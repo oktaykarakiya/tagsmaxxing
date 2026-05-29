@@ -1,0 +1,6 @@
+# Pinned for deterministic gates across the autonomous build loop. Bump deliberately
+# (a new stable can introduce new clippy lints that would otherwise halt the loop).
+[toolchain]
+channel = "1.92.0"
+components = ["rustfmt", "clippy", "llvm-tools"]
+profile = "minimal"

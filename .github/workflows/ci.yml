@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  gates:
+    name: Definition-of-Done gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Installs the toolchain pinned in rust-toolchain.toml (1.92.0 + rustfmt, clippy,
+      # llvm-tools) and caches the cargo registry / build artifacts.
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      # Prebuilt binaries for the gate tools (fast, no compilation).
+      - name: Install gate tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just,cargo-deny,cargo-audit,cargo-llvm-cov
+
+      # Each gate is a separate step so a failure pinpoints the cause. Together these are
+      # exactly `just ci` (plan §31.2/§31.3).
+      - name: Formatting
+        run: just fmt-check
+      - name: Build
+        run: just build
+      - name: Clippy (-D warnings)
+        run: just clippy
+      - name: Tests
+        run: just test
+      - name: Dependency policy (cargo-deny)
+        run: just deny
+      - name: Security advisories (cargo-audit)
+        run: just audit
+      - name: Coverage floor
+        run: just cov

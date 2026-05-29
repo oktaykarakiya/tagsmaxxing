@@ -1,0 +1,11 @@
+[package]
+name = "kb-extract"
+description = "Extractor implementations: native docs, Tika, media (ffmpeg/whisper), vision."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]

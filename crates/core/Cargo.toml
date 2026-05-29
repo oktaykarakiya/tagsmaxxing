@@ -1,0 +1,19 @@
+[package]
+name = "kb-core"
+description = "Domain types and capability traits for the Local File Knowledge Base (the stable, I/O-free contract)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+hex = { workspace = true }
+bytes = { workspace = true }

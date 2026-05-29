@@ -1,0 +1,11 @@
+[package]
+name = "kb-api"
+description = "axum HTTP API + clap CLI + folder-watch + web UI. Serves on port 9999."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]

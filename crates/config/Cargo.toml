@@ -1,0 +1,11 @@
+[package]
+name = "kb-config"
+description = "TOML configuration loading with hot-reload for the KB workspace."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]

@@ -1,0 +1,21 @@
+# Build output
+/target/
+
+# Coverage artifacts
+/lcov.info
+*.profraw
+*.profdata
+
+# Secrets / local env (never commit; see .env.example)
+.env
+.env.local
+
+# Autonomous build-loop state
+/.build-loop/
+
+# Editor noise
+*.rs.bk
+.DS_Store
+
+# NOTE: Cargo.lock IS committed — this workspace produces an application binary,
+# so deterministic builds (and meaningful `cargo audit`/`deny`) require it.

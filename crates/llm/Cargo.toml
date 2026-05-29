@@ -1,0 +1,11 @@
+[package]
+name = "kb-llm"
+description = "llama.cpp OpenAI-compatible client; Tagger/Embedder/Reranker impls over the scheduler."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]

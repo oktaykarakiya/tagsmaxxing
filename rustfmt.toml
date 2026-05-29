@@ -1,0 +1,3 @@
+# Stable rustfmt options only (the pinned toolchain is stable; unstable options
+# would make `cargo fmt --check` error).
+edition = "2024"

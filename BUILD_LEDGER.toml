@@ -1,0 +1,170 @@
+# BUILD_LEDGER.toml — the single source of build progress (plan §31.1).
+#
+# The autonomous loop (scripts/build-loop.sh) advances this file one task at a time:
+#   1. pick the next `status = "todo"` task whose `depends_on` are all `done`;
+#   2. read its `plan_sections` + the code it touches;
+#   3. implement it WITH unit tests (§31.3), following the modularity rules (§31.4);
+#   4. run the Definition-of-Done gates: `just ci` (§31.2) — ALL must pass;
+#   5. commit (one task = one commit, message references the id, §31.6), set status = "done";
+#   6. if `checkpoint = true`, STOP and request human review before proceeding (§31.5).
+#
+# Only P0 and P1 are decomposed here (bootstrap scope). When P1 completes, generate the P2
+# task set BEFORE continuing — "current phase first", not the whole project (§31.1).
+
+[meta]
+generated = "2026-05-29"
+phases_planned = ["P0", "P1"]
+gate_command = "just ci"
+walking_skeleton = "Complete the P0-P4 vertical slice before adding breadth (§31.6)."
+# Crate versions verified against crates.io on 2026-05-29 (the plan's names had drifted):
+# serde 1.0.228, serde_json 1.0.150, async-trait 0.1.89, anyhow 1.0.102, thiserror 2.0.18,
+# chrono 0.4.44, hex 0.4.3, bytes 1.11.1. For P1+: tokio 1.52.3, reqwest 0.13.4, axum 0.8.9,
+# sqlx 0.9.0, clap 4.6.1, tracing 0.1.44 (RE-VERIFY before use, §31.6).
+app_port = 9999  # the HTTP API must serve on port 9999 (acceptance of P6; default in config)
+
+# ── Phase P0 — Scaffold ───────────────────────────────────────────────────────
+
+[[task]]
+id = "P0-T1"
+phase = "P0"
+description = "Cargo workspace skeleton: 8 crates (core, config, scheduler, llm, extract, store, pipeline, api) compiling as empty libs; workspace.dependencies + workspace.lints enforcing missing_docs/unsafe/unwrap/todo; pinned toolchain; .gitignore (Cargo.lock tracked)."
+depends_on = []
+plan_sections = ["4", "31"]
+acceptance = "`cargo build` succeeds on a clean checkout; all 8 crates present under crates/."
+status = "done"
+checkpoint = false
+notes = "Crates named kb-* (avoid clashing with std `core`). Crates live under crates/. edition 2024, resolver 3. Done in bootstrap commit."
+
+[[task]]
+id = "P0-T2"
+phase = "P0"
+description = "Quality gates: justfile (fmt, clippy -D warnings, test, audit, deny, cov, ci); deny.toml (license allow-list, deny unknown sources/wildcards); cargo-llvm-cov floor; GitHub Actions CI running every gate on push/PR."
+depends_on = ["P0-T1"]
+plan_sections = ["14", "31"]
+acceptance = "`just ci` is green locally; CI workflow runs the same gates."
+status = "done"
+checkpoint = false
+notes = "Coverage floor cov_min=85 in justfile. CI uses actions-rust-lang/setup-rust-toolchain + taiki-e/install-action."
+
+[[task]]
+id = "P0-T3"
+phase = "P0"
+description = "Author this ledger (P0+P1) and the autonomy harness: scripts/ledger.py (next-eligible/status), scripts/build-loop.sh (per-task agent invocation + gate verification + checkpoint stops), scripts/bootstrap-dev.sh, and CLAUDE.md encoding the §31 protocol."
+depends_on = ["P0-T1"]
+plan_sections = ["31"]
+acceptance = "`just next` prints the next eligible task; `python3 scripts/ledger.py status` summarizes; build-loop.sh is runnable and stops at checkpoints."
+status = "done"
+checkpoint = false
+notes = "Loop is user-launched (`just loop`); it never bulk-emits code — it orchestrates and verifies (§31.1)."
+
+[[task]]
+id = "P0-T4"
+phase = "P0"
+description = "core crate: domain types mirroring schema §5 (Tenant, User, Document, FileRecord, Chunk, Tag, TagAlias, Job, UsageEvent, Sha256, enums) + capability traits (Extractor, Tagger, Embedder, Reranker, Store, ProviderAdapter, Blob). Doc comments on every public item; colocated unit tests for all logic."
+depends_on = ["P0-T1"]
+plan_sections = ["4", "5", "26"]
+acceptance = "`just ci` green; every enum string-maps to its DB value with a test; coverage of core logic ~100%."
+status = "done"
+checkpoint = false
+notes = "Divergences from plan sketches (recorded): TagOutput drops `category` (§1/§6.5/§7.4); PageImage carries encoded bytes not image::DynamicImage (keeps core codec-free); ProviderAdapter takes a core ProviderConn not scheduler Backend (avoids dependency cycle). Capability traits return anyhow::Result per the sketches; core's own parsing uses thiserror CoreError."
+
+[[task]]
+id = "P0-T5"
+phase = "P0"
+description = "config crate: serde/TOML loader for config.toml (storage.postgres_url, scheduler.{acquire_timeout_secs,health_interval_secs,max_retries}, [[backend]] entries with id/base_url/roles/slots/priority), env overrides, validation, and the api serve port (default 9999). Optional hot-reload (arc-swap + notify) may be deferred to a follow-up task."
+depends_on = ["P0-T4"]
+plan_sections = ["6", "4", "18", "22"]
+acceptance = "Parses the §6 example config.toml into typed structs; rejects invalid configs with clear errors; unit tests cover defaults, env override, missing-field and bad-role errors; api port defaults to 9999. `just ci` green."
+status = "todo"
+checkpoint = false
+notes = "Roles parse via core::role::Role. Verify `toml` and `arc-swap`/`notify` versions before adding (§31.6)."
+
+[[task]]
+id = "P0-T6"
+phase = "P0"
+description = "sqlx migrations for the full schema §5 (tenants, users, documents, files, tags, tag_aliases, document_tags, chunks, jobs, usage_events), pgvector extension, indexes (HNSW + GIN), and the RLS policies + app.current_tenant pattern. Migrations apply forward-only."
+depends_on = ["P0-T1"]
+plan_sections = ["5", "13", "16"]
+acceptance = "Migrations apply cleanly on a fresh pgvector Postgres (testcontainers integration test); VECTOR dim = 1024; RLS enabled on tenant-scoped tables. `just ci` green."
+status = "todo"
+checkpoint = false
+notes = "RLS is INTRODUCED here but the cross-tenant negative-test suite + sign-off is the P5 checkpoint (§31.5). Store embedder id+dim in a settings table (§5 lock-in note). Verify sqlx 0.9 API."
+
+[[task]]
+id = "P0-T7"
+phase = "P0"
+description = "compose.yaml bringing up pgvector/pgvector Postgres + Apache Tika with healthchecks; runs under both `docker compose` and `podman compose`. .env.example documents required vars (incl. PORT=9999)."
+depends_on = ["P0-T1"]
+plan_sections = ["14", "5"]
+acceptance = "`docker compose up` and `podman compose up` start Postgres+Tika; healthchecks pass; Postgres reachable on the documented port; data-checksums enabled (§23)."
+status = "todo"
+checkpoint = false
+notes = "GPU inference (llama/whisper) is a separate profile/compose.gpu.yaml — not part of this task (§14)."
+
+# ── Phase P1 — Scheduler + llm client (centerpiece) ───────────────────────────
+
+[[task]]
+id = "P1-T1"
+phase = "P1"
+description = "scheduler crate core types: Backend (id, base_url, roles, priority, slots: Semaphore, healthy: AtomicBool), Lease (RAII OwnedSemaphorePermit), Pool (by_role: DashMap, acquire_timeout), AcquireError (thiserror: NoBackend/Timeout/Closed). Build a Pool from config (P0-T5). Backend::free()."
+depends_on = ["P0-T4", "P0-T5"]
+plan_sections = ["6"]
+acceptance = "Types compile; Backend::free() and Pool construction-from-config unit-tested; `just ci` green."
+status = "todo"
+checkpoint = true
+notes = "CHECKPOINT: the user asked to review the foundation before P1 (the concurrency-heavy scheduler). The loop must STOP here until approved (e.g. `just loop --approve P1-T1`). Verify tokio 1.52 Semaphore/OwnedSemaphorePermit + dashmap APIs (§31.6)."
+
+[[task]]
+id = "P1-T2"
+phase = "P1"
+description = "Pool::acquire(role, priority): fast path (least-loaded healthy candidate with a try_acquire-able slot, sorted by priority then free slots); wait path (await all candidates' acquire_owned concurrently via FuturesUnordered, first free wins, bounded by acquire_timeout); dead-host skip; NoBackend/Timeout errors."
+depends_on = ["P1-T1"]
+plan_sections = ["6", "31"]
+acceptance = "TDD unit tests (no HTTP): free-slot pick, priority ordering, all-busy timeout, dead-host skipped, NoBackend when no healthy backend serves the role, RAII slot release on Lease drop. `just ci` green."
+status = "todo"
+checkpoint = false
+notes = "Use proptest where input space is wide (§31.3). Inject a clock/timeout source for deterministic timing tests (no real sleeps)."
+
+[[task]]
+id = "P1-T3"
+phase = "P1"
+description = "In-process mock HTTP backend test harness: a controllable server (configurable per-request status, latency, and concurrency) implementing /health and /v1/chat/completions + /v1/embeddings, for deterministic scheduler/llm tests (§31.3 mock-backend pattern)."
+depends_on = ["P1-T1"]
+plan_sections = ["6", "31"]
+acceptance = "Harness can simulate healthy/unhealthy, slow, 5xx, and 429 responses; used by at least one passing test; deterministic (no flakiness). `just ci` green."
+status = "todo"
+checkpoint = false
+notes = "Likely axum/hyper on an ephemeral 127.0.0.1 port. Verify reqwest 0.13 + axum 0.8 test patterns."
+
+[[task]]
+id = "P1-T4"
+phase = "P1"
+description = "Health loop: one background task polling GET {base}/health every health_interval, setting Backend.healthy; a recovered host becomes eligible again on the next acquire(). Local semaphore remains the source of truth for in-flight load."
+depends_on = ["P1-T1", "P1-T3"]
+plan_sections = ["6"]
+acceptance = "Against the mock: unhealthy host is skipped, then re-included after it recovers; graceful task shutdown. Deterministic (inject interval/clock). `just ci` green."
+status = "todo"
+checkpoint = false
+notes = "Avoid /slots races — health is liveness only; the semaphore tracks our load."
+
+[[task]]
+id = "P1-T5"
+phase = "P1"
+description = "llm crate: OpenAI-compatible chat + embed calls routed through Pool.acquire with the §6 failover wrapper — on transport error/5xx drop the lease, mark suspect, retry on another backend (bounded by max_retries); circuit-break after K consecutive failures with a cooldown. Slot freed when the Lease drops."
+depends_on = ["P1-T2", "P1-T3", "P1-T4"]
+plan_sections = ["6", "9", "26"]
+acceptance = "Against the mock: success path; failover on 5xx to a healthy backend; bounded retries then error; circuit-break + cooldown; slot released on drop. `just ci` green."
+status = "todo"
+checkpoint = false
+notes = "embed must NOT fail over across different models (§11) — only same-model/host. reqwest client with json + timeouts on every call (§22)."
+
+[[task]]
+id = "P1-T6"
+phase = "P1"
+description = "Scheduler+llm mock-backend integration test suite asserting the full §10 P1 contract together: free-slot pick, fair wait-then-acquire, priority ordering, timeout, dead-host skip, failover (and 429 cooldown). This is the P1 phase integration test."
+depends_on = ["P1-T2", "P1-T3", "P1-T4", "P1-T5"]
+plan_sections = ["6", "11", "31"]
+acceptance = "All P1 assertions pass deterministically as integration tests; coverage on scheduler/llm meets the floor. `just ci` green. P1 COMPLETE → generate the P2 ledger before continuing."
+status = "todo"
+checkpoint = false
+notes = "On completion, the user has the scheduler + mock-backend tests to judge real quality (per the bootstrap note)."
