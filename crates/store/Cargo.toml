@@ -12,9 +12,16 @@ workspace = true
 # `sqlx::migrate!` embeds the forward-only schema migrations under ./migrations into the
 # binary; the runtime `Migrator` applies them. The store impl proper lands in P4.
 sqlx = { workspace = true }
+# Local-disk Blob impl (P2-T1): content-addressed file storage behind the core Blob trait.
+# Hot-swappable root directory via arc-swap (the hot-swap rule, CLAUDE.md / §20).
+kb-core = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+bytes = { workspace = true }
+arc-swap = { workspace = true }
+tokio = { workspace = true, features = ["fs"] }
 
 [dev-dependencies]
-# The migrations-apply-on-fresh-pgvector integration test (gated `#[ignore]`; needs a
-# container runtime) spins up pgvector/pgvector via testcontainers and connects with tokio.
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "fs"] }
 testcontainers = { workspace = true }
+tempfile = { workspace = true }

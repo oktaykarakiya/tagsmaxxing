@@ -184,8 +184,9 @@ description = "Local disk Blob: implement the core Blob trait against the local 
 depends_on = ["P0-T4"]
 plan_sections = ["4", "13", "20"]
 acceptance = "All six Blob trait methods work deterministically under tempdir; put is idempotent (same key+content = no-op); get_range returns correct byte slices; delete then exists returns false; presigned_get_url returns a valid filesystem path. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
+notes = "LocalBlob in kb-store::blob: hot-swappable root (ArcSwap), content-addressed key layout {root}/{prefix}/{key}, all 6 Blob trait methods + 18 unit tests. Idempotent put, get_range with clamping, file:// presigned URLs, prefix-based key isolation. just ci green (blob.rs 95.83% lines)."
 
 [[task]]
 id = "P2-T2"
