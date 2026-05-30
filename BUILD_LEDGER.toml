@@ -8,12 +8,12 @@
 #   5. commit (one task = one commit, message references the id, §31.6), set status = "done";
 #   6. if `checkpoint = true`, STOP and request human review before proceeding (§31.5).
 #
-# Only P0 and P1 are decomposed here (bootstrap scope). When P1 completes, generate the P2
-# task set BEFORE continuing — "current phase first", not the whole project (§31.1).
+# P0 and P1 were the bootstrap scope (now complete). P2 is decomposed below; P3+ remain to
+# be authored when their preceding phases complete — "current phase first" (§31.1).
 
 [meta]
 generated = "2026-05-29"
-phases_planned = ["P0", "P1"]
+phases_planned = ["P0", "P1", "P2"]
 gate_command = "just ci"
 walking_skeleton = "Complete the P0-P4 vertical slice before adding breadth (§31.6)."
 # Crate versions verified against crates.io on 2026-05-29 (the plan's names had drifted):
@@ -174,3 +174,95 @@ acceptance = "All P1 assertions pass deterministically as integration tests; cov
 status = "done"
 checkpoint = false
 notes = "17 integration tests in crates/llm/tests/p1_integration.rs: free-slot pick (Pool.acquire + LlamaClient), priority ordering, wait-then-acquire, concurrent callers, timeout, dead-host skip, NoBackend, health-loop lifecycle, failover on 5xx/transport/429, slot release, multi-role routing, embed failover. All 17 pass. just ci green. P1 PHASE COMPLETE."
+
+# ── Phase P2 — Job queue + extractors + local Blob (§10, §16, §7, §20) ──────────
+
+[[task]]
+id = "P2-T1"
+phase = "P2"
+description = "Local disk Blob: implement the core Blob trait against the local filesystem in kb-store. Content-addressed key layout ({root}/{prefix}/{blob_key}), put/get/get_range/exists/delete/presigned_get_url (presigned returns a file:// path for dev). Blob is the 'local first' impl (§20); B2 lands in P8."
+depends_on = ["P0-T4"]
+plan_sections = ["4", "13", "20"]
+acceptance = "All six Blob trait methods work deterministically under tempdir; put is idempotent (same key+content = no-op); get_range returns correct byte slices; delete then exists returns false; presigned_get_url returns a valid filesystem path. just ci green."
+status = "todo"
+checkpoint = false
+
+[[task]]
+id = "P2-T2"
+phase = "P2"
+description = "PgStore: Postgres connection + Store::upsert_file + Store::upsert_chunks. Establish sqlx PgPool in kb-store with connection config (hot-swappable postgres_url), auto-apply migrations on connect, and implement the first two Store trait methods. hybrid_search is deferred to P4."
+depends_on = ["P0-T6"]
+plan_sections = ["5", "7", "13"]
+acceptance = "PgStore::connect establishes a pool and runs migrations; upsert_file INSERTs or updates on (tenant_id, sha256) conflict; upsert_chunks atomically replaces chunks for a file_id (DELETE old + INSERT new in a transaction). Integration tests with testcontainers (#[ignore] in just ci). just ci green."
+status = "todo"
+checkpoint = false
+
+[[task]]
+id = "P2-T3"
+phase = "P2"
+description = "Durable job queue (Postgres-backed, §16) in kb-pipeline: enqueue, claim workers with SELECT … FOR UPDATE SKIP LOCKED, complete, fail with exponential backoff (run_after = now + min_backoff × 2^attempts), dead-letter after max_retries, graceful shutdown via watch channel, and a concurrent worker pool spawning at most N handlers."
+depends_on = ["P2-T2"]
+plan_sections = ["16", "7"]
+acceptance = "Enqueue creates a jobs row with status=queued; claim atomically picks the next eligible job (respects priority, run_after, SKIP LOCKED); complete sets status=done; fail increments attempts + sets backoff; exhausted retries sets dead; concurrent claimants never get the same row; graceful shutdown drains in-flight and stops claiming. Integration tests against Postgres (#[ignore] in just ci). just ci green."
+status = "todo"
+checkpoint = false
+
+[[task]]
+id = "P2-T4"
+phase = "P2"
+description = "Text + code extractors: TextExtractor reads plain-text bytes (UTF-8) for Document-kind .txt/.md/.html/log files; CodeExtractor does the same for Code-kind source files. Both produce Extracted { text, meta:{}, page_images:[] }. Tree-sitter chunking is deferred to P3 (chunking step)."
+depends_on = ["P0-T4"]
+plan_sections = ["2", "7"]
+acceptance = "TextExtractor returns the full file content as text; CodeExtractor returns source code as text; both handle valid UTF-8 and return errors on invalid UTF-8; no page_images for these kinds. just ci green."
+status = "todo"
+checkpoint = false
+
+[[task]]
+id = "P2-T5"
+phase = "P2"
+description = "Tika document extractor: sends bytes via HTTP PUT to Apache Tika /tika endpoint (configurable, hot-swappable base URL), receives text + metadata (Tika returns plain text and optional JSON metadata), maps Tika output into Extracted. Covers PDF/DOCX/PPTX/XLSX/ODT/RTF and other formats Tika supports."
+depends_on = ["P0-T4", "P2-T4"]
+plan_sections = ["2", "7", "14"]
+acceptance = "Against a mock Tika server (axum, same pattern as kb-mock-backend): returns extracted text for text/plain response, metadata for application/json, error for unsupported MIME; follows hot-swap Tika URL changes; deterministic tests. just ci green."
+status = "todo"
+checkpoint = false
+
+[[task]]
+id = "P2-T6"
+phase = "P2"
+description = "Image extractor: validates magic bytes for JPEG/PNG/GIF/WebP/TIFF, harvests EXIF metadata via kamadak-exif into namespaced meta JSON, produces a PageImage (original encoded bytes + MIME) for later VLM captioning (the actual VLM call is P3). Does NOT decode pixels or resize — raw bytes pass through."
+depends_on = ["P0-T4", "P2-T4"]
+plan_sections = ["2", "7"]
+acceptance = "Extracts EXIF fields (camera, GPS, orientation, datetime) into deterministic JSON keys; produces one PageImage per input; rejects non-image bytes; no EXIF means meta is empty-object, not an error. just ci green."
+status = "todo"
+checkpoint = false
+
+[[task]]
+id = "P2-T7"
+phase = "P2"
+description = "Audio extractor: transcode to 16kHz mono WAV via ffmpeg subprocess (tokio::process::Command, timeout-gated), then POST the WAV to whisper-server for transcription (OpenAI-compatible /v1/audio/transcriptions). Produces Extracted { text, meta: {duration_secs, …}, chunks with ts_offset }. Hot-swappable whisper base URL."
+depends_on = ["P2-T4"]
+plan_sections = ["2", "7"]
+acceptance = "Against a mock whisper server (axum, same pattern): transcode command is constructed correctly; transcription response is parsed into text with segments; subprocess error gives clear anyhow error; timeout kills ffmpeg. Unit tests mock the subprocess boundary; integration tests use a real short WAV sample + mock server. just ci green."
+status = "todo"
+checkpoint = false
+
+[[task]]
+id = "P2-T8"
+phase = "P2"
+description = "Video extractor (§7.1): ffmpeg scene-change keyframe extraction (capped at ~40 frames, select='gt(scene,0.3)'), audio track extraction then whisper transcription, ffprobe metadata (duration/resolution/codec/fps). Produces Extracted { text: transcript, meta: ffprobe data, page_images: keyframes } with ts_offsets on transcript chunks. Frame cap + total duration bounds enforce cost control."
+depends_on = ["P2-T6", "P2-T7"]
+plan_sections = ["2", "7", "7.1"]
+acceptance = "Against mock ffmpeg/ffprobe + mock whisper server: keyframe extraction is bounded (cap enforced), audio track is extracted and transcribed, ffprobe JSON is parsed into structured meta, ts_offsets align with transcript segments. Subprocess timeouts give clear errors. Unit tests inject mock command factories to avoid real ffmpeg dependency. just ci green."
+status = "todo"
+checkpoint = false
+
+[[task]]
+id = "P2-T9"
+phase = "P2"
+description = "Binary / unknown extractor (§2 table): runs magic-byte detection (tree_magic_mini or infer, yields MIME), the file command (detached subprocess), strings (gathering printable ASCII runs >= 4 chars), and collects size + SHA256. Produces Extracted { text: \"\", meta: {mime, size_bytes, sha256, magic, strings: […], kind}, page_images:[] }. Archive listing (zip/tar recursion) uses the same pattern + stores a manifest in meta."
+depends_on = ["P2-T4"]
+plan_sections = ["2", "7"]
+acceptance = "Against known binary samples: magic bytes correctly identified (PNG header, ELF, ZIP), strings extracts printable ASCII sequences, file output parsed into structured meta, size + sha256 match. Deterministic tests (mock subprocess facade so no file availability gate). just ci green."
+status = "todo"
+checkpoint = false
