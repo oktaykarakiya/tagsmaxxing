@@ -228,7 +228,8 @@ description = "Tika document extractor: sends bytes via HTTP PUT to Apache Tika 
 depends_on = ["P0-T4", "P2-T4"]
 plan_sections = ["2", "7", "14"]
 acceptance = "Against a mock Tika server (axum, same pattern as kb-mock-backend): returns extracted text for text/plain response, metadata for application/json, error for unsupported MIME; follows hot-swap Tika URL changes; deterministic tests. just ci green."
-status = "todo"
+status = "done"
+notes = "TikaExtractor with hot-swappable ArcSwap URL, HTTP PUT to /tika, JSON+text/plain parsing, mock axum Tika server with 20 unit tests covering happy path, plain-text fallback, HTTP errors, connection refused, non-UTF-8, rich metadata, hot-swap, DOCX simulation."
 checkpoint = false
 
 [[task]]

@@ -11,9 +11,12 @@ workspace = true
 [dependencies]
 kb-core = { workspace = true }
 anyhow = { workspace = true }
+arc-swap = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
+reqwest = { workspace = true, features = ["json"] }
 serde_json = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt", "macros"] }
+axum = "0.8"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "sync"] }

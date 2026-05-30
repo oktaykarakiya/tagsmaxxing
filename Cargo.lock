@@ -1457,9 +1457,12 @@ name = "kb-extract"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arc-swap",
  "async-trait",
+ "axum",
  "bytes",
  "kb-core",
+ "reqwest",
  "serde_json",
  "tokio",
 ]
