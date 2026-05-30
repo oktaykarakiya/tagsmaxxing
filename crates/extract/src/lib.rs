@@ -8,3 +8,4 @@ pub mod code;
 pub mod image;
 pub mod text;
 pub mod tika;
+pub mod video;

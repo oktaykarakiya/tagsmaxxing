@@ -261,8 +261,9 @@ description = "Video extractor (§7.1): ffmpeg scene-change keyframe extraction 
 depends_on = ["P2-T6", "P2-T7"]
 plan_sections = ["2", "7", "7.1"]
 acceptance = "Against mock ffmpeg/ffprobe + mock whisper server: keyframe extraction is bounded (cap enforced), audio track is extracted and transcribed, ffprobe JSON is parsed into structured meta, ts_offsets align with transcript segments. Subprocess timeouts give clear errors. Unit tests inject mock command factories to avoid real ffmpeg dependency. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
+notes = "VideoExtractor in kb-extract::video: MediaTool trait abstracts ffmpeg/ffprobe (RealMediaTool uses temp files), parse_ffprobe_json + parse_r_frame_rate for structured meta, reuses WhisperConfig from audio module, configurable max_keyframes (default 40) + max_duration_secs for cost control. 36 unit tests with MockMediaTool + axum mock whisper server. just ci green (video.rs 92.14% lines)."
 
 [[task]]
 id = "P2-T9"
