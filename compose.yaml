@@ -4,10 +4,10 @@
 #   * Postgres + pgvector  — the only durable state (plan §5)
 #   * Apache Tika          — document text/metadata extraction (plan §2, §14)
 #
-# Designed to run *identically* under `docker compose up` and `podman compose up`:
-# no `version:` key, only spec features both engines support, and every value has an
-# inline default via `${VAR:-default}` so it works with no `.env` at all. Copy
-# `.env.example` → `.env` to override (ports, image tags, credentials).
+# Run with `podman compose up` — this project targets Podman exclusively (no Docker). No
+# `version:` key, only widely-supported compose-spec features, and every value has an inline
+# default via `${VAR:-default}` so it works with no `.env` at all. Copy `.env.example` → `.env`
+# to override (ports, image tags, credentials).
 #
 # The application container (built from a Containerfile) joins this file as an `app`
 # service in a later phase — for now the app runs on the host against these sidecars.
@@ -18,8 +18,8 @@ name: local-kb
 services:
   # ── Postgres + pgvector — metadata, tags, vectors, keyword index (plan §5) ──────
   postgres:
-    # Image is fully qualified (docker.io/…) so it resolves identically under Docker
-    # and under Podman's strict short-name policy with no interactive registry prompt.
+    # Image is fully qualified (docker.io/… = the Docker Hub registry) to satisfy Podman's
+    # strict short-name policy with no interactive registry prompt.
     image: ${POSTGRES_IMAGE:-docker.io/pgvector/pgvector:pg17}
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-kb}

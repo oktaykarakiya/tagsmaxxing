@@ -2,18 +2,16 @@
 //! produce 1024-dim vector columns, enable RLS, and are idempotent on re-run (plan §5/§13/§16,
 //! acceptance of P0-T6).
 //!
-//! This test needs a container runtime (Docker **or** Podman) and network access to pull the
-//! `pgvector/pgvector` image, so it is gated `#[ignore]` and does NOT run in `just ci`
-//! (CI/dev machines here have Podman only, and pulls may be offline). Run it explicitly:
+//! This test needs **Podman** (this project targets Podman exclusively) and network access to
+//! pull the `pgvector/pgvector` image, so it is gated `#[ignore]` and does NOT run in `just ci`
+//! (pulls may be offline). Run it explicitly against the Podman socket testcontainers talks to:
 //!
 //! ```text
-//! # Docker:
-//! cargo test -p kb-store --test migrations_pg -- --ignored
-//! # Podman (expose the socket testcontainers talks to):
 //! systemctl --user start podman.socket
 //! DOCKER_HOST=unix://$XDG_RUNTIME_DIR/podman/podman.sock \
 //!   cargo test -p kb-store --test migrations_pg -- --ignored
 //! ```
+//! (`DOCKER_HOST` is just the env var testcontainers reads; it points at the Podman socket.)
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::time::Duration;
@@ -46,7 +44,7 @@ async fn connect_with_retry(url: &str) -> PgPool {
 }
 
 #[tokio::test]
-#[ignore = "requires a container runtime (Docker/Podman) + image pull; run with --ignored"]
+#[ignore = "requires Podman + image pull; run with --ignored"]
 async fn migrations_apply_on_fresh_pgvector() -> TestResult {
     // A fresh pgvector image — nothing pre-created. POSTGRES_DB ensures the `kb` database exists.
     let container = GenericImage::new("pgvector/pgvector", "pg17")

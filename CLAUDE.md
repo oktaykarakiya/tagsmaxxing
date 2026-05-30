@@ -71,6 +71,16 @@ ids, routing/tiers, rate limits, scheduler timeouts, log levels, quotas, feature
   system stay simple. The test is *"would an operator reasonably change this on a live system?"*
   If yes, make it hot-swappable and look it up at use.
 
+## Container runtime — Podman only
+This project targets **Podman exclusively** (the operator has no Docker). This **supersedes the
+plan's Docker mentions** (e.g. §14 "docker build and podman build", "docker compose"). Use
+`podman` / `podman compose` in every command, doc, acceptance criterion, and CI step — never
+require or reference the Docker engine. Keep `compose.yaml`/Containerfiles spec-compliant so
+`podman compose` / `podman build` work; fully-qualified `docker.io/…` image names are fine
+(that is the Docker Hub *registry*, which Podman pulls from). Container-based tests
+(testcontainers) target the Podman socket
+(`DOCKER_HOST=unix://$XDG_RUNTIME_DIR/podman/podman.sock`) and stay `#[ignore]` in `just ci`.
+
 ## Mandatory human-review checkpoints (plan §31.5) — implement+test, but do NOT self-merge
 Tenant isolation / RLS (ship a cross-tenant negative-test suite) • encryption & key handling •
 auth & sessions • Stripe billing webhooks • the extractor untrusted-bytes/prompt-injection
