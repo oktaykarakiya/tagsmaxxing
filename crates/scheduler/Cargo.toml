@@ -18,3 +18,8 @@ dashmap = { workspace = true }
 thiserror = { workspace = true }
 # Futures meta-crate for FuturesUnordered in the wait path (plan §6.3).
 futures = "0.3"
+
+[dev-dependencies]
+kb-mock-backend = { workspace = true }
+# reqwest for making HTTP assertions against the mock-backend test harness.
+reqwest = { version = "0.13", features = ["json"] }

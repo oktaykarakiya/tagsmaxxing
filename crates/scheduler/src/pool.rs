@@ -439,4 +439,40 @@ mod tests {
         let _l2 = pool2.acquire(Role::Text).await.unwrap();
         assert_eq!(b.free(), 0);
     }
+
+    // ── P1-T3: mock-backend harness smoke test ────────────────────────
+
+    /// Prove the mock-backend harness works end-to-end with the scheduler:
+    /// start a mock, register it as a backend, acquire a slot, drop it.
+    #[tokio::test]
+    async fn acquire_from_mock_backend() {
+        let mock = kb_mock_backend::MockBackend::start().await;
+        let base_url = format!("http://{}/v1", mock.addr());
+
+        let b = Arc::new(Backend::new(
+            "mock-1",
+            base_url,
+            vec![Role::Text],
+            0, /* priority */
+            2, /* slots */
+        ));
+        let pool = Pool::new(vec![Arc::clone(&b)], Duration::from_secs(5));
+
+        // Fast-path: mock is healthy (default), slots are free.
+        let lease = pool.acquire(Role::Text).await.unwrap();
+        assert_eq!(lease.backend_id, "mock-1");
+        assert!(lease.base_url.starts_with("http://127.0.0.1:"));
+        assert!(lease.base_url.ends_with("/v1"));
+        assert_eq!(b.free(), 1);
+
+        drop(lease);
+        assert_eq!(b.free(), 2);
+
+        // Prove the mock is truly alive: issue an actual health request.
+        let health_url = mock.url("/health");
+        let status = reqwest::get(&health_url).await.unwrap().status();
+        assert_eq!(status, 200);
+
+        mock.shutdown().await;
+    }
 }

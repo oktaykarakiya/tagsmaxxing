@@ -1,0 +1,19 @@
+[package]
+name = "kb-mock-backend"
+description = "In-process mock HTTP backend test harness for deterministic scheduler/llm tests (plan §31.3 mock-backend pattern)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+axum = "0.8"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "net", "time"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+reqwest = { version = "0.13", features = ["json"] }

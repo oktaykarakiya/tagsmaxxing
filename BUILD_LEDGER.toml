@@ -138,9 +138,9 @@ description = "In-process mock HTTP backend test harness: a controllable server 
 depends_on = ["P1-T1"]
 plan_sections = ["6", "31"]
 acceptance = "Harness can simulate healthy/unhealthy, slow, 5xx, and 429 responses; used by at least one passing test; deterministic (no flakiness). `just ci` green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = "Likely axum/hyper on an ephemeral 127.0.0.1 port. Verify reqwest 0.13 + axum 0.8 test patterns."
+notes = "kb-mock-backend crate with axum 0.8.9 on 127.0.0.1:0; 9 unit tests cover healthy/unhealthy/500/429/slow/chat/embed shapes + 1 scheduler integration test; all CI gates green (97.4% lines)."
 
 [[task]]
 id = "P1-T4"
