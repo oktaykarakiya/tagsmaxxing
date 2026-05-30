@@ -1,4 +1,19 @@
-//! `kb-config`: configuration loading (serde + TOML) with hot-reload (arc-swap + notify).
+//! Typed, validated, hot-swappable configuration for the Local File Knowledge Base.
 //!
-//! Skeleton crate. Implemented incrementally per `BUILD_LEDGER.toml`; see plan §6
-//! (scheduler/backend config) and §4 (workspace layout).
+//! Configuration is parsed from a TOML file (plan §6), overlaid with environment
+//! variables, validated, and exposed behind an [`arc_swap::ArcSwap`] handle
+//! ([`AppConfig`]) offering `current()` / `reload()` plus file-watch hot-reload
+//! (the hot-swap rule, see `CLAUDE.md`). Call sites resolve [`AppConfig::current`]
+//! per use so that edits take effect without a restart.
+
+mod app;
+mod env;
+mod error;
+mod load;
+mod model;
+
+pub use app::AppConfig;
+pub use env::{EnvMap, apply_env, env_from_process};
+pub use error::ConfigError;
+pub use load::{load_path, load_str, validate};
+pub use model::{Api, Backend, Config, DEFAULT_PORT, Scheduler, Storage};

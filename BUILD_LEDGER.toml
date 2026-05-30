@@ -79,9 +79,9 @@ description = "config crate: serde/TOML loader for config.toml (storage.postgres
 depends_on = ["P0-T4"]
 plan_sections = ["6", "4", "18", "22", "26"]
 acceptance = "Parses the §6 example config.toml into typed structs; rejects invalid configs with clear errors; exposes an ArcSwap-backed `current()` that reflects a `reload()` without restart (unit-tested); unit tests cover defaults, env override, missing-field and bad-role errors; api port defaults to 9999. `just ci` green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = "Roles parse via core::role::Role. Hot-reload is first-class here (not deferred) per the user's hot-swap rule. Verify `toml`, `arc-swap`, `notify` versions before adding (§31.6)."
+notes = "Roles parse via core::role::Role. Hot-reload is first-class here (not deferred) per the user's hot-swap rule. Verify `toml`, `arc-swap`, `notify` versions before adding (§31.6). DONE: kb-config implements typed Config (storage/api/scheduler/[[backend]]) via serde+toml 0.9, env overlay (POSTGRES_URL/PORT/KB_*), validation (missing-field/invalid-port/bad-role), and an ArcSwap AppConfig with current()/reload() + notify 8 file-watch hot-reload; ships config.example.toml mirroring §6 (parsed by a test); api port defaults 9999; priority is u8 (lower=preferred). Added arc-swap 1.9.1, notify 8, toml 0.9, tracing 0.1.44 (+tempfile dev) and version-pinned the kb-core path dep so cargo-deny's wildcard ban passes. just ci green, llvm-cov 97.6% lines."
 
 [[task]]
 id = "P0-T6"

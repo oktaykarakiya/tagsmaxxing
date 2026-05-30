@@ -1,0 +1,55 @@
+# Local File Knowledge Base — example configuration (plan §6).
+# Copy to `config.toml` and edit. Adding a machine is one `[[backend]]` entry.
+# (The §6 sketch packs several keys per line with `;`; that is illustrative — real
+# TOML needs one key per line, as below.)
+
+[storage]
+# The only durable state. May also be supplied via the POSTGRES_URL env var.
+postgres_url = "postgres://kb:kb@localhost/kb"
+
+[api]
+# Not in the §6 sketch; the HTTP API serve port (defaults to 9999 when omitted).
+port = 9999
+
+[scheduler]
+acquire_timeout_secs = 120   # how long a task waits for a slot before erroring
+health_interval_secs = 5
+max_retries = 2
+
+# ── 32 GB box ─────────────────────────────────────────────────────────────────
+# Each backend is one llama-server. `slots` MUST equal its --parallel N (plan §6).
+[[backend]]                  # workhorse: Qwen3-VL-30B-A3B + mmproj
+id = "local-vl"
+base_url = "http://127.0.0.1:8080/v1"
+roles = ["text", "vision", "code"]
+slots = 4
+priority = 0
+
+[[backend]]                  # BGE-M3, started with --embedding
+id = "local-embed"
+base_url = "http://127.0.0.1:8082/v1"
+roles = ["embed"]
+slots = 8
+priority = 0
+
+[[backend]]                  # bge-reranker-v2-m3
+id = "local-rerank"
+base_url = "http://127.0.0.1:8083/v1"
+roles = ["rerank"]
+slots = 8
+priority = 0
+
+# ── second machine: just add entries, no code change ──────────────────────────
+[[backend]]                  # Qwen3-Coder-30B-A3B
+id = "gpu2-coder"
+base_url = "http://gpu2.lan:8080/v1"
+roles = ["code"]
+slots = 4
+priority = 0
+
+[[backend]]                  # Qwen3.6-35B-A3B for query-time RAG synthesis
+id = "gpu2-brain"
+base_url = "http://gpu2.lan:8081/v1"
+roles = ["text"]
+slots = 2
+priority = 1
