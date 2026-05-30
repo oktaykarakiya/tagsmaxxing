@@ -19,7 +19,10 @@ exif = { package = "kamadak-exif", version = "0.6.1" }
 reqwest = { workspace = true, features = ["json", "multipart"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 tokio = { workspace = true, features = ["process", "io-util", "time"] }
+tree_magic_mini = { workspace = true }
+hex = { workspace = true }
 
 [dev-dependencies]
 axum = "0.8"

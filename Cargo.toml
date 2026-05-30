@@ -43,6 +43,8 @@ reqwest = { version = "0.13.4", default-features = false }
 # 1.92.0 (rust-toolchain.toml). The Migrator / migrate! / Migration API used here is stable
 # across 0.7–0.9, so this is purely an MSRV-compat pin (§31.6: verify versions before use).
 sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "postgres", "migrate", "macros"] }
+tree_magic_mini = "3.2.2"
+sha2 = "0.10"
 testcontainers = "0.27.3"
 
 # Workspace-wide lints, inherited by every crate via `[lints] workspace = true`.

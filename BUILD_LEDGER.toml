@@ -272,5 +272,6 @@ description = "Binary / unknown extractor (§2 table): runs magic-byte detection
 depends_on = ["P2-T4"]
 plan_sections = ["2", "7"]
 acceptance = "Against known binary samples: magic bytes correctly identified (PNG header, ELF, ZIP), strings extracts printable ASCII sequences, file output parsed into structured meta, size + sha256 match. Deterministic tests (mock subprocess facade so no file availability gate). just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
+notes = "BinaryExtractor in kb-extract::binary: magic-byte MIME via tree_magic_mini 3.2.2, file --brief subprocess (RealFileTool), pure-Rust extract_strings (printable ASCII runs ≥4 chars), sha2-based SHA-256 + size, archive manifest listing (tar tf/unzip -l) for zip/tar/gz/bz2/xz/zstd. 37 unit tests with MockFileTool. Added tree_magic_mini, sha2, hex to workspace deps. just ci green; binary.rs 89.87% lines."
