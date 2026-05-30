@@ -101,9 +101,9 @@ description = "compose.yaml bringing up pgvector/pgvector Postgres + Apache Tika
 depends_on = ["P0-T1"]
 plan_sections = ["14", "5"]
 acceptance = "`docker compose up` and `podman compose up` start Postgres+Tika; healthchecks pass; Postgres reachable on the documented port; data-checksums enabled (§23)."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = "GPU inference (llama/whisper) is a separate profile/compose.gpu.yaml — not part of this task (§14)."
+notes = "GPU inference (llama/whisper) is a separate profile/compose.gpu.yaml — not part of this task (§14). DONE: compose.yaml (no `version:`, common-subset spec) brings up postgres (docker.io/pgvector/pgvector:pg17, POSTGRES_INITDB_ARGS=--data-checksums per §23) + tika (docker.io/apache/tika:3.3.0.0, minimal). Fully-qualified images so podman's strict short-name policy needs no TTY prompt; every value has a `${VAR:-default}` so it runs with no .env. Healthchecks: postgres `pg_isready -h 127.0.0.1` (TCP-only, so the init's socket-only temp server doesn't false-positive); tika bash `/dev/tcp` connect (minimal image is ubuntu-based: bash/timeout present, no curl/wget). Ports published on loopback, configurable (POSTGRES_PORT/TIKA_PORT/_BIND). .env.example documents app-vs-compose vars (PORT=9999 kept); README gained a Run-the-sidecar-stack section. Verified under podman compose (docker absent in this env; file is docker-compatible + `podman compose config` validates): both containers reach `healthy` in ~9s, `SHOW data_checksums`=on, pgvector available, PG 17.10, host port reachable, Tika /version=3.3.0; clean `down -v`. `just ci` green (no Rust changed), llvm-cov 97.0% lines."
 
 # ── Phase P1 — Scheduler + llm client (centerpiece) ───────────────────────────
 

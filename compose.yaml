@@ -1,0 +1,71 @@
+# compose.yaml — local dev/sidecar stack for the Local File Knowledge Base (plan §14).
+#
+# Brings up the two stateful sidecars the walking skeleton needs:
+#   * Postgres + pgvector  — the only durable state (plan §5)
+#   * Apache Tika          — document text/metadata extraction (plan §2, §14)
+#
+# Designed to run *identically* under `docker compose up` and `podman compose up`:
+# no `version:` key, only spec features both engines support, and every value has an
+# inline default via `${VAR:-default}` so it works with no `.env` at all. Copy
+# `.env.example` → `.env` to override (ports, image tags, credentials).
+#
+# The application container (built from a Containerfile) joins this file as an `app`
+# service in a later phase — for now the app runs on the host against these sidecars.
+# GPU inference (llama-server / whisper) is a separate profile / compose.gpu.yaml (§14).
+
+name: local-kb
+
+services:
+  # ── Postgres + pgvector — metadata, tags, vectors, keyword index (plan §5) ──────
+  postgres:
+    # Image is fully qualified (docker.io/…) so it resolves identically under Docker
+    # and under Podman's strict short-name policy with no interactive registry prompt.
+    image: ${POSTGRES_IMAGE:-docker.io/pgvector/pgvector:pg17}
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-kb}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kb}
+      POSTGRES_DB: ${POSTGRES_DB:-kb}
+      # data-checksums detect on-disk page corruption (plan §23). They can ONLY be
+      # turned on at cluster init, so they are baked into the very first `initdb`;
+      # they apply to a *fresh* data volume (delete the volume to re-init).
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    # Published on loopback only by default — dev tooling and the host-run app reach
+    # it at localhost:5432; in-compose services would use the `postgres` hostname.
+    ports:
+      - "${POSTGRES_BIND:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Headroom for parallel pgvector HNSW index builds (plan §5); default /dev/shm
+    # in a container is a cramped 64 MB.
+    shm_size: "256mb"
+    healthcheck:
+      # The init phase runs a temporary socket-only server, so checking over TCP
+      # (-h 127.0.0.1) reports healthy only once the *real* server is accepting
+      # connections. pg_isready needs no credentials.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+
+  # ── Apache Tika — extracts text + metadata from arbitrary documents (plan §2) ───
+  tika:
+    # Default is the minimal server image; override with the `-full` variant (adds
+    # Tesseract OCR + more format support) via TIKA_IMAGE in .env when you need it.
+    image: ${TIKA_IMAGE:-docker.io/apache/tika:3.3.0.0}
+    ports:
+      - "${TIKA_BIND:-127.0.0.1}:${TIKA_PORT:-9998}:9998"
+    healthcheck:
+      # The minimal Tika image ships no curl/wget, but is Ubuntu-based, so bash's
+      # /dev/tcp probes the port directly. Tika binds 9998 only once it is ready,
+      # so a successful connect is a sound readiness signal. `timeout` guards hangs.
+      test: ["CMD", "timeout", "5", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9998"]
+      interval: 10s
+      timeout: 6s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+volumes:
+  pgdata:

@@ -44,6 +44,24 @@ just ci                     # fmt-check, build, clippy -D warnings, test, deny, 
 Individual gates: `just fmt`, `just clippy`, `just test`, `just deny`, `just audit`,
 `just cov`. List everything with `just`.
 
+## Run the sidecar stack
+
+The stateful sidecars — Postgres (with **pgvector**, `data-checksums` on) and **Apache Tika** —
+come up from a single [`compose.yaml`](./compose.yaml) that runs identically under Docker and
+Podman:
+
+```bash
+cp .env.example .env        # optional: override ports / image tags / credentials
+docker compose up -d        # or: podman compose up -d
+```
+
+Both services declare healthchecks, so `compose ps` reports `healthy` once Postgres is accepting
+connections and Tika is serving. Postgres is published on `127.0.0.1:5432` and Tika on
+`127.0.0.1:9998` by default (change `POSTGRES_PORT` / `TIKA_PORT` if a port is taken). The app
+(once containerised) and GPU inference join via later profiles; for now the app runs on the host
+against these sidecars. Tear down with `docker compose down` (add `-v` to also drop the data
+volume).
+
 ## Autonomous build loop
 
 Development is **ledger-driven**: one small task at a time, each gated by `just ci`
