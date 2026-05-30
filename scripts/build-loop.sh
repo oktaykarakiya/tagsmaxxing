@@ -22,7 +22,10 @@
 #   CLAUDE_MODEL   (default: claude-opus-4-8)  model for each task
 #   EFFORT         (default: xhigh)            reasoning effort (claude --effort)
 #   PERM_MODE      (default: acceptEdits)      claude --permission-mode (overridden by --yolo)
-#   TASK_TIMEOUT   (default: 1800)             seconds per task before abort
+#   TASK_TIMEOUT   (default: 3600)             seconds per task before abort
+#                                              (in --print mode claude buffers its final
+#                                              output, so a timeout kill yields a 0-byte log;
+#                                              keep generous headroom for xhigh + full `just ci`)
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -38,7 +41,7 @@ DRY_RUN=0
 CLAUDE_MODEL="${CLAUDE_MODEL:-claude-opus-4-8}"
 EFFORT="${EFFORT:-xhigh}"
 PERM_MODE="${PERM_MODE:-acceptEdits}"
-TASK_TIMEOUT="${TASK_TIMEOUT:-1800}"
+TASK_TIMEOUT="${TASK_TIMEOUT:-3600}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
