@@ -1306,6 +1306,7 @@ name = "kb-scheduler"
 version = "0.1.0"
 dependencies = [
  "dashmap",
+ "futures",
  "kb-config",
  "kb-core",
  "thiserror",

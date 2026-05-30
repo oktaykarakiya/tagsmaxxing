@@ -127,9 +127,9 @@ description = "Pool::acquire(role, priority): fast path (least-loaded healthy ca
 depends_on = ["P1-T1"]
 plan_sections = ["6", "31"]
 acceptance = "TDD unit tests (no HTTP): free-slot pick, priority ordering, all-busy timeout, dead-host skipped, NoBackend when no healthy backend serves the role, RAII slot release on Lease drop. `just ci` green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = "Use proptest where input space is wide (§31.3). Inject a clock/timeout source for deterministic timing tests (no real sleeps)."
+notes = "Use proptest where input space is wide (§31.3). Inject a clock/timeout source for deterministic timing tests (no real sleeps). DONE: Pool::acquire implements §6.3 fast path (try_acquire on priority/free-sorted candidates) + wait path (FuturesUnordered, first-free-wins, bounded by acquire_timeout) + dead-host filter. 10 new async tests (free-slot pick, priority ordering, same-priority most-free, all-busy timeout, dead-host skipped, NoBackend unknown-role + all-unhealthy, wait-path succeeds, RAII drop, cloned pool shares state). Added tokio 'time' feature + futures 0.3 dep. just ci green; scheduler/pool.rs 97.55% lines."
 
 [[task]]
 id = "P1-T3"
