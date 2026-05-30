@@ -217,8 +217,9 @@ description = "Text + code extractors: TextExtractor reads plain-text bytes (UTF
 depends_on = ["P0-T4"]
 plan_sections = ["2", "7"]
 acceptance = "TextExtractor returns the full file content as text; CodeExtractor returns source code as text; both handle valid UTF-8 and return errors on invalid UTF-8; no page_images for these kinds. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
+notes = "TextExtractor + CodeExtractor in kb-extract (text.rs, code.rs). Both decode bytes as UTF-8 into Extracted { text, meta:{}, page_images:[] }. 17 unit tests (9 text + 8 code) covering valid/invalid UTF-8, empty input, missing path, multiline, special chars. just ci green; extract/text.rs 97.30% lines, extract/code.rs 97.64% lines."
 
 [[task]]
 id = "P2-T5"

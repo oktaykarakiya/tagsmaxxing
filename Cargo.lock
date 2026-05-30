@@ -1455,6 +1455,14 @@ dependencies = [
 [[package]]
 name = "kb-extract"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "kb-core",
+ "serde_json",
+ "tokio",
+]
 
 [[package]]
 name = "kb-llm"
