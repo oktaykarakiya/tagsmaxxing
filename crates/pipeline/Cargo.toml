@@ -13,7 +13,10 @@ kb-core = { workspace = true }
 sqlx = { workspace = true, features = ["runtime-tokio", "postgres", "chrono"] }
 anyhow = { workspace = true }
 chrono = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
 tokio = { workspace = true, features = ["sync", "time"] }
+tree_magic_mini = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }

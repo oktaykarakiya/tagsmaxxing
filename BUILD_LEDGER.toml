@@ -290,8 +290,9 @@ description = "Document builder: construct a Document + ordered FileRecords from
 depends_on = ["P0-T4"]
 plan_sections = ["5", "7", "27"]
 acceptance = "Single file → 1-page document with correct sha256 + blob_key + MIME; multi-file → N pages with correct page_no ordering + labels; dedup: same content bytes → same sha256/blob_key; MIME detection for text/png/jpeg/pdf; blob_key starts with tenant prefix. Unit tests for all paths + edge cases (empty bytes, invalid UTF-8 filename, large file). just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
+notes = "DocumentBuilder in kb-pipeline::document_builder: PageInput, build_single (1-page auto-wrap), build_multi (N-page ordered). compute_sha256 (sha2), detect_mime (tree_magic_mini), build_blob_key ({tenant_id}/{hex}), mime_to_doc_kind (image/audio/video/archive/document/binary), infer_doc_kind (all-same→that kind, mixed→Document). 66 unit tests (SHA-256 test vectors, 8 MIME detections, blob key prefixing, kind inference, single/multi/e2e shape). just ci green; document_builder.rs 99.63% lines, workspace 92.34%."
 
 [[task]]
 id = "P3-T2"

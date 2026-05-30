@@ -1523,9 +1523,12 @@ dependencies = [
  "chrono",
  "kb-core",
  "kb-store",
+ "serde_json",
+ "sha2",
  "sqlx",
  "testcontainers",
  "tokio",
+ "tree_magic_mini",
 ]
 
 [[package]]
