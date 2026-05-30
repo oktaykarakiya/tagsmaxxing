@@ -28,6 +28,15 @@ notify = "8"
 toml = "0.9"
 tracing = "0.1.44"
 tempfile = "3"
+# Async runtime + Postgres/pgvector store. sqlx pulls its own tokio (runtime-tokio); the
+# extra tokio entry here is for tests that need `#[tokio::test]`. No TLS feature: local
+# connections are plaintext for now (rustls is added with the networked store impl, §14/§20).
+tokio = { version = "1.52.3", default-features = false }
+# Pinned to 0.8.x: sqlx 0.9 raised its MSRV to rustc 1.94, but the toolchain is pinned to
+# 1.92.0 (rust-toolchain.toml). The Migrator / migrate! / Migration API used here is stable
+# across 0.7–0.9, so this is purely an MSRV-compat pin (§31.6: verify versions before use).
+sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "postgres", "migrate", "macros"] }
+testcontainers = "0.27.3"
 
 # Workspace-wide lints, inherited by every crate via `[lints] workspace = true`.
 # These enforce the §31 quality bar mechanically (docs, no-stubs, no-unwrap).

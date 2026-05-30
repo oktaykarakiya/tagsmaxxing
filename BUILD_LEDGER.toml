@@ -90,9 +90,9 @@ description = "sqlx migrations for the full schema §5 (tenants, users, document
 depends_on = ["P0-T1"]
 plan_sections = ["5", "13", "16"]
 acceptance = "Migrations apply cleanly on a fresh pgvector Postgres (testcontainers integration test); VECTOR dim = 1024; RLS enabled on tenant-scoped tables. `just ci` green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = "RLS is INTRODUCED here but the cross-tenant negative-test suite + sign-off is the P5 checkpoint (§31.5). Store embedder id+dim in a settings table (§5 lock-in note). Verify sqlx 0.9 API."
+notes = "RLS is INTRODUCED here but the cross-tenant negative-test suite + sign-off is the P5 checkpoint (§31.5). Store embedder id+dim in a settings table (§5 lock-in note). Verify sqlx 0.9 API. DONE: 3 forward-only sqlx migrations under crates/store/migrations (extensions; full §5 schema with enum CHECK constraints + embedder-lockin settings row {id:bge-m3,dim:1024}; RLS) embedded via sqlx::migrate! → kb_store::MIGRATOR. pgvector + HNSW(vector_cosine_ops) + GIN(tsv,jsonb) indexes; VECTOR(1024) on tags+chunks. RLS ENABLE+FORCE + tenant_isolation policy (USING+WITH CHECK current_setting('app.current_tenant',true)) on users/documents/files/tags/tag_aliases/chunks/jobs/usage_events, document_tags via parent-doc subquery, + app_set_current_tenant() helper. sqlx pinned 0.8.6 (0.9 needs rustc 1.94 > pinned 1.92; Migrator/migrate! API stable). Non-DB unit tests pin the DDL; #[ignore] testcontainers test (pgvector/pgvector:pg17) verified GREEN against real Postgres via podman (dim=1024, RLS forced, idempotent re-run). just audit ignores RUSTSEC-2023-0071 (rsa, reachable only via never-compiled sqlx-mysql; cargo deny stays fully strict + confirms it's absent from the build graph). just ci green, llvm-cov 97.0% lines."
 
 [[task]]
 id = "P0-T7"

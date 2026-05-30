@@ -33,8 +33,14 @@ test:
     cargo test --workspace --all-features
 
 # RustSec security advisories.
+# `cargo audit` scans the whole Cargo.lock literally, including OPTIONAL dependencies that are
+# never enabled or compiled. RUSTSEC-2023-0071 (rsa, Marvin timing sidechannel — no fix
+# available) is reachable only through `sqlx-mysql`, the MySQL driver we never enable (we are
+# Postgres-only). `cargo deny check` (graph- and feature-aware) confirms it is absent from the
+# real build graph, so this is a lockfile-superset false positive, not a shipped vulnerability.
+# Scope: this single id only; `cargo deny`'s advisory gate stays fully strict.
 audit:
-    cargo audit
+    cargo audit --ignore RUSTSEC-2023-0071
 
 # Licenses / bans / sources / advisories policy.
 deny:

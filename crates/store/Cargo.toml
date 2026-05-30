@@ -9,3 +9,12 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+# `sqlx::migrate!` embeds the forward-only schema migrations under ./migrations into the
+# binary; the runtime `Migrator` applies them. The store impl proper lands in P4.
+sqlx = { workspace = true }
+
+[dev-dependencies]
+# The migrations-apply-on-fresh-pgvector integration test (gated `#[ignore]`; needs a
+# container runtime) spins up pgvector/pgvector via testcontainers and connects with tokio.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+testcontainers = { workspace = true }
