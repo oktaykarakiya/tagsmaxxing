@@ -8,12 +8,12 @@
 #   5. commit (one task = one commit, message references the id, §31.6), set status = "done";
 #   6. if `checkpoint = true`, STOP and request human review before proceeding (§31.5).
 #
-# P0 and P1 were the bootstrap scope (now complete). P2 is decomposed below; P3+ remain to
-# be authored when their preceding phases complete — "current phase first" (§31.1).
+# P0, P1, and P2 are complete. P3 is decomposed below; P4+ remain to be authored when their
+# preceding phases complete — "current phase first" (§31.1).
 
 [meta]
-generated = "2026-05-29"
-phases_planned = ["P0", "P1", "P2"]
+generated = "2026-05-31"
+phases_planned = ["P0", "P1", "P2", "P3"]
 gate_command = "just ci"
 walking_skeleton = "Complete the P0-P4 vertical slice before adding breadth (§31.6)."
 # Crate versions verified against crates.io on 2026-05-29 (the plan's names had drifted):
@@ -275,3 +275,91 @@ acceptance = "Against known binary samples: magic bytes correctly identified (PN
 status = "done"
 checkpoint = false
 notes = "BinaryExtractor in kb-extract::binary: magic-byte MIME via tree_magic_mini 3.2.2, file --brief subprocess (RealFileTool), pure-Rust extract_strings (printable ASCII runs ≥4 chars), sha2-based SHA-256 + size, archive manifest listing (tar tf/unzip -l) for zip/tar/gz/bz2/xz/zstd. 37 unit tests with MockFileTool. Added tree_magic_mini, sha2, hex to workspace deps. just ci green; binary.rs 89.87% lines."
+
+# ── Phase P3 — Document ingestion end-to-end (§10, §7, §6.5, §27) ──────────
+#
+# P3 wires the P2 extractors + P1 scheduler/LLM + P0 schema into the full ingestion
+# pipeline: document/page model, per-page harvest + merge, LLM tagging with json_schema,
+# semantic tag canonicalization, token-aware chunking + embedding, and transactional
+# upsert with usage logging. This completes the P0–P4 walking skeleton's ingest side.
+
+[[task]]
+id = "P3-T1"
+phase = "P3"
+description = "Document builder: construct a Document + ordered FileRecords from 1..N raw file bytes. Single upload auto-wraps in a 1-page document (§27); explicit multi-file grouping accepts (bytes, page_label) pairs in order. Computes sha256, detects MIME via tree_magic_mini, assigns blob_key = hex(sha256). Returns (Document { status: pending }, Vec<FileRecord>) — no DB writes yet."
+depends_on = ["P0-T4"]
+plan_sections = ["5", "7", "27"]
+acceptance = "Single file → 1-page document with correct sha256 + blob_key + MIME; multi-file → N pages with correct page_no ordering + labels; dedup: same content bytes → same sha256/blob_key; MIME detection for text/png/jpeg/pdf; blob_key starts with tenant prefix. Unit tests for all paths + edge cases (empty bytes, invalid UTF-8 filename, large file). just ci green."
+status = "todo"
+checkpoint = false
+
+[[task]]
+id = "P3-T2"
+phase = "P3"
+description = "JsonSchema Tagger: implement the core Tagger trait in kb-llm using LlamaClient. Sends TagInput as a chat request with ChatReq.json_schema set to a versioned JSON Schema (§9), producing structured {title, summary, tags[]}. Adds response_format serialization to the OpenAI wire types (OpenAiChatBody). Prompt + schema versioned as constants in the tagger module. Validates response parses into TagOutput; retries once on parse failure. This is the untrusted-bytes/prompt-injection boundary — the tagger prompt must bracket user content clearly (§31.5 checkpoint)."
+depends_on = ["P1-T5", "P0-T4"]
+plan_sections = ["7", "9", "31.5"]
+acceptance = "Against mock LLM backend: valid json_schema response parses into TagOutput { title, summary, tags }; invalid JSON retries once then errors; prompt includes all TagInput fields (text, user_note, kind, meta); schema version constant is tracked; empty tags list is valid. Unit tests with kb-mock-backend asserting prompt shape + retry behavior. just ci green."
+status = "todo"
+checkpoint = true
+notes = "CHECKPOINT (§31.5): untrusted-bytes/prompt-injection boundary. Extracted text may contain prompt-injection markers; the prompt template brackets user content explicitly and the json_schema constraint provides a structural second barrier. Human must review the prompt template + JSON Schema before proceeding."
+
+[[task]]
+id = "P3-T3"
+phase = "P3"
+description = "Tag canonicalization (§6.5): given raw tags from TagOutput + tenant_id, canonicalize against the tenant's tag set. Algorithm: (1) exact alias lookup in tag_aliases → canonical tag_id; (2) else embed the raw tag name, cosine-match against existing tags.embedding for the tenant — if best match ≥ TAG_MERGE_THRESHOLD (0.85), reuse the canonical tag + INSERT alias; (3) else INSERT new canonical tag + embed its name + return new id. Returns Vec<i64> of canonical tag_ids. Adds tag-related DB methods to PgStore: upsert_tag, lookup_alias, find_similar_tags, insert_tag_alias, insert_document_tags."
+depends_on = ["P2-T2", "P1-T5"]
+plan_sections = ["6.5"]
+acceptance = "Exact alias match → returns existing canonical id; new tag below threshold → new canonical created + its name embedded; tag above threshold → merges with alias row; empty tags list → empty result; threshold boundary: 0.85 match merges, 0.84 creates new. Unit tests (pure logic: cosine match, alias lookup, threshold) + integration tests for DB round-trip (#[ignore]). just ci green."
+status = "todo"
+checkpoint = false
+
+[[task]]
+id = "P3-T4"
+phase = "P3"
+description = "Token-aware chunker + batch embed: (a) split extracted text into overlapping chunks (~512 tokens via char-count heuristic, ~64-char overlap), each preserving page_no + file_id provenance; transcript chunks (from audio/video) keep their ts_offset. (b) Batch-embed chunk content via LlamaClient::embed (EmbedKind::Document, batches ≤ 32), attaching vectors. Also embed tag names for new canonical tags needed by P3-T3. Verifies output dim matches schema (1024). Pure chunker logic in kb-pipeline; embed step wraps LlamaClient."
+depends_on = ["P1-T5", "P2-T4"]
+plan_sections = ["7", "8", "4"]
+acceptance = "Short text (< 512 chars) → 1 embedded chunk; long text → multiple chunks with correct idx/page_no/file_id + overlap; ts_offset preserved for transcript chunks; empty text → empty vec; batch embed splits 100 texts into 4 calls; mismatched embed dim is an error. Unit tests (chunker logic: sizes, overlap, provenance, edge cases) + embed tests against mock backend. just ci green."
+status = "todo"
+checkpoint = false
+
+[[task]]
+id = "P3-T5"
+phase = "P3"
+description = "Document upsert + usage logging in PgStore: extend PgStore with (a) upsert_document — INSERT/UPDATE documents row returning id, (b) insert_usage_event — write one usage_events row per model call, and (c) transactional_ingest — in one transaction: upsert document, upsert all files (existing PgStore method), insert document_tags, upsert chunks (existing), set document.status = 'ready'. Rollback on any failure. Usage events record tag + embed calls (model, role, backend_id, prompt/completion tokens, latency)."
+depends_on = ["P2-T2", "P3-T1", "P3-T3"]
+plan_sections = ["5", "7", "15"]
+acceptance = "Full document write in one transaction: document row exists with status='ready', files linked, tags linked, chunks present; rollback on mid-transaction failure leaves no partial state; usage_events rows written with correct role/model/token fields; idempotent re-upsert updates existing rows. Integration tests against Postgres (#[ignore] in just ci). just ci green."
+status = "todo"
+checkpoint = false
+
+[[task]]
+id = "P3-T6"
+phase = "P3"
+description = "Metadata merge: given Vec<(FileRecord, Extracted)> from per-page extraction, merge into document-level output. Produces: (a) merged document text — all pages' extracted text concatenated with page separator markers (e.g. '--- page 1 (front) ---'), (b) merged documents.meta — per-page meta namespaced under page_N.* keys plus top-level union fields, (c) dominant DocKind (e.g. image+image → Image; mixed → Document), (d) updated page_count. Pure logic, no I/O."
+depends_on = ["P3-T1", "P2-T4"]
+plan_sections = ["7"]
+acceptance = "Single page: text passed through, meta preserved; two pages: both texts present with separators, page_1.* + page_2.* namespaces in meta; dominant kind: 3 images → Image, mixed image+text → Document; empty meta pages handled; page_count matches input count. Unit tests for 1-page, 2-page, 3-page, mixed-kind, empty-meta, empty-text. just ci green."
+status = "todo"
+checkpoint = false
+
+[[task]]
+id = "P3-T7"
+phase = "P3"
+description = "IngestPipeline orchestrator: the main struct in kb-pipeline that wires the complete §7 flow. Given 1..N raw file bytes + optional user_note: (1) DocumentBuilder → Document + FileRecords, (2) store blobs via Blob::put for each file, (3) run each file through its Extractor (routes by DocKind), (4) MetadataMerge, (5) Tagger::tag over the merged document text, (6) TagCanonicalizer, (7) Chunker + Embedder, (8) TransactionalIngest (P3-T5). Returns the ready Document id. Uses the JobQueue for async processing (§16)."
+depends_on = ["P3-T1", "P3-T2", "P3-T3", "P3-T4", "P3-T5", "P3-T6"]
+plan_sections = ["7", "10", "16"]
+acceptance = "Single text file → pipeline produces a ready document with tags + embedded chunks + usage events; pipeline runs via job queue (enqueue → worker claims → processes → completes); errors on unsupported/empty files; deterministic test with mock extractor + mock tagger + mock embedder + real LocalBlob. just ci green."
+status = "todo"
+checkpoint = false
+
+[[task]]
+id = "P3-T8"
+phase = "P3"
+description = "P3 phase integration test: end-to-end ingest of a real text file through the full pipeline (mock LLM backends for tagger + embedder, LocalBlob for storage, real PgStore with testcontainers). Asserts: document.status = 'ready', all files stored in blob, tags canonicalized in DB, chunks embedded with correct dim (1024) + provenance (page_no/file_id), usage_events populated, idempotent re-ingest doesn't duplicate. This is the P3 phase gate — the walking skeleton's ingest leg is complete."
+depends_on = ["P3-T7"]
+plan_sections = ["7", "10", "31"]
+acceptance = "End-to-end: text file → ready document with tags + 1024-dim embedded chunks + usage events in DB + blobs on disk; idempotent re-ingest doesn't duplicate rows; transaction rollback on mid-pipeline failure leaves no partial state; pipeline emits the correct job lifecycle (queued → running → done). #[ignore] in just ci (needs testcontainers + podman socket). P3 PHASE COMPLETE → generate P4 ledger. just ci green."
+status = "todo"
+checkpoint = false
