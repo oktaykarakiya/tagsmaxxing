@@ -9,19 +9,21 @@ license.workspace = true
 workspace = true
 
 [dependencies]
-# `sqlx::migrate!` embeds the forward-only schema migrations under ./migrations into the
-# binary; the runtime `Migrator` applies them. The store impl proper lands in P4.
-sqlx = { workspace = true }
-# Local-disk Blob impl (P2-T1): content-addressed file storage behind the core Blob trait.
-# Hot-swappable root directory via arc-swap (the hot-swap rule, CLAUDE.md / §20).
+# sqlx: Postgres connection pool, migrate! for embedded schema, chrono for DateTime<Utc>
+# support in queries, and the runtime-tokio/postgres driver.
+sqlx = { workspace = true, features = ["runtime-tokio", "postgres", "migrate", "macros", "chrono"] }
+# Core domain types (FileRecord, Chunk, Query, Hit) and the Store trait.
 kb-core = { workspace = true }
 async-trait = { workspace = true }
 anyhow = { workspace = true }
 bytes = { workspace = true }
+# Hot-swappable postgres_url (the hot-swap rule, CLAUDE.md).
 arc-swap = { workspace = true }
-tokio = { workspace = true, features = ["fs"] }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["fs", "sync"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "fs"] }
 testcontainers = { workspace = true }
 tempfile = { workspace = true }
+chrono = { workspace = true }

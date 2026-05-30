@@ -5,13 +5,14 @@
 //! * the **schema migrations** (plan §5 schema, §13 RLS, §16 queue): forward-only SQL
 //!   under `migrations/`, embedded and applied via [`MIGRATOR`];
 //! * the **local-disk [`Blob`](kb_core::blob::Blob) implementation** (plan §20, P2-T1):
-//!   content-addressed file storage under a hot-swappable root directory.
-//!
-//! The `Store` trait implementation, hybrid search, and RRF fusion land in phase P4
-//! (see plan §8).
+//!   content-addressed file storage under a hot-swappable root directory;
+//! * **[`PgStore`]** — the Postgres-backed [`Store`](kb_core::store::Store) implementation
+//!   (plan §5/§7/§13): `upsert_file`, `upsert_chunks`, and deferred `hybrid_search` (P4).
 
 pub mod blob;
 mod migrations;
+pub mod pg_store;
 
 pub use blob::LocalBlob;
 pub use migrations::MIGRATOR;
+pub use pg_store::PgStore;

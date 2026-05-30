@@ -195,8 +195,9 @@ description = "PgStore: Postgres connection + Store::upsert_file + Store::upsert
 depends_on = ["P0-T6"]
 plan_sections = ["5", "7", "13"]
 acceptance = "PgStore::connect establishes a pool and runs migrations; upsert_file INSERTs or updates on (tenant_id, sha256) conflict; upsert_chunks atomically replaces chunks for a file_id (DELETE old + INSERT new in a transaction). Integration tests with testcontainers (#[ignore] in just ci). just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
+notes = "PgStore in kb-store::pg_store: ArcSwap<String> hot-swappable postgres_url, connect() auto-applies MIGRATOR, upsert_file with ON CONFLICT (tenant_id, sha256) RETURNING id, upsert_chunks with DELETE+INSERT in a transaction using CAST($n AS vector) for embeddings. 11 unit tests (format_vector, URL hot-swap, not-connected error, hybrid_search deferred) + 7 #[ignore] integration tests (connect, upsert insert/idempotent/update, chunks replace/empty/dim). hybrid_search returns anyhow::bail deferred to P4. just ci green; workspace 95.99% lines."
 
 [[task]]
 id = "P2-T3"
