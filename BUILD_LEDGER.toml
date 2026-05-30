@@ -250,7 +250,8 @@ description = "Audio extractor: transcode to 16kHz mono WAV via ffmpeg subproces
 depends_on = ["P2-T4"]
 plan_sections = ["2", "7"]
 acceptance = "Against a mock whisper server (axum, same pattern): transcode command is constructed correctly; transcription response is parsed into text with segments; subprocess error gives clear anyhow error; timeout kills ffmpeg. Unit tests mock the subprocess boundary; integration tests use a real short WAV sample + mock server. just ci green."
-status = "todo"
+status = "done"
+notes = "AudioExtractor in kb-extract::audio: WhisperConfig (hot-swappable ArcSwap URL), transcoder trait (RealFfmpeg tokio::process::Command with pipe stdin/stdout + timeout), whisper transcription via multipart POST /v1/audio/transcriptions (verbose_json), segments with ts_offsets in meta. 31 unit tests with mock whisper axum server + mock ffmpeg transcoder. just ci green (audio.rs 94.86% lines)."
 checkpoint = false
 
 [[task]]
