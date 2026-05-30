@@ -239,8 +239,9 @@ description = "Image extractor: validates magic bytes for JPEG/PNG/GIF/WebP/TIFF
 depends_on = ["P0-T4", "P2-T4"]
 plan_sections = ["2", "7"]
 acceptance = "Extracts EXIF fields (camera, GPS, orientation, datetime) into deterministic JSON keys; produces one PageImage per input; rejects non-image bytes; no EXIF means meta is empty-object, not an error. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
+notes = "ImageExtractor in kb-extract::image: detect_image_mime for JPEG/PNG/GIF/WebP/TIFF magic bytes, validate_image with hex-preview errors, harvest_exif via kamadak-exif 0.6.1 (Value::Ascii handled directly to avoid display-layer quoting, Undefined rendered as hex), exif_value_to_string helper. 34 unit tests (magic detection, validation, EXIF harvest with synthetic JPEG+APP1/EXIF IFD, full extract flow). just ci green; image.rs 96.52% lines."
 
 [[task]]
 id = "P2-T7"

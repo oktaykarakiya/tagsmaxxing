@@ -4,5 +4,6 @@
 //! See plan §2 (per-filetype routing), §7 (pipeline), and §7.1 (video).
 
 pub mod code;
+pub mod image;
 pub mod text;
 pub mod tika;
