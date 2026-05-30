@@ -5,7 +5,9 @@
 # It does NOT write code. Each iteration it: (1) asks the ledger for the next eligible task,
 # (2) invokes Claude Code headless to implement THAT ONE task with tests + commit, then
 # (3) INDEPENDENTLY re-runs `just ci` and confirms the task flipped to `done` and a commit was
-# made. It stops immediately on a red gate, a blocked task, phase completion, or a checkpoint:
+# made. This verification — NOT claude's exit code — is authoritative: a `timeout`/interrupt
+# that fires after the task was already committed is a false failure and is absorbed.
+# It stops immediately on a red gate, a blocked task, phase completion, or a checkpoint:
 # it halts BEFORE an unapproved checkpoint (awaiting `--approve <id>`) AND AFTER completing an
 # approved checkpoint (for human review) — so a human is in the loop at every checkpoint and
 # partial progress is always safe and resumable.
@@ -128,25 +130,36 @@ Do NOT implement any other task. If you genuinely cannot finish, set ${TASK_ID} 
 EOF
 
   say "→ invoking Claude (model=$CLAUDE_MODEL effort=$EFFORT, log: ${log#"$ROOT"/})"
-  if ! timeout "$TASK_TIMEOUT" claude -p "$PROMPT" \
+  # A non-zero exit from claude is NOT authoritative. In --print mode claude buffers its final
+  # output, so `timeout` (rc=124) can fire AFTER the task was already committed — a false
+  # failure (0-byte log, work intact). Capture the code but DON'T die yet: the independent
+  # verification below (gates green + ledger 'done' + a new commit) is the real arbiter.
+  if timeout "$TASK_TIMEOUT" claude -p "$PROMPT" \
         --model "$CLAUDE_MODEL" \
         --effort "$EFFORT" \
         --permission-mode "$PERM_MODE" \
         2>&1 | tee "$log"; then
-    die "Claude invocation for $TASK_ID failed or timed out (see $log)."
+    claude_rc=0
+  else
+    claude_rc="${PIPESTATUS[0]}"
+    printf '\033[1;33m⚠ claude exited %s for %s (timeout/interrupt?); verifying whether it completed anyway…\033[0m\n' "$claude_rc" "$TASK_ID"
   fi
 
-  # ── independent verification (don't trust "should pass") ────────────────────
+  # ── independent verification (don't trust the agent — nor its exit code) ─────
   say "verifying gates for $TASK_ID"
   just ci 2>&1 | tee "$log.ci" | tail -5 || die "GATES RED after $TASK_ID — stopping (see $log.ci)."
 
   status="$(ledger field "$TASK_ID" status)"
-  [[ "$status" == "done" ]] || die "$TASK_ID is '$status', not 'done' — agent did not complete it. Stopping."
-
   after_head="$(git rev-parse HEAD)"
-  [[ "$after_head" != "$before_head" ]] || die "no new commit was created for $TASK_ID. Stopping."
+  hint=""
+  if [[ "$claude_rc" -ne 0 ]]; then hint=" (claude also exited $claude_rc — see $log)"; fi
+  [[ "$status" == "done" ]] || die "$TASK_ID is '$status', not 'done' — agent did not complete it. Stopping.${hint}"
+  [[ "$after_head" != "$before_head" ]] || die "no new commit was created for $TASK_ID. Stopping.${hint}"
   git log --oneline -1 | grep -q "$TASK_ID" || printf '\033[1;33m⚠ latest commit subject does not mention %s\033[0m\n' "$TASK_ID"
 
+  if [[ "$claude_rc" -ne 0 ]]; then
+    ok "$TASK_ID verified complete despite claude exit $claude_rc — invocation was interrupted AFTER the work was committed (false failure absorbed)."
+  fi
   ok "$TASK_ID done, gates green, committed ($(git rev-parse --short "$after_head"))"
   completed=$((completed+1))
 
