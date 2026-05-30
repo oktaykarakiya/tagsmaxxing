@@ -1,6 +1,6 @@
 [package]
 name = "kb-llm"
-description = "llama.cpp OpenAI-compatible client; Tagger/Embedder/Reranker impls over the scheduler."
+description = "OpenAI-compatible client routing through the scheduler with failover and circuit-breaking (plan §6.4)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,3 +9,14 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+kb-core = { workspace = true }
+kb-scheduler = { workspace = true }
+reqwest = { workspace = true, features = ["json"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+dashmap = { workspace = true }
+
+[dev-dependencies]
+kb-mock-backend = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }

@@ -1459,6 +1459,17 @@ version = "0.1.0"
 [[package]]
 name = "kb-llm"
 version = "0.1.0"
+dependencies = [
+ "dashmap",
+ "kb-core",
+ "kb-mock-backend",
+ "kb-scheduler",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
 
 [[package]]
 name = "kb-mock-backend"
