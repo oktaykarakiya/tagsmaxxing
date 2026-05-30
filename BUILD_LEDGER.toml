@@ -116,9 +116,9 @@ description = "scheduler crate core types: Backend (id, base_url, roles, priorit
 depends_on = ["P0-T4", "P0-T5"]
 plan_sections = ["6"]
 acceptance = "Types compile; Backend::free() and Pool construction-from-config unit-tested; `just ci` green."
-status = "todo"
+status = "done"
 checkpoint = true
-notes = "CHECKPOINT: the user asked to review the foundation before P1 (the concurrency-heavy scheduler). The loop must STOP here until approved (e.g. `just loop --approve P1-T1`). Verify tokio 1.52 Semaphore/OwnedSemaphorePermit + dashmap APIs (§31.6)."
+notes = "DONE (committed in this commit; impl in 4cc4943): Backend/Lease/Pool/AcquireError + Pool::from_config + Backend::free(), tokio Semaphore/OwnedSemaphorePermit + dashmap. `just ci` independently re-run GREEN (workspace 97.79% lines; scheduler files 85-100%). CHECKPOINT — awaiting human review before P1-T2; do not self-merge. Note: the agent committed at 17:01 but the loop's 1800s TASK_TIMEOUT killed `claude -p` ~90s later mid output-flush (0-byte log, false 'failure'); recovered manually — ledger flip + independent verification done by hand. TASK_TIMEOUT raised to 3600s to prevent recurrence."
 
 [[task]]
 id = "P1-T2"

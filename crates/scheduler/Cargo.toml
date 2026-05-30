@@ -9,3 +9,10 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+kb-core = { workspace = true }
+kb-config = { workspace = true }
+# Only the `sync` feature is needed here (Semaphore / OwnedSemaphorePermit); the
+# workspace default is feature-less. Async runtime features arrive with `acquire` (P1-T2).
+tokio = { workspace = true, features = ["sync"] }
+dashmap = { workspace = true }
+thiserror = { workspace = true }
