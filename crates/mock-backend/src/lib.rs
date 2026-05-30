@@ -117,6 +117,7 @@ impl MockBackend {
 
         let app = Router::new()
             .route("/health", get(handle_health))
+            .route("/v1/health", get(handle_health))
             .route("/v1/chat/completions", post(handle_chat))
             .route("/v1/embeddings", post(handle_embed))
             .with_state(app_state);

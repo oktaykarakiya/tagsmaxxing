@@ -1,6 +1,7 @@
 //! [`Pool`]: the role-indexed registry of backends (plan §6.2, §6.6) and
 //! its acquire algorithm (§6.3).
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -141,6 +142,24 @@ impl Pool {
     pub fn roles(&self) -> Vec<Role> {
         self.by_role.iter().map(|entry| *entry.key()).collect()
     }
+
+    /// Every unique backend registered in this pool, deduplicated.
+    ///
+    /// A backend that serves several roles still appears once. Useful for the
+    /// health loop and other components that need to operate on all physical
+    /// hosts without double-counting.
+    pub fn all_backends(&self) -> Vec<Arc<Backend>> {
+        let mut seen = HashSet::new();
+        let mut out = Vec::new();
+        for entry in self.by_role.iter() {
+            for b in entry.value() {
+                if seen.insert(Arc::as_ptr(b) as usize) {
+                    out.push(Arc::clone(b));
+                }
+            }
+        }
+        out
+    }
 }
 
 #[cfg(test)]
@@ -228,6 +247,17 @@ mod tests {
         assert_eq!(roles.len(), 2);
         assert!(roles.contains(&Role::Text));
         assert!(roles.contains(&Role::Embed));
+    }
+
+    #[test]
+    fn all_backends_deduplicates_multi_role() {
+        let pool = Pool::from_config(&two_backend_config());
+        let all = pool.all_backends();
+        // gpu-a serves two roles but appears once.
+        assert_eq!(all.len(), 2, "two unique backends, not three");
+        let ids: Vec<&str> = all.iter().map(|b| b.id.as_str()).collect();
+        assert!(ids.contains(&"gpu-a"));
+        assert!(ids.contains(&"gpu-b"));
     }
 
     #[test]

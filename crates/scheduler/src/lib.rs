@@ -15,10 +15,12 @@
 
 mod backend;
 mod error;
+mod health;
 mod lease;
 mod pool;
 
 pub use backend::Backend;
 pub use error::AcquireError;
+pub use health::HealthLoop;
 pub use lease::Lease;
 pub use pool::Pool;

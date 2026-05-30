@@ -149,9 +149,9 @@ description = "Health loop: one background task polling GET {base}/health every 
 depends_on = ["P1-T1", "P1-T3"]
 plan_sections = ["6"]
 acceptance = "Against the mock: unhealthy host is skipped, then re-included after it recovers; graceful task shutdown. Deterministic (inject interval/clock). `just ci` green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = "Avoid /slots races — health is liveness only; the semaphore tracks our load."
+notes = "HealthLoop polls GET {base_url}/health every health_interval, updating Backend::healthy. Uses watch channel for graceful shutdown. Deduplicates backends by Arc ptr. 6 new tests (marks unhealthy on 503, detects recovery, dedup by ptr, graceful shutdown, unhealthy-skipped-in-acquire, recovered-used-in-acquire) + all_backends() test. Added reqwest to workspace deps. Added /v1/health route to mock backend for plan-conformant URL convention. just ci green; 30 tests pass; scheduler health.rs 97.06% lines."
 
 [[task]]
 id = "P1-T5"

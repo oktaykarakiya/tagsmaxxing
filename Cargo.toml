@@ -36,6 +36,7 @@ tempfile = "3"
 tokio = { version = "1.52.3", default-features = false }
 # Lock-free concurrent map for the scheduler's role → backends registry (plan §6.2).
 dashmap = "6.1.0"
+reqwest = { version = "0.13.4", default-features = false }
 # Pinned to 0.8.x: sqlx 0.9 raised its MSRV to rustc 1.94, but the toolchain is pinned to
 # 1.92.0 (rust-toolchain.toml). The Migrator / migrate! / Migration API used here is stable
 # across 0.7–0.9, so this is purely an MSRV-compat pin (§31.6: verify versions before use).
