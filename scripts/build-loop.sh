@@ -5,20 +5,24 @@
 # It does NOT write code. Each iteration it: (1) asks the ledger for the next eligible task,
 # (2) invokes Claude Code headless to implement THAT ONE task with tests + commit, then
 # (3) INDEPENDENTLY re-runs `just ci` and confirms the task flipped to `done` and a commit was
-# made. It stops immediately on a red gate, a blocked task, an unapproved checkpoint, or phase
-# completion — so partial progress is always safe and resumable.
+# made. It stops immediately on a red gate, a blocked task, phase completion, or a checkpoint:
+# it halts BEFORE an unapproved checkpoint (awaiting `--approve <id>`) AND AFTER completing an
+# approved checkpoint (for human review) — so a human is in the loop at every checkpoint and
+# partial progress is always safe and resumable.
 #
 # Usage:
 #   just loop                          # run until checkpoint / blocked / complete
-#   just loop --approve P1-T1          # pre-approve specific checkpoint(s) (comma-separated)
+#   just loop --approve P1-T1          # approve ONE checkpoint; it runs that task, then stops
 #   just loop --max 3                  # stop after 3 successful tasks
 #   just loop --dry-run                # show what it would do; invoke nothing
 #   just loop --yolo                   # bypass permission prompts (UNATTENDED; see warning)
+#   just loop --model opus --effort high   # override model / reasoning effort
 #
 # Env knobs:
-#   CLAUDE_MODEL   (default: opus)         model for each task
-#   PERM_MODE      (default: acceptEdits)  claude --permission-mode (overridden by --yolo)
-#   TASK_TIMEOUT   (default: 1800)         seconds per task before abort
+#   CLAUDE_MODEL   (default: claude-opus-4-8)  model for each task
+#   EFFORT         (default: xhigh)            reasoning effort (claude --effort)
+#   PERM_MODE      (default: acceptEdits)      claude --permission-mode (overridden by --yolo)
+#   TASK_TIMEOUT   (default: 1800)             seconds per task before abort
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -31,7 +35,8 @@ mkdir -p "$LOG_DIR"
 APPROVED=""
 MAX_TASKS=0          # 0 = unlimited
 DRY_RUN=0
-CLAUDE_MODEL="${CLAUDE_MODEL:-opus}"
+CLAUDE_MODEL="${CLAUDE_MODEL:-claude-opus-4-8}"
+EFFORT="${EFFORT:-xhigh}"
 PERM_MODE="${PERM_MODE:-acceptEdits}"
 TASK_TIMEOUT="${TASK_TIMEOUT:-1800}"
 
@@ -42,6 +47,7 @@ while [[ $# -gt 0 ]]; do
     --dry-run) DRY_RUN=1; shift ;;
     --yolo)    PERM_MODE="bypassPermissions"; shift ;;
     --model)   CLAUDE_MODEL="$2"; shift 2 ;;
+    --effort)  EFFORT="$2"; shift 2 ;;
     *) echo "build-loop: unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -63,7 +69,7 @@ if [[ -n "$(git status --porcelain)" ]]; then
   die "working tree is dirty — commit or stash first (the loop verifies clean per-task commits)"
 fi
 
-say "Autonomous build loop  (model=$CLAUDE_MODEL  perm=$PERM_MODE  approved=[${APPROVED:-none}])"
+say "Autonomous build loop  (model=$CLAUDE_MODEL  effort=$EFFORT  perm=$PERM_MODE  approved=[${APPROVED:-none}])"
 [[ "$PERM_MODE" == "bypassPermissions" ]] && \
   printf '\033[1;33m⚠ --yolo: permission prompts are bypassed; Claude can run commands unattended.\033[0m\n'
 
@@ -76,13 +82,16 @@ while :; do
     BLOCKED)        ledger status; die "Tasks remain but none are unblocked (blocked/in_progress or dependency deadlock)." ;;
   esac
   TASK_ID="$next"
+  is_cp="$(ledger is-checkpoint "$TASK_ID")"
 
-  if [[ "$(ledger is-checkpoint "$TASK_ID")" == "true" ]] && ! is_approved "$TASK_ID"; then
-    say "CHECKPOINT — human review required before $TASK_ID"
+  # Halt BEFORE an unapproved checkpoint — awaits explicit approval of exactly this task.
+  if [[ "$is_cp" == "true" ]] && ! is_approved "$TASK_ID"; then
+    say "CHECKPOINT — human review required BEFORE $TASK_ID"
     echo "  $(ledger field "$TASK_ID" description)"
     echo "  Reason: $(ledger field "$TASK_ID" notes)"
     echo
-    echo "  Review the work so far, then resume with:  just loop --approve $TASK_ID"
+    echo "  Review the work so far, then approve exactly this task to proceed:"
+    echo "      just loop --approve $TASK_ID"
     exit 0
   fi
 
@@ -90,9 +99,9 @@ while :; do
   echo "  $(ledger field "$TASK_ID" description)"
   echo "  plan sections: $(ledger field "$TASK_ID" plan_sections)"
 
-  if [[ "$DRY_RUN" == "1" ]]; then ok "(dry-run) would implement $TASK_ID"; completed=$((completed+1));
-    [[ "$MAX_TASKS" -gt 0 && "$completed" -ge "$MAX_TASKS" ]] && { ok "reached --max $MAX_TASKS"; exit 0; }
-    # dry-run can't actually advance the ledger; stop to avoid an infinite loop.
+  if [[ "$DRY_RUN" == "1" ]]; then
+    ok "(dry-run) would implement $TASK_ID"
+    # dry-run can't advance the ledger; stop to avoid an infinite loop.
     ok "(dry-run) stopping after showing the next task"; exit 0
   fi
 
@@ -105,8 +114,9 @@ Implement EXACTLY ONE task: ${TASK_ID}.
 Steps:
  1. Read that task's plan_sections in local-kb-plan.md and the existing code it touches.
  2. Implement it WITH unit tests for every function carrying logic (§31.3), obeying the
-    modularity / file-size / no-unwrap / no-stub rules (§31.4, §31.2). Verify any new crate
-    versions/APIs against current sources before using them (§31.6).
+    modularity / file-size / no-unwrap / no-stub rules (§31.4, §31.2) and the hot-swappable
+    configuration rule in CLAUDE.md. Verify any new crate versions/APIs against current
+    sources before using them (§31.6).
  3. Run \`just ci\` and fix until ALL gates are green. Do not weaken or skip a gate.
  4. In BUILD_LEDGER.toml set task ${TASK_ID} status to "done" and append a one-line note.
  5. Commit everything in ONE commit whose message begins with "${TASK_ID}: " (§31.6).
@@ -114,9 +124,10 @@ Do NOT implement any other task. If you genuinely cannot finish, set ${TASK_ID} 
 "blocked" with a reason, commit that, and stop.
 EOF
 
-  say "→ invoking Claude (log: ${log#$ROOT/})"
+  say "→ invoking Claude (model=$CLAUDE_MODEL effort=$EFFORT, log: ${log#"$ROOT"/})"
   if ! timeout "$TASK_TIMEOUT" claude -p "$PROMPT" \
         --model "$CLAUDE_MODEL" \
+        --effort "$EFFORT" \
         --permission-mode "$PERM_MODE" \
         2>&1 | tee "$log"; then
     die "Claude invocation for $TASK_ID failed or timed out (see $log)."
@@ -135,6 +146,15 @@ EOF
 
   ok "$TASK_ID done, gates green, committed ($(git rev-parse --short "$after_head"))"
   completed=$((completed+1))
+
+  # Halt AFTER a checkpoint — human-review gate (§31.5); the task is built and committed.
+  if [[ "$is_cp" == "true" ]]; then
+    say "CHECKPOINT COMPLETE — $TASK_ID implemented, gated, and committed."
+    echo "  This is a human-review gate (§31.5): review the work before continuing."
+    echo "  Resume the loop when satisfied:  just loop"
+    exit 0
+  fi
+
   if [[ "$MAX_TASKS" -gt 0 && "$completed" -ge "$MAX_TASKS" ]]; then
     ok "reached --max $MAX_TASKS — stopping."; exit 0
   fi

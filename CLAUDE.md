@@ -56,6 +56,21 @@ modules, `#![allow(clippy::unwrap_used, clippy::expect_used)]` is the accepted e
 - Errors via `thiserror` per crate; capability traits return `anyhow::Result`. No
   `unwrap()`/`expect()` outside tests.
 
+## Hot-swappable configuration (a standing design rule)
+Wherever it makes sense and is genuinely useful, runtime parameters must be **hot-swappable**
+(changeable without a restart), and call sites must **resolve the current value at call time** —
+never capture it once at startup. Applies to: model endpoints/base URLs, **API keys**, model
+ids, routing/tiers, rate limits, scheduler timeouts, log levels, quotas, feature flags.
+- Hold mutable config behind an `arc_swap::ArcSwap<…>` (or the DB-backed routing table,
+  plan §26.5) and read it **per call** (`cfg.load()` / `routes.current()`); reload via file
+  `notify` (plan §6) or DB `LISTEN/NOTIFY`. Prefer passing a shared handle (the swappable
+  source), not a snapshot value, into long-lived components.
+- Secrets (provider keys, §24) are fetched + decrypted **at call time** so rotation needs no
+  restart; never bake a key into a long-lived client.
+- Don't over-apply: genuine compile-time constants and values that cannot change on a running
+  system stay simple. The test is *"would an operator reasonably change this on a live system?"*
+  If yes, make it hot-swappable and look it up at use.
+
 ## Mandatory human-review checkpoints (plan §31.5) — implement+test, but do NOT self-merge
 Tenant isolation / RLS (ship a cross-tenant negative-test suite) • encryption & key handling •
 auth & sessions • Stripe billing webhooks • the extractor untrusted-bytes/prompt-injection
