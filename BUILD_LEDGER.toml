@@ -206,8 +206,9 @@ description = "Durable job queue (Postgres-backed, §16) in kb-pipeline: enqueue
 depends_on = ["P2-T2"]
 plan_sections = ["16", "7"]
 acceptance = "Enqueue creates a jobs row with status=queued; claim atomically picks the next eligible job (respects priority, run_after, SKIP LOCKED); complete sets status=done; fail increments attempts + sets backoff; exhausted retries sets dead; concurrent claimants never get the same row; graceful shutdown drains in-flight and stops claiming. Integration tests against Postgres (#[ignore] in just ci). just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
+notes = "JobQueue in kb-pipeline::job_queue: enqueue/claim (SKIP LOCKED)/complete/fail with exponential backoff (calculate_backoff, 9 unit tests) + run_worker_pool with graceful shutdown. 20 #[ignore] integration tests (enqueue/claim/priority/backoff/dead-letter/concurrent/pool/shutdown). kb-store added to workspace deps. just ci green (90.29% lines)."
 
 [[task]]
 id = "P2-T4"

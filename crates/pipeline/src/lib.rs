@@ -1,5 +1,11 @@
-//! `kb-pipeline`: orchestrates ingestion (extract -> tag -> chunk -> embed -> upsert) and
-//! retrieval (embed -> hybrid search -> RRF -> rerank -> optional RAG).
+//! `kb-pipeline`: orchestrates ingestion (extract → tag → chunk → embed → upsert) and
+//! retrieval (embed → hybrid search → RRF → rerank → optional RAG).
 //!
-//! Skeleton crate. Implemented in phases P2-P4 per `BUILD_LEDGER.toml`; see plan §7
-//! (ingestion) and §8 (retrieval).
+//! This crate currently ships the durable, Postgres-backed **job queue** (plan §16):
+//! enqueue, atomic claim with `SELECT … FOR UPDATE SKIP LOCKED`, complete, exponential
+//! backoff + dead-letter on failure, and a concurrent worker pool with graceful shutdown.
+//! Extractors, chunking, and the full ingest pipeline land in subsequent P2/P3 tasks.
+
+pub mod job_queue;
+
+pub use job_queue::{JobQueue, run_worker_pool};

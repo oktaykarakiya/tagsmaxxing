@@ -1486,6 +1486,15 @@ dependencies = [
 [[package]]
 name = "kb-pipeline"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "kb-core",
+ "kb-store",
+ "sqlx",
+ "testcontainers",
+ "tokio",
+]
 
 [[package]]
 name = "kb-scheduler"

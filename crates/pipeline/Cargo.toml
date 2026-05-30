@@ -9,3 +9,13 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+kb-core = { workspace = true }
+sqlx = { workspace = true, features = ["runtime-tokio", "postgres", "chrono"] }
+anyhow = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true, features = ["sync", "time"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
+testcontainers = { workspace = true }
+kb-store = { workspace = true }
