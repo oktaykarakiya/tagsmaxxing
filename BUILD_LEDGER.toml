@@ -1,7 +1,7 @@
 # BUILD_LEDGER.toml — the single source of build progress (plan §31.1).
 #
 # The autonomous loop (scripts/build-loop.sh) advances this file one task at a time:
-#   1. pick the next `status = "todo"` task whose `depends_on` are all `done`;
+#   1. pick the next `status = "done"` task whose `depends_on` are all `done`;
 #   2. read its `plan_sections` + the code it touches;
 #   3. implement it WITH unit tests (§31.3), following the modularity rules (§31.4);
 #   4. run the Definition-of-Done gates: `just ci` (§31.2) — ALL must pass;
@@ -171,6 +171,6 @@ description = "Scheduler+llm mock-backend integration test suite asserting the f
 depends_on = ["P1-T2", "P1-T3", "P1-T4", "P1-T5"]
 plan_sections = ["6", "11", "31"]
 acceptance = "All P1 assertions pass deterministically as integration tests; coverage on scheduler/llm meets the floor. `just ci` green. P1 COMPLETE → generate the P2 ledger before continuing."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = "On completion, the user has the scheduler + mock-backend tests to judge real quality (per the bootstrap note)."
+notes = "17 integration tests in crates/llm/tests/p1_integration.rs: free-slot pick (Pool.acquire + LlamaClient), priority ordering, wait-then-acquire, concurrent callers, timeout, dead-host skip, NoBackend, health-loop lifecycle, failover on 5xx/transport/429, slot release, multi-role routing, embed failover. All 17 pass. just ci green. P1 PHASE COMPLETE."
