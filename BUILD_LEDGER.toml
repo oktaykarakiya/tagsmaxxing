@@ -8,12 +8,12 @@
 #   5. commit (one task = one commit, message references the id, §31.6), set status = "done";
 #   6. if `checkpoint = true`, STOP and request human review before proceeding (§31.5).
 #
-# P0, P1, and P2 are complete. P3 is decomposed below; P4+ remain to be authored when their
-# preceding phases complete — "current phase first" (§31.1).
+# P0, P1, P2, and P3 are complete. P4 is decomposed below; P5+ remain to be authored when
+# their preceding phases complete — "current phase first" (§31.1).
 
 [meta]
 generated = "2026-05-31"
-phases_planned = ["P0", "P1", "P2", "P3"]
+phases_planned = ["P0", "P1", "P2", "P3", "P4"]
 gate_command = "just ci"
 walking_skeleton = "Complete the P0-P4 vertical slice before adding breadth (§31.6)."
 # Crate versions verified against crates.io on 2026-05-29 (the plan's names had drifted):
@@ -370,4 +370,77 @@ plan_sections = ["7", "10", "31"]
 acceptance = "End-to-end: text file → ready document with tags + 1024-dim embedded chunks + usage events in DB + blobs on disk; idempotent re-ingest doesn't duplicate rows; transaction rollback on mid-pipeline failure leaves no partial state; pipeline emits the correct job lifecycle (queued → running → done). #[ignore] in just ci (needs testcontainers + podman socket). P3 PHASE COMPLETE → generate P4 ledger. just ci green."
 status = "done"
 checkpoint = false
-notes = "p3_integration.rs: e2e test (#[ignore]) via mock LLM + LocalBlob + PgStore via testcontainers. Pure-logic smoke tests run in-unit. P3 PHASE COMPLETE — ingest leg of walking skeleton is done. Next: author P4 ledger (Store + retrieval: hybrid search + RRF + reranker)."
+notes = "p3_integration.rs: e2e test (#[ignore]) via mock LLM + LocalBlob + PgStore via testcontainers. Pure-logic smoke tests run in-unit. P3 PHASE COMPLETE — ingest leg of walking skeleton is done."
+
+# ── Phase P4 — Store + retrieval (§8, §10) ───────────────────────────────────
+#
+# P4 completes the P0–P4 walking skeleton's retrieval side: embed the query →
+# hybrid (vector + keyword) search → RRF fusion → roll-up to documents with
+# deep-link provenance → cross-encoder rerank → ranked Hits. This is the read path
+# that makes ingestion useful — the walking skeleton is complete when P4 ships.
+
+[[task]]
+id = "P4-T1"
+phase = "P4"
+description = "Update Store::hybrid_search trait signature to accept a query embedding vector alongside the Query text. The search needs both: the query text for full-text (tsv/ts_rank) matching and the query embedding for vector (cosine) search. Update the PgStore stub, the deferred-error test, and any callers. This is a pure API change — no SQL search yet."
+depends_on = ["P0-T4"]
+plan_sections = ["4", "5", "8"]
+acceptance = "Store trait compiles with the new signature; PgStore stub updated; deferred-error test passes; just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P4-T2"
+phase = "P4"
+description = "RRF (Reciprocal Rank Fusion) pure logic in kb-pipeline: rrf_fuse(vec_ranked, kw_ranked, k=60) → Vec<(chunk_id, fused_score)>. Also document_rollup(chunk_hits) → Vec<Hit> grouping chunk-level fused results by document_id, keeping the best-scoring chunk's provenance (file_id, page_no, ts_offset) as the deep-link target. Both are pure functions, no I/O — trivially unit-testable with wide input coverage (empty lists, single-list, ties, different list lengths)."
+depends_on = []
+plan_sections = ["8"]
+acceptance = "RRF: formula Σ 1/(k + rank_i) with k=60 matches spec; two equal lists → fused correctly; empty kw list → vec results pass through (and vice versa); single-item lists handled. Roll-up: two chunks from same doc → one Hit with best score + correct provenance; different docs → one Hit per doc; empty → empty. Unit tests for all edge cases. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P4-T3"
+phase = "P4"
+description = "PgStore::hybrid_search SQL implementation. Runs two queries within a single DB call: (a) vector top-N via HNSW cosine distance (chunks.embedding <=> $query_vec ORDER BY distance LIMIT N), (b) keyword top-N via ts_rank on tsv @@ websearch_to_tsquery. Applies tenant_id filter + optional QueryFilters (kinds via document JOIN, tags via document_tags JOIN, created_after/before). Feeds both ranked lists into P4-T2's RRF fusion, then rolls up to documents. Returns Vec<Hit> with document deep-link provenance (document_id, score, title, snippet, file_id, page_no, ts_offset)."
+depends_on = ["P2-T2", "P4-T2"]
+plan_sections = ["5", "8"]
+acceptance = "Vector-only search returns ranked Hits; keyword-only search returns matches via tsv; hybrid search fuses both with RRF; tag filter restricts to tagged documents only; date filter bounds results; empty query text → vector-only (no tsv match); multiple chunks from same document → one Hit with best-scoring chunk's provenance; Hit carries snippet from winning chunk + document title. Unit tests for SQL construction + #[ignore] integration tests against testcontainers Postgres. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P4-T4"
+phase = "P4"
+description = "LlamaReranker in kb-llm: implements the core Reranker trait using LlamaClient with Role::Rerank. Calls the llama.cpp /rerank endpoint (OpenAI-compatible: POST /v1/rerank with {model, query, documents[]}), parses the relevance_score list, and returns Vec<f32> aligned with input docs. Validates that the response length matches input length. Deterministic tests against MockBackend (add rerank_content to Scenario for mock control)."
+depends_on = ["P1-T5"]
+plan_sections = ["4", "8"]
+acceptance = "Against MockBackend: valid rerank response → Vec<f32> of correct length; empty documents → empty result; length mismatch between input and response → error; backend error → propagated. Unit tests with MockBackend asserting correct scores returned. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P4-T5"
+phase = "P4"
+description = "RetrievalPipeline orchestrator in kb-pipeline: wires the complete §8 read path. Given a Query + tenant_id: (1) embed the query text via ChunkEmbedder/LlamaClient with EmbedKind::Query, (2) call Store::hybrid_search with the query + embedding, (3) rerank top-K documents via Reranker trait, (4) return top-n Hits. Accepts Arc<dyn Store> + Arc<ChunkEmbedder> + Arc<dyn Reranker>. Parallel to IngestPipeline — same pattern, same testability (mock Store + mock Reranker for unit tests)."
+depends_on = ["P4-T3", "P4-T4", "P3-T4"]
+plan_sections = ["8", "10"]
+acceptance = "Single query → embed → hybrid search → rerank → top-n Hits returned; mock Store returns controlled Hits → verified Reranker receives correct documents; mock Reranker returns controlled scores → Hits sorted by score; tenant_id passed through to Store; empty search results handled gracefully (empty vec, not error). Unit tests with mock Store + mock Reranker + mock backend. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P4-T6"
+phase = "P4"
+description = "P4 phase integration test: end-to-end retrieval round-trip. Ingest real text files through the P3 pipeline (mock LLM backends, LocalBlob, real PgStore via testcontainers), then query the RetrievalPipeline and verify: ranked Hits returned with correct document_id + deep-link provenance (file_id, page_no), scores descending, snippet from the winning chunk, tag-filtered search excludes non-matching docs, RRF fusion favors documents matching both vector and keyword signals. This is the P4 phase gate — the walking skeleton is complete (ingest + retrieve)."
+depends_on = ["P4-T5", "P3-T8"]
+plan_sections = ["8", "10", "31"]
+acceptance = "E2E: ingest documents → query → relevant documents returned with deep-links; vector search alone returns results; keyword search (matching a unique word) returns the right document; tag filter narrows results; idempotent: same query returns same ranking. #[ignore] in just ci (needs testcontainers + podman socket). P4 PHASE COMPLETE → generate P5 ledger. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
