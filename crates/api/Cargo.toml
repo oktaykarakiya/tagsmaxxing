@@ -17,7 +17,7 @@ kb-scheduler = { workspace = true }
 kb-pipeline = { workspace = true }
 kb-extract = { workspace = true }
 # axum 0.8: the current stable line. Works with tokio 1.x and edition 2024.
-axum = "0.8"
+axum = { version = "0.8", features = ["multipart"] }
 clap = { workspace = true }
 tokio = { workspace = true, features = ["sync", "rt", "rt-multi-thread"] }
 reqwest = { workspace = true }
@@ -27,12 +27,19 @@ tracing = { workspace = true }
 tracing-subscriber = "0.3"
 anyhow = { workspace = true }
 chrono = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+bytes = { workspace = true }
+sqlx = { workspace = true }
 
 [dev-dependencies]
 kb-mock-backend = { workspace = true }
+kb-testsupport = { workspace = true }
 tokio = { workspace = true, features = ["sync", "rt", "macros", "rt-multi-thread"] }
 tower = "0.5"
 tempfile = { workspace = true }
+async-trait = { workspace = true }
+serde_urlencoded = "0.7"
 
 [[bin]]
 name = "kb"

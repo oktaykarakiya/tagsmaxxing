@@ -29,10 +29,12 @@ use async_trait::async_trait;
 use kb_core::chunk::Chunk;
 use kb_core::document::Document;
 use kb_core::file::FileRecord;
+use kb_core::job::Job;
 use kb_core::query::{Hit, Query};
 use kb_core::store::Store;
 use kb_core::usage::UsageEvent;
 use sqlx::Postgres;
+use sqlx::Row;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 
 use crate::MIGRATOR;
@@ -1251,6 +1253,191 @@ impl PgStore {
             .await
             .context("failed to look up tenant slug")?;
         slug.ok_or_else(|| anyhow::anyhow!("tenant {tenant_id} not found"))
+    }
+}
+
+// ── API query methods (document detail, file download, job status) ────────────
+
+impl PgStore {
+    /// Fetch a single document by id, scoped to `tenant_id`.
+    ///
+    /// Returns `None` if no document with that id exists for the tenant
+    /// (including cross-tenant access attempts — RLS enforces isolation).
+    ///
+    /// # Errors
+    /// Returns an error if the database is not connected or the query fails.
+    pub async fn get_document(
+        &self,
+        tenant_id: i64,
+        doc_id: i64,
+    ) -> anyhow::Result<Option<Document>> {
+        let pool = self.app_pool()?;
+        let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
+        let row: Option<DocumentRow> = sqlx::query_as(
+            "SELECT id, tenant_id, title, summary, user_note, kind, meta, page_count, status, created_at \
+             FROM documents WHERE id = $1",
+        )
+        .bind(doc_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .context("failed to fetch document")?;
+        tx.commit().await.context("failed to commit get_document")?;
+        row.map(document_from_row).transpose()
+    }
+
+    /// Fetch all files belonging to a document, ordered by `page_no`.
+    ///
+    /// Returns an empty `Vec` if the document has no files or does not exist
+    /// for the tenant (RLS enforces isolation).
+    ///
+    /// # Errors
+    /// Returns an error if the database is not connected or the query fails.
+    pub async fn get_files_for_document(
+        &self,
+        tenant_id: i64,
+        doc_id: i64,
+    ) -> anyhow::Result<Vec<FileRecord>> {
+        let pool = self.app_pool()?;
+        let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
+        let rows: Vec<FileRow> = sqlx::query_as(
+            "SELECT id, tenant_id, document_id, page_no, page_label, sha256, blob_key, path, \
+             mime, size_bytes, meta, status, ingested_at \
+             FROM files WHERE document_id = $1 ORDER BY page_no",
+        )
+        .bind(doc_id)
+        .fetch_all(&mut *tx)
+        .await
+        .context("failed to fetch files for document")?;
+        tx.commit()
+            .await
+            .context("failed to commit get_files_for_document")?;
+        rows.into_iter().map(file_from_row).collect()
+    }
+
+    /// Fetch all canonical tags attached to a document via `document_tags`.
+    ///
+    /// Returns an empty `Vec` if the document has no tags or does not exist
+    /// for the tenant (RLS enforces isolation).
+    ///
+    /// # Errors
+    /// Returns an error if the database is not connected or the query fails.
+    pub async fn get_tags_for_document(
+        &self,
+        tenant_id: i64,
+        doc_id: i64,
+    ) -> anyhow::Result<Vec<kb_core::tag::Tag>> {
+        let pool = self.app_pool()?;
+        let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
+        #[derive(sqlx::FromRow)]
+        struct TagRow {
+            id: i64,
+            tenant_id: i64,
+            name: String,
+            embedding_text: Option<String>,
+        }
+        let rows: Vec<TagRow> = sqlx::query_as(
+            "SELECT t.id, t.tenant_id, t.name, t.embedding::text AS embedding_text \
+             FROM tags t \
+             JOIN document_tags dt ON t.id = dt.tag_id \
+             WHERE dt.document_id = $1 \
+             ORDER BY t.name",
+        )
+        .bind(doc_id)
+        .fetch_all(&mut *tx)
+        .await
+        .context("failed to fetch tags for document")?;
+        tx.commit()
+            .await
+            .context("failed to commit get_tags_for_document")?;
+        rows.into_iter()
+            .map(|r| {
+                let embedding = r
+                    .embedding_text
+                    .map(|t| parse_vector_text(&t))
+                    .transpose()?;
+                Ok(kb_core::tag::Tag {
+                    id: r.id,
+                    tenant_id: r.tenant_id,
+                    name: r.name,
+                    embedding,
+                })
+            })
+            .collect()
+    }
+
+    /// Fetch a single file by id, scoped to `tenant_id`.
+    ///
+    /// Returns `None` if no file with that id exists for the tenant
+    /// (including cross-tenant access attempts — RLS enforces isolation).
+    ///
+    /// # Errors
+    /// Returns an error if the database is not connected or the query fails.
+    pub async fn get_file(
+        &self,
+        tenant_id: i64,
+        file_id: i64,
+    ) -> anyhow::Result<Option<FileRecord>> {
+        let pool = self.app_pool()?;
+        let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
+        let row: Option<FileRow> = sqlx::query_as(
+            "SELECT id, tenant_id, document_id, page_no, page_label, sha256, blob_key, path, \
+             mime, size_bytes, meta, status, ingested_at \
+             FROM files WHERE id = $1",
+        )
+        .bind(file_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .context("failed to fetch file")?;
+        tx.commit().await.context("failed to commit get_file")?;
+        row.map(file_from_row).transpose()
+    }
+
+    /// Fetch a single job by id.
+    ///
+    /// The `jobs` table is not covered by RLS (job queue uses the privileged
+    /// admin pool), so this method queries via the admin pool and filters by
+    /// `tenant_id` explicitly to prevent cross-tenant job access.
+    ///
+    /// Returns `None` if no job with that id exists, or if the job belongs to
+    /// a different tenant.
+    ///
+    /// # Errors
+    /// Returns an error if the database is not connected or the query fails.
+    pub async fn get_job(&self, tenant_id: i64, job_id: i64) -> anyhow::Result<Option<Job>> {
+        use kb_core::job::{Job, JobKind, JobStatus};
+        use std::str::FromStr;
+        let pool = self.pool()?;
+        let row: Option<sqlx::postgres::PgRow> = sqlx::query(
+            "SELECT id, tenant_id, file_id, kind, priority, status, attempts, \
+             last_error, run_after, created_at \
+             FROM jobs WHERE id = $1 AND tenant_id = $2",
+        )
+        .bind(job_id)
+        .bind(tenant_id)
+        .fetch_optional(&pool)
+        .await
+        .context("failed to fetch job")?;
+        match row {
+            Some(r) => {
+                let kind_str: String = r.try_get("kind")?;
+                let status_str: String = r.try_get("status")?;
+                Ok(Some(Job {
+                    id: r.try_get("id")?,
+                    tenant_id: r.try_get("tenant_id")?,
+                    file_id: r.try_get("file_id")?,
+                    kind: JobKind::from_str(&kind_str)
+                        .with_context(|| format!("invalid job kind: '{kind_str}'"))?,
+                    priority: r.try_get("priority")?,
+                    status: JobStatus::from_str(&status_str)
+                        .with_context(|| format!("invalid job status: '{status_str}'"))?,
+                    attempts: r.try_get("attempts")?,
+                    last_error: r.try_get("last_error")?,
+                    run_after: r.try_get("run_after")?,
+                    created_at: r.try_get("created_at")?,
+                }))
+            }
+            None => Ok(None),
+        }
     }
 }
 
@@ -2689,6 +2876,43 @@ mod tests {
         };
         let err = file_from_row(row).unwrap_err();
         assert!(err.to_string().contains("invalid ProcessingStatus"));
+    }
+
+    // ── P6-T2 API query methods — error-before-connect ──────────────────
+
+    #[tokio::test]
+    async fn get_document_errors_before_connect() {
+        let store = PgStore::new("postgres://localhost/db");
+        let err = store.get_document(1, 1).await.unwrap_err();
+        assert!(err.to_string().contains("not connected"));
+    }
+
+    #[tokio::test]
+    async fn get_files_for_document_errors_before_connect() {
+        let store = PgStore::new("postgres://localhost/db");
+        let err = store.get_files_for_document(1, 1).await.unwrap_err();
+        assert!(err.to_string().contains("not connected"));
+    }
+
+    #[tokio::test]
+    async fn get_tags_for_document_errors_before_connect() {
+        let store = PgStore::new("postgres://localhost/db");
+        let err = store.get_tags_for_document(1, 1).await.unwrap_err();
+        assert!(err.to_string().contains("not connected"));
+    }
+
+    #[tokio::test]
+    async fn get_file_errors_before_connect() {
+        let store = PgStore::new("postgres://localhost/db");
+        let err = store.get_file(1, 1).await.unwrap_err();
+        assert!(err.to_string().contains("not connected"));
+    }
+
+    #[tokio::test]
+    async fn get_job_errors_before_connect() {
+        let store = PgStore::new("postgres://localhost/db");
+        let err = store.get_job(1, 1).await.unwrap_err();
+        assert!(err.to_string().contains("not connected"));
     }
 
     // ── P5-T6 quota DB-integration tests (#[ignore]) ────────────────────

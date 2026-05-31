@@ -2,7 +2,8 @@
 //!
 //! This crate provides the auth middleware (cookie-based session validation),
 //! the auth endpoints (`/auth/login`, `/auth/register`, `/auth/logout`),
-//! the bootstrap seed (first-run tenant + admin user creation), and the
+//! the bootstrap seed (first-run tenant + admin user creation), the ingest /
+//! search / document / job status endpoints (plan §10, §12, §13), and the
 //! [`AppState`] handle shared across all request handlers.
 //!
 //! The router constructed by [`build_router`] is intended to be served on
@@ -19,8 +20,12 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::middleware::from_fn_with_state;
-use axum::routing::post;
+use axum::routing::{get, post};
+use kb_core::blob::Blob;
 use kb_core::session::SessionStore;
+use kb_pipeline::RetrievalPipeline;
+use kb_pipeline::ingest::IngestPipeline;
+use kb_pipeline::job_queue::JobQueue;
 use kb_store::PgStore;
 
 use crate::middleware::auth_middleware;
@@ -32,23 +37,39 @@ use crate::middleware::auth_middleware;
 /// All fields are `Arc`-wrapped so the state can be cheaply cloned across axum worker
 /// tasks. The session secret is validated at construction (≥32 bytes, per
 /// [`SessionSecret`](kb_core::auth::SessionSecret)).
+///
+/// # Pipeline components
+///
+/// Fields added in P6-T2 (`ingest_pipeline`, `retrieval_pipeline`, `blob`, `job_queue`)
+/// are `Option`al — existing tests that construct a minimal `AppState` for auth-only
+/// routes will leave them as `None`. Handlers that require them return `500` with a
+/// clear message when the component is missing.
 #[derive(Clone)]
 pub struct AppState {
     /// Session persistence backend (in-memory for dev, Postgres for prod).
     pub session_store: Arc<dyn SessionStore>,
-    /// Postgres store for user / tenant CRUD (register, login lookup, bootstrap).
+    /// Postgres store for user / tenant CRUD and document/file/job queries.
     pub pg_store: Arc<PgStore>,
     /// Session TTL for new sessions and sliding expiration.
     pub session_ttl: Duration,
     /// Whether `Secure` is set on session cookies (`false` for local dev without TLS).
     pub secure_cookies: bool,
+    /// Ingestion pipeline (P6-T2+). Handlers return 500 when `None`.
+    pub ingest_pipeline: Option<Arc<IngestPipeline>>,
+    /// Retrieval pipeline (P6-T2+). Handlers return 500 when `None`.
+    pub retrieval_pipeline: Option<Arc<RetrievalPipeline>>,
+    /// Content-addressed blob store for file upload/download (P6-T2+).
+    pub blob: Option<Arc<dyn Blob>>,
+    /// Durable job queue for async ingest jobs (P6-T2+).
+    pub job_queue: Option<Arc<JobQueue>>,
 }
 
 impl AppState {
-    /// Build a new `AppState` value.
+    /// Build a minimal `AppState` suitable for auth-only routes and existing tests.
     ///
     /// `session_ttl` defaults to [`DEFAULT_SESSION_TTL_SECS`](kb_core::session::DEFAULT_SESSION_TTL_SECS)
-    /// when `None` is passed.
+    /// when `None` is passed. Pipeline fields are initialised to `None` — use
+    /// the `with_*` builder methods or [`AppState::full`] to set them.
     #[must_use]
     pub fn new(
         session_store: Arc<dyn SessionStore>,
@@ -63,7 +84,66 @@ impl AppState {
                 kb_core::session::DEFAULT_SESSION_TTL_SECS,
             )),
             secure_cookies,
+            ingest_pipeline: None,
+            retrieval_pipeline: None,
+            blob: None,
+            job_queue: None,
         }
+    }
+
+    /// Build a fully-populated `AppState` with all pipeline components.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn full(
+        session_store: Arc<dyn SessionStore>,
+        pg_store: Arc<PgStore>,
+        session_ttl: Option<Duration>,
+        secure_cookies: bool,
+        ingest_pipeline: Arc<IngestPipeline>,
+        retrieval_pipeline: Arc<RetrievalPipeline>,
+        blob: Arc<dyn Blob>,
+        job_queue: Arc<JobQueue>,
+    ) -> Self {
+        Self {
+            session_store,
+            pg_store,
+            session_ttl: session_ttl.unwrap_or(Duration::from_secs(
+                kb_core::session::DEFAULT_SESSION_TTL_SECS,
+            )),
+            secure_cookies,
+            ingest_pipeline: Some(ingest_pipeline),
+            retrieval_pipeline: Some(retrieval_pipeline),
+            blob: Some(blob),
+            job_queue: Some(job_queue),
+        }
+    }
+
+    /// Builder: attach the ingest pipeline.
+    #[must_use]
+    pub fn with_ingest_pipeline(mut self, p: Arc<IngestPipeline>) -> Self {
+        self.ingest_pipeline = Some(p);
+        self
+    }
+
+    /// Builder: attach the retrieval pipeline.
+    #[must_use]
+    pub fn with_retrieval_pipeline(mut self, p: Arc<RetrievalPipeline>) -> Self {
+        self.retrieval_pipeline = Some(p);
+        self
+    }
+
+    /// Builder: attach the blob store.
+    #[must_use]
+    pub fn with_blob(mut self, b: Arc<dyn Blob>) -> Self {
+        self.blob = Some(b);
+        self
+    }
+
+    /// Builder: attach the job queue.
+    #[must_use]
+    pub fn with_job_queue(mut self, q: Arc<JobQueue>) -> Self {
+        self.job_queue = Some(q);
+        self
     }
 }
 
@@ -73,14 +153,16 @@ impl AppState {
 ///
 /// Route table:
 ///
-/// | Method | Path             | Auth? | Description                          |
-/// |--------|------------------|-------|--------------------------------------|
-/// | POST   | `/auth/login`    | no    | Verify password → session cookie     |
-/// | POST   | `/auth/register` | no    | Create user → session cookie         |
-/// | POST   | `/auth/logout`   | yes   | Revoke session → clear cookie        |
-///
-/// Future endpoints (search, ingest, admin) are added in later phases behind the
-/// auth middleware.
+/// | Method | Path                           | Auth? | Description                          |
+/// |--------|--------------------------------|-------|--------------------------------------|
+/// | POST   | `/auth/login`                  | no    | Verify password → session cookie     |
+/// | POST   | `/auth/register`               | no    | Create user → session cookie         |
+/// | POST   | `/auth/logout`                 | yes   | Revoke session → clear cookie        |
+/// | POST   | `/api/ingest`                  | yes   | Multipart upload → enqueue job       |
+/// | GET    | `/api/search`                  | yes   | Hybrid search → ranked hits          |
+/// | GET    | `/api/documents/:id`           | yes   | Document detail + files + tags       |
+/// | GET    | `/api/documents/:id/file/:file_id` | yes | Download a file's blob             |
+/// | GET    | `/api/jobs/:id`                | yes   | Job status                           |
 pub fn build_router(state: AppState) -> Router {
     let state = Arc::new(state);
 
@@ -89,13 +171,24 @@ pub fn build_router(state: AppState) -> Router {
         .route("/auth/login", post(handlers::auth::login))
         .route("/auth/register", post(handlers::auth::register));
 
-    // Protected routes (auth required).
-    let protected = Router::new()
+    // Protected API routes (auth required, P6-T2+).
+    let api = Router::new()
+        .route("/api/ingest", post(handlers::ingest::ingest))
+        .route("/api/search", get(handlers::search::search))
+        .route(
+            "/api/documents/{id}",
+            get(handlers::documents::document_detail),
+        )
+        .route(
+            "/api/documents/{id}/file/{file_id}",
+            get(handlers::documents::file_download),
+        )
+        .route("/api/jobs/{id}", get(handlers::jobs::job_status))
         .route("/auth/logout", post(handlers::auth::logout))
         .layer(from_fn_with_state(state.clone(), auth_middleware));
 
     // Merge public + protected, attach shared state.
-    public.merge(protected).with_state(state)
+    public.merge(api).with_state(state)
 }
 
 // ── AuthUser extractor ─────────────────────────────────────────────────────────

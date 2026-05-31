@@ -607,9 +607,9 @@ description = "REST API endpoints: (a) POST /api/ingest — multipart upload (1.
 depends_on = ["P5-T5", "P3-T7", "P4-T5"]
 plan_sections = ["10", "12", "13"]
 acceptance = "Authenticated ingest → 202 + valid job_id; search → 200 + ranked hits; unauthenticated → 401; cross-tenant document access → 404; file download streams correct bytes with Content-Type; job status returns correct state; multipart with 3 files + group_as_document → 1 document with 3 pages; missing query param → 400 with message. Unit tests (mock pipeline + mock session store) + axum::test integration tests. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "DONE: 5 REST API endpoints behind auth middleware. POST /api/ingest (multipart, 202), GET /api/search (comma-sep kind/tag/limit), GET /api/documents/:id (detail with files+tags), GET /api/documents/:id/file/:file_id (blob download with MIME), GET /api/jobs/:id (status). AppState extended with pipeline components (optional, builder pattern). 5 new PgStore query methods (get_document, files_for_doc, tags_for_doc, get_file, get_job). just ci green (77.00% lines)."
 
 [[task]]
 id = "P6-T3"
