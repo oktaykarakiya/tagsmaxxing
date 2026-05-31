@@ -225,7 +225,7 @@ fn build_blob_key(tenant_id: i64, sha256_hex: &str) -> String {
 /// [`DocKind::Image`], all `audio/*` → [`DocKind::Audio`], etc.), that kind is
 /// used. Mixed MIME types default to [`DocKind::Document`] (the catch-all
 /// document kind). An empty MIME list yields [`DocKind::Binary`].
-fn infer_doc_kind(mimes: &[String]) -> DocKind {
+pub(crate) fn infer_doc_kind(mimes: &[String]) -> DocKind {
     if mimes.is_empty() {
         return DocKind::Binary;
     }
@@ -253,7 +253,7 @@ fn infer_doc_kind(mimes: &[String]) -> DocKind {
 /// | known document MIMEs        | Document    |
 /// | `text/*`                    | Document    |
 /// | everything else             | Binary      |
-fn mime_to_doc_kind(mime: &str) -> DocKind {
+pub(crate) fn mime_to_doc_kind(mime: &str) -> DocKind {
     match mime {
         s if s.starts_with("image/") => DocKind::Image,
         s if s.starts_with("audio/") => DocKind::Audio,
