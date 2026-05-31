@@ -12,6 +12,7 @@
 // Internal helper macro for the string-enum pattern; not part of the public API.
 mod macros;
 
+pub mod auth;
 pub mod blob;
 pub mod chunk;
 pub mod document;

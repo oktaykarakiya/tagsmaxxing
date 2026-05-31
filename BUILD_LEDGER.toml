@@ -483,9 +483,9 @@ description = "Argon2id password hashing: pure functions in kb-core (or a small 
 depends_on = ["P0-T4"]
 plan_sections = ["13", "24"]
 acceptance = "hash_password → unique per call (random salt); verify_password returns true for correct password + false for wrong; known PHC strings verify correctly (test vector); SessionSecret rejects short secrets. Unit tests for all paths. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "auth.rs: hash_password (Argon2id), verify_password, SessionSecret newtype. 18 unit tests. Rand 0.10 API fix (SysRng/TryRng)."
 
 [[task]]
 id = "P5-T4"

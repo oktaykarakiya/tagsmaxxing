@@ -17,3 +17,5 @@ thiserror = { workspace = true }
 chrono = { workspace = true }
 hex = { workspace = true }
 bytes = { workspace = true }
+argon2 = { workspace = true }
+rand = { workspace = true }
