@@ -18,6 +18,7 @@
 pub mod chunker;
 pub mod document_builder;
 pub mod embedder;
+pub mod ingest;
 pub mod job_queue;
 pub mod metadata_merge;
 pub mod tag_canonicalizer;

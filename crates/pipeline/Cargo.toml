@@ -15,6 +15,7 @@ kb-llm = { workspace = true }
 sqlx = { workspace = true, features = ["runtime-tokio", "postgres", "chrono"] }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+bytes = { workspace = true }
 chrono = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

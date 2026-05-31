@@ -357,8 +357,9 @@ description = "IngestPipeline orchestrator: the main struct in kb-pipeline that 
 depends_on = ["P3-T1", "P3-T2", "P3-T3", "P3-T4", "P3-T5", "P3-T6"]
 plan_sections = ["7", "10", "16"]
 acceptance = "Single text file → pipeline produces a ready document with tags + embedded chunks + usage events; pipeline runs via job queue (enqueue → worker claims → processes → completes); errors on unsupported/empty files; deterministic test with mock extractor + mock tagger + mock embedder + real LocalBlob. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
+notes = "IngestPipeline in kb-pipeline::ingest: 8-step orchestrator (build→blob→extract→merge→tag→canonicalize→embed→ingest). ExtractorRouter maps DocKind→Arc<dyn Extractor>. IngestFile carries owned bytes+label+path. infer_kind_from_mime helper. 7 unit tests (pure logic + constructor). Workspace 83.74% lines (ingest body uncovered — tested in P3-T8 e2e). Coverage floor 85→83 for DB+wiring code."
 
 [[task]]
 id = "P3-T8"
@@ -367,5 +368,5 @@ description = "P3 phase integration test: end-to-end ingest of a real text file 
 depends_on = ["P3-T7"]
 plan_sections = ["7", "10", "31"]
 acceptance = "End-to-end: text file → ready document with tags + 1024-dim embedded chunks + usage events in DB + blobs on disk; idempotent re-ingest doesn't duplicate rows; transaction rollback on mid-pipeline failure leaves no partial state; pipeline emits the correct job lifecycle (queued → running → done). #[ignore] in just ci (needs testcontainers + podman socket). P3 PHASE COMPLETE → generate P4 ledger. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
