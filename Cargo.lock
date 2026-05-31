@@ -1609,6 +1609,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "kb-cov-gate"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "kb-extract"
 version = "0.1.0"
 dependencies = [

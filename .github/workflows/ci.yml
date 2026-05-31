@@ -47,3 +47,36 @@ jobs:
         run: just audit
       - name: Coverage floor
         run: just cov
+
+  # Podman-backed integration lane (ledger P6-T0): runs the #[ignore] testcontainers suites
+  # (cross-tenant RLS isolation, auth/session store, pg_store, job queue) against a real
+  # Postgres and enforces the spec's >=85 coverage floors WITH those suites included
+  # (§31.2/§31.3). ubuntu-latest ships Podman; this project is Podman-only (CLAUDE.md), so we
+  # talk to the rootless Podman API socket via DOCKER_HOST rather than the Docker engine.
+  integration:
+    name: Integration lane (Podman)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Install gate tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just,cargo-llvm-cov
+
+      - name: Start Podman API socket
+        run: |
+          # Bring up the rootless Podman socket testcontainers will connect to. Prefer the
+          # systemd user unit; fall back to `podman system service` if no user session.
+          systemctl --user enable --now podman.socket \
+            || (podman system service --time=0 >/dev/null 2>&1 &)
+          sock="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock"
+          for _ in $(seq 1 30); do [ -S "$sock" ] && break; sleep 0.5; done
+          test -S "$sock" || { echo "podman socket not found at $sock" >&2; exit 1; }
+          echo "DOCKER_HOST=unix://$sock" >> "$GITHUB_ENV"
+
+      - name: Integration suites + coverage floors
+        run: just ci-integration

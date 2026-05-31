@@ -563,8 +563,19 @@ description = "Re-armed CI + Podman integration lane (review/p6-readiness; CLAUD
 depends_on = ["P0-T2", "P5-T2"]
 plan_sections = ["31", "31.2", "31.3", "13"]
 acceptance = "`just ci-integration` runs the #[ignore] suites against a real Podman/testcontainers Postgres and fails the build if any fail; coverage including integration tests is >=85 overall with >=85 per-crate floors on kb-store + auth; the fast `just ci` cov gate is real (no `|| true`); a test asserts the cov recipe isn't masked; CI runs the integration lane. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
+notes = "Added `just ci-integration` (Podman socket via DOCKER_HOST; --test-threads=1 --no-fail-fast) running the #[ignore] suites, plus a new kb-cov-gate crate that enforces overall/kb-store/auth line floors from an LCOV report (unit-tested, lib 100%/floors 100%/lcov 98%). Un-masked the fast `cov` recipe (removed `--fail-under-lines 0`; now report-from-collected-data, no `|| true`) + regression test (cov_recipe_unmasked.rs) guarding it; pointed stray scripts/cov.sh at `just cov`; added a Podman CI job. VALIDATED on real Podman/pgvector: floors PASS — overall 94.46%, kb-store 92.47%, auth 95.18% (all >=85). Running the lane EXPOSED ~38 pre-existing #[ignore] failures (real bugs + testcontainers flakiness, NOT P6-T0 scope) — surfaced in docs/analysis/06-integration-suite-findings.md and new task P6-T13 (checkpoint: incl. cross-tenant RLS re-verify, §31.5). Fast `just ci` green (77.55%, floor 76)."
+
+[[task]]
+id = "P6-T13"
+phase = "P6"
+description = "Triage + fix the pre-existing #[ignore] integration-suite failures the P6-T0 lane exposed — the first time these testcontainers suites have actually run (see docs/analysis/06-integration-suite-findings.md). ~38/190 fail. Confirmed real bugs, each fixed as a small commit: (1) JobQueue::claim() returns a stale 'queued' status instead of 'running' (job_queue.rs:160 returns the pre-UPDATE row; set the field or use UPDATE ... RETURNING); (2) quota 'storage usage' decodes a NUMERIC column as i64 (cast/typing fix); (3) a 2-dim embedding is inserted into a vector(1024) column (fixture/schema mismatch); (4) a query references jobs.job_type which doesn't exist (column is 'kind' — schema/query drift); (5) duplicate-key files_tenant_id_sha256 in transactional_ingest (test isolation or idempotency gap). Also make the testcontainers harness reliable (share one container per test binary, or add startup retry/backoff) so the lane isn't flaky on container/pool timeouts under churn. THEN make the P5-T2 cross-tenant RLS isolation suite green and obtain §31.5 sign-off — those isolation tests are among the failures; they currently fall over in setup/ingest (NOT on an observed cross-tenant read), but isolation MUST be re-verified, not assumed."
+depends_on = ["P6-T0", "P3-T7", "P5-T2"]
+plan_sections = ["13", "31.3", "31.5"]
+acceptance = "Each real bug (1-5) fixed in its own commit with the relevant #[ignore] test green; testcontainers harness reliable (no spurious pool/startup timeouts); `just ci-integration` green end-to-end (all #[ignore] suites pass + coverage floors met); cross-tenant isolation suite green WITH §31.5 human sign-off. just ci green."
+status = "todo"
+checkpoint = true
 notes = ""
 
 [[task]]

@@ -1,0 +1,20 @@
+[package]
+name = "kb-cov-gate"
+description = "Build tooling (ledger P6-T0): enforce per-group line-coverage floors from an LCOV report — overall plus higher floors on the security-critical kb-store crate and auth paths (plan §31.2). Used by `just ci-integration`."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "kb-cov-gate"
+path = "src/main.rs"
+
+[dependencies]
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

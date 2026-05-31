@@ -9,12 +9,20 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 # now a REAL enforced floor again, set to the current honest LINE level ~77% (NB: llvm-cov's first
 # two summary %s are region/function coverage; LINES are the 3rd column — the `|| true` had been
 # masking that real line coverage was below even the 79 it claimed). Measured 2026-05-31.
-# DB-heavy crates (pg_store, session_store, B2) are largely covered by #[ignore]
-# integration tests that don't run in the fast `just ci`; task P6-T0 adds a Podman-backed
-# `just ci-integration` lane that runs them and restores the spec's >=85 with per-crate floors on
-# kb-store + auth. Do NOT lower this floor to make a red gate pass — cover the code or run the
-# integration lane.
+# DB-heavy crates (pg_store, session_store, hybrid_search) are largely covered by #[ignore]
+# integration tests that don't run in the fast `just ci`; the Podman-backed `just ci-integration`
+# lane (added in P6-T0) runs them and enforces the spec's >=85 overall with higher per-group
+# floors on kb-store + the auth paths. Do NOT lower this floor to make a red gate pass — cover
+# the code or run the integration lane. The kb-cov-gate regression test (P6-T0) fails the build
+# if this gate is ever masked again.
 cov_min := "76"
+
+# Coverage floors for the Podman-backed integration lane (`just ci-integration`). The spec
+# (§31.2) requires >=85% lines, "higher on crypto/auth/store" — so the security-critical
+# kb-store crate and the auth paths get the same >=85 floor, measured WITH the #[ignore]
+# testcontainers suites that exercise that DB/auth code.
+cov_min_integration := "85"
+cov_min_secure := "85"
 
 # List available recipes.
 default:
@@ -56,13 +64,13 @@ audit:
 deny:
     cargo deny check
 
-# Line coverage with an enforced floor (REAL gate — no `|| true` masking; review/p6-readiness).
-cov: cov-run
-    cargo llvm-cov --workspace --all-features --fail-under-lines {{cov_min}} --summary-only
-
-# Run instrumented tests to produce coverage data.
-cov-run:
-    @cargo llvm-cov --workspace --all-features --no-report --fail-under-lines 0 2>/dev/null
+# Line coverage with an enforced floor. REAL gate: a fresh, self-cleaning instrumented run
+# (cargo-llvm-cov cleans stale profraw by default, so this is hermetic — it measures the fast
+# suite only and never merges leftover `just ci-integration` data) that FAILS if line coverage
+# is below {{cov_min}}. No `|| true`, no `--fail-under-lines 0`; the kb-cov-gate regression test
+# (crates/cov-gate/tests/cov_recipe_unmasked.rs) guards against this gate ever being masked.
+cov:
+    cargo llvm-cov --workspace --all-features --summary-only --fail-under-lines {{cov_min}}
 
 # HTML coverage report for local inspection.
 cov-html:
@@ -75,6 +83,42 @@ cov-html:
 # Mirrors CI exactly, so "green locally" == "green in CI".
 ci: fmt-check build clippy test deny audit cov
     @echo "✓ all gates passed"
+
+# ── Podman-backed integration lane (plan §31.2/§31.3; ledger P6-T0) ────────────
+#
+# Runs the `#[ignore]` testcontainers suites (cross-tenant RLS isolation, auth/session store,
+# pg_store, job queue) against a REAL Postgres via Podman, then enforces the spec's coverage
+# floors WITH those suites included: >=85% lines overall, and >=85% on the security-critical
+# kb-store crate and the auth paths (§31.2: "higher on crypto/auth/store"). These suites need a
+# container runtime, so they stay out of the fast `just ci`; CI runs this as a separate Podman
+# job. Built FIRST in P6 so every later phase's integration tests are actually exercised as they
+# land. Requires a running rootless Podman API socket (this project is Podman-only — CLAUDE.md):
+#     systemctl --user start podman.socket
+ci-integration:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # testcontainers reads DOCKER_HOST; point it at the rootless Podman socket if unset.
+    sock="${DOCKER_HOST:-unix://${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock}"
+    echo "ci-integration: using Podman socket ${sock}"
+    # Collect coverage across the WHOLE suite, INCLUDING the #[ignore] testcontainers tests.
+    # `--test-threads=1` serialises them: each container-backed test spins its OWN pgvector
+    # container, and running ~150 of them in parallel exhausts host connections/IO (flaky "pool
+    # timed out" errors). Serial execution is reliable and deterministic (§31.3 "deterministic
+    # only; no network/time flakiness").
+    DOCKER_HOST="${sock}" cargo llvm-cov --workspace --all-features --no-report --no-fail-fast \
+        -- --include-ignored --test-threads=1
+    # Human-readable per-file summary, then emit LCOV for the per-group floor check (no re-run).
+    cargo llvm-cov report --summary-only
+    cargo llvm-cov report --lcov --output-path target/ci-integration.lcov
+    # Enforce overall + per-group floors via the unit-tested kb-cov-gate tool. The "auth paths"
+    # group spans crates (core password/session logic + the session store); extend it as later
+    # phases add HTTP-auth integration tests (P6-T2/T4).
+    cargo run -q -p kb-cov-gate -- \
+        --lcov target/ci-integration.lcov \
+        --group overall={{cov_min_integration}} \
+        --group kb-store={{cov_min_secure}}:crates/store/ \
+        --group auth={{cov_min_secure}}:crates/core/src/auth.rs,crates/core/src/session.rs,crates/store/src/session_store.rs
+    echo "✓ ci-integration: #[ignore] suites passed; coverage floors met (>={{cov_min_integration}} overall, >={{cov_min_secure}} store+auth)"
 
 # ── autonomous build loop (plan §31.1) ───────────────────────────────────────
 
