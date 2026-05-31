@@ -386,9 +386,9 @@ description = "Update Store::hybrid_search trait signature to accept a query emb
 depends_on = ["P0-T4"]
 plan_sections = ["4", "5", "8"]
 acceptance = "Store trait compiles with the new signature; PgStore stub updated; deferred-error test passes; just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "Store::hybrid_search gains query_embedding: &[f32] parameter; doc comment explains caller embeds with EmbedKind::Query; PgStore stub + deferred-error test updated. just ci green."
 
 [[task]]
 id = "P4-T2"
