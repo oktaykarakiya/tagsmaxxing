@@ -13,7 +13,7 @@
 
 [meta]
 generated = "2026-05-31"
-phases_planned = ["P0", "P1", "P2", "P3", "P4", "P5"]
+phases_planned = ["P0", "P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10", "P11", "P12"]
 gate_command = "just ci"
 walking_skeleton = "Complete the P0-P4 vertical slice before adding breadth (§31.6)."
 # Crate versions verified against crates.io on 2026-05-29 (the plan's names had drifted):
@@ -541,3 +541,715 @@ acceptance = "Multi-tenant e2e: isolation, auth, quota, and export all verified 
 status = "done"
 checkpoint = false
 	notes = "p5_integration.rs: 4 #[ignore] integration tests (isolation, quota, export, empty export) + 5 pure-logic smoke tests. P5 PHASE COMPLETE."
+
+# ── Phase P6 — Interfaces (CLI + API + folder watch + Web UI + Admin + Metrics) ──
+#
+# P6 wraps the P0–P5 walking skeleton with user-facing surfaces: a `clap` CLI for
+# scripted/headless ingest and search, a REST API serving the same operations, a folder
+# watcher for hands-off auto-ingest, a server-rendered Web UI (Askama + HTMX + Tailwind)
+# for search/upload/document-detail, an admin panel for tenant/user/routing management,
+# and Prometheus metrics + Grafana dashboard for observability (§15).
+
+[[task]]
+id = "P6-T1"
+phase = "P6"
+description = "CLI (clap): a binary (or subcommand) providing `kb ingest <FILES...> [--as-document] [--note]` and `kb search <QUERY> [--kind] [--tag] [--limit]`. Ingest calls IngestPipeline (P3-T7) via the job queue, prints the job id, and polls until done (or exits early with --no-wait). Search calls RetrievalPipeline (P4-T5), prints ranked Hits with title/summary/snippet/page_no deep-link. Both load config from config.toml + env (P0-T5). Pure-logic tests for CLI arg parsing; integration tests with mock backends for the happy paths."
+depends_on = ["P3-T7", "P4-T5", "P0-T5"]
+plan_sections = ["10", "12", "4"]
+acceptance = "`kb ingest file.txt` → job id → status=done; `kb search 'query'` → ranked results with deep-link fields; `kb ingest --as-document front.jpg back.jpg` → 2-page document; `--no-wait` exits immediately after enqueue; `--kind image` filters search; missing config gives a clear error; CLI help text covers all flags. Unit tests for arg parsing + mock-integration tests for happy paths. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P6-T2"
+phase = "P6"
+description = "REST API endpoints: (a) POST /api/ingest — multipart upload (1..N files + optional user_note + group_as_document flag), enqueues ingest job, returns {job_id, document_id: null} (202). (b) GET /api/search?q=…&kind=…&tag=…&limit=… — calls RetrievalPipeline, returns {hits: [{document_id, title, summary, snippet, score, page_no, file_id, ts_offset}]}. (c) GET /api/documents/:id — document detail with files, tags, chunks. (d) GET /api/documents/:id/file/:file_id — download the blob. (e) GET /api/jobs/:id — job status. All routes tenant-scoped via the P5-T5 auth middleware; 401 for unauthenticated, 404 for cross-tenant access. Request validation with clear error messages (413 for oversize, 400 for unsupported MIME)."
+depends_on = ["P5-T5", "P3-T7", "P4-T5"]
+plan_sections = ["10", "12", "13"]
+acceptance = "Authenticated ingest → 202 + valid job_id; search → 200 + ranked hits; unauthenticated → 401; cross-tenant document access → 404; file download streams correct bytes with Content-Type; job status returns correct state; multipart with 3 files + group_as_document → 1 document with 3 pages; missing query param → 400 with message. Unit tests (mock pipeline + mock session store) + axum::test integration tests. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P6-T3"
+phase = "P6"
+description = "Folder watch: a notify-based directory watcher (hot-swappable watch root from config) that detects new files (Create) and modified files (Modify, debounced to avoid mid-write ingestion), enqueues each as an ingest job via the job queue. Respects a configurable file extension allow-list + ignore patterns (.git, thumbs.db, ~backup files). Logs each detection at INFO; errors on unwatchable paths are surfaced but don't crash the watcher. Runs as a background task alongside the API server, with graceful shutdown (stop watching, drain in-flight)."
+depends_on = ["P3-T7", "P2-T3", "P0-T5"]
+plan_sections = ["10", "7"]
+acceptance = "Create a new .txt file in the watched folder → ingest job enqueued within the debounce window; modify an existing file → re-ingested; file matching ignore pattern → NOT enqueued; unsupported extension → skipped + logged; watcher survives a transient permission error on a subdirectory; graceful shutdown drains pending detects. Unit tests with mock IngestPipeline + temp dir. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P6-T4"
+phase = "P6"
+description = "Web UI foundation: wire Askama templating into the axum API crate with Tailwind CSS (served as static asset, or CDN for dev). Base layout template (navigation, tenant/user context from session, flash messages), CSRF token on all mutating forms, CSP + security headers middleware (extends P6-T2). Serve static assets (CSS, minimal JS for HTMX + drag-and-drop + MediaRecorder). Login + register pages (reuse P5-T5 auth handlers, but render HTML forms instead of JSON — or accept JSON from JS). This task is the UI skeleton — no search/upload logic yet, just the framework and auth pages."
+depends_on = ["P6-T2", "P5-T5"]
+plan_sections = ["12"]
+acceptance = "GET / → redirects to /login (unauthenticated) or /search (authenticated); /login renders a styled form, POST succeeds → Set-Cookie + redirect; /register renders form, POST → 201 + redirect; /logout clears session; all pages share consistent layout + nav bar; CSRF token present on forms; CSP header set; static CSS/JS served with correct Content-Type. Unit tests with axum::test asserting HTML responses + CSRF presence. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P6-T5"
+phase = "P6"
+description = "Web UI — search page (§12): single search bar, async results list via HTMX (hx-post to /api/search, swaps results container — no full page reload). Each result row shows: title (linked to document detail), summary excerpt, snippet from the winning chunk with query-term highlighting, score, kind badge, and a page-no deep-link indicator. Left sidebar or top bar with filter controls: kind (checkboxes), tag (multi-select from tenant's tags), date range. Filters update results via HTMX. Empty state: illustration + 'ingest your first file' CTA. Error state: retry button."
+depends_on = ["P6-T4", "P6-T2"]
+plan_sections = ["12", "8"]
+acceptance = "Search for 'invoice' → HTMX swaps in results with snippets; filter by kind=image → only image documents returned; filter by tag → only tagged docs; empty results → CTA; unauthenticated → redirect to /login; CSRF token validated on POST; results deep-link to document detail page. Unit tests asserting HTML fragments + integration test with mock RetrievalPipeline. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P6-T6"
+phase = "P6"
+description = "Web UI — upload page (§12): drag-and-drop zone + file picker fallback. Multi-select files → reorderable list with thumbnails (image preview via object URL) + filenames/sizes. 'Ingest as one document' toggle (maps to group_as_document in P6-T2). Optional user_note textarea with a mic button: MediaRecorder API records audio → POSTs to /api/transcribe (whisper-backed, P2-T7) → fills textarea with editable transcript. Submit → multipart POST to /api/ingest → progress bar (poll job status via HTMX) → redirect to document detail on completion. Max file size / total upload size enforced client-side and server-side (413)."
+depends_on = ["P6-T4", "P6-T2", "P2-T7"]
+plan_sections = ["12", "7"]
+acceptance = "Drag 3 files → reorderable list rendered; toggle 'as one document' ON → ingest creates 3-page document; toggle OFF → 3 separate 1-page documents; mic button records → transcript appears in note field → editable before submit; submit → progress bar → redirect to /documents/:id; file too large → client warning + server 413 with clear message; unauthenticated → redirect to /login. Unit tests for form rendering + CSRF; integration test with mock pipeline. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P6-T7"
+phase = "P6"
+description = "Web UI — document detail page (§12): title, summary, user_note, kind badge, status, created_at, page_count. Canonical tags displayed as chips with X-to-remove; inline 'add tag' input → POST re-tag (calls tagger + canonicalizer). Page thumbnail strip (front/back/p1…pN) — each thumbnail links to file download; reorder pages via drag-and-drop → PUT /api/documents/:id/reorder. 'Add page' button → upload additional file(s) → appended to document → re-tag. Combined metadata section (per-page fields namespaced). Per-page original download link. Re-tag button (re-runs tagger on current text)."
+depends_on = ["P6-T4", "P6-T2"]
+plan_sections = ["12", "7"]
+acceptance = "Document detail loads with all fields; tag chips render with remove buttons → DELETE removes; add-tag autocomplete from tenant's existing tags; page strip shows thumbnails in order; drag-to-reorder persists new order; add-page uploads + tags update; per-page download streams correct blob; re-tag button updates tags; CSRF on all mutating actions. Unit tests for template rendering + integration test with mock store. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P6-T8"
+phase = "P6"
+description = "Admin panel (§15): protected routes under /admin. (a) Dashboard: tenant count, user count, storage used, token usage, recent jobs — all scoped to tenant-admin vs super-admin (cross-tenant). (b) Tenant management (super-admin only): list, create, edit quotas, suspend. (c) User management: list users per tenant, invite (create user), change role, disable. (d) Audit log: read-only table of admin actions (who did what when). (e) Tag merge: select two tags → merge into canonical (all alias rows updated, document_tags re-pointed). (f) Dead-letter queue: list dead jobs, inspect error, retry or delete. (g) Backend status: live view of health, slots, cooldown state per backend. All actions are audit-logged."
+depends_on = ["P5-T5", "P2-T3", "P1-T4"]
+plan_sections = ["15", "13"]
+acceptance = "Super-admin sees cross-tenant dashboard + tenant CRUD; tenant-admin sees only their tenant's data + user management; tag merge correctly re-points all aliases + document_tags in a transaction; dead-letter retry re-enqueues job; backend status shows live healthy/slots/cooldown; all mutating actions create audit log rows; CSRF on all forms; 403 for unauthorized role access. Unit tests for authorization boundaries + integration tests with testcontainers (#[ignore]). just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P6-T9"
+phase = "P6"
+description = "Prometheus metrics + Grafana dashboard (§15): (a) Export metrics via `metrics` + `metrics-exporter-prometheus` on a separate port or /metrics endpoint: per-backend (healthy, free_slots/total_slots or rate-limit headroom, cooldown), queue (depth, waiters, oldest_job_age_secs), requests (count, p50/p95/p99 latency, error_rate by role/model), throughput (requests/sec), storage (bytes_used per tenant), spend (dollars per tenant/provider), active_users (by tenant). (b) Ship a grafana-dashboard.json with panels for: backend health grid, queue depth + latency heatmap, throughput + error rate, per-tenant storage/spend, top queries. Use metric labels (backend_id, role, tenant_id) so a single dashboard works for all."
+depends_on = ["P1-T4", "P2-T3", "P5-T6"]
+plan_sections = ["15"]
+acceptance = "GET /metrics returns Prometheus-formatted metrics; all listed metrics present with correct labels; histogram quantiles computed correctly; grafana-dashboard.json is valid JSON and imports without errors; metrics update in real time (no caching/staleness). Unit tests asserting metric increments + gauge values. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P6-T10"
+phase = "P6"
+description = "P6 phase integration test: end-to-end through the CLI, API, and Web UI fronts. (1) CLI: `kb ingest file.txt` → polls → done; `kb search 'query'` → prints ranked results. (2) API: authenticated POST /api/ingest (multipart, 2 files grouped) → 202 → poll job → done → GET /api/documents/:id → correct files+tags; GET /api/search → results with deep-links; cross-tenant isolation (tenant B's API key → 404 on tenant A's doc). (3) Web UI: GET /search → HTML page; POST search → HTMX fragment with results; GET /documents/:id → detail page with tags + page strip. (4) Admin: super-admin creates tenant + user; tenant-admin manages users. (5) Metrics: GET /metrics returns valid Prometheus output. All use mock LLM backends + real PgStore via testcontainers (#[ignore] in just ci). P6 PHASE COMPLETE."
+depends_on = ["P6-T1", "P6-T2", "P6-T3", "P6-T4", "P6-T5", "P6-T6", "P6-T7", "P6-T8", "P6-T9"]
+plan_sections = ["10", "12", "15", "31"]
+acceptance = "CLI ingest+search round-trip; API multi-file grouped ingest → search → document detail; Web UI search returns HTML; admin tenant+user CRUD works across scopes; folder watch auto-ingests dropped files; metrics endpoint returns valid Prometheus output. All gates green. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+# ── Phase P7 — Packaging + OSS (§14, §18) ────────────────────────────────────
+#
+# P7 containers the app for production deployment, ships GPU and CPU-only profiles,
+# adds Podman-native Quadlet units for systemd, caps log storage, and produces the
+# OSS documentation suite (README, ARCHITECTURE, CONTRIBUTING, LICENSE, SBOM).
+
+[[task]]
+id = "P7-T1"
+phase = "P7"
+description = "Multi-stage Containerfile: (a) chef stage: cargo-chef for dependency-layer caching (plan §14). (b) Builder stage: cargo build --release with the pinned toolchain, targeting rustls (no OpenSSL). (c) Runtime stage: debian:slim (or distroless), non-root user (uid 1000), only the binary + static assets + templates. COPY from builder. HEALTHCHECK using the API's /health endpoint. Containerfile must build with `podman build` (no Docker assumed)."
+depends_on = ["P6-T2"]
+plan_sections = ["14"]
+acceptance = "`podman build -t kb:latest .` succeeds; resulting image runs as non-root (verify with `id`); binary is rustls-linked (no libssl dependency); HEALTHCHECK passes; image size < 200 MB (debian:slim base). just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P7-T2"
+phase = "P7"
+description = "compose.yaml with GPU profile + compose.gpu.yaml: (a) Base compose.yaml — app container (P7-T1 image), pgvector/pgvector Postgres (data-checksums), Apache Tika. (b) Profile `gpu` in compose.yaml or a separate compose.gpu.yaml: llama-server (text+vision workhorse, embedding, reranker) and whisper-server, all with CDI GPU device mounts (`--device nvidia.com/gpu=all`). (c) compose.cpu.yaml override for CPU-only llama-server (no GPU, slower but runs anywhere). All profiles use `podman compose` — spec-compliant, no Docker-only features. .env.example updated with GPU/CPU vars."
+depends_on = ["P7-T1", "P0-T7"]
+plan_sections = ["14"]
+acceptance = "`podman compose up` (CPU-only) → app + Postgres + Tika healthy; `podman compose --profile gpu up` → adds llama-server + whisper-server with GPU devices; `podman compose config` validates; .env.example documents all vars including GPU_DEVICE, LLAMA_MODEL_PATH, WHISPER_MODEL_PATH. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P7-T3"
+phase = "P7"
+description = "Quadlet .container units for systemd deployment (§14): ship `.container` files for the app, postgres, tika, and the GPU inference services (llama-server, whisper-server). Each unit declares its image, volumes, environment, network, and dependencies (e.g. app Requires=postgres). Include a `kb.pod` file grouping them. README documents `quadlet` deployment as the recommended production method for single-node Podman users."
+depends_on = ["P7-T1", "P7-T2"]
+plan_sections = ["14"]
+acceptance = "Quadlet files are valid (podlet or quadlet --dry-run passes); the pod brings up all services with correct ordering; volumes mapped correctly; env vars documented. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P7-T4"
+phase = "P7"
+description = "Log rotation with LOG_MAX_GB cap (§18): integrate the `file-rotate` crate (ContentLimit::Bytes + FileLimit::MaxFiles) into the tracing subscriber setup. On startup, read LOG_MAX_GB from env (default 1 GB), compute max files = LOG_MAX_GB / per-file max size. Rotate by size, not time. Also add a janitor background task that prunes oldest logs when the total log dir exceeds LOG_MAX_GB (belt-and-suspenders). Log format: JSON (structured) or pretty (dev), controlled by LOG_FORMAT env var. All logs carry `request_id` / `tenant_id` / `file_id` spans for correlation."
+depends_on = ["P0-T1"]
+plan_sections = ["18"]
+acceptance = "Logs rotate when per-file size limit reached; total log dir stays under LOG_MAX_GB; janitor prunes oldest files first; JSON format includes span fields; LOG_FORMAT=pretty produces human-readable output; LOG_LEVEL controls filtering. Unit tests for rotation + janitor logic. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P7-T5"
+phase = "P7"
+description = "OSS documentation suite: README.md (overview, quickstart, architecture diagram, license), ARCHITECTURE.md (crate tour, data flow, design decisions from §1, trait-per-capability rationale), CONTRIBUTING.md (dev setup, just ci, test patterns, PR process), LICENSE (Apache-2.0 OR MIT, dual). Also generate an SBOM (Software Bill of Materials) via `cargo cyclonedx` or `cargo sbom` as a CI artifact. The README must note that model weights are separately licensed and not included."
+depends_on = ["P6-T10"]
+plan_sections = ["14"]
+acceptance = "README has quickstart (clone → podman compose up → open localhost:9999); ARCHITECTURE covers all 8 crates + data flow; CONTRIBUTING documents just ci + test patterns + CLAUDE.md workflow; LICENSE file present; SBOM generation command documented. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P7-T6"
+phase = "P7"
+description = "P7 phase verification: `podman build` the Containerfile, `podman compose up` the full stack (CPU profile), run a smoke test (CLI ingest + search via `podman exec` or API curl), verify logs capped, verify health endpoints, `podman compose down -v`. This task verifies packaging end-to-end — no new Rust code, just verification + any packaging fixes discovered. P7 PHASE COMPLETE."
+depends_on = ["P7-T1", "P7-T2", "P7-T3", "P7-T4", "P7-T5"]
+plan_sections = ["14", "31"]
+acceptance = "Full podman build + compose up → smoke test passes → clean down. All containers reach healthy. Log rotation working. Quadlet files validated. Docs complete + accurate. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+# ── Phase P8 — Storage + resilience (§20, §21, §22, §23, §25) ────────────────
+#
+# P8 replaces the local-disk Blob with Backblaze B2 (S3-compatible via object_store),
+# adds envelope encryption + local read-through cache + presigned URLs, sets up
+# pgBackRest continuous WAL/PITR with automated restore-testing, orchestrates
+# multi-replica serving behind Caddy + PgBouncer, implements graceful degradation,
+# and adds periodic maintenance jobs (orphan GC, integrity scan, vacuum, re-embed).
+
+[[task]]
+id = "P8-T1"
+phase = "P8"
+description = "B2 blob backend: implement the core Blob trait using `object_store` with a Backblaze B2 S3-compatible endpoint. Content-addressed key layout (`{tenant_id}/{sha256_hex}`) — same as LocalBlob (P2-T1). Supports: put (streaming, idempotent via content-addressing), get (streaming), get_range (HTTP Range for byte slices), exists (HEAD), delete, presigned_get_url (time-limited download URL via B2's presigned mechanism). Configured via env vars: B2_APPLICATION_KEY_ID, B2_APPLICATION_KEY, B2_BUCKET_NAME, B2_ENDPOINT (default s3.us-west-004.backblazeb2.com). Hot-swappable endpoint + credentials (ArcSwap reload from env/file-notify). Multipart upload for files > 5 MB (streaming, never buffers full file in RAM)."
+depends_on = ["P2-T1"]
+plan_sections = ["20"]
+acceptance = "put → get returns identical bytes; get_range returns correct byte slice; exists returns true after put, false after delete; presigned_get_url is valid and time-limited; same content → same key → idempotent put (no error); multipart upload for 50 MB file works; B2 unreachable → clear anyhow error (not panic); hot-swap credentials picks up new key without restart. Unit tests with a mock S3 server (or object_store's in-memory backend) + integration tests against real B2 (#[ignore] in just ci). just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P8-T2"
+phase = "P8"
+description = "Local read-through cache for B2 blobs (§20): a size-capped on-disk LRU cache. On get(): check local cache → hit → return cached bytes (validate SHA256 if paranoid mode); miss → fetch from B2 → store in cache → return. On put(): write to B2 first, then cache (write-through). Cache eviction: LRU, total size ≤ BLOB_CACHE_MAX_GB (env, default 10 GB). Cache stores decrypted plaintext only (encryption is above this layer, P8-T5). Metadata tracked in a SQLite or sled DB for fast lookup without filesystem scans. The cache is disposable — clearing it only causes re-fetches."
+depends_on = ["P8-T1"]
+plan_sections = ["20"]
+acceptance = "First get → B2 fetch (cache miss); second get → cache hit (no B2 call); put → B2 + cache; eviction removes least-recently-used entries; total cache size stays under limit; cache clear → subsequent get re-fetches; SHA256 validation catches corrupted cache entries. Unit tests with mock B2 backend + temp dir. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P8-T3"
+phase = "P8"
+description = "Presigned download URLs: the B2 blob backend returns time-limited (configurable, default 1 hour) presigned GET URLs from presigned_get_url(). Wire this into the API's file download endpoint (GET /api/documents/:id/file/:file_id → 302 redirect to presigned URL) so download bandwidth bypasses the app server entirely. For LocalBlob (dev), presigned returns a `file://` path as before (P2-T1). Configurable presigned TTL via BLOB_PRESIGNED_TTL_SECS (env, default 3600)."
+depends_on = ["P8-T1", "P6-T2"]
+plan_sections = ["20", "12"]
+acceptance = "GET file → 302 redirect to presigned B2 URL; URL works within TTL window, returns 403 after; LocalBlob presigned returns file:// path (unchanged); configurable TTL; download streams with correct Content-Type + Content-Disposition. Unit tests with mock B2 + integration test with real B2 (#[ignore]). just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P8-T4"
+phase = "P8"
+description = "Streaming multipart upload: for files larger than a configurable threshold (BLOB_MULTIPART_THRESHOLD_BYTES, default 5 MB), use S3 multipart upload via object_store's MultipartUpload API. Stream the source (user upload or pipeline output) directly into B2 parts — never buffer the full file in RAM. On failure, abort the multipart upload (clean up partial parts). Retry individual parts on transient errors (bounded, 3 attempts). Progress callback for UI polling. Works with both B2Blob (P8-T1) and LocalBlob (which just does a regular streaming put)."
+depends_on = ["P8-T1"]
+plan_sections = ["20"]
+acceptance = "50 MB file → uploaded in ≥10 parts (5 MB each), no OOM; part failure → retried 3×; total failure → abort cleans up parts; file < threshold → single PUT; progress callback fires per part; streaming — peak memory < 2× part size. Unit tests with mock multipart server. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P8-T5"
+phase = "P8"
+description = "Envelope encryption for B2 blobs (§20, §24): before storing a blob, generate a random 256-bit Data Encryption Key (DEK). Encrypt the blob bytes with the DEK (XChaCha20-Poly1305 or AES-256-GCM). Wrap (encrypt) the DEK with a Key Encryption Key (KEK) — initially loaded from env (BLOB_KEK_B64, a 256-bit key), with the understanding that P10 will move the KEK into a KMS/HSM. Store the wrapped DEK alongside the ciphertext (or in a separate metadata column). On get: unwrap DEK with KEK → decrypt blob bytes. This means B2 never sees plaintext. The encryption layer sits between the Blob trait caller and the B2 transport — it is a Blob impl wrapper (EncryptedBlob<B: Blob>) so it works with any backend."
+depends_on = ["P8-T1"]
+plan_sections = ["20", "24", "28"]
+acceptance = "put → encrypted bytes stored in B2 (verify by reading raw B2 object); get → decrypted correctly; wrong KEK → get returns error; DEK is random per file (two puts of same content → different ciphertext due to unique DEK, but dedup is by plaintext SHA256 which happens before encryption); EncryptedBlob wraps any Blob impl (test with both B2 + LocalBlob). Unit tests for encrypt/decrypt round-trip + wrong-KEK error + DEK uniqueness + KEK rotation (re-wrap). just ci green."
+status = "todo"
+checkpoint = true
+notes = "CHECKPOINT (§31.5): encryption & key handling — human review required. KEK from env is a temporary bridge; P10 moves to KMS/HSM."
+
+[[task]]
+id = "P8-T6"
+phase = "P8"
+description = "pgBackRest WAL/PITR configuration (§21): (a) pgBackRest configuration (pgbackrest.conf) targeting a separate B2 bucket (B2_BACKUP_KEY_ID, B2_BACKUP_KEY, B2_BACKUP_BUCKET) with repo encryption (repo1-cipher-type=aes-256-cbc, repo1-cipher-pass from env). (b) Stanza creation command. (c) Scheduled full + incremental backup commands (daily full, hourly incremental) via cron/systemd timer or the maintenance scheduler. (d) WAL archiving enabled (archive_command = pgbackrest --stanza=kb archive-push). (e) PITR restore script: provision node → restore to latest or point-in-time → start Postgres. Script is documented in a runbook (DR_RUNBOOK.md). This task writes configs + scripts + docs; the actual execution is verified in P8-T7."
+depends_on = ["P8-T1", "P0-T7"]
+plan_sections = ["21"]
+acceptance = "pgbackrest.conf valid (pgbackrest --config=… info runs); backup + restore scripts are executable and idempotent; WAL archiving documented; DR runbook has step-by-step commands with expected output; separate backup bucket with Object Lock noted. just ci green (scripts are shell, tests validate config syntax)."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P8-T7"
+phase = "P8"
+description = "Automated restore-test job (§21): a scheduled maintenance job that (1) takes a pgBackRest backup from the B2 bucket, (2) restores it to a scratch Postgres instance (separate port, temp data dir), (3) runs integrity checks (pg_dump schema check, row counts on key tables, CHECK constraints valid), (4) reports success or alerts on failure (log at ERROR level + Prometheus gauge). Runs on a configurable schedule (default: daily at 03:00). Stale-backup check: if the latest backup is older than a threshold (BACKUP_MAX_AGE_HOURS, default 25), alert. This is the non-negotiable test that makes backups real (§21)."
+depends_on = ["P8-T6"]
+plan_sections = ["21", "25"]
+acceptance = "Restore test runs against a real Postgres backup; integrity checks pass; stale backup → alert gauge set; failure → ERROR log + alert gauge; configurable schedule; scratch instance cleaned up after test (pass or fail). Integration test with testcontainers (#[ignore] in just ci). just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P8-T8"
+phase = "P8"
+description = "Caddy reverse proxy + PgBouncer + app replica scaling (§22): (a) Caddyfile: reverse proxy to app:9999 with automatic TLS (if a domain is configured), rate limiting, request logging, security headers (HSTS, CSP, X-Frame-Options). (b) PgBouncer config: connection pool in front of Postgres (transaction pooling mode), auth_file from env. (c) App replicas: `podman compose up --scale app=3` works correctly — workers claim jobs via SKIP-LOCKED (P2-T3), sessions in DB (P5-T4). (d) Migration guard: startup runs migrations under a Postgres advisory lock (pg_advisory_lock) so concurrent replicas serialize. (e) Readiness endpoint: GET /health returns 200 only when DB reachable + migrations applied + ≥1 healthy backend per required role (§22)."
+depends_on = ["P7-T2", "P2-T3", "P5-T4"]
+plan_sections = ["22"]
+acceptance = "Caddy proxies to app with correct headers; PgBouncer pools connections; scale=3 → 3 app instances, all healthy, jobs distributed; concurrent startups serialize migrations via advisory lock; /health returns 503 when DB unreachable; /health returns 200 when all ready. Integration test with podman compose. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P8-T9"
+phase = "P8"
+description = "Graceful degradation matrix (§22): (a) B2 unreachable: ingest jobs pause + retry with backoff (existing job queue behavior), reads serve from cache (P8-T2) where possible, search still works (vectors + metadata in Postgres), a `degraded` flag is set → API adds `X-Degraded: blob-store` header + admin panel shows banner. (b) A role has no healthy backends: queries return 503 with clear message 'no {role} backend available, retry later'; jobs for that role stay queued. (c) DB read-replica lag: if using replicas, route reads to primary when lag > threshold. (d) Backpressure: cap in-flight ingest requests (configurable max, default 100) → return 429 with Retry-After when saturated. (e) Circuit breakers per external dependency — 3 consecutive failures → open circuit (reject fast), half-open probe after cooldown. This task is the coordination layer — it wires together signals from B2 health (P8-T1), backend health (P1-T4), and queue depth (P2-T3)."
+depends_on = ["P8-T1", "P8-T2", "P1-T4", "P2-T3"]
+plan_sections = ["22", "6"]
+acceptance = "B2 down → ingest pauses, reads hit cache, X-Degraded header, admin banner; no healthy embed backend → search returns 503 with message; in-flight > max → 429 + Retry-After; circuit breaker opens after 3 failures, half-open probe after cooldown; all states visible in metrics (P6-T9). Unit tests for circuit breaker logic + degradation middleware. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P8-T10"
+phase = "P8"
+description = "Orphan GC + blob integrity scan jobs (§23): (a) Orphan GC: periodic job that finds B2 blobs with no corresponding files row in DB (orphaned by failed transactions — content-addressing makes them harmless but they cost money) AND DB rows whose blob_key doesn't exist in B2. For blobs without DB rows: delete from B2 (with a grace period, BLOB_GC_GRACE_HOURS default 24h, to avoid deleting blobs of in-flight transactions). For DB rows without blobs: log ERROR (data loss). (b) Integrity scan: periodically re-hash a random sample (configurable %) of B2 blobs and compare to stored sha256 → detect bit-rot/tampering. Both run as job queue jobs on a configurable schedule."
+depends_on = ["P8-T1", "P2-T3"]
+plan_sections = ["23", "25"]
+acceptance = "Orphan GC finds blob without DB row → deletes after grace period; blob within grace period → skipped; DB row references missing blob → ERROR log + metric; integrity scan verifies SHA256 of random sample; both jobs report results to metrics (P6-T9). Unit tests with mock B2 backend. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P8-T11"
+phase = "P8"
+description = "Maintenance scheduler (§25): a built-in cron-like scheduler for recurring maintenance tasks. Jobs: (a) periodic VACUUM ANALYZE on large tables (files, chunks, usage_events), (b) log pruning to LOG_MAX_GB (P7-T4 janitor trigger), (c) blob cache LRU eviction (P8-T2), (d) B2 lifecycle enforcement (version expiry), (e) re-embed migration trigger (when embedder config changes — detects embedder_id mismatch in settings table → enqueues re-embed jobs for all chunks). Configurable schedule per job type. Each run logs at INFO; failures log at ERROR + set Prometheus gauge. The scheduler runs inside the app process (no external cron dependency) — lightweight, in-memory schedule table."
+depends_on = ["P2-T3", "P8-T2", "P7-T4"]
+plan_sections = ["25"]
+acceptance = "Each maintenance job runs on its configured schedule; VACUUM completes without error; re-embed detection triggers when embedder_id changes; log prune respects LOG_MAX_GB; scheduler survives transient job failures (next run proceeds); graceful shutdown completes the current job. Unit tests with mock clock + integration test for re-embed trigger. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P8-T12"
+phase = "P8"
+description = "P8 phase integration test: (a) B2 mock: put → encrypt → store → get → decrypt → verify; multipart large file; presigned URL generation; cache hit/miss/eviction; hot-swap credentials. (b) Degradation: B2 mock returns errors → ingest pauses, cache serves reads, X-Degraded header, circuit breaker opens/closes. (c) Orphan GC: create orphan blob → GC deletes after grace period. (d) Integrity scan: verify blob hash matches. (e) Maintenance scheduler: VACUUM runs, re-embed triggered. All use mock B2 server + real PgStore via testcontainers (#[ignore] in just ci). P8 PHASE COMPLETE."
+depends_on = ["P8-T1", "P8-T2", "P8-T3", "P8-T4", "P8-T5", "P8-T8", "P8-T9", "P8-T10", "P8-T11"]
+plan_sections = ["20", "22", "23", "31"]
+acceptance = "Full encrypted blob round-trip through mock B2; multipart upload + download; degradation matrix works; GC cleans orphans; integrity scan validates hashes; all gates green. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+# ── Phase P9 — Pluggable providers + DB-driven routing (§26) ─────────────────
+#
+# P9 generalizes the scheduler so any model — local llama.cpp or remote (DeepSeek,
+# Qwen, Gemini, Anthropic, OpenAI) — is a Backend added and wired from the admin
+# panel. Introduces the ProviderAdapter trait, pluggable capacity guards (slots vs
+# concurrency vs token-bucket rate limits), a DB-driven providers/models/routes
+# schema with hot-reload, tiered failover in acquire(), data-residency enforcement,
+# and cost tracking with budget alerts.
+
+[[task]]
+id = "P9-T1"
+phase = "P9"
+description = "ProviderAdapter trait + OpenAiCompat adapter (§26.1): define the `ProviderAdapter` trait in kb-core: `async fn chat(&self, conn: &ProviderConn, req: ChatReq) -> anyhow::Result<ChatResp>` + `async fn embed(&self, conn: &ProviderConn, req: EmbedReq) -> anyhow::Result<EmbedResp>` + `fn supports(&self, role: Role) -> bool`. `ProviderConn` carries base_url + optional decrypted API key + headers. Implement `OpenAiCompat` adapter (covers local llama.cpp, vLLM, DeepSeek, Qwen/DashScope, Gemini OpenAI-compat endpoint, OpenAI itself). It sends POST {base_url}/v1/chat/completions and /v1/embeddings with Authorization: Bearer header when a key is present. Returns normalized ChatResp/EmbedResp. This adapter replaces the hardcoded llama.cpp client (P1-T5's LlamaClient) — or wraps it as the OpenAiCompat path (no key = local)."
+depends_on = ["P1-T5"]
+plan_sections = ["26", "26.1"]
+acceptance = "OpenAiCompat adapter sends correctly-formed chat + embed requests; Authorization header present when key set; supports(Role::Text) = true, supports(Role::Rerank) = depends on endpoint; error on non-2xx response with status + body; response parsed into ChatResp/EmbedResp; works against MockBackend (P1-T3) + a separate mock remote server. Unit tests for request shape + error handling + role support. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P9-T2"
+phase = "P9"
+description = "Anthropic adapter (optional but tested): implement ProviderAdapter for Anthropic's native Messages API (`x-api-key`, `anthropic-version: 2023-06-01`, system param, tools/blocks format). Normalizes to ChatResp/EmbedResp. Returns `supports(Role::Embed) = false` (Anthropic has no embeddings endpoint). If Anthropic-specific features (extended thinking, citations) are wired later, they go through the same adapter. This adapter is compiled behind a feature flag (`anthropic`) so it doesn't bloat the default binary, but tests always run."
+depends_on = ["P9-T1"]
+plan_sections = ["26.1"]
+acceptance = "Chat request → valid Anthropic Messages API JSON; response parsed into ChatResp with correct usage; supports() returns correct role set; non-2xx → anyhow::Error; embed() returns error (unsupported). Unit tests against mock Anthropic server. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P9-T3"
+phase = "P9"
+description = "Pluggable Capacity enum (§26.2): replace the hardcoded `Semaphore` in P1-T1's Backend with a `Capacity` enum: `Slots(Semaphore)` (local llama.cpp, permits = --parallel N), `Concurrency(Semaphore)` (remote, max in-flight chosen by operator), `Rated { conc: Semaphore, rpm: TokenBucket, tpm: TokenBucket }` (remote API with documented rate limits). Token bucket uses `governor` or a simple pure-Rust implementation with configurable refill rate. `try_acquire()` attempts to take capacity from the appropriate variant; `release()` returns it (Semaphore permit drop / token bucket credit). Backend in cooldown (`cooldown_until > now`) is skipped in acquire(). Capacity is observable: `free()` returns the current available count or rate-limit headroom."
+depends_on = ["P1-T1"]
+plan_sections = ["26.2"]
+acceptance = "Slots: N concurrent → N+1th waits; Concurrency: same behavior; Rated: RPM bucket drains with requests, refills over time, exhausted → NoCapacity; cooldown backend skipped; free() returns correct numbers; all Capacity variants share a common interface (trait or enum methods). TDD unit tests for token bucket math (refill, burst, exhaustion, fractional rates) using injected clock — deterministic. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P9-T4"
+phase = "P9"
+description = "Generalized Backend struct (§26.3): extend/replace P1-T1's Backend with: `id`, `adapter: Arc<dyn ProviderAdapter>`, `endpoint: Option<String>` (base_url), `key: Option<SecretRef>` (id referencing an encrypted key in DB, P10-T3 decrypts it), `model_id: String`, `caps: CapSet` (bitflags: Text, Vision, Code, Embed, Rerank), `capacity: Capacity` (P9-T3), `pricing: Option<Pricing>` ($/Mtok in+out, None = free/local), `data_class: DataClass` (Local | Remote), `healthy: AtomicBool`, `cooldown_until: Mutex<Option<Instant>>`. Backend::new() constructs from DB model row + provider row (P9-T5). The old P1-T1 Backend is subsumed — migration is mechanical (existing tests updated)."
+depends_on = ["P9-T1", "P9-T3"]
+plan_sections = ["26.3"]
+acceptance = "Backend::new() from valid model+provider rows; caps gating: Backend::supports(role) checks CapSet; data_class exposed; pricing optional; cooldown managed per-backend; existing P1 scheduler tests still pass with updated Backend struct. Unit tests for Backend construction + CapSet logic. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P9-T5"
+phase = "P9"
+description = "DB-driven providers/models/routes schema (§26.5): sqlx migration adding `providers`, `models`, and `routes` tables (DDL per plan §26.5). PgStore methods: CRUD for all three tables + a `test_connection` method (calls the adapter with a cheap 'ping' request to validate the decrypted key + endpoint). Also add `get_routing_table()` which queries all enabled providers + models + routes and builds the in-memory `RoutingTable` (indexed by role → ordered tiers). Routes support tenant-specific overrides (tenant_id NULL = global default). Migration is backward-compatible (the existing hardcoded config backends still work as a seed/bootstrap path)."
+depends_on = ["P0-T6", "P9-T4"]
+plan_sections = ["26.5"]
+acceptance = "Migration creates providers/models/routes tables with correct constraints; CRUD methods create, read, update, soft-delete (enabled=false); test_connection validates a real endpoint (mock server in tests); get_routing_table builds correct tiered structure; tenant-specific routes override global; duplicate detection (same role+tier+tenant+model UNIQUE). Unit tests for CRUD + routing table build + #[ignore] integration tests against testcontainers. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P9-T6"
+phase = "P9"
+description = "Tiered failover routes in Pool::acquire (§26.4): rewrite Pool::acquire to walk the RoutingTable (P9-T5) rather than the hardcoded config pool. Algorithm: for each tier in order: (1) filter candidates (healthy, not in cooldown, supports role, allowed for tenant per data-residency P9-T9), (2) order by Strategy (LeastLoaded: most free capacity first; RoundRobin; CostAsc: cheapest first; Priority: explicit order), (3) try_acquire across candidates — first success wins; (4) if none free now, wait up to `spill_after` on this tier (await first-free via FuturesUnordered); on timeout → spill to next tier; (5) all tiers exhausted → wait on union up to global timeout → CapacityExhausted. Embed role: only tier 0 is used (no failover across models — §11 lock). On request failure: 5xx/timeout → suspect + retry next; 429 → cooldown + retry next."
+depends_on = ["P9-T4", "P9-T5"]
+plan_sections = ["26.4", "6"]
+acceptance = "Tier 0 candidate available → acquired; tier 0 all busy → waits spill_after → spills to tier 1; embed role → tier 0 only (tier 1+ ignored); CostAsc prefers cheapest; 429 sets cooldown, next acquire skips; 5xx marks suspect; Priority ordering respects explicit order; existing P1-T2 acquire tests updated + new tests for tier spill + 429 cooldown + strategy ordering + embed-no-spill. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P9-T7"
+phase = "P9"
+description = "Hot-reload routing table from DB (§26.5): the Pool holds an `ArcSwap<RoutingTable>`. On startup, load from DB (or bootstrap from config.toml if DB is empty). Subscribe to Postgres LISTEN/NOTIFY on a `routing_change` channel — when providers/models/routes are mutated via admin CRUD (P9-T8), the PgStore sends NOTIFY. The Pool's background task listens, re-queries `get_routing_table()`, and atomically swaps. Fallback: if LISTEN/NOTIFY is not available (e.g. PgBouncer transaction pooling), fall back to periodic polling (configurable interval, default 30s). The hot-swap is lock-free for readers (ArcSwap::load() is wait-free)."
+depends_on = ["P9-T5", "P9-T6"]
+plan_sections = ["26.5", "6"]
+acceptance = "Admin edits a route → NOTIFY fires → Pool reloads within 1s → next acquire() uses new route; LISTEN/NOTIFY unavailable → falls back to polling; ArcSwap load() is contention-free under concurrent acquires; startup loads from DB; empty DB → falls back to config.toml bootstrap. Unit tests with mock LISTEN/NOTIFY + integration test with testcontainers (#[ignore]). just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P9-T8"
+phase = "P9"
+description = "Admin CRUD for providers/models/routes + test-connection: web UI pages under /admin/providers, /admin/models, /admin/routes (extending P6-T8 admin panel). Provider form: name, kind (openai_compat/anthropic/local), endpoint, API key (masked, rotatable), headers JSON, enabled toggle. Model form: provider (dropdown), model_id, capabilities checkboxes, context tokens, max concurrency, RPM/TPM (for remote), pricing ($/Mtok in+out), data_class (local/remote). Routes: per-role tiered list with drag-to-reorder, strategy dropdown, spill_after ms, model assignment. 'Test connection' button on provider/model → POSTs a cheap validation call → shows green checkmark or red error with message. Every edit sends NOTIFY (P9-T7) and is audit-logged."
+depends_on = ["P9-T5", "P6-T8"]
+plan_sections = ["26.5", "15"]
+acceptance = "CRUD operations persist to DB; test-connection validates endpoint; masked API key (never returned to UI, only set); NOTIFY fires on every mutation; audit log records who changed what; validation: empty endpoint for non-local provider → error; embed role assigned to multiple models → warning. Unit tests for CRUD handlers + test-connection flow + integration test with mock endpoint. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P9-T9"
+phase = "P9"
+description = "Data residency enforcement (§26.6): add a `residency` column to tenants (VARCHAR, default 'allow_remote', CHECK IN ('local_only', 'allow_remote')). In Pool::acquire, filter candidate backends: if tenant.residency = 'local_only', exclude all backends with data_class = Remote. The 'spill to cloud' feature can never silently override this. Per-tenant residency is settable by super-admin only. Also add a per-document `local_only` flag (for identity_document kind per §17) — if set, the document's content is never sent to a remote provider, even if the tenant allows remote. This is enforced at the IngestPipeline level (routing the tag/embed calls) and at query time."
+depends_on = ["P9-T6", "P5-T1"]
+plan_sections = ["26.6", "17"]
+acceptance = "Tenant with local_only → acquire() never returns Remote backends; document with local_only flag → ingest uses Local backends only; tenant allow_remote + no document flag → Remote backends eligible; changing residency takes effect on next acquire() (hot-swap via routing reload). Unit tests for acquire() filtering + integration test with mock backends of both DataClasses. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P9-T10"
+phase = "P9"
+description = "Cost tracking + budget alerts (§26.6): on every LLM call (chat/embed/rerank), record usage_events (already done, P3-T5). For remote backends with pricing, multiply tokens × $/Mtok → cost, store in usage_events (add cost_micros column via migration). Per-tenant budget: add `budget_monthly_cents` to tenants (NULL = unlimited). A background check on each call: sum this month's costs → if > budget, log WARN + set Prometheus gauge `budget_exceeded`. Optional hard cap mode (TENANT_HARD_BUDGET_CAP=true) → reject calls with 429 when budget exceeded. Admin dashboard shows per-tenant spend vs budget. Alerts: Prometheus alert rule for budget > 80% and > 100%."
+depends_on = ["P9-T4", "P5-T6", "P6-T9"]
+plan_sections = ["26.6"]
+acceptance = "Remote call → cost calculated from tokens × pricing; usage_events.cost_micros populated; monthly sum under budget → allowed; over budget → WARN + gauge; hard cap mode → 429; NULL budget → unlimited; per-tenant spend visible in admin; Prometheus alert rules defined. Unit tests for cost calc + budget check + hard cap. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P9-T11"
+phase = "P9"
+description = "P9 phase integration test: (a) Mock providers: local (free) + remote (DeepSeek compat mock, $2/Mtok) + remote (Anthropic mock, $15/Mtok). (b) Tiered routing: text role → Tier 0 local (CostAsc), Tier 1 DeepSeek ($2), Tier 2 Anthropic ($15). Test: local available → used (free); local at capacity → waits spill_after → spills to DeepSeek; DeepSeek returns 429 → cooldown → next call uses Anthropic. (c) Embed role: only Tier 0 used (no spill across models — §11 lock). (d) Data residency: tenant with local_only → only local backends, even if remote is cheaper. (e) Cost tracking: calls accrue correctly, budget exceeded → 429 (hard cap mode). (f) Hot-reload: insert new provider via DB → LISTEN/NOTIFY → Pool picks it up. All use mock servers + real PgStore via testcontainers (#[ignore] in just ci). P9 PHASE COMPLETE."
+depends_on = ["P9-T1", "P9-T2", "P9-T3", "P9-T4", "P9-T5", "P9-T6", "P9-T7", "P9-T8", "P9-T9", "P9-T10"]
+plan_sections = ["26", "31"]
+acceptance = "Tier spill works; 429 cooldown works; embed never spills; local_only filters remote; costs accrue + budget enforced; hot-reload picks up DB changes; all gates green. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+# ── Phase P10 — Confidentiality hardening (§28, §24) ──────────────────────────
+#
+# P10 hardens the P8-T5 encryption bridge into a proper key hierarchy with KMS/HSM
+# backing, encrypts sensitive DB columns at rest, implements crypto-shredding for
+# GDPR-compliant deletion, and adds decrypt-access auditing. This moves the KEK
+# from an env var to a proper key management service.
+
+[[task]]
+id = "P10-T1"
+phase = "P10"
+description = "Key hierarchy: define a `KeyEncryptionKey` trait in kb-core: `async fn wrap(&self, plaintext: &[u8]) -> anyhow::Result<Vec<u8>>` + `async fn unwrap(&self, ciphertext: &[u8]) -> anyhow::Result<Vec<u8>>`. Two impls: (a) `FileKek` — loads a 256-bit key from a file path (env BLOB_KEK_FILE), used for dev/test/single-node (the P8-T5 bridge). (b) `VaultTransitKek` — uses HashiCorp Vault's Transit engine (or cloud KMS: AWS KMS, GCP KMS) for wrap/unwrap — the KEK never enters the app process. Also define a `DataKey` struct: `{ id: Uuid, wrapped_dek: Vec<u8>, kek_id: String }` for tracking which KEK wrapped each DEK (enables rotation). The KEK trait and DataKey are pure abstractions — unit-testable without real KMS. The actual KMS integration tests are #[ignore]."
+depends_on = ["P5-T3"]
+plan_sections = ["28", "24"]
+acceptance = "FileKek wrap → unwrap returns original; different FileKek → unwrap fails; VaultTransitKek calls correct API path (mock Vault server in tests); DataKey serializes/deserializes; KEK rotation: unwrap with old KEK, re-wrap with new KEK (no bulk re-encryption). Unit tests for FileKek + mock Vault. just ci green."
+status = "todo"
+checkpoint = true
+notes = "CHECKPOINT (§31.5): encryption & key handling — human must review KEK design before proceeding. The FileKek is dev-only; production keying requires KMS/HSM."
+
+[[task]]
+id = "P10-T2"
+phase = "P10"
+description = "Envelope encryption for sensitive DB columns (§28): extend the envelope pattern (P8-T5) to cover Postgres columns that contain derived plaintext. Columns to encrypt at rest: (a) `chunks.content` — the chunk text (vectors + tsv index are on encrypted volumes, LUKS). (b) `documents.summary` + `documents.user_note`. (c) Any future PII-heavy metadata fields. Use the same DEK-per-tenant model: each tenant gets a DEK (wrapped by KEK). On chunk write: encrypt content with tenant DEK → store ciphertext (base64). On read: decrypt. The search index (vectors, tsv) must stay plaintext to be queryable — it is protected at the disk layer (LUKS). This means the DB itself holds both ciphertext (content) and plaintext (search index) — the threat model is stolen DB dumps / disk theft (§28). Migration: add `content_enc` BYTEA column alongside `content` (kept for transition), with a background job to encrypt existing rows."
+depends_on = ["P10-T1", "P2-T2"]
+plan_sections = ["28"]
+acceptance = "Chunk write → content_enc populated with ciphertext; chunk read → decrypts correctly; different tenant's DEK → decrypt fails; DB dump contains ciphertext in content_enc, not plaintext; search still works (vectors + tsv unencrypted, on LUKS); migration is backward-compatible (existing plaintext content column remains until encrypted). Unit tests for encrypt/decrypt round-trip per tenant + wrong-tenant-DEK error. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P10-T3"
+phase = "P10"
+description = "Encrypted provider API keys at rest (§24, §26.5): the `providers.api_key_enc` column (P9-T5) stores API keys encrypted with the tenant's DEK (or a system-level KEK for global providers). On write (admin sets/rotates a key): encrypt plaintext key → store ciphertext in DB. On read (at call time, P9-T1): decrypt → use in memory → zeroize after use (zeroize crate). Keys are never logged (tracing filter strips Authorization headers + key fields). The `SecretRef` in P9-T4 resolves to the decrypted key at call time. Rotation: admin provides new key → old key is overwritten (no history kept in DB; key history is in the KMS audit log)."
+depends_on = ["P10-T1", "P9-T5"]
+plan_sections = ["24", "26.5"]
+acceptance = "Provider key stored as ciphertext in DB; decrypted at call time; zeroized after use; not present in logs (verify by grepping test log output); wrong KEK → decrypt fails with clear error; rotation → new key used on next call (hot-swap, no restart). Unit tests for encrypt/decrypt + zeroize + log filtering. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P10-T4"
+phase = "P10"
+description = "Crypto-shredding (§28): on tenant delete (super-admin action) or document delete, destroy the tenant/document DEK. This makes all encrypted data (B2 blobs, DB encrypted columns) irrecoverable — even from B2 immutable versions and PITR backups, which can't be selectively purged. Implementation: (a) tenant delete → DELETE the tenant's DEK from the key store (Vault/KMS or file) → data is unrecoverable. Keep a tombstone record (tenant_id, deleted_at) for audit. (b) Document delete: if per-document keys are used, delete that doc's key. If using tenant-level DEK, document delete only removes the DB row + B2 blob — crypto-shredding is at tenant granularity. (c) GDPR erasure request → tenant delete = crypto-shred. Implement as a job queue task (delete_tenant job: revoke sessions, delete DB rows, delete B2 blobs, destroy DEK, create tombstone)."
+depends_on = ["P10-T1", "P5-T1"]
+plan_sections = ["28"]
+acceptance = "Tenant delete job: sessions revoked, DB rows removed, B2 blobs deleted, DEK destroyed, tombstone created; after DEK destruction, B2 ciphertext is unrecoverable (verify by attempting decrypt with new KEK → fails); tombstone audit log records who + when; job is idempotent (re-running on already-deleted tenant is a no-op). Unit tests with mock KEK + mock B2. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P10-T5"
+phase = "P10"
+description = "Decrypt-access audit logging (§28, §24): every key unwrap operation (DEK unwrap, provider key decrypt) writes an audit event: `{timestamp, tenant_id, operation: 'unwrap_dek'|'unwrap_provider_key', key_id, user_id (if in session context), success: bool}`. Audit events go to a dedicated `decrypt_audit` table (immutable — no UPDATE/DELETE, append-only) AND to the tracing log at DEBUG level. The admin panel (P6-T8) gains a read-only audit log viewer. Alert: if failed unwrap count spikes (Prometheus gauge), trigger alert (possible attack or key corruption). The audit trail answers \"who accessed which keys when\" for compliance."
+depends_on = ["P10-T1", "P6-T8"]
+plan_sections = ["28", "24", "15"]
+acceptance = "Successful decrypt → audit row with success=true; wrong KEK → audit row with success=false; audit rows are append-only (verify with permissions test); admin viewer shows chronological log with filters (tenant, operation, time range); Prometheus gauge exposed. Unit tests for audit event creation + immutability. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P10-T6"
+phase = "P10"
+description = "P10 phase integration test: (a) Key hierarchy: FileKek wraps/unwraps DEK → DEK encrypts/decrypts blob + chunk content. (b) Encrypted provider key: set key → encrypted in DB → decrypted at call time → zeroized. (c) Crypto-shredding: create tenant → ingest document → verify retrievable → delete tenant → DEK destroyed → verify data unrecoverable. (d) Audit: all unwrap operations logged. (e) Foreign KEK: simulate KEK rotation (re-wrap DEK with new KEK) + verify old wrapped DEK can't be unwrapped by new KEK. All use mock KMS + real PgStore via testcontainers (#[ignore] in just ci). P10 PHASE COMPLETE."
+depends_on = ["P10-T1", "P10-T2", "P10-T3", "P10-T4", "P10-T5"]
+plan_sections = ["28", "31"]
+acceptance = "Full encrypt → store → retrieve → shred → unrecoverable cycle; provider key encrypted at rest, decrypted at call time; audit trail complete; KEK rotation works. just ci green."
+status = "todo"
+checkpoint = true
+notes = "CHECKPOINT (§31.5): encryption & key handling — full confidentiality review before merging."
+
+# ── Phase P11 — Billing & plans (§29) ─────────────────────────────────────────
+#
+# P11 integrates Stripe for SaaS billing: Checkout for signup, Customer Portal for
+# self-service, webhooks for lifecycle management, and plan-driven quota enforcement.
+# PCI stays at SAQ-A (card data never touches our servers). All Stripe calls are
+# tested against a mock Stripe server.
+
+[[task]]
+id = "P11-T1"
+phase = "P11"
+description = "Plans table + migration + seed data (§29): migration adding `plans` table (code, stripe_price, quota_bytes, token_budget, features JSONB, price_cents, currency) + columns on tenants (plan_id, stripe_customer_id, subscription_id, billing_status, current_period_end). Seed default plans: 'free' (50 MB storage, 10K tokens/mo, local-only models, 1 user), 'pro' (5 GB, 500K tokens, remote models, 5 users, $9/mo), 'team' (50 GB, 2M tokens, remote models, 20 users, $29/mo). PgStore methods: get_plan, get_plan_by_code, list_plans, update_tenant_plan, get_tenant_billing. Migration is backward-compatible (existing tenants get NULL plan = grandfathered unlimited until they subscribe)."
+depends_on = ["P0-T6", "P5-T6"]
+plan_sections = ["29"]
+acceptance = "Migration creates plans + alters tenants with new columns; seed plans inserted (idempotent — ON CONFLICT DO NOTHING); get_plan returns correct quota/features; list_plans ordered by price; existing tenants have NULL plan_id (unlimited); plan features JSONB parsed correctly. Unit tests for seed idempotency + CRUD + #[ignore] integration tests against testcontainers. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P11-T2"
+phase = "P11"
+description = "Stripe Checkout integration (§29): (a) POST /billing/checkout — authenticated, takes plan_code → looks up stripe_price from plans table → creates Stripe Checkout Session (via stripe-rs or raw HTTP to Stripe API) with success_url + cancel_url → returns {url}. (b) GET /billing/success — Stripe redirects here after payment; shows a 'setting up your account…' interstitial while the webhook (P11-T3) activates the subscription. (c) GET /billing/cancel — user cancelled at Checkout; redirect to pricing page. All Stripe HTTP calls are behind a `StripeClient` trait (mock + real impls) for deterministic testing. Stripe secret key loaded from env (STRIPE_SECRET_KEY), hot-swappable."
+depends_on = ["P11-T1", "P5-T5"]
+plan_sections = ["29"]
+acceptance = "POST /billing/checkout with plan_code='pro' → 200 + {url: 'https://checkout.stripe.com/…'}; unauthenticated → 401; invalid plan_code → 400; success page shows interstitial; cancel page redirects to pricing; Stripe key missing → 500 with clear log message. Unit tests with mock StripeClient. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P11-T3"
+phase = "P11"
+description = "Stripe webhook handler (§29): POST /stripe/webhook — verify Stripe signature (stripe-signature header, verify with webhook signing secret from STRIPE_WEBHOOK_SECRET env). Parse event type. Handle: `checkout.session.completed` (activate subscription — set tenant.plan_id, stripe_customer_id, subscription_id, billing_status='active', current_period_end), `customer.subscription.updated` (plan change → update plan_id + quota), `customer.subscription.deleted` (cancel → set billing_status='canceled', revert to free plan), `invoice.paid` (update current_period_end), `invoice.payment_failed` (→ billing_status='past_due', trigger dunning). Idempotency: store processed event_ids in `stripe_events` table, skip duplicates. Return 200 quickly (Stripe retries on non-2xx). Webhook handler is a checkpoint (§31.5)."
+depends_on = ["P11-T1"]
+plan_sections = ["29"]
+acceptance = "Valid signature → 200, event processed; invalid signature → 401; duplicate event_id → 200 (idempotent skip); checkout.session.completed → tenant gets plan + quota; payment_failed → past_due; subscription.deleted → canceled + free plan; idempotency verified with concurrent duplicate events. Unit tests with mock Stripe signature + integration test with testcontainers (#[ignore]). just ci green."
+status = "todo"
+checkpoint = true
+notes = "CHECKPOINT (§31.5): billing webhooks — signature verification + idempotency must be human-reviewed."
+
+[[task]]
+id = "P11-T4"
+phase = "P11"
+description = "Subscription lifecycle (§29): (a) Dunning: on `invoice.payment_failed`, after Stripe's Smart Retries exhaust (configurable days), set billing_status='suspended'. Suspended tenants are read-only: search works, ingest + export return 403 'Subscription suspended — update payment method'. (b) Plan upgrade/downgrade: on `customer.subscription.updated`, re-map quota immediately (proration handled by Stripe). (c) Cancellation: on `customer.subscription.deleted`, revert to free plan quota, billing_status='canceled'. (d) Admin override: super-admin can manually set billing_status + plan_id (for offline/enterprise deals). All lifecycle changes are audit-logged."
+depends_on = ["P11-T3"]
+plan_sections = ["29"]
+acceptance = "Suspended tenant → ingest returns 403 with message; search still works; upgrade → quota increases immediately; downgrade → quota decreases (existing data unaffected, but new uploads blocked at limit); cancel → free plan; admin override creates audit log. Unit tests for state machine transitions + integration test with mock webhook events. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P11-T5"
+phase = "P11"
+description = "Plan-driven quota enforcement (§29): replace P5-T6's static quota checking with plan-driven quotas. On blob upload: check tenant's plan.quota_bytes (via tenant's plan_id) → if exceeded, return 413 with upsell message ('Upgrade to Pro for more storage'). On LLM call: check plan.token_budget (or plan.features.remote_models gate) → if exceeded, return 429. Tenant with NULL plan_id = grandfathered (no quota enforcement). Plan features drive capability gates: `remote_models: true` → remote backends (P9-T9) allowed; `max_users: N` → enforce at user creation. Admin quota override: super-admin can set a per-tenant quota_override that takes precedence over the plan's quota."
+depends_on = ["P11-T1", "P5-T6", "P9-T9"]
+plan_sections = ["29", "13"]
+acceptance = "Free plan (50 MB) → upload 60 MB file → 413 with upsell; Pro plan (5 GB) → upload passes; token budget exceeded → 429; NULL plan → unlimited; feature gate: free plan → remote models disabled (P9-T9 residency); max_users: team plan (20) → 21st user creation → 403; admin override quota takes precedence. Unit tests for plan resolution + override logic. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P11-T6"
+phase = "P11"
+description = "Stripe Customer Portal (§29): (a) GET /billing/portal — creates a Stripe Customer Portal session for the authenticated tenant's stripe_customer_id → returns {url} → user is redirected. The portal handles: update payment method, view invoices, cancel subscription, change plan (if configured in Stripe dashboard). (b) POST /billing/portal (same, for HTMX button). (c) The portal return URL points back to /account. No custom billing UI needed — Stripe's hosted portal is PCI-compliant and sufficient for v1."
+depends_on = ["P11-T2"]
+plan_sections = ["29"]
+acceptance = "Authenticated tenant with stripe_customer_id → portal URL returned; no customer ID (free plan, never subscribed) → 400 with message; Stripe API error → 502 with log; portal URL is valid Stripe URL. Unit tests with mock StripeClient. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P11-T7"
+phase = "P11"
+description = "P11 phase integration test: end-to-end billing flow with mock Stripe server. (1) Seed plans (free, pro). (2) Signup → register → create Checkout session for 'pro' → mock checkout.session.completed webhook → verify tenant has pro plan + quota. (3) Payment failure: mock invoice.payment_failed → verify past_due → mock final failure → verify suspended → ingest returns 403. (4) Upgrade: mock subscription.updated from pro to team → verify plan + quota updated. (5) Cancel: mock subscription.deleted → verify canceled + free plan. (6) Idempotency: send duplicate webhook → verify no double-processing. (7) Plan quota: pro tenant uploads within 5 GB → ok; free tenant exceeds 50 MB → 413. All use mock Stripe server + real PgStore via testcontainers (#[ignore] in just ci). P11 PHASE COMPLETE."
+depends_on = ["P11-T1", "P11-T2", "P11-T3", "P11-T4", "P11-T5", "P11-T6"]
+plan_sections = ["29", "31"]
+acceptance = "Full billing lifecycle passes with mock Stripe; webhook idempotency verified; plan quotas enforced; suspended tenant gated; all gates green. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+# ── Phase P12 — Public frontend, onboarding & email (§30) ─────────────────────
+#
+# P12 builds the public-facing SaaS surface: marketing site, signup/login with email
+# verification, account/billing management, usage dashboard, API tokens, legal pages,
+# and transactional email (verification, receipts, dunning, quota alerts). This ties
+# together all previous phases into a complete product.
+
+[[task]]
+id = "P12-T1"
+phase = "P12"
+description = "Marketing pages (§30): (a) Landing page (/) — hero, value proposition, 'how it works' (3 steps: upload → auto-tag → search), social proof placeholder. (b) Pricing page (/pricing) — rendered from the plans database (P11-T1): plan name, price, quota, features list, CTA button (links to /signup?plan=X or /billing/checkout if authenticated). (c) Features page (/features) — per-filetype support matrix, hybrid search, multi-tenant, encryption, export. (d) FAQ (/faq) — common questions. All pages use the same Askama + Tailwind stack (P6-T4); marketing pages are public (no auth), with nav links to /login and /signup. Static, fast, SEO-friendly (meta tags)."
+depends_on = ["P6-T4", "P11-T1"]
+plan_sections = ["30", "12"]
+acceptance = "Landing page loads at /; pricing shows plans from DB; features page lists capabilities; FAQ answers common questions; nav has correct links for unauthenticated vs authenticated users; pages are responsive (Tailwind); meta tags present. Unit tests for template rendering + pricing-from-DB. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P12-T2"
+phase = "P12"
+description = "Signup/login flow + email verification + password reset (§30): (a) Signup page (/signup) — email, password, tenant name → POST creates tenant + admin user (reuse P5-T5 register), sends verification email (P12-T7), redirects to 'check your email' page. (b) Email verification: GET /verify?token=… → marks user.email_verified = true → redirect to /login with flash. (c) Login page (/login) — existing P5-T5 handler, with 'remember me' checkbox (sets session TTL to 30 days instead of 24h). (d) Password reset: /forgot → POST email → send reset link (P12-T7); /reset?token=… → GET shows form → POST new password → argon2 rehash. Add `email_verified BOOLEAN DEFAULT false` + `email_verify_token TEXT` + `password_reset_token TEXT` + `password_reset_expires TIMESTAMPTZ` to users table (migration)."
+depends_on = ["P5-T5", "P6-T4"]
+plan_sections = ["30", "12", "13"]
+acceptance = "Signup → tenant + user created, verification email sent; verify token → email_verified=true; unverified user can log in but sees 'verify your email' banner; password reset → token emailed → new password works; expired reset token → error; 'remember me' → 30-day session TTL. Unit tests for token generation/validation + flow handlers. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P12-T3"
+phase = "P12"
+description = "Account & billing pages (§30): (a) /account — profile (email, display name, change password form), tenant name, current plan with quota usage bar, billing status badge, 'Manage Billing' button → Stripe Customer Portal (P11-T6). (b) /account/team — list users with roles, invite button (creates user + sends invite email via P12-T7), change role, remove user (tenant-admin only). (c) /account/plan — current plan details, upgrade/downgrade options (links to /pricing or directly to Checkout). (d) /account/danger — 'Delete Account' button with confirmation modal → enqueues crypto-shredding job (P10-T4) → redirects to goodbye page."
+depends_on = ["P12-T2", "P11-T6", "P10-T4"]
+plan_sections = ["30", "13"]
+acceptance = "Account page shows profile + plan + usage bar; team management lists users with roles; invite creates user + sends email; change role respects admin-only gate; plan upgrade redirects to Checkout; delete account enqueues shred job; CSRF on all mutating actions. Unit tests for handlers + template rendering. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P12-T4"
+phase = "P12"
+description = "Usage dashboard (§30, §15): /dashboard — charts and stats from usage_events + files: (a) Storage used vs plan quota (progress bar + GB numbers). (b) Token usage this month (prompt + completion) vs plan budget, with daily breakdown bar chart. (c) Spend this month (for remote model usage) — sum of cost_micros from usage_events (P9-T10). (d) Recent activity feed: last 20 ingestions/searches with timestamps. (e) Document count, total files, total tags. All data scoped to tenant (no cross-tenant leakage). Charts rendered server-side or with a lightweight JS charting library (e.g. Chart.js from CDN, or HTMX-polled SVG). Use Askama templates for the dashboard shell + data attributes for charts."
+depends_on = ["P5-T6", "P12-T2", "P9-T10"]
+plan_sections = ["30", "15"]
+acceptance = "Dashboard loads with all stats for authenticated tenant; storage bar shows correct %; token usage chart has daily breakdown; spend shows correct $ amount; activity feed lists recent events; unauthenticated → redirect to /login; cross-tenant: tenant A's dashboard shows only A's data. Unit tests for query logic + template rendering. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P12-T5"
+phase = "P12"
+description = "API tokens for programmatic access (§30, §13): (a) /account/tokens — list existing tokens (name, last_4_chars, last_used_at, created_at), create new token (POST → returns full token once — never stored in plaintext, only SHA256 hash in DB), revoke token. (b) Bearer auth middleware: extract `Authorization: Bearer kb_tok_…` header, SHA256-hash it, lookup in `api_tokens` table (join with users/tenants for tenant context), inject AuthUser into extensions (same shape as session auth). Token has same permissions as the user who created it. (c) Migration: `api_tokens` table (id, user_id, tenant_id, name, token_hash BYTEA, last_4 CHAR(4), last_used_at, created_at, expires_at, revoked BOOL). (d) Rate limiting per token (configurable RPM, default higher for tokens since they're for automation). Token prefix `kb_tok_` for easy identification in logs (strip before hashing)."
+depends_on = ["P5-T5"]
+plan_sections = ["30", "13"]
+acceptance = "Create token → full token returned once (not recoverable later); list shows metadata only (no full token); revoke → token stops working; Bearer auth works for all API endpoints; token inherits user's tenant + role; expired token → 401; revoked token → 401; token hash is SHA256 (not plaintext in DB). Unit tests for token CRUD + Bearer middleware + rate limiting. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P12-T6"
+phase = "P12"
+description = "Legal pages (§30): (a) Terms of Service (/terms) — usage terms, account responsibilities, acceptable use. (b) Privacy Policy (/privacy) — data collected, how it's used, third-party sub-processors (B2, Stripe, email provider, any remote LLM providers), data retention. (c) DPA (Data Processing Agreement) (/dpa) — GDPR-compliant data processing terms, sub-processor list (dynamically rendered from routing table for remote providers), encryption details (§28), data residency option. (d) AUP (Acceptable Use Policy) (/aup). (e) Cookie policy (/cookies). (f) Erasure/retention statement (/retention) — crypto-shredding explanation (P10-T4). All pages are static Askama templates (no DB queries except DPA sub-processor list). These are required for a public multi-tenant service — template content is placeholder, to be finalized by the operator."
+depends_on = ["P6-T4"]
+plan_sections = ["30"]
+acceptance = "All 6 legal pages load at their routes; DPA dynamically lists sub-processors from routing table; content is reasonable placeholder (not lorem ipsum); pages are accessible without auth; linked from footer on all pages. Unit tests for route accessibility + DPA sub-processor list. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P12-T7"
+phase = "P12"
+description = "Transactional email (§30): define an `EmailProvider` trait: `async fn send(&self, to: &str, subject: &str, body_html: &str) -> anyhow::Result<()>`. Two impls: (a) `LogEmail` — logs to tracing at INFO (dev/test). (b) `ResendEmail` (or Postmark/SES) — HTTP API call with API key from env (EMAIL_PROVIDER_KEY). Wired behind a feature flag or runtime config. Email templates (Askama, HTML): verification (with token link), password reset (with token link), welcome (post-signup), invoice/receipt (Stripe invoice.paid → forward PDF or summary), payment failed/dunning, quota warning (80%, 100%), ingest failed alert, invite (team member). Emails are sent asynchronously via the job queue (enqueue send_email job → worker calls EmailProvider) so they don't block request handlers."
+depends_on = ["P12-T2", "P2-T3"]
+plan_sections = ["30"]
+acceptance = "LogEmail writes email content to log; ResendEmail sends HTTP request with correct API shape (mock server in tests); verification email contains valid token link; reset email contains valid token link; quota warning triggers at 80% and 100%; failed payment email sent; all emails enqueued as jobs (non-blocking); email job failure retries (3×) then dead-letters. Unit tests with mock email server + template rendering. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P12-T8"
+phase = "P12"
+description = "P12 phase integration test: full SaaS onboarding flow. (1) Visit landing page → pricing → signup (with plan=pro) → register → verification email sent (mock) → click verify link → email_verified. (2) Redirect to Stripe Checkout (mock) → complete → webhook activates subscription → pro plan + quota active. (3) Login → dashboard shows 0 usage → upload first file (drag-and-drop UI) → job completes → document appears in search. (4) API token: create token → use Bearer auth to search via API → works. (5) Team: invite user → they receive email → register → join tenant. (6) Billing: payment fails → past_due → dunning email → suspended → ingest blocked. (7) Delete account → crypto-shred → data unrecoverable. All use mock servers (Stripe, email) + real PgStore via testcontainers (#[ignore] in just ci). P12 PHASE COMPLETE → PROJECT COMPLETE."
+depends_on = ["P12-T1", "P12-T2", "P12-T3", "P12-T4", "P12-T5", "P12-T6", "P12-T7"]
+plan_sections = ["30", "31"]
+acceptance = "Full onboarding → checkout → first upload → search → API token → team invite → billing failure → dunning → suspension → account deletion → crypto-shred. All mock external services; all gates green. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
