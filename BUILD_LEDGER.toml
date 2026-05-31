@@ -312,8 +312,9 @@ description = "Tag canonicalization (§6.5): given raw tags from TagOutput + ten
 depends_on = ["P2-T2", "P1-T5"]
 plan_sections = ["6.5"]
 acceptance = "Exact alias match → returns existing canonical id; new tag below threshold → new canonical created + its name embedded; tag above threshold → merges with alias row; empty tags list → empty result; threshold boundary: 0.85 match merges, 0.84 creates new. Unit tests (pure logic: cosine match, alias lookup, threshold) + integration tests for DB round-trip (#[ignore]). just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
+notes = "PgStore: parse_vector_text + 5 tag methods (upsert_tag, lookup_alias, find_similar_tags, insert_tag_alias, insert_document_tags) with 9 unit + 5 #[ignore] integration tests. kb-pipeline: TagCanonicalizer with cosine_similarity, find_best_match, and canonicalize() using Arc<PgStore> + Arc<LlamaClient>. TAG_MERGE_THRESHOLD=0.85. 16 pure-logic tests + const-eval guard. Added kb-llm to workspace deps, tokio macros to scheduler. just ci green (workspace 88.47% lines)."
 
 [[task]]
 id = "P3-T4"

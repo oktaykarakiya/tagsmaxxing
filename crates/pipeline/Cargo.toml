@@ -10,6 +10,8 @@ workspace = true
 
 [dependencies]
 kb-core = { workspace = true }
+kb-store = { workspace = true }
+kb-llm = { workspace = true }
 sqlx = { workspace = true, features = ["runtime-tokio", "postgres", "chrono"] }
 anyhow = { workspace = true }
 chrono = { workspace = true }

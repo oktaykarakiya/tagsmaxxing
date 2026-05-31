@@ -1524,6 +1524,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "kb-core",
+ "kb-llm",
  "kb-store",
  "serde_json",
  "sha2",
