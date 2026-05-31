@@ -116,7 +116,7 @@ impl PgStore {
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /// Format a `Vec<f32>` into the pgvector text representation `[x1,x2,...]`.
-fn format_vector(v: &[f32]) -> String {
+pub(crate) fn format_vector(v: &[f32]) -> String {
     let mut buf = String::with_capacity(2 + v.len() * 16);
     buf.push('[');
     for (i, x) in v.iter().enumerate() {
@@ -208,17 +208,18 @@ impl Store for PgStore {
         tx.commit().await.context("failed to commit upsert_chunks")
     }
 
-    /// Hybrid (vector + keyword) search — **not yet implemented** (deferred to P4 per
-    /// the plan §8 ledger).
+    /// Hybrid (vector + keyword) search with RRF fusion and document roll-up (plan §8,
+    /// P4-T3). Tenant isolation is enforced by Postgres RLS (§13) — callers must set
+    /// `app.current_tenant` before calling.
     ///
     /// # Errors
-    /// Always returns an error indicating this method is not yet available.
+    /// Returns an error if the database is not connected or any query fails.
     async fn hybrid_search(
         &self,
-        _query: &Query,
-        _query_embedding: &[f32],
+        query: &Query,
+        query_embedding: &[f32],
     ) -> anyhow::Result<Vec<Hit>> {
-        anyhow::bail!("hybrid_search is not yet implemented (deferred to P4, plan §8)")
+        crate::hybrid_search::run_hybrid_search(self, query, query_embedding).await
     }
 }
 
@@ -624,10 +625,10 @@ mod tests {
         );
     }
 
-    // ── hybrid_search deferred ──────────────────────────────────────────
+    // ── hybrid_search without connect ───────────────────────────────────
 
     #[tokio::test]
-    async fn hybrid_search_returns_deferred_error() {
+    async fn hybrid_search_errors_before_connect() {
         let store = PgStore::new("postgres://localhost/db");
         let q = Query {
             text: "test".into(),
@@ -636,9 +637,22 @@ mod tests {
         };
         let err = store.hybrid_search(&q, &[0.1_f32; 1024]).await.unwrap_err();
         assert!(
-            err.to_string().contains("not yet implemented"),
-            "expected deferred error, got: {err}"
+            err.to_string().contains("not connected"),
+            "expected 'not connected' error, got: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn hybrid_search_top_k_zero_returns_empty() {
+        let store = PgStore::new("postgres://localhost/db");
+        let q = Query {
+            text: "test".into(),
+            filters: Default::default(),
+            top_k: 0,
+        };
+        // top_k=0 returns empty immediately (before pool check), even without connect.
+        let hits = store.hybrid_search(&q, &[0.1_f32; 1024]).await.unwrap();
+        assert!(hits.is_empty());
     }
 
     // ── parse_vector_text ─────────────────────────────────────────────────

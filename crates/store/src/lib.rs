@@ -10,6 +10,7 @@
 //!   (plan §5/§7/§13): `upsert_file`, `upsert_chunks`, and deferred `hybrid_search` (P4).
 
 pub mod blob;
+pub(crate) mod hybrid_search;
 mod migrations;
 pub mod pg_store;
 
