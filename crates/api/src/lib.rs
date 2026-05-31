@@ -14,6 +14,7 @@ pub mod cli;
 pub mod commands;
 pub mod handlers;
 pub mod middleware;
+pub mod web;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -149,9 +150,10 @@ impl AppState {
 
 // ── Router ─────────────────────────────────────────────────────────────────────
 
-/// Build the full axum [`Router`] for the API, mounted at the given `AppState`.
+/// Build the full axum [`Router`] for the API + Web UI, mounted at the given
+/// `AppState`.
 ///
-/// Route table:
+/// Route table — JSON API:
 ///
 /// | Method | Path                           | Auth? | Description                          |
 /// |--------|--------------------------------|-------|--------------------------------------|
@@ -163,10 +165,21 @@ impl AppState {
 /// | GET    | `/api/documents/:id`           | yes   | Document detail + files + tags       |
 /// | GET    | `/api/documents/:id/file/:file_id` | yes | Download a file's blob             |
 /// | GET    | `/api/jobs/:id`                | yes   | Job status                           |
+///
+/// Route table — Web UI (P6-T4):
+///
+/// | Method | Path        | Auth? | Description                     |
+/// |--------|-------------|-------|---------------------------------|
+/// | GET    | `/`         | yes   | Redirect to /login or /search   |
+/// | GET    | `/login`    | no    | Login form (HTML)               |
+/// | POST   | `/login`    | no    | Login form submission           |
+/// | GET    | `/register` | no    | Registration form (HTML)        |
+/// | POST   | `/register` | no    | Registration form submission    |
+/// | POST   | `/logout`  | yes   | Revoke session + redirect       |
 pub fn build_router(state: AppState) -> Router {
     let state = Arc::new(state);
 
-    // Public routes (no auth required).
+    // Public JSON API routes (no auth required).
     let public = Router::new()
         .route("/auth/login", post(handlers::auth::login))
         .route("/auth/register", post(handlers::auth::register));
@@ -187,8 +200,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/auth/logout", post(handlers::auth::logout))
         .layer(from_fn_with_state(state.clone(), auth_middleware));
 
-    // Merge public + protected, attach shared state.
-    public.merge(api).with_state(state)
+    // Web UI routes (P6-T4).
+    let web = web::build_web_router(state.clone());
+
+    // Merge public + protected API + Web UI, attach shared state.
+    public.merge(api).merge(web).with_state(state)
 }
 
 // ── AuthUser extractor ─────────────────────────────────────────────────────────

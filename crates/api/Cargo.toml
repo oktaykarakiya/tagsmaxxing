@@ -31,6 +31,9 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 bytes = { workspace = true }
 sqlx = { workspace = true }
+askama = { workspace = true }
+tower-http = { workspace = true, features = ["fs"] }
+rand = { workspace = true }
 
 [dev-dependencies]
 kb-mock-backend = { workspace = true }

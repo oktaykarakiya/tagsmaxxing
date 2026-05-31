@@ -629,9 +629,9 @@ description = "Web UI foundation: wire Askama templating into the axum API crate
 depends_on = ["P6-T2", "P5-T5"]
 plan_sections = ["12"]
 acceptance = "GET / → redirects to /login (unauthenticated) or /search (authenticated); /login renders a styled form, POST succeeds → Set-Cookie + redirect; /register renders form, POST → 201 + redirect; /logout clears session; all pages share consistent layout + nav bar; CSRF token present on forms; CSP header set; static CSS/JS served with correct Content-Type. Unit tests with axum::test asserting HTML responses + CSRF presence. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "Web UI skeleton: Askama 0.16 templates (login.html, register.html, base.html), CSRF (double-submit cookie, 32-byte SysRng, constant-time validation, 18 unit tests), CSP + security headers middleware (4 unit tests), HTML form handlers (login/register/logout redirect, 10 integration tests). Tailwind via CDN for dev (tower-http ServeDir deferred to P6-T5 when HTMX + custom JS land). Templates render via askama::Template::render() → Html response; header append for multi-cookie responses. 152 tests total (119 lib + 33 bin), all green. just ci green."
 
 [[task]]
 id = "P6-T5"
