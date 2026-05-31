@@ -29,7 +29,7 @@ mod tests {
     use kb_pipeline::chunker::TextChunk;
     use kb_pipeline::document_builder::DocumentBuilder;
     use kb_pipeline::embedder::ChunkEmbedder;
-    use kb_pipeline::ingest::{IngestFile, IngestPipeline};
+    use kb_pipeline::ingest::{IngestFile, IngestPipeline, IngestStore};
     use kb_pipeline::metadata_merge::MetadataMerger;
     use kb_pipeline::tag_canonicalizer::TagCanonicalizer;
     use kb_pipeline::tag_store::TagStore;
@@ -171,7 +171,7 @@ mod tests {
             tagger,
             canon,
             embedder,
-            Arc::clone(&store),
+            Arc::clone(&store) as Arc<dyn IngestStore>,
         );
 
         // ── run ───────────────────────────────────────────────────────

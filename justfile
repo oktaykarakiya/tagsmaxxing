@@ -4,12 +4,10 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
 # Minimum line coverage enforced by `just cov` (plan §31.3).
-# 83%: the IngestPipeline orchestrator (§7) + PgStore/JobQueue SQL methods add large
-# bodies of wiring/DB code that can only be exercised with a running Postgres +
-# mock LLM backends. Those paths are covered by #[ignore] integration tests
-# (testcontainers+podman). Non-DB crates all exceed 90%. Raise back to 85% when CI
-# gains a Postgres service container (P5 infra) and after the P3 e2e gate (P3-T8).
-cov_min := "83"
+# Restored to 85% after P3-T7 added comprehensive mock-backed tests for the
+# ingest pipeline. PgStore SQL methods remain covered by #[ignore] integration tests
+# (testcontainers+podman); all non-DB crates exceed 90%.
+cov_min := "85"
 
 # List available recipes.
 default:

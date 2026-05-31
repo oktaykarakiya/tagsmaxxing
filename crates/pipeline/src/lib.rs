@@ -24,5 +24,8 @@ pub mod metadata_merge;
 pub mod tag_canonicalizer;
 pub mod tag_store;
 
+pub use ingest::{
+    ExtractorRouter, IngestFile, IngestOutput, IngestPipeline, IngestStore, process_ingest_job,
+};
 pub use job_queue::{JobQueue, run_worker_pool};
 pub use tag_store::TagStore;

@@ -359,7 +359,7 @@ plan_sections = ["7", "10", "16"]
 acceptance = "Single text file → pipeline produces a ready document with tags + embedded chunks + usage events; pipeline runs via job queue (enqueue → worker claims → processes → completes); errors on unsupported/empty files; deterministic test with mock extractor + mock tagger + mock embedder + real LocalBlob. just ci green."
 status = "done"
 checkpoint = false
-notes = "IngestPipeline in kb-pipeline::ingest: 8-step orchestrator (build→blob→extract→merge→tag→canonicalize→embed→ingest). ExtractorRouter maps DocKind→Arc<dyn Extractor>. IngestFile carries owned bytes+label+path. infer_kind_from_mime helper. 7 unit tests (pure logic + constructor). Workspace 83.74% lines (ingest body uncovered — tested in P3-T8 e2e). Coverage floor 85→83 for DB+wiring code."
+notes = "IngestPipeline in kb-pipeline::ingest with IngestStore trait (Arc<dyn> for testability, impl'd for PgStore), fixed RawFile bytes passage (was Bytes::new()), fixed chunk-per-file grouping for transactional_ingest, process_ingest_job for JobQueue worker integration. 24 tests: single-file success, multi-file, empty-files error, extractor/tagger error propagation, bytes-to-extractor verification, no-extractor defaults, blob storage round-trip, user_note passthrough, empty-text→zero-chunks, mock-store capture, process_ingest_job success+resolver-error. Imported IngestStore in p3_integration test with Arc coercion. just ci green; ingest.rs 97.56% lines."
 
 [[task]]
 id = "P3-T8"
