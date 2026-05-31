@@ -529,7 +529,7 @@ plan_sections = ["13", "16"]
 acceptance = "Export creates a valid ZIP with original files + JSONL + manifest; streaming doesn't OOM on large exports; ZIP entry paths are stable (no absolute paths, no traversal); empty tenant → valid ZIP with just manifest.json; round-trip: export a tenant → import into fresh tenant → documents/files/tags/chunks match. Unit tests for JSONL/manifest generation + #[ignore] integration test for full export round-trip via testcontainers. just ci green."
 status = "done"
 checkpoint = false
-	notes = "export.rs: ExportStore trait, ExportPipeline, streaming ZIP+JSONL+manifest, process_export_job, safe_zip_path. PgStore: 7 list_* methods. 19 unit tests."
+	notes = "p5_integration.rs: 4 #[ignore] integration tests (isolation, quota, export, empty export) + 5 pure-logic smoke tests. P5 PHASE COMPLETE."
 
 [[task]]
 id = "P5-T8"
@@ -538,6 +538,6 @@ description = "P5 phase integration test: multi-tenant end-to-end. (1) Bootstrap
 depends_on = ["P5-T2", "P5-T5", "P5-T6", "P5-T7"]
 plan_sections = ["13", "31"]
 acceptance = "Multi-tenant e2e: isolation, auth, quota, and export all verified in a single test suite against real Postgres. P5 PHASE COMPLETE → generate P6 ledger. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+	notes = "p5_integration.rs: 4 #[ignore] integration tests (isolation, quota, export, empty export) + 5 pure-logic smoke tests. P5 PHASE COMPLETE."
