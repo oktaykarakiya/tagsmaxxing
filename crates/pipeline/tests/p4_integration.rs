@@ -365,11 +365,14 @@ mod tests {
 
         // Query with the distinctive keyword "Zephyr".
         let hits = pipeline
-            .retrieve(&Query {
-                text: "Zephyr".to_string(),
-                filters: QueryFilters::default(),
-                top_k: 10,
-            })
+            .retrieve(
+                1,
+                &Query {
+                    text: "Zephyr".to_string(),
+                    filters: QueryFilters::default(),
+                    top_k: 10,
+                },
+            )
             .await
             .unwrap();
 
@@ -452,11 +455,14 @@ mod tests {
 
         // Query for "cryptographic" → should favour doc 1.
         let hits = pipeline
-            .retrieve(&Query {
-                text: "cryptographic".to_string(),
-                filters: QueryFilters::default(),
-                top_k: 10,
-            })
+            .retrieve(
+                1,
+                &Query {
+                    text: "cryptographic".to_string(),
+                    filters: QueryFilters::default(),
+                    top_k: 10,
+                },
+            )
             .await
             .unwrap();
 
@@ -470,11 +476,14 @@ mod tests {
         // Query for a word matching neither document — vector search still
         // returns results (all chunks share the same embedding).
         let all_hits = pipeline
-            .retrieve(&Query {
-                text: "flibbertigibbet".to_string(),
-                filters: QueryFilters::default(),
-                top_k: 10,
-            })
+            .retrieve(
+                1,
+                &Query {
+                    text: "flibbertigibbet".to_string(),
+                    filters: QueryFilters::default(),
+                    top_k: 10,
+                },
+            )
             .await
             .unwrap();
         assert!(
@@ -545,14 +554,17 @@ mod tests {
 
         // Filter for "finance" tag.
         let hits = pipeline
-            .retrieve(&Query {
-                text: String::new(), // vector-only + tag filter
-                filters: QueryFilters {
-                    tags: vec!["finance".to_string()],
-                    ..Default::default()
+            .retrieve(
+                1,
+                &Query {
+                    text: String::new(), // vector-only + tag filter
+                    filters: QueryFilters {
+                        tags: vec!["finance".to_string()],
+                        ..Default::default()
+                    },
+                    top_k: 10,
                 },
-                top_k: 10,
-            })
+            )
             .await
             .unwrap();
 
@@ -569,14 +581,17 @@ mod tests {
 
         // Filter for a non-existent tag → empty results.
         let empty = pipeline
-            .retrieve(&Query {
-                text: String::new(),
-                filters: QueryFilters {
-                    tags: vec!["nonexistent_tag_xyz".to_string()],
-                    ..Default::default()
+            .retrieve(
+                1,
+                &Query {
+                    text: String::new(),
+                    filters: QueryFilters {
+                        tags: vec!["nonexistent_tag_xyz".to_string()],
+                        ..Default::default()
+                    },
+                    top_k: 10,
                 },
-                top_k: 10,
-            })
+            )
             .await
             .unwrap();
         assert!(
@@ -620,8 +635,8 @@ mod tests {
             top_k: 10,
         };
 
-        let hits1 = pipeline.retrieve(&query).await.unwrap();
-        let hits2 = pipeline.retrieve(&query).await.unwrap();
+        let hits1 = pipeline.retrieve(1, &query).await.unwrap();
+        let hits2 = pipeline.retrieve(1, &query).await.unwrap();
 
         assert_eq!(
             hits1.len(),
@@ -694,11 +709,14 @@ mod tests {
         let (pipeline, mock) = build_retrieval_pipeline(store_arc).await;
 
         let hits = pipeline
-            .retrieve(&Query {
-                text: "hash functions".to_string(),
-                filters: QueryFilters::default(),
-                top_k: 10,
-            })
+            .retrieve(
+                1,
+                &Query {
+                    text: "hash functions".to_string(),
+                    filters: QueryFilters::default(),
+                    top_k: 10,
+                },
+            )
             .await
             .unwrap();
 
@@ -759,11 +777,14 @@ mod tests {
         let (pipeline, mock) = build_retrieval_pipeline(store_arc).await;
 
         let hits = pipeline
-            .retrieve(&Query {
-                text: "Rust programming".to_string(),
-                filters: QueryFilters::default(),
-                top_k: 10,
-            })
+            .retrieve(
+                1,
+                &Query {
+                    text: "Rust programming".to_string(),
+                    filters: QueryFilters::default(),
+                    top_k: 10,
+                },
+            )
             .await
             .unwrap();
 
@@ -821,11 +842,14 @@ mod tests {
 
         // Empty query text → keyword search skipped, vector only.
         let hits = pipeline
-            .retrieve(&Query {
-                text: String::new(),
-                filters: QueryFilters::default(),
-                top_k: 10,
-            })
+            .retrieve(
+                1,
+                &Query {
+                    text: String::new(),
+                    filters: QueryFilters::default(),
+                    top_k: 10,
+                },
+            )
             .await
             .unwrap();
 
@@ -870,11 +894,14 @@ mod tests {
 
         // Request only 2 results.
         let hits = pipeline
-            .retrieve(&Query {
-                text: "document".to_string(),
-                filters: QueryFilters::default(),
-                top_k: 2,
-            })
+            .retrieve(
+                1,
+                &Query {
+                    text: "document".to_string(),
+                    filters: QueryFilters::default(),
+                    top_k: 2,
+                },
+            )
             .await
             .unwrap();
 
@@ -886,11 +913,14 @@ mod tests {
 
         // top_k=0 returns empty (handled before any DB query).
         let empty = pipeline
-            .retrieve(&Query {
-                text: "document".to_string(),
-                filters: QueryFilters::default(),
-                top_k: 0,
-            })
+            .retrieve(
+                1,
+                &Query {
+                    text: "document".to_string(),
+                    filters: QueryFilters::default(),
+                    top_k: 0,
+                },
+            )
             .await
             .unwrap();
         assert!(empty.is_empty(), "top_k=0 must return empty results");

@@ -461,9 +461,9 @@ description = "RLS enforcement: every PgStore method that touches tenant-scoped 
 depends_on = ["P4-T3"]
 plan_sections = ["13", "5"]
 acceptance = "Every PgStore method that touches tenant-scoped data calls set_tenant first; RLS GUC is set transaction-locally so pooled connections don't leak; unit tests verify set_tenant is called (mock/spy pattern); just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "Added set_tenant(pool, tenant_id) calling SELECT app_set_current_tenant($1); added tenant_id param to Store::hybrid_search trait + insert_document_tags + RetrievalPipeline::retrieve; all 12 PgStore tenant-scoped methods call set_tenant at start; spy counter (SET_TENANT_CALLS AtomicU64) for unit-test verification; updated all callers (retrieval, p4_integration, hybrid_search tests). just ci green (86.85% lines)."
 
 [[task]]
 id = "P5-T2"

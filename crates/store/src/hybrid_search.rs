@@ -18,7 +18,7 @@ use kb_core::query::{ChunkHit, Hit, Query, RRF_K, document_rollup, rrf_fuse};
 use sqlx::postgres::PgPool;
 use sqlx::{Postgres, QueryBuilder};
 
-use crate::pg_store::PgStore;
+use crate::pg_store::{PgStore, set_tenant};
 
 /// One row returned by the vector or keyword chunk query. Field names match the
 /// column aliases in the SELECT list so `sqlx::FromRow` works without `#[sqlx(rename)]`.
@@ -35,11 +35,15 @@ struct ChunkRow {
 
 /// Execute the full hybrid search pipeline (plan §8 steps 3–4).
 ///
+/// Sets `app.current_tenant` before querying so Postgres RLS (§13) enforces
+/// tenant isolation.
+///
 /// # Errors
 /// Returns an error if the database is not connected, tag resolution fails, or any
 /// query fails.
 pub(crate) async fn run_hybrid_search(
     store: &PgStore,
+    tenant_id: i64,
     query: &Query,
     query_embedding: &[f32],
 ) -> anyhow::Result<Vec<Hit>> {
@@ -49,6 +53,7 @@ pub(crate) async fn run_hybrid_search(
     }
 
     let pool = store.pool()?;
+    set_tenant(&pool, tenant_id).await?;
 
     // Resolve tag names to IDs if a tag filter is set. We resolve once and reuse for
     // both queries.
@@ -794,7 +799,7 @@ mod tests {
                 top_k: 5,
             };
             // Query embedding also spikes at position 0 → high cosine similarity.
-            let hits = store.hybrid_search(&q, &spike_vector(0)).await?;
+            let hits = store.hybrid_search(1, &q, &spike_vector(0)).await?;
             assert!(!hits.is_empty(), "expected at least one hit");
             assert_eq!(hits[0].document_id, doc_id);
             assert_eq!(hits[0].file_id, file_id);
@@ -830,7 +835,7 @@ mod tests {
                 filters: Default::default(),
                 top_k: 5,
             };
-            let hits = store.hybrid_search(&q, &spike_vector(0)).await?;
+            let hits = store.hybrid_search(1, &q, &spike_vector(0)).await?;
             assert!(!hits.is_empty(), "keyword search should find 'brown fox'");
             let found = hits.iter().any(|h| h.document_id == doc_id);
             assert!(found, "document {doc_id} not found in keyword results");
@@ -864,7 +869,7 @@ mod tests {
                 filters: Default::default(),
                 top_k: 5,
             };
-            let hits = store.hybrid_search(&q, &spike_vector(0)).await?;
+            let hits = store.hybrid_search(1, &q, &spike_vector(0)).await?;
             assert!(!hits.is_empty(), "vector-only search should return results");
             Ok(())
         })
@@ -913,7 +918,7 @@ mod tests {
                 },
                 top_k: 10,
             };
-            let hits = store.hybrid_search(&q, &spike_vector(0)).await?;
+            let hits = store.hybrid_search(1, &q, &spike_vector(0)).await?;
             // Only the image document should appear.
             for hit in &hits {
                 assert_eq!(
@@ -958,7 +963,7 @@ mod tests {
                 },
                 top_k: 10,
             };
-            let hits = store.hybrid_search(&q, &spike_vector(0)).await?;
+            let hits = store.hybrid_search(1, &q, &spike_vector(0)).await?;
             assert!(!hits.is_empty(), "tag filter should match the tagged doc");
             assert_eq!(hits[0].document_id, doc_id);
 
@@ -971,7 +976,7 @@ mod tests {
                 },
                 top_k: 10,
             };
-            let hits2 = store.hybrid_search(&q2, &spike_vector(0)).await?;
+            let hits2 = store.hybrid_search(1, &q2, &spike_vector(0)).await?;
             assert!(hits2.is_empty(), "non-existent tag should yield no results");
 
             Ok(())
@@ -1020,7 +1025,7 @@ mod tests {
                 },
                 top_k: 10,
             };
-            let hits = store.hybrid_search(&q, &spike_vector(0)).await?;
+            let hits = store.hybrid_search(1, &q, &spike_vector(0)).await?;
             assert!(
                 hits.is_empty(),
                 "old document should be filtered out by date"
@@ -1035,7 +1040,7 @@ mod tests {
                 },
                 top_k: 10,
             };
-            let hits2 = store.hybrid_search(&q2, &spike_vector(0)).await?;
+            let hits2 = store.hybrid_search(1, &q2, &spike_vector(0)).await?;
             assert!(
                 hits2.is_empty(),
                 "old document should be filtered out by date"
@@ -1050,7 +1055,7 @@ mod tests {
                 },
                 top_k: 10,
             };
-            let hits3 = store.hybrid_search(&q3, &spike_vector(0)).await?;
+            let hits3 = store.hybrid_search(1, &q3, &spike_vector(0)).await?;
             assert!(
                 !hits3.is_empty(),
                 "document within date range should appear"
@@ -1101,7 +1106,7 @@ mod tests {
             query_vec[0] = 0.7;
             query_vec[1] = 0.7;
 
-            let hits = store.hybrid_search(&q, &query_vec).await?;
+            let hits = store.hybrid_search(1, &q, &query_vec).await?;
             assert_eq!(
                 hits.len(),
                 1,
@@ -1142,7 +1147,7 @@ mod tests {
                 top_k: 3,
             };
             let query_vec = spike_vector(0); // best match for doc 0
-            let hits = store.hybrid_search(&q, &query_vec).await?;
+            let hits = store.hybrid_search(1, &q, &query_vec).await?;
             assert!(hits.len() <= 3, "should respect top_k limit");
             Ok(())
         })

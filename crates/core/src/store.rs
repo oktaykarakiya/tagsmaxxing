@@ -26,6 +26,9 @@ pub trait Store: Send + Sync {
     /// Run hybrid (vector + keyword) search, fuse with RRF, and roll results up to documents
     /// (deduplicated), each carrying its winning chunk's deep-link provenance (plan §8).
     ///
+    /// `tenant_id` is required so the implementation can set the `app.current_tenant`
+    /// Postgres GUC before querying tenant-scoped tables (RLS enforcement, plan §13).
+    ///
     /// `query_embedding` is the embedded form of `query.text`, produced by the caller
     /// (usually via [`crate::embedder::Embedder::embed`] with [`crate::embedder::EmbedKind::Query`]).
     /// Its dimension must match the embedder configured in the schema.
@@ -34,6 +37,7 @@ pub trait Store: Send + Sync {
     /// Returns an error if the database operation fails.
     async fn hybrid_search(
         &self,
+        tenant_id: i64,
         query: &Query,
         query_embedding: &[f32],
     ) -> anyhow::Result<Vec<Hit>>;

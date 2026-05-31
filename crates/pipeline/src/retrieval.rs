@@ -65,6 +65,10 @@ impl RetrievalPipeline {
 
     /// Run the full 4-step retrieval flow for a single query.
     ///
+    /// `tenant_id` is passed through to [`Store::hybrid_search`] so the
+    /// implementation can set the `app.current_tenant` Postgres GUC for
+    /// Row-Level Security enforcement (plan §13, P5-T1).
+    ///
     /// 1. Embeds `query.text` with [`EmbedKind::Query`].
     /// 2. Calls [`Store::hybrid_search`] with the query and embedding.
     /// 3. If results are non-empty, passes the snippet of each hit to the
@@ -72,29 +76,19 @@ impl RetrievalPipeline {
     /// 4. Returns the top `query.top_k` hits ordered by reranker score
     ///    descending.
     ///
-    /// # Tenant isolation
-    ///
-    /// Tenant scoping is enforced by the Postgres **Row-Level Security**
-    /// policies configured in the schema (plan §5, §13): every query
-    /// against tenant-scoped tables carries a `current_setting('app.
-    /// current_tenant')` check. No explicit `tenant_id` filter is needed
-    /// at this layer — RLS guarantees that a misconfigured or forgotten
-    /// filter cannot leak rows across tenants.
-    ///
-    /// The caller is responsible for setting `app.current_tenant` on the
-    /// database session before calling this method (typically via the API
-    /// layer's per-request middleware, plan §13).
-    ///
     /// # Errors
     ///
     /// Returns an error if embedding or search fails. An empty result set
     /// is not an error — it returns an empty `Vec<Hit>`.
-    pub async fn retrieve(&self, query: &Query) -> anyhow::Result<Vec<Hit>> {
+    pub async fn retrieve(&self, tenant_id: i64, query: &Query) -> anyhow::Result<Vec<Hit>> {
         // 1. Embed query text.
         let query_embedding = self.embedder.embed_query(&query.text).await?;
 
         // 2. Hybrid search (vector + keyword) with RRF fusion + document rollup.
-        let hits = self.store.hybrid_search(query, &query_embedding).await?;
+        let hits = self
+            .store
+            .hybrid_search(tenant_id, query, &query_embedding)
+            .await?;
 
         // 3. Rerank: if there are results, rescore them against the query.
         if hits.is_empty() {
@@ -177,6 +171,7 @@ mod tests {
 
         async fn hybrid_search(
             &self,
+            _tenant_id: i64,
             _query: &Query,
             _query_embedding: &[f32],
         ) -> anyhow::Result<Vec<Hit>> {
@@ -231,6 +226,7 @@ mod tests {
 
         async fn hybrid_search(
             &self,
+            _tenant_id: i64,
             query: &Query,
             query_embedding: &[f32],
         ) -> anyhow::Result<Vec<Hit>> {
@@ -407,7 +403,7 @@ mod tests {
         let (pipeline, mock) = build_test_pipeline(store_hits, rerank_scores).await;
         let q = query("test query", 10);
 
-        let results = pipeline.retrieve(&q).await.unwrap();
+        let results = pipeline.retrieve(1, &q).await.unwrap();
 
         assert_eq!(results.len(), 3);
         // Sorted by reranker score descending.
@@ -442,7 +438,7 @@ mod tests {
 
         // Request only top-2.
         let q = query("top 2 query", 2);
-        let results = pipeline.retrieve(&q).await.unwrap();
+        let results = pipeline.retrieve(1, &q).await.unwrap();
 
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].document_id, 1);
@@ -460,7 +456,7 @@ mod tests {
         let (pipeline, mock) = build_test_pipeline(store_hits, rerank_scores).await;
         let q = query("query", 0);
 
-        let results = pipeline.retrieve(&q).await.unwrap();
+        let results = pipeline.retrieve(1, &q).await.unwrap();
         assert!(results.is_empty());
 
         mock.shutdown().await;
@@ -473,7 +469,7 @@ mod tests {
         let (pipeline, mock) = build_test_pipeline(vec![], vec![]).await;
         let q = query("nothing matches", 10);
 
-        let results = pipeline.retrieve(&q).await.unwrap();
+        let results = pipeline.retrieve(1, &q).await.unwrap();
         assert!(results.is_empty());
         // Reranker is never called when hits are empty (verified by the
         // MockStore returning empty — if reranker were called with empty docs,
@@ -494,7 +490,7 @@ mod tests {
             build_test_pipeline_with_recording_reranker(store_hits, vec![0.7, 0.3]).await;
 
         let q = query("find me", 10);
-        let _results = pipeline.retrieve(&q).await.unwrap();
+        let _results = pipeline.retrieve(1, &q).await.unwrap();
 
         let docs = pipeline.recording_reranker.last_docs();
         // Verify the reranker received the snippets.
@@ -570,7 +566,7 @@ mod tests {
         let (pipeline, mock) = build_test_pipeline_with_failing_reranker(store_hits).await;
         let q = query("query", 10);
 
-        let err = pipeline.retrieve(&q).await.unwrap_err();
+        let err = pipeline.retrieve(1, &q).await.unwrap_err();
         assert!(
             err.to_string().contains("simulated reranker failure"),
             "expected reranker failure error, got: {err}"
@@ -639,7 +635,7 @@ mod tests {
             RetrievalPipeline::new(embedder, Arc::clone(&store) as Arc<dyn Store>, reranker);
 
         let q = query("find this text", 10);
-        let _results = pipeline.retrieve(&q).await.unwrap();
+        let _results = pipeline.retrieve(1, &q).await.unwrap();
 
         // Verify the store received the correct query text and embedding.
         assert_eq!(store.last_query_text().as_deref(), Some("find this text"));
@@ -667,7 +663,7 @@ mod tests {
         let (pipeline, mock) = build_test_pipeline(store_hits, rerank_scores).await;
         let q = query("key", 10);
 
-        let results = pipeline.retrieve(&q).await.unwrap();
+        let results = pipeline.retrieve(1, &q).await.unwrap();
         assert_eq!(results.len(), 1);
 
         let hit = &results[0];
@@ -701,7 +697,7 @@ mod tests {
             build_test_pipeline_with_mismatched_reranker(store_hits, rerank_scores).await;
         let q = query("mismatch", 10);
 
-        let err = pipeline.retrieve(&q).await.unwrap_err();
+        let err = pipeline.retrieve(1, &q).await.unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("reranker returned"),
@@ -762,7 +758,7 @@ mod tests {
         let (pipeline, mock) = build_test_pipeline(store_hits, rerank_scores).await;
         let q = query("tied", 10);
 
-        let results = pipeline.retrieve(&q).await.unwrap();
+        let results = pipeline.retrieve(1, &q).await.unwrap();
         assert_eq!(results.len(), 3);
         // All scores are now 0.5.
         for hit in &results {
