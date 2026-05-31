@@ -809,6 +809,7 @@ fn hit_struct_has_deep_link_fields() {
         file_id: 7,
         page_no: Some(3),
         ts_offset: Some(12.5),
+        kind: None,
     };
     assert_eq!(hit.document_id, 42);
     assert!(hit.score > 0.0);

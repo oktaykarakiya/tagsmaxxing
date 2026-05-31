@@ -260,6 +260,7 @@ mod tests {
             file_id: 42,
             page_no: Some(3),
             ts_offset: Some(12.5),
+            kind: None,
         };
         assert_eq!(hit.document_id, 1);
         assert!((hit.score - 0.95).abs() < 0.001);

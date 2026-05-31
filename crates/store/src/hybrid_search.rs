@@ -30,6 +30,8 @@ struct ChunkRow {
     ts_offset: Option<f64>,
     content: String,
     title: Option<String>,
+    #[sqlx(default)]
+    kind: Option<String>,
 }
 
 /// Execute the full hybrid search pipeline (plan §8 steps 3–4).
@@ -106,6 +108,7 @@ pub(crate) async fn run_hybrid_search(
                 ts_offset: row.ts_offset,
                 snippet: row.content.clone(),
                 title: row.title.clone(),
+                kind: row.kind.clone(),
             })
         })
         .collect();
@@ -201,7 +204,7 @@ async fn execute_keyword_query(
 fn build_base_select() -> QueryBuilder<'static, Postgres> {
     QueryBuilder::new(
         "SELECT c.id AS chunk_id, c.document_id, c.file_id, \
-         c.page_no, c.ts_offset, c.content, d.title \
+         c.page_no, c.ts_offset, c.content, d.title, d.kind \
          FROM chunks c \
          JOIN documents d ON c.document_id = d.id \
          WHERE TRUE",
@@ -486,6 +489,7 @@ mod tests {
                 ts_offset: None,
                 content: "snippet A".into(),
                 title: Some("Doc Ten".into()),
+                kind: Some("document".into()),
             },
             ChunkRow {
                 chunk_id: 2,
@@ -495,6 +499,7 @@ mod tests {
                 ts_offset: None,
                 content: "snippet B better".into(),
                 title: Some("Doc Ten".into()),
+                kind: Some("document".into()),
             },
             ChunkRow {
                 chunk_id: 3,
@@ -504,6 +509,7 @@ mod tests {
                 ts_offset: Some(30.0),
                 content: "audio snippet".into(),
                 title: None,
+                kind: Some("audio".into()),
             },
         ];
 
@@ -524,6 +530,7 @@ mod tests {
                     ts_offset: row.ts_offset,
                     snippet: row.content.clone(),
                     title: row.title.clone(),
+                    kind: row.kind.clone(),
                 })
             })
             .collect();
@@ -572,6 +579,7 @@ mod tests {
             ts_offset: None,
             content: "present".into(),
             title: None,
+            kind: None,
         }];
         let chunk_map: HashMap<i64, &ChunkRow> = rows.iter().map(|r| (r.chunk_id, r)).collect();
 
@@ -589,6 +597,7 @@ mod tests {
                     ts_offset: row.ts_offset,
                     snippet: row.content.clone(),
                     title: row.title.clone(),
+                    kind: row.kind.clone(),
                 })
             })
             .collect();
@@ -614,6 +623,7 @@ mod tests {
                     ts_offset: row.ts_offset,
                     snippet: row.content.clone(),
                     title: row.title.clone(),
+                    kind: row.kind.clone(),
                 })
             })
             .collect();
@@ -635,6 +645,7 @@ mod tests {
                 ts_offset: None,
                 content: format!("chunk {i}"),
                 title: Some(format!("Doc {}", i * 10)),
+                kind: Some("document".into()),
             })
             .collect();
 
@@ -654,6 +665,7 @@ mod tests {
                     ts_offset: row.ts_offset,
                     snippet: row.content.clone(),
                     title: row.title.clone(),
+                    kind: row.kind.clone(),
                 })
             })
             .collect();

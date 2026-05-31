@@ -310,6 +310,7 @@ mod tests {
             file_id,
             page_no,
             ts_offset: None,
+            kind: None,
         }
     }
 
@@ -657,6 +658,7 @@ mod tests {
             file_id: 777,
             page_no: Some(3),
             ts_offset: Some(15.0),
+            kind: None,
         }];
         let rerank_scores = vec![0.75];
 

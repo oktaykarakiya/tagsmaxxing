@@ -640,9 +640,9 @@ description = "Web UI — search page (§12): single search bar, async results l
 depends_on = ["P6-T4", "P6-T2"]
 plan_sections = ["12", "8"]
 acceptance = "Search for 'invoice' → HTMX swaps in results with snippets; filter by kind=image → only image documents returned; filter by tag → only tagged docs; empty results → CTA; unauthenticated → redirect to /login; CSRF token validated on POST; results deep-link to document detail page. Unit tests asserting HTML fragments + integration test with mock RetrievalPipeline. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "Search page (GET /search) + HTMX fragment (POST /search) with kind checkboxes, tag filter, deep-link provenance, kind badges, empty-state CTA. Added kind to Hit/ChunkHit/ChunkRow/SearchHit, threaded through SQL→API→templates. 13 new tests (8 handler + 5 pure-logic). Date-range filter deferred. just ci green."
 
 [[task]]
 id = "P6-T6"

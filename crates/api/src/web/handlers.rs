@@ -1,5 +1,5 @@
-//! Web UI route handlers: login page, register page, logout, and the root
-//! redirect (`GET /` → `/login` or `/search`).
+//! Web UI route handlers: login page, register page, logout, root redirect,
+//! and the search page with HTMX results (P6-T5).
 //!
 //! These handlers render Askama templates and return HTML responses. CSRF
 //! tokens are generated or validated on every request. Auth-related actions
@@ -15,6 +15,12 @@
 //! corresponding JSON handler. Responses are 303 redirects:
 //! - Success → `GET /search`
 //! - Failure → back to the form with an error message.
+//!
+//! # Search (P6-T5)
+//!
+//! `GET /search` renders the full search page with an empty-state illustration.
+//! `POST /search` receives an HTMX form submission, validates CSRF, runs the
+//! retrieval pipeline, and returns an HTML fragment swapped into `#results`.
 
 use std::sync::Arc;
 
@@ -31,7 +37,9 @@ use crate::AuthUser;
 use crate::handlers::auth::{LoginRequest, RegisterRequest};
 
 use super::csrf;
-use super::templates::{LoginPage, RegisterPage};
+use super::templates::{
+    KindFilter, LoginPage, RegisterPage, SearchPage, SearchResultHit, SearchResultsPartial,
+};
 
 // ── Form data types (deserialized from application/x-www-form-urlencoded) ──
 
@@ -59,6 +67,29 @@ pub struct RegisterForm {
     pub email: String,
     /// Plaintext password.
     pub password: String,
+}
+
+// ── Form data types (deserialized from application/x-www-form-urlencoded) ──
+
+/// HTML form data for the HTMX search form (P6-T5).
+///
+/// `kind` is a comma-separated string (matching the JSON API convention).
+/// The HTML template uses JavaScript to collect checked checkbox values into
+/// a hidden field with this name, because `serde_urlencoded` cannot handle
+/// `kind=image&kind=document` (duplicate field names) as a `Vec<String>`.
+#[derive(Debug, Deserialize)]
+pub struct SearchForm {
+    /// Hidden CSRF token.
+    pub csrf_token: String,
+    /// Search query text.
+    #[serde(default)]
+    pub q: String,
+    /// Selected kind(s), comma-separated (e.g. "image,document").
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// Tag filter text, comma-separated.
+    #[serde(default)]
+    pub tag: Option<String>,
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -313,6 +344,200 @@ pub async fn logout_web(
     }
 }
 
+// ── GET /search ─────────────────────────────────────────────────────────────────
+
+/// `GET /search` — render the search page.
+///
+/// Shows the search bar, filter controls, and an empty-state illustration.
+/// The search form uses HTMX (`hx-post="/search"`) to submit searches and swap
+/// results into the `#results` container without a full page reload.
+pub async fn search_page(State(state): State<Arc<AppState>>) -> Result<Response, StatusCode> {
+    let token = csrf::generate_csrf_token().map_err(|e| {
+        tracing::error!(error = %e, "failed to generate CSRF token");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let kind_filters = build_kind_filters(&[]);
+
+    let page = SearchPage {
+        csrf_token: token.clone(),
+        query: String::new(),
+        kind_filters,
+        selected_tags: String::new(),
+        hits: Vec::new(),
+    };
+
+    let mut resp = render_ok(&page);
+    resp.headers_mut().insert(
+        axum::http::header::SET_COOKIE,
+        csrf::csrf_cookie_value(&token, state.session_ttl, state.secure_cookies),
+    );
+
+    Ok(resp)
+}
+
+// ── POST /search (HTMX fragment) ────────────────────────────────────────────────
+
+/// `POST /search` — execute a search and return the results as an HTML fragment.
+///
+/// This handler is called by HTMX when the search form is submitted. It validates
+/// the CSRF token, runs the retrieval pipeline, and renders a
+/// [`SearchResultsPartial`] fragment that HTMX swaps into the `#results` container.
+///
+/// If the pipeline is not configured or the search fails, an error fragment is returned.
+pub async fn search_submit(
+    State(state): State<Arc<AppState>>,
+    Extension(auth_user): Extension<AuthUser>,
+    headers: HeaderMap,
+    Form(form): Form<SearchForm>,
+) -> Response {
+    // ── Validate CSRF ────────────────────────────────────────────────────────
+    if let Err((status, _msg)) = csrf::validate_csrf(&headers, &form.csrf_token) {
+        let partial = SearchResultsPartial {
+            hits: Vec::new(),
+            query: form.q,
+        };
+        return render_template(&partial, status);
+    }
+
+    // ── Validate input ───────────────────────────────────────────────────────
+    let query_text = form.q.trim().to_string();
+    if query_text.is_empty() {
+        // Empty query → return the initial empty state.
+        let partial = SearchResultsPartial {
+            hits: Vec::new(),
+            query: query_text,
+        };
+        return render_ok(&partial);
+    }
+
+    // ── Ensure pipeline is configured ────────────────────────────────────────
+    let retrieval = match state.retrieval_pipeline.as_ref() {
+        Some(r) => r,
+        None => {
+            tracing::error!("search_submit: retrieval pipeline not configured");
+            let partial = SearchResultsPartial {
+                hits: Vec::new(),
+                query: query_text,
+            };
+            return render_template(&partial, StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+
+    // ── Resolve filters ──────────────────────────────────────────────────────
+    let kind_strs: Vec<&str> = form
+        .kind
+        .as_deref()
+        .map(|s| {
+            s.split(',')
+                .map(|p| p.trim())
+                .filter(|p| !p.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    let kinds: Vec<kb_core::kind::DocKind> = kind_strs
+        .iter()
+        .filter_map(|k| std::str::FromStr::from_str(k).ok())
+        .collect();
+
+    let tags: Vec<String> = form
+        .tag
+        .as_deref()
+        .map(|s| {
+            s.split(',')
+                .map(|p| p.trim().to_string())
+                .filter(|t| !t.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // ── Build query + run pipeline ───────────────────────────────────────────
+    let query = kb_core::query::Query {
+        text: query_text.clone(),
+        filters: kb_core::query::QueryFilters {
+            kinds,
+            tags,
+            ..Default::default()
+        },
+        top_k: 20, // web UI shows more results
+    };
+
+    let hits = match retrieval.retrieve(auth_user.tenant_id, &query).await {
+        Ok(h) => h,
+        Err(e) => {
+            tracing::warn!(error = %e, "search failed");
+            let partial = SearchResultsPartial {
+                hits: Vec::new(),
+                query: query_text,
+            };
+            return render_template(&partial, StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+
+    let result_hits: Vec<SearchResultHit> = hits
+        .into_iter()
+        .map(|h| SearchResultHit {
+            document_id: h.document_id,
+            score: h.score,
+            title: h.title,
+            snippet: h.snippet,
+            file_id: h.file_id,
+            page_no: h.page_no,
+            ts_offset: h.ts_offset,
+            kind: h.kind,
+        })
+        .collect();
+
+    let partial = SearchResultsPartial {
+        hits: result_hits,
+        query: query_text,
+    };
+
+    render_ok(&partial)
+}
+
+// ── Kind filter helpers ────────────────────────────────────────────────────────
+
+/// Build the list of kind filter checkboxes for the search sidebar.
+///
+/// Each known [`DocKind`] is listed with its wire string, a human-readable label,
+/// and whether it is currently selected.
+fn build_kind_filters(selected: &[String]) -> Vec<KindFilter> {
+    kb_core::kind::DocKind::all()
+        .iter()
+        .map(|k| {
+            let value = k.as_str().to_string();
+            KindFilter {
+                label: kind_label(&value),
+                selected: selected.contains(&value),
+                value,
+            }
+        })
+        .collect()
+}
+
+/// Human-readable label for a [`DocKind`] wire string.
+fn kind_label(kind: &str) -> String {
+    match kind {
+        "document" => "Docs".into(),
+        "image" => "Images".into(),
+        "audio" => "Audio".into(),
+        "video" => "Video".into(),
+        "identity_document" => "ID Docs".into(),
+        "code" => "Code".into(),
+        "archive" => "Archives".into(),
+        "binary" => "Binaries".into(),
+        other => {
+            // Capitalize the first letter as a fallback.
+            let mut chars = other.chars();
+            match chars.next() {
+                Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        }
+    }
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -348,7 +573,7 @@ mod tests {
         ))
     }
 
-    /// Full web router for integration tests.
+    /// Full web router for integration tests (includes search routes, P6-T5).
     fn web_router(state: Arc<AppState>) -> axum::Router {
         // Public pages (no auth).
         let public = axum::Router::new()
@@ -358,6 +583,7 @@ mod tests {
         // Protected pages (auth required).
         let protected = axum::Router::new()
             .route("/", get(root_redirect))
+            .route("/search", get(search_page).post(search_submit))
             .route("/logout", post(logout_web))
             .layer(axum::middleware::from_fn_with_state(
                 state.clone(),
@@ -368,6 +594,106 @@ mod tests {
             .merge(protected)
             .layer(axum::middleware::from_fn(security_headers_middleware))
             .with_state(state)
+    }
+
+    /// Build a mock-backed `RetrievalPipeline` for search tests.
+    ///
+    /// Returns a controlled pipeline that returns the given hits and rerank scores.
+    async fn build_mock_retrieval(
+        hits: Vec<kb_core::query::Hit>,
+        scores: Vec<f32>,
+    ) -> (kb_pipeline::RetrievalPipeline, kb_mock_backend::MockBackend) {
+        use kb_core::reranker::Reranker;
+        use kb_core::role::Role;
+        use kb_core::store::Store;
+        use kb_llm::LlamaClient;
+        use kb_mock_backend::MockBackend;
+        use kb_pipeline::embedder::ChunkEmbedder;
+        use kb_scheduler::{Backend, Pool};
+        use reqwest::Client;
+
+        let mock = MockBackend::start().await;
+        let base_url = mock.url("/v1");
+        let backend = Arc::new(Backend::new(
+            "mock-web-search",
+            base_url,
+            vec![Role::Embed],
+            0,
+            4,
+        ));
+        let pool = Pool::new(vec![backend], Duration::from_secs(5));
+        let llm = Arc::new(LlamaClient::new(
+            pool,
+            Client::new(),
+            0,
+            0,
+            Duration::from_millis(200),
+        ));
+        let embedder = Arc::new(ChunkEmbedder::new(llm, "test-model".into(), 3));
+
+        // Mock Store returning controlled hits.
+        struct MockStore {
+            hits: Vec<kb_core::query::Hit>,
+        }
+        #[async_trait::async_trait]
+        impl Store for MockStore {
+            async fn upsert_file(&self, _rec: &kb_core::file::FileRecord) -> anyhow::Result<i64> {
+                anyhow::bail!("mock: only hybrid_search is used")
+            }
+            async fn upsert_chunks(
+                &self,
+                _file_id: i64,
+                _chunks: &[kb_core::chunk::Chunk],
+            ) -> anyhow::Result<()> {
+                anyhow::bail!("mock: only hybrid_search is used")
+            }
+            async fn hybrid_search(
+                &self,
+                _tenant_id: i64,
+                _query: &kb_core::query::Query,
+                _query_embedding: &[f32],
+            ) -> anyhow::Result<Vec<kb_core::query::Hit>> {
+                Ok(self.hits.clone())
+            }
+        }
+
+        // Mock Reranker returning controlled scores.
+        struct MockReranker {
+            scores: Vec<f32>,
+        }
+        #[async_trait::async_trait]
+        impl Reranker for MockReranker {
+            async fn rerank(&self, _query: &str, _docs: &[String]) -> anyhow::Result<Vec<f32>> {
+                Ok(self.scores.clone())
+            }
+        }
+
+        let store: Arc<dyn Store> = Arc::new(MockStore { hits });
+        let reranker: Arc<dyn Reranker> = Arc::new(MockReranker { scores });
+
+        let pipeline = kb_pipeline::RetrievalPipeline::new(embedder, store, reranker);
+        (pipeline, mock)
+    }
+
+    /// Build a `Hit` for use in mock store returns.
+    fn make_hit(
+        doc_id: i64,
+        score: f32,
+        snippet: &str,
+        file_id: i64,
+        page_no: Option<i32>,
+        kind: Option<&str>,
+    ) -> kb_core::query::Hit {
+        kb_core::query::Hit {
+            document_id: doc_id,
+            score,
+            title: Some(format!("Doc {doc_id}")),
+            snippet: snippet.to_string(),
+            file_id,
+            page_no,
+            ts_offset: None,
+            kind: kind.map(String::from),
+        }
     }
 
     // ── GET /login tests ────────────────────────────────────────────────────
@@ -605,5 +931,453 @@ mod tests {
             .any(|c| c.contains("__Host-csrf=") && c.contains("Max-Age=0"));
         assert!(has_session_clear, "logout must clear session cookie");
         assert!(has_csrf_clear, "logout must clear CSRF cookie");
+    }
+
+    // ── GET /search tests ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn get_search_returns_html_with_csrf() {
+        let state = test_state();
+        let router = web_router(state.clone());
+
+        // Authenticate.
+        let token = state
+            .session_store
+            .create(1, 42, UserRole::Member, Duration::from_secs(3600))
+            .await
+            .unwrap();
+
+        let req = axum::http::Request::builder()
+            .uri("/search")
+            .header("Cookie", format!("__Host-session={token}"))
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let ct = resp
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(ct.contains("text/html"), "search page must return HTML");
+
+        let has_csrf = resp
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .any(|h| h.to_str().unwrap_or("").contains("__Host-csrf="));
+        assert!(has_csrf, "search page must set CSRF cookie");
+
+        let body = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+        let body_str = std::str::from_utf8(&body).unwrap();
+        assert!(
+            body_str.contains("csrf_token"),
+            "search page must contain CSRF hidden field"
+        );
+        assert!(body_str.contains("hx-post"), "search page must use HTMX");
+    }
+
+    #[tokio::test]
+    async fn get_search_unauthenticated_returns_401() {
+        let state = test_state();
+        let router = web_router(state);
+
+        let req = axum::http::Request::builder()
+            .uri("/search")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn search_page_has_security_headers() {
+        let state = test_state();
+        let token = state
+            .session_store
+            .create(1, 42, UserRole::Member, Duration::from_secs(3600))
+            .await
+            .unwrap();
+        let router = web_router(state);
+
+        let req = axum::http::Request::builder()
+            .uri("/search")
+            .header("Cookie", format!("__Host-session={token}"))
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(resp.headers().contains_key("content-security-policy"));
+        assert!(resp.headers().contains_key("x-content-type-options"));
+    }
+
+    // ── POST /search tests (HTMX fragments) ────────────────────────────────
+
+    #[tokio::test]
+    async fn search_submit_unauthenticated_returns_401() {
+        let state = test_state();
+        let router = web_router(state);
+
+        let body = "csrf_token=fake&q=test";
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/search")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn search_submit_no_csrf_cookie_returns_403() {
+        let state = test_state();
+        let token = state
+            .session_store
+            .create(1, 42, UserRole::Member, Duration::from_secs(3600))
+            .await
+            .unwrap();
+        let router = web_router(state);
+
+        // Sending a csrf_token in the form body but no __Host-csrf cookie.
+        let body = "csrf_token=fake123&q=hello";
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/search")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .header("Cookie", format!("__Host-session={token}"))
+            .body(Body::from(body))
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn search_submit_empty_query_returns_empty_state() {
+        let state = test_state();
+        // Generate a valid CSRF token and set it as a cookie.
+        let csrf_token = csrf::generate_csrf_token().unwrap();
+        let token = state
+            .session_store
+            .create(1, 42, UserRole::Member, Duration::from_secs(3600))
+            .await
+            .unwrap();
+        let router = web_router(state);
+
+        let body = format!("csrf_token={csrf_token}&q=+++"); // whitespace-only
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/search")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .header(
+                "Cookie",
+                format!("__Host-session={token}; __Host-csrf={csrf_token}"),
+            )
+            .body(Body::from(body))
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+        let body_str = std::str::from_utf8(&body).unwrap();
+        assert!(
+            body_str.contains("No results found") || body_str.contains("get started"),
+            "empty query should show empty state; got: {body_str}"
+        );
+    }
+
+    #[tokio::test]
+    async fn search_submit_pipeline_not_configured_returns_500_fragment() {
+        let state = test_state();
+        let csrf_token = csrf::generate_csrf_token().unwrap();
+        let token = state
+            .session_store
+            .create(1, 42, UserRole::Member, Duration::from_secs(3600))
+            .await
+            .unwrap();
+        let router = web_router(state);
+
+        let body = format!("csrf_token={csrf_token}&q=meaningful+query");
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/search")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .header(
+                "Cookie",
+                format!("__Host-session={token}; __Host-csrf={csrf_token}"),
+            )
+            .body(Body::from(body))
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+
+        // Pipeline not configured → 500 status but still returns an HTML fragment.
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn search_submit_with_results_returns_fragment() {
+        let hits = vec![
+            make_hit(
+                10,
+                0.95,
+                "matching snippet A",
+                100,
+                Some(1),
+                Some("document"),
+            ),
+            make_hit(20, 0.72, "matching snippet B", 200, Some(2), Some("image")),
+        ];
+        let (pipeline, mock) = build_mock_retrieval(hits, vec![0.95, 0.72]).await;
+
+        // Build state with the mock pipeline.
+        let session_store: Arc<dyn SessionStore> = Arc::new(InMemorySessionStore::new());
+        let pg_store = Arc::new(PgStore::new("postgres://localhost/test?sslmode=disable"));
+        let state = Arc::new(
+            AppState::new(
+                session_store,
+                pg_store,
+                Some(Duration::from_secs(3600)),
+                false,
+            )
+            .with_retrieval_pipeline(Arc::new(pipeline)),
+        );
+
+        let csrf_token = csrf::generate_csrf_token().unwrap();
+        let token = state
+            .session_store
+            .create(1, 42, UserRole::Member, Duration::from_secs(3600))
+            .await
+            .unwrap();
+        let router = web_router(state);
+
+        let body = format!("csrf_token={csrf_token}&q=test+query");
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/search")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .header(
+                "Cookie",
+                format!("__Host-session={token}; __Host-csrf={csrf_token}"),
+            )
+            .body(Body::from(body))
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+        let body_str = std::str::from_utf8(&body).unwrap();
+
+        // Verify result count and content.
+        assert!(
+            body_str.contains("2 result"),
+            "should show result count; got: {body_str}"
+        );
+        assert!(
+            body_str.contains("matching snippet A"),
+            "should contain first snippet; got: {body_str}"
+        );
+        assert!(
+            body_str.contains("Doc 10"),
+            "should contain first doc title; got: {body_str}"
+        );
+        // Kind badges.
+        assert!(
+            body_str.contains("document") || body_str.contains("image"),
+            "should have kind badges; got: {body_str}"
+        );
+
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn search_submit_empty_results_renders_cta() {
+        let (pipeline, mock) = build_mock_retrieval(vec![], vec![]).await;
+
+        let session_store: Arc<dyn SessionStore> = Arc::new(InMemorySessionStore::new());
+        let pg_store = Arc::new(PgStore::new("postgres://localhost/test?sslmode=disable"));
+        let state = Arc::new(
+            AppState::new(
+                session_store,
+                pg_store,
+                Some(Duration::from_secs(3600)),
+                false,
+            )
+            .with_retrieval_pipeline(Arc::new(pipeline)),
+        );
+
+        let csrf_token = csrf::generate_csrf_token().unwrap();
+        let token = state
+            .session_store
+            .create(1, 42, UserRole::Member, Duration::from_secs(3600))
+            .await
+            .unwrap();
+        let router = web_router(state);
+
+        let body = format!("csrf_token={csrf_token}&q=nonexistent");
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/search")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .header(
+                "Cookie",
+                format!("__Host-session={token}; __Host-csrf={csrf_token}"),
+            )
+            .body(Body::from(body))
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+        let body_str = std::str::from_utf8(&body).unwrap();
+        assert!(
+            body_str.contains("No results found"),
+            "empty results should show no-results state; got: {body_str}"
+        );
+
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn search_submit_with_kind_tag_filters() {
+        let hits = vec![make_hit(1, 0.8, "photo match", 10, Some(1), Some("image"))];
+        let (pipeline, mock) = build_mock_retrieval(hits, vec![0.9]).await;
+
+        let session_store: Arc<dyn SessionStore> = Arc::new(InMemorySessionStore::new());
+        let pg_store = Arc::new(PgStore::new("postgres://localhost/test?sslmode=disable"));
+        let state = Arc::new(
+            AppState::new(
+                session_store,
+                pg_store,
+                Some(Duration::from_secs(3600)),
+                false,
+            )
+            .with_retrieval_pipeline(Arc::new(pipeline)),
+        );
+
+        let csrf_token = csrf::generate_csrf_token().unwrap();
+        let token = state
+            .session_store
+            .create(1, 42, UserRole::Member, Duration::from_secs(3600))
+            .await
+            .unwrap();
+        let router = web_router(state);
+
+        // Send kind as comma-separated (simulating the hidden field filled by JS)
+        // and tag as a simple string.
+        let body = format!("csrf_token={csrf_token}&q=photo&kind=image&tag=vacation");
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/search")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .header(
+                "Cookie",
+                format!("__Host-session={token}; __Host-csrf={csrf_token}"),
+            )
+            .body(Body::from(body))
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        mock.shutdown().await;
+    }
+
+    #[test]
+    fn search_form_deserialization() {
+        // Single kind, with tag.
+        let body = "csrf_token=abc123&q=photo&kind=image&tag=vacation";
+        let form: SearchForm = serde_urlencoded::from_str(body).unwrap();
+        assert_eq!(form.csrf_token, "abc123");
+        assert_eq!(form.q, "photo");
+        assert_eq!(form.kind.as_deref(), Some("image"));
+        assert_eq!(form.tag.as_deref(), Some("vacation"));
+
+        // Without kind/tag.
+        let body2 = "csrf_token=abc123&q=photo";
+        let form2: SearchForm = serde_urlencoded::from_str(body2).unwrap();
+        assert_eq!(form2.csrf_token, "abc123");
+        assert_eq!(form2.q, "photo");
+        assert!(form2.kind.is_none());
+        assert!(form2.tag.is_none());
+
+        // Comma-separated kinds (as the JS-hidden field sends them).
+        let body3 = "csrf_token=abc&q=test&kind=image,document";
+        let form3: SearchForm = serde_urlencoded::from_str(body3).unwrap();
+        assert_eq!(form3.kind.as_deref(), Some("image,document"));
+
+        // Empty string kind (all checkboxes unchecked).
+        let body4 = "csrf_token=x&q=query&kind=";
+        let form4: SearchForm = serde_urlencoded::from_str(body4).unwrap();
+        assert_eq!(form4.kind.as_deref(), Some(""));
+    }
+
+    // ── kind_label pure-logic tests ─────────────────────────────────────────
+
+    #[test]
+    fn kind_label_returns_readable_strings() {
+        assert_eq!(kind_label("document"), "Docs");
+        assert_eq!(kind_label("image"), "Images");
+        assert_eq!(kind_label("audio"), "Audio");
+        assert_eq!(kind_label("video"), "Video");
+        assert_eq!(kind_label("identity_document"), "ID Docs");
+        assert_eq!(kind_label("code"), "Code");
+        assert_eq!(kind_label("archive"), "Archives");
+        assert_eq!(kind_label("binary"), "Binaries");
+    }
+
+    #[test]
+    fn kind_label_unknown_falls_back_to_capitalized() {
+        assert_eq!(kind_label("unknown"), "Unknown");
+        assert_eq!(kind_label("x"), "X");
+        assert_eq!(kind_label(""), "");
+    }
+
+    // ── build_kind_filters pure-logic tests ────────────────────────────────
+
+    #[test]
+    fn build_kind_filters_all_present() {
+        let filters = build_kind_filters(&[]);
+        // All 8 DocKind variants must be present.
+        assert_eq!(filters.len(), kb_core::kind::DocKind::all().len());
+        // None selected initially.
+        assert!(filters.iter().all(|f| !f.selected));
+    }
+
+    #[test]
+    fn build_kind_filters_selected() {
+        let selected = vec!["image".to_string(), "code".to_string()];
+        let filters = build_kind_filters(&selected);
+        let img = filters
+            .iter()
+            .find(|f| f.value == "image")
+            .expect("image filter present");
+        assert!(img.selected);
+        let code = filters
+            .iter()
+            .find(|f| f.value == "code")
+            .expect("code filter present");
+        assert!(code.selected);
+        let doc = filters
+            .iter()
+            .find(|f| f.value == "document")
+            .expect("document filter present");
+        assert!(!doc.selected);
+    }
+
+    #[test]
+    fn build_kind_filters_values_match_doc_kind() {
+        let filters = build_kind_filters(&[]);
+        for k in kb_core::kind::DocKind::all() {
+            assert!(
+                filters.iter().any(|f| f.value == k.as_str()),
+                "kind filter missing for {}",
+                k.as_str()
+            );
+        }
     }
 }

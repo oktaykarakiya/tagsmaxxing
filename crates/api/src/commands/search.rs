@@ -257,6 +257,7 @@ mod tests {
             file_id: 42,
             page_no: Some(3),
             ts_offset: None,
+            kind: None,
         };
         print_hit(1, &hit); // should not panic
     }
@@ -271,6 +272,7 @@ mod tests {
             file_id: 7,
             page_no: None,
             ts_offset: Some(12.5),
+            kind: None,
         };
         print_hit(2, &hit); // should not panic
     }
@@ -285,6 +287,7 @@ mod tests {
             file_id: 1,
             page_no: Some(1),
             ts_offset: None,
+            kind: None,
         };
         print_hit(1, &hit); // should not panic, snippet truncated
     }

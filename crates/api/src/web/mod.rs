@@ -4,6 +4,7 @@
 //! This module provides the server-rendered Web UI (plan §12) using:
 //! - **Askama** for type-safe Jinja-like template rendering
 //! - **Tailwind CSS** (CDN) for styling
+//! - **HTMX** for async partial updates (search results, P6-T5)
 //! - **CSRF tokens** on all mutating forms (double-submit cookie pattern)
 //! - **Security headers** (CSP, X-Content-Type-Options, X-Frame-Options, etc.)
 //!
@@ -41,6 +42,8 @@ pub(crate) mod templates;
 /// | GET    | `/register` | no    | Registration form (HTML)        |
 /// | POST   | `/register` | no    | Registration form submission    |
 /// | POST   | `/logout`  | yes   | Revoke session, redirect        |
+/// | GET    | `/search`   | yes   | Search page (P6-T5)             |
+/// | POST   | `/search`   | yes   | HTMX search fragment (P6-T5)    |
 pub(crate) fn build_web_router(
     state: std::sync::Arc<crate::AppState>,
 ) -> axum::Router<std::sync::Arc<crate::AppState>> {
@@ -61,6 +64,10 @@ pub(crate) fn build_web_router(
     // Protected web routes (auth required).
     let protected = axum::Router::new()
         .route("/", get(handlers::root_redirect))
+        .route(
+            "/search",
+            get(handlers::search_page).post(handlers::search_submit),
+        )
         .route("/logout", post(handlers::logout_web))
         .layer(from_fn_with_state(
             std::sync::Arc::clone(&state),

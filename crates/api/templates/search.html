@@ -1,0 +1,136 @@
+{% extends "base.html" %}
+
+{% block title %}Search{% endblock %}
+
+{% block head_extra %}
+<script src="https://unpkg.com/htmx.org@2.0.4"></script>
+<script>
+  // Sync kind-filter checkboxes into the hidden form field.
+  // Called on checkbox change and on form submit (before HTMX serializes).
+  function syncKindFilter() {
+    const vals = [];
+    document.querySelectorAll('.kind-cb:checked').forEach(function(el) {
+      vals.push(el.dataset.kindValue);
+    });
+    document.getElementById('kind-hidden').value = vals.join(',');
+  }
+</script>
+{% endblock %}
+
+{% block content %}
+<div class="min-h-screen flex flex-col">
+    {# ── Navigation bar ──────────────────────────────────────────────────── #}
+    <nav class="bg-white shadow-sm border-b border-gray-200">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between h-14 items-center">
+                <span class="text-lg font-semibold text-indigo-600">Local KB</span>
+                <div class="flex items-center space-x-4">
+                    <a href="/search" class="text-sm text-gray-700 hover:text-indigo-600">Search</a>
+                    <form method="post" action="/logout" class="inline">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                        <button type="submit" class="text-sm text-gray-500 hover:text-red-600">
+                            Log out
+                        </button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    {# ── Search bar ─────────────────────────────────────────────────────── #}
+    <div class="bg-indigo-50 border-b border-indigo-100">
+        <div class="max-w-4xl mx-auto px-4 py-8">
+            <form id="search-form"
+                  hx-post="/search"
+                  hx-target="#results"
+                  hx-trigger="submit"
+                  hx-indicator="#search-spinner"
+                  hx-swap="innerHTML"
+                  onsubmit="syncKindFilter()">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <div class="flex gap-2">
+                    <input type="search"
+                           name="q"
+                           value="{{ query }}"
+                           placeholder="Search your documents…"
+                           autofocus
+                           autocomplete="off"
+                           class="flex-1 rounded-lg border border-gray-300 px-4 py-3 text-gray-900 placeholder-gray-400 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/30 text-base">
+                    <button type="submit"
+                            class="rounded-lg bg-indigo-600 px-6 py-3 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 transition">
+                        Search
+                    </button>
+                </div>
+
+                {# ── Filters (P6-T5) ─────────────────────────────────────── #}
+                <div class="mt-3 flex flex-wrap items-center gap-4 text-sm">
+                    {# Kind filter checkboxes (JS-controlled; values synced to hidden field) #}
+                    <fieldset class="flex flex-wrap gap-2">
+                        <legend class="sr-only">Document kind</legend>
+                        {% for kf in kind_filters %}
+                        <label class="inline-flex items-center gap-1 cursor-pointer rounded-md border px-2.5 py-1 text-xs font-medium
+                                      {% if kf.selected %}
+                                      border-indigo-300 bg-indigo-50 text-indigo-700
+                                      {% else %}
+                                      border-gray-200 bg-white text-gray-600 hover:border-gray-300
+                                      {% endif %}">
+                            <input type="checkbox"
+                                   class="kind-cb h-3.5 w-3.5 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                                   data-kind-value="{{ kf.value }}"
+                                   {% if kf.selected %}checked{% endif %}
+                                   onchange="syncKindFilter(); htmx.trigger('#search-form', 'submit');">
+                            {{ kf.label }}
+                        </label>
+                        {% endfor %}
+                        {# Hidden field: checkbox values are joined by JS into this field #}
+                        <input type="hidden" name="kind" id="kind-hidden" value="">
+                    </fieldset>
+
+                    {# Tag filter #}
+                    <div class="flex items-center gap-1.5">
+                        <label for="tag-filter" class="text-xs text-gray-500">Tags:</label>
+                        <input type="text"
+                               id="tag-filter"
+                               name="tag"
+                               value="{{ selected_tags }}"
+                               placeholder="comma-separated"
+                               hx-post="/search"
+                               hx-target="#results"
+                               hx-include="#search-form"
+                               hx-trigger="keyup changed delay:500ms"
+                               hx-indicator="#search-spinner"
+                               class="w-40 rounded-md border border-gray-200 px-2 py-1 text-xs text-gray-700 placeholder-gray-400 focus:border-indigo-400 focus:outline-none focus:ring-1 focus:ring-indigo-400">
+                    </div>
+                </div>
+
+                {# Loading spinner (hidden by default, shown during HTMX requests) #}
+                <div id="search-spinner" class="htmx-indicator mt-2 text-xs text-gray-400">
+                    Searching…
+                </div>
+            </form>
+        </div>
+    </div>
+
+    {# ── Results container ──────────────────────────────────────────────── #}
+    <div id="results" class="flex-1 max-w-4xl mx-auto px-4 py-6 w-full">
+        {% if !query.is_empty() %}
+            {% include "search_results.html" %}
+        {% else %}
+            {# Initial empty state — shown when the page loads without a query #}
+            <div class="flex flex-col items-center justify-center py-20 text-center">
+                <div class="rounded-full bg-indigo-50 p-6 mb-4">
+                    <svg class="h-12 w-12 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                              d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                    </svg>
+                </div>
+                <h3 class="text-lg font-semibold text-gray-700 mb-1">Find anything, instantly</h3>
+                <p class="text-sm text-gray-500 max-w-sm">
+                    Search across all your files — documents, images, audio, video, code, and more.
+                    Type a query above to get started.
+                </p>
+            </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

@@ -59,6 +59,8 @@ pub struct SearchHit {
     page_no: Option<i32>,
     /// Seconds offset for audio/video chunks.
     ts_offset: Option<f64>,
+    /// Document kind string (e.g. "document", "image"), if available.
+    kind: Option<String>,
 }
 
 /// Successful search response.
@@ -176,6 +178,7 @@ pub async fn search(
             file_id: h.file_id,
             page_no: h.page_no,
             ts_offset: h.ts_offset,
+            kind: h.kind,
         })
         .collect();
 
@@ -305,6 +308,7 @@ mod tests {
             file_id,
             page_no: Some(page),
             ts_offset: None,
+            kind: None,
         }
     }
 

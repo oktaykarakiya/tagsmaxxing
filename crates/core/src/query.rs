@@ -49,6 +49,9 @@ pub struct Hit {
     pub page_no: Option<i32>,
     /// Seconds offset of the winning chunk for audio/video, if applicable.
     pub ts_offset: Option<f64>,
+    /// Document [`DocKind`](crate::kind::DocKind) as the database string,
+    /// if available from the search query.
+    pub kind: Option<String>,
 }
 
 // ── ChunkHit — intermediate between DB search and document rollup ────────────
@@ -76,6 +79,9 @@ pub struct ChunkHit {
     pub snippet: String,
     /// Document title, if set.
     pub title: Option<String>,
+    /// Document [`DocKind`](crate::kind::DocKind) as the database string,
+    /// if available from the search query.
+    pub kind: Option<String>,
 }
 
 // ── RRF fusion + document rollup ─────────────────────────────────────────────
@@ -149,6 +155,7 @@ pub fn document_rollup(chunk_hits: &[ChunkHit]) -> Vec<Hit> {
             file_id: ch.file_id,
             page_no: ch.page_no,
             ts_offset: ch.ts_offset,
+            kind: ch.kind.clone(),
         })
         .collect();
 
@@ -319,6 +326,7 @@ mod tests {
             ts_offset: None,
             snippet: snippet.to_string(),
             title: Some(format!("Doc {document_id}")),
+            kind: Some("document".to_string()),
         }
     }
 
@@ -427,6 +435,7 @@ mod tests {
             ts_offset: Some(12.5),
             snippet: "audio snippet".into(),
             title: None,
+            kind: Some("audio".into()),
         }];
         let hits = document_rollup(&chunks);
 
@@ -445,6 +454,7 @@ mod tests {
             ts_offset: None,
             snippet: "s".into(),
             title: None,
+            kind: Some("document".into()),
         }];
         let hits = document_rollup(&chunks);
         assert_eq!(hits[0].title, None);
