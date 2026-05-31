@@ -14,7 +14,8 @@ use std::time::Duration;
 use anyhow::Context;
 use async_trait::async_trait;
 use chrono::Utc;
-use kb_core::session::{Session, SessionStore, generate_session_token};
+use kb_core::session::{Session, SessionInfo, SessionStore, generate_session_token};
+use kb_core::user::UserRole;
 use sqlx::PgPool;
 use tokio::sync::RwLock;
 
@@ -59,13 +60,20 @@ impl Default for InMemorySessionStore {
 
 #[async_trait]
 impl SessionStore for InMemorySessionStore {
-    async fn create(&self, tenant_id: i64, user_id: i64, ttl: Duration) -> anyhow::Result<String> {
+    async fn create(
+        &self,
+        tenant_id: i64,
+        user_id: i64,
+        user_role: UserRole,
+        ttl: Duration,
+    ) -> anyhow::Result<String> {
         let token = generate_session_token()?;
         let now = Utc::now();
         let session = Session {
             id: token.clone(),
             tenant_id,
             user_id,
+            user_role,
             expires_at: now
                 + chrono::Duration::from_std(ttl)
                     .map_err(|e| anyhow::anyhow!("invalid TTL: {e}"))?,
@@ -75,7 +83,7 @@ impl SessionStore for InMemorySessionStore {
         Ok(token)
     }
 
-    async fn validate(&self, token: &str) -> anyhow::Result<Option<(i64, i64)>> {
+    async fn validate(&self, token: &str) -> anyhow::Result<Option<SessionInfo>> {
         let guard = self.sessions.read().await;
         let session = match guard.get(token) {
             Some(s) => s,
@@ -84,7 +92,11 @@ impl SessionStore for InMemorySessionStore {
         if session.expires_at <= Utc::now() {
             return Ok(None);
         }
-        Ok(Some((session.tenant_id, session.user_id)))
+        Ok(Some(SessionInfo {
+            tenant_id: session.tenant_id,
+            user_id: session.user_id,
+            user_role: session.user_role,
+        }))
     }
 
     async fn extend(&self, token: &str, ttl: Duration) -> anyhow::Result<()> {
@@ -140,18 +152,25 @@ impl PgSessionStore {
 
 #[async_trait]
 impl SessionStore for PgSessionStore {
-    async fn create(&self, tenant_id: i64, user_id: i64, ttl: Duration) -> anyhow::Result<String> {
+    async fn create(
+        &self,
+        tenant_id: i64,
+        user_id: i64,
+        user_role: UserRole,
+        ttl: Duration,
+    ) -> anyhow::Result<String> {
         let token = generate_session_token()?;
         let now = Utc::now();
         let ttl_secs = ttl.as_secs_f64();
         // Use INTERVAL arithmetic so the database clock is authoritative.
         sqlx::query(
-            "INSERT INTO sessions (id, tenant_id, user_id, expires_at, created_at)
-             VALUES ($1, $2, $3, $4 + make_interval(secs => $5), $4)",
+            "INSERT INTO sessions (id, tenant_id, user_id, user_role, expires_at, created_at)
+             VALUES ($1, $2, $3, $4, $5 + make_interval(secs => $6), $5)",
         )
         .bind(&token)
         .bind(tenant_id)
         .bind(user_id)
+        .bind(user_role.as_str())
         .bind(now)
         .bind(ttl_secs)
         .execute(&self.pool)
@@ -160,16 +179,36 @@ impl SessionStore for PgSessionStore {
         Ok(token)
     }
 
-    async fn validate(&self, token: &str) -> anyhow::Result<Option<(i64, i64)>> {
-        let row: Option<(i64, i64)> = sqlx::query_as(
-            "SELECT tenant_id, user_id FROM sessions
+    async fn validate(&self, token: &str) -> anyhow::Result<Option<SessionInfo>> {
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            tenant_id: i64,
+            user_id: i64,
+            user_role: String,
+        }
+
+        let row: Option<Row> = sqlx::query_as(
+            "SELECT tenant_id, user_id, user_role FROM sessions
              WHERE id = $1 AND expires_at > now()",
         )
         .bind(token)
         .fetch_optional(&self.pool)
         .await
         .context("failed to query sessions table")?;
-        Ok(row)
+
+        match row {
+            Some(r) => {
+                let user_role = r.user_role.parse::<UserRole>().with_context(|| {
+                    format!("invalid user_role in sessions table: {}", r.user_role)
+                })?;
+                Ok(Some(SessionInfo {
+                    tenant_id: r.tenant_id,
+                    user_id: r.user_id,
+                    user_role,
+                }))
+            }
+            None => Ok(None),
+        }
     }
 
     async fn extend(&self, token: &str, ttl: Duration) -> anyhow::Result<()> {
@@ -221,12 +260,28 @@ mod tests {
         Duration::from_secs(1)
     }
 
+    fn role() -> UserRole {
+        UserRole::Member
+    }
+
+    fn admin_role() -> UserRole {
+        UserRole::Admin
+    }
+
+    fn info(tenant_id: i64, user_id: i64, role: UserRole) -> Option<SessionInfo> {
+        Some(SessionInfo {
+            tenant_id,
+            user_id,
+            user_role: role,
+        })
+    }
+
     // ── create ────────────────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn inmem_create_returns_64_char_hex_token() {
         let store = InMemorySessionStore::new();
-        let token = store.create(1, 42, ttl()).await.unwrap();
+        let token = store.create(1, 42, role(), ttl()).await.unwrap();
         assert_eq!(token.len(), 64);
         assert!(token.chars().all(|c| c.is_ascii_hexdigit()));
     }
@@ -234,16 +289,16 @@ mod tests {
     #[tokio::test]
     async fn inmem_create_tokens_are_unique() {
         let store = InMemorySessionStore::new();
-        let t1 = store.create(1, 1, ttl()).await.unwrap();
-        let t2 = store.create(1, 1, ttl()).await.unwrap();
+        let t1 = store.create(1, 1, role(), ttl()).await.unwrap();
+        let t2 = store.create(1, 1, role(), ttl()).await.unwrap();
         assert_ne!(t1, t2);
     }
 
     #[tokio::test]
     async fn inmem_create_different_tenants() {
         let store = InMemorySessionStore::new();
-        let t1 = store.create(10, 100, ttl()).await.unwrap();
-        let t2 = store.create(20, 200, ttl()).await.unwrap();
+        let t1 = store.create(10, 100, role(), ttl()).await.unwrap();
+        let t2 = store.create(20, 200, role(), ttl()).await.unwrap();
         assert_ne!(t1, t2);
         assert_eq!(store.len().await, 2);
     }
@@ -251,11 +306,11 @@ mod tests {
     // ── validate ──────────────────────────────────────────────────────────────
 
     #[tokio::test]
-    async fn inmem_validate_returns_ids_for_valid_session() {
+    async fn inmem_validate_returns_info_for_valid_session() {
         let store = InMemorySessionStore::new();
-        let token = store.create(5, 99, ttl()).await.unwrap();
+        let token = store.create(5, 99, admin_role(), ttl()).await.unwrap();
         let result = store.validate(&token).await.unwrap();
-        assert_eq!(result, Some((5, 99)));
+        assert_eq!(result, info(5, 99, UserRole::Admin));
     }
 
     #[tokio::test]
@@ -271,7 +326,7 @@ mod tests {
     #[tokio::test]
     async fn inmem_validate_returns_none_for_expired_session() {
         let store = InMemorySessionStore::new();
-        let token = store.create(1, 2, short_ttl()).await.unwrap();
+        let token = store.create(1, 2, role(), short_ttl()).await.unwrap();
         // Wait for the session to expire.
         tokio::time::sleep(Duration::from_millis(1100)).await;
         let result = store.validate(&token).await.unwrap();
@@ -281,7 +336,7 @@ mod tests {
     #[tokio::test]
     async fn inmem_validate_returns_none_for_revoked_session() {
         let store = InMemorySessionStore::new();
-        let token = store.create(1, 2, ttl()).await.unwrap();
+        let token = store.create(1, 2, role(), ttl()).await.unwrap();
         store.revoke(&token).await.unwrap();
         let result = store.validate(&token).await.unwrap();
         assert_eq!(result, None);
@@ -293,13 +348,13 @@ mod tests {
     async fn inmem_extend_bumps_expiry() {
         let store = InMemorySessionStore::new();
         // Create with a very short TTL.
-        let token = store.create(1, 2, short_ttl()).await.unwrap();
+        let token = store.create(1, 2, role(), short_ttl()).await.unwrap();
         // Extend to a long TTL.
         store.extend(&token, ttl()).await.unwrap();
         // After short TTL + buffer, session should still be valid.
         tokio::time::sleep(Duration::from_millis(1100)).await;
         let result = store.validate(&token).await.unwrap();
-        assert_eq!(result, Some((1, 2)));
+        assert_eq!(result, info(1, 2, UserRole::Member));
     }
 
     #[tokio::test]
@@ -313,12 +368,12 @@ mod tests {
     #[tokio::test]
     async fn inmem_extend_never_shortens() {
         let store = InMemorySessionStore::new();
-        let token = store.create(1, 2, ttl()).await.unwrap();
+        let token = store.create(1, 2, role(), ttl()).await.unwrap();
         // Extend with a shorter TTL — should not reduce the existing expiry.
         store.extend(&token, short_ttl()).await.unwrap();
         // Session should still be valid (the original 24h TTL is much larger).
         let result = store.validate(&token).await.unwrap();
-        assert_eq!(result, Some((1, 2)));
+        assert_eq!(result, info(1, 2, UserRole::Member));
     }
 
     // ── revoke ────────────────────────────────────────────────────────────────
@@ -333,11 +388,14 @@ mod tests {
     #[tokio::test]
     async fn inmem_revoke_removes_only_targeted_token() {
         let store = InMemorySessionStore::new();
-        let t1 = store.create(1, 10, ttl()).await.unwrap();
-        let t2 = store.create(1, 20, ttl()).await.unwrap();
+        let t1 = store.create(1, 10, role(), ttl()).await.unwrap();
+        let t2 = store.create(1, 20, role(), ttl()).await.unwrap();
         store.revoke(&t1).await.unwrap();
         assert_eq!(store.validate(&t1).await.unwrap(), None);
-        assert_eq!(store.validate(&t2).await.unwrap(), Some((1, 20)));
+        assert_eq!(
+            store.validate(&t2).await.unwrap(),
+            info(1, 20, UserRole::Member)
+        );
     }
 
     // ── clone / send / sync ───────────────────────────────────────────────────
@@ -346,8 +404,34 @@ mod tests {
     async fn inmem_cloned_store_shares_state() {
         let store1 = InMemorySessionStore::new();
         let store2 = store1.clone();
-        let token = store1.create(1, 42, ttl()).await.unwrap();
-        assert_eq!(store2.validate(&token).await.unwrap(), Some((1, 42)));
+        let token = store1.create(1, 42, role(), ttl()).await.unwrap();
+        assert_eq!(
+            store2.validate(&token).await.unwrap(),
+            info(1, 42, UserRole::Member)
+        );
+    }
+
+    // ── user_role is preserved ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn inmem_preserves_user_role() {
+        let store = InMemorySessionStore::new();
+        let t_owner = store.create(1, 1, UserRole::Owner, ttl()).await.unwrap();
+        let t_admin = store.create(1, 2, UserRole::Admin, ttl()).await.unwrap();
+        let t_member = store.create(1, 3, UserRole::Member, ttl()).await.unwrap();
+
+        assert_eq!(
+            store.validate(&t_owner).await.unwrap(),
+            info(1, 1, UserRole::Owner)
+        );
+        assert_eq!(
+            store.validate(&t_admin).await.unwrap(),
+            info(1, 2, UserRole::Admin)
+        );
+        assert_eq!(
+            store.validate(&t_member).await.unwrap(),
+            info(1, 3, UserRole::Member)
+        );
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -428,10 +512,10 @@ mod tests {
     #[ignore = "needs testcontainers + podman socket"]
     async fn pg_create_and_validate_session() {
         with_pg_session_store(|store| async move {
-            let token = store.create(1, 1, ttl()).await.unwrap();
+            let token = store.create(1, 1, UserRole::Owner, ttl()).await.unwrap();
             assert_eq!(token.len(), 64);
             let result = store.validate(&token).await.unwrap();
-            assert_eq!(result, Some((1, 1)));
+            assert_eq!(result, info(1, 1, UserRole::Owner));
         })
         .await;
     }
@@ -453,11 +537,14 @@ mod tests {
     #[ignore = "needs testcontainers + podman socket"]
     async fn pg_extend_bumps_expiry() {
         with_pg_session_store(|store| async move {
-            let token = store.create(1, 1, short_ttl()).await.unwrap();
+            let token = store
+                .create(1, 1, UserRole::Admin, short_ttl())
+                .await
+                .unwrap();
             store.extend(&token, ttl()).await.unwrap();
             tokio::time::sleep(Duration::from_millis(1100)).await;
             let result = store.validate(&token).await.unwrap();
-            assert_eq!(result, Some((1, 1)));
+            assert_eq!(result, info(1, 1, UserRole::Admin));
         })
         .await;
     }
@@ -466,7 +553,7 @@ mod tests {
     #[ignore = "needs testcontainers + podman socket"]
     async fn pg_revoke_removes_session() {
         with_pg_session_store(|store| async move {
-            let token = store.create(1, 1, ttl()).await.unwrap();
+            let token = store.create(1, 1, UserRole::Member, ttl()).await.unwrap();
             store.revoke(&token).await.unwrap();
             let result = store.validate(&token).await.unwrap();
             assert_eq!(result, None);
@@ -478,12 +565,15 @@ mod tests {
     #[ignore = "needs testcontainers + podman socket"]
     async fn pg_revoke_then_recreate_is_new_token() {
         with_pg_session_store(|store| async move {
-            let token = store.create(1, 1, ttl()).await.unwrap();
+            let token = store.create(1, 1, UserRole::Member, ttl()).await.unwrap();
             store.revoke(&token).await.unwrap();
-            let token2 = store.create(1, 1, ttl()).await.unwrap();
+            let token2 = store.create(1, 1, UserRole::Admin, ttl()).await.unwrap();
             assert_ne!(token, token2);
             assert_eq!(store.validate(&token).await.unwrap(), None);
-            assert_eq!(store.validate(&token2).await.unwrap(), Some((1, 1)));
+            assert_eq!(
+                store.validate(&token2).await.unwrap(),
+                info(1, 1, UserRole::Admin)
+            );
         })
         .await;
     }

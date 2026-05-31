@@ -1459,6 +1459,18 @@ dependencies = [
 [[package]]
 name = "kb-api"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "chrono",
+ "kb-core",
+ "kb-store",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower",
+ "tracing",
+]
 
 [[package]]
 name = "kb-config"

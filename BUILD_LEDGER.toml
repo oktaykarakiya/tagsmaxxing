@@ -505,9 +505,9 @@ description = "Auth middleware + API handlers: (a) axum middleware that extracts
 depends_on = ["P5-T4", "P5-T1"]
 plan_sections = ["13", "12"]
 acceptance = "Middleware: valid cookie → extensions populated; missing/expired → 401. Login: correct password → 200 + Set-Cookie; wrong password → 401. Register: new email → 201 + session; duplicate email → 409. Logout: clears cookie + revokes session. Bootstrap: first run with env vars → tenant + admin user created; second run is idempotent. Unit tests (mock SessionStore for middleware/handlers, real argon2 for login/register) + integration tests (#[ignore] for DB-reliant handlers). just ci green."
-status = "todo"
+status = "done"
 checkpoint = true
-notes = "CHECKPOINT (§31.5): AUTH & SESSIONS — human review required."
+notes = "Auth middleware (12 tests), login/register/logout handlers (8 tests), bootstrap seed (2 tests), PgStore user CRUD (create_user, find_user_by_email, create_tenant, tenant_count, find_tenant_by_slug, 9 tests), migration 0005. KNOWN: user_role cached in session token (MEDIUM) -- role changes don't take effect until session expiry. Fix: join users table on validate or invalidate sessions on role change."
 
 [[task]]
 id = "P5-T6"

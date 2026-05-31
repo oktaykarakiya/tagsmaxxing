@@ -29,6 +29,8 @@ use chrono::{DateTime, Utc};
 use rand::TryRng;
 use rand::rngs::SysRng;
 
+use crate::user::UserRole;
+
 /// Default session lifetime: 24 hours (plan §13).
 pub const DEFAULT_SESSION_TTL_SECS: u64 = 86_400;
 
@@ -51,11 +53,29 @@ pub struct Session {
     pub tenant_id: i64,
     /// Authenticated user.
     pub user_id: i64,
+    /// Role within the tenant at session creation time.
+    pub user_role: UserRole,
     /// When this session expires. After this point [`SessionStore::validate`] returns
     /// `None` and the client must re-authenticate.
     pub expires_at: DateTime<Utc>,
     /// Row creation time.
     pub created_at: DateTime<Utc>,
+}
+
+// ── SessionInfo ──────────────────────────────────────────────────────────────────
+
+/// The result of a successful [`SessionStore::validate`] call.
+///
+/// Carries the minimum information the auth middleware needs to populate request
+/// extensions: which tenant and user, and what role the user holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionInfo {
+    /// Owning tenant.
+    pub tenant_id: i64,
+    /// Authenticated user.
+    pub user_id: i64,
+    /// Role within the tenant.
+    pub user_role: UserRole,
 }
 
 // ── SessionStore trait ─────────────────────────────────────────────────────────
@@ -76,16 +96,26 @@ pub struct Session {
 pub trait SessionStore: Send + Sync {
     /// Create a new session for the given user, returning the opaque token.
     ///
-    /// `ttl` controls how long the session is valid from `now`. Implementations should
-    /// use [`DEFAULT_SESSION_TTL_SECS`] unless the caller explicitly overrides it.
+    /// `ttl` controls how long the session is valid from `now`. `user_role` is the
+    /// role of the authenticated user at session-creation time — it is stored in the
+    /// session record and returned by [`validate`](Self::validate) so the auth
+    /// middleware can inject it into request extensions without a separate DB lookup.
+    /// Implementations should use [`DEFAULT_SESSION_TTL_SECS`] unless the caller
+    /// explicitly overrides it.
     ///
     /// # Errors
     ///
     /// Returns an error when the underlying store is unavailable.
-    async fn create(&self, tenant_id: i64, user_id: i64, ttl: Duration) -> anyhow::Result<String>;
+    async fn create(
+        &self,
+        tenant_id: i64,
+        user_id: i64,
+        user_role: UserRole,
+        ttl: Duration,
+    ) -> anyhow::Result<String>;
 
-    /// Validate a session token, returning `Some((tenant_id, user_id))` if the session
-    /// exists and has not expired, or `None` if the token is unknown, expired, or revoked.
+    /// Validate a session token, returning [`SessionInfo`] if the session exists and
+    /// has not expired, or `None` if the token is unknown, expired, or revoked.
     ///
     /// Expiry is checked **at call time** against the store's clock, so a session that
     /// expires mid-request is rejected by the next validation.
@@ -94,7 +124,7 @@ pub trait SessionStore: Send + Sync {
     ///
     /// Returns an error only when the underlying store is unavailable (not for
     /// expired/unknown tokens — those return `Ok(None)`).
-    async fn validate(&self, token: &str) -> anyhow::Result<Option<(i64, i64)>>;
+    async fn validate(&self, token: &str) -> anyhow::Result<Option<SessionInfo>>;
 
     /// Extend (slide) the expiration of an existing session.
     ///

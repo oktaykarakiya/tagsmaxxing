@@ -1,0 +1,7 @@
+# Advisory suppressions: these transitive dependencies are not exploitable
+# in our deployment (we use Postgres, not MySQL, and never use the rsa crate directly).
+
+[advisories]
+ignore = [
+    "RUSTSEC-2023-0071", # rsa Marvin Attack — only pulled via sqlx-mysql, we use Postgres only
+]

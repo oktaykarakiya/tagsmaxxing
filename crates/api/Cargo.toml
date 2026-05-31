@@ -9,3 +9,17 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+kb-core = { workspace = true }
+kb-store = { workspace = true }
+# axum 0.8: the current stable line. Works with tokio 1.x and edition 2024.
+axum = "0.8"
+tokio = { workspace = true, features = ["sync", "rt"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["sync", "rt", "macros", "rt-multi-thread"] }
+tower = "0.5"
