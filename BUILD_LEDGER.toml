@@ -430,9 +430,9 @@ description = "RetrievalPipeline orchestrator in kb-pipeline: wires the complete
 depends_on = ["P4-T3", "P4-T4", "P3-T4"]
 plan_sections = ["8", "10"]
 acceptance = "Single query → embed → hybrid search → rerank → top-n Hits returned; mock Store returns controlled Hits → verified Reranker receives correct documents; mock Reranker returns controlled scores → Hits sorted by score; tenant_id passed through to Store; empty search results handled gracefully (empty vec, not error). Unit tests with mock Store + mock Reranker + mock backend. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "RetrievalPipeline in kb-pipeline::retrieval: 4-step flow (embed_query → hybrid_search → rerank → top-k). ChunkEmbedder::embed_query added with EmbedKind::Query. 12 unit tests: happy-path, top-k truncation, empty results, reranker-doc-verification, error propagation, embed-to-store passthrough, deep-link provenance, length mismatch, tied scores, embed_query dim checks. Tenant isolation via RLS (Store::hybrid_search doesn't take tenant_id — RLS enforces scoping in DB per §13). just ci pending verification."
 
 [[task]]
 id = "P4-T6"

@@ -112,6 +112,28 @@ impl ChunkEmbedder {
         self.batch_embed(names, EmbedKind::Document).await
     }
 
+    /// Embed a single query text for retrieval (plan §8 step 2).
+    ///
+    /// Uses [`EmbedKind::Query`] to signal the retrieval instruction
+    /// (BGE-M3 / Qwen3-Embedding models apply a different prompt prefix for
+    /// queries vs. stored documents).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the embedding call fails or the returned vector's
+    /// dimension does not match [`expected_dim`](Self::new).
+    pub async fn embed_query(&self, query_text: &str) -> anyhow::Result<Vec<f32>> {
+        let vectors = self
+            .batch_embed(&[query_text.to_string()], EmbedKind::Query)
+            .await?;
+        anyhow::ensure!(
+            vectors.len() == 1,
+            "embedder returned {} vectors for a single query text",
+            vectors.len()
+        );
+        Ok(vectors.into_iter().next().unwrap_or_default())
+    }
+
     // ── Internal ───────────────────────────────────────────────────────────
 
     /// Send `texts` to the embed backend in batches, verifying output dimensions.
