@@ -1534,6 +1534,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sqlx",
+ "tempfile",
  "testcontainers",
  "tokio",
  "tree_magic_mini",

@@ -29,3 +29,4 @@ kb-store = { workspace = true }
 kb-mock-backend = { workspace = true }
 kb-scheduler = { workspace = true }
 reqwest = { workspace = true }
+tempfile = { workspace = true }

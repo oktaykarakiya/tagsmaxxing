@@ -370,3 +370,4 @@ plan_sections = ["7", "10", "31"]
 acceptance = "End-to-end: text file → ready document with tags + 1024-dim embedded chunks + usage events in DB + blobs on disk; idempotent re-ingest doesn't duplicate rows; transaction rollback on mid-pipeline failure leaves no partial state; pipeline emits the correct job lifecycle (queued → running → done). #[ignore] in just ci (needs testcontainers + podman socket). P3 PHASE COMPLETE → generate P4 ledger. just ci green."
 status = "done"
 checkpoint = false
+notes = "p3_integration.rs: e2e test (#[ignore]) via mock LLM + LocalBlob + PgStore via testcontainers. Pure-logic smoke tests run in-unit. P3 PHASE COMPLETE — ingest leg of walking skeleton is done. Next: author P4 ledger (Store + retrieval: hybrid search + RRF + reranker)."
