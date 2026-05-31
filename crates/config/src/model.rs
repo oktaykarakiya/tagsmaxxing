@@ -42,9 +42,19 @@ pub struct Config {
 /// Durable-storage configuration.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Storage {
-    /// Postgres connection URL. Required; may be supplied via the `POSTGRES_URL` env var.
+    /// **Privileged** Postgres connection URL (owner/superuser): runs migrations, the
+    /// cross-tenant job queue, and admin/usage roll-ups. Required; may be supplied via the
+    /// `POSTGRES_URL` env var. Both URLs are read at connect time so rotation needs no restart
+    /// (the hot-swap rule, CLAUDE.md).
     #[serde(default)]
     pub postgres_url: String,
+    /// **Application** Postgres connection URL — the non-privileged `kb_app` role
+    /// (`NOSUPERUSER NOBYPASSRLS`, migration `0006_app_role.sql`) used for all tenant-scoped
+    /// data so Row-Level Security is enforced (P6-T14, §13). May be supplied via the
+    /// `APP_POSTGRES_URL` env var. When empty, the store falls back to [`postgres_url`]
+    /// (single-role mode — RLS then relies on the explicit `tenant_id` filters only).
+    #[serde(default)]
+    pub app_postgres_url: String,
 }
 
 /// HTTP API configuration.

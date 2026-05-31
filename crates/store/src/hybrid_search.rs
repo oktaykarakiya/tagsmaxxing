@@ -15,10 +15,9 @@ use std::collections::HashMap;
 
 use anyhow::Context;
 use kb_core::query::{ChunkHit, Hit, Query, RRF_K, document_rollup, rrf_fuse};
-use sqlx::postgres::PgPool;
-use sqlx::{Postgres, QueryBuilder};
+use sqlx::{PgConnection, Postgres, QueryBuilder};
 
-use crate::pg_store::{PgStore, set_tenant};
+use crate::pg_store::{PgStore, begin_tenant_tx};
 
 /// One row returned by the vector or keyword chunk query. Field names match the
 /// column aliases in the SELECT list so `sqlx::FromRow` works without `#[sqlx(rename)]`.
@@ -52,13 +51,17 @@ pub(crate) async fn run_hybrid_search(
         return Ok(Vec::new());
     }
 
-    let pool = store.pool()?;
-    set_tenant(&pool, tenant_id).await?;
+    // All three reads run inside ONE tenant transaction on the kb_app pool, so the
+    // `app.current_tenant` GUC set by begin_tenant_tx is live for every query and RLS scopes
+    // them to this tenant (P6-T14). Running them on separate pooled connections would lose the
+    // transaction-local GUC and deny every row under the non-BYPASSRLS role.
+    let pool = store.app_pool()?;
+    let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
 
     // Resolve tag names to IDs if a tag filter is set. We resolve once and reuse for
     // both queries.
     let tag_ids = if !query.filters.tags.is_empty() {
-        resolve_tag_ids_for_filter(&pool, &query.filters.tags).await?
+        resolve_tag_ids_for_filter(&mut tx, &query.filters.tags).await?
     } else {
         Vec::new()
     };
@@ -69,9 +72,11 @@ pub(crate) async fn run_hybrid_search(
         return Ok(Vec::new());
     }
 
-    // Run both queries sequentially (both reads, no transaction needed).
-    let vec_chunks = execute_vector_query(&pool, query, query_embedding, &tag_ids).await?;
-    let kw_chunks = execute_keyword_query(&pool, query, &tag_ids).await?;
+    let vec_chunks = execute_vector_query(&mut tx, query, query_embedding, &tag_ids).await?;
+    let kw_chunks = execute_keyword_query(&mut tx, query, &tag_ids).await?;
+    tx.commit()
+        .await
+        .context("failed to commit hybrid_search transaction")?;
 
     // Extract ranked IDs for RRF. The DB query returns rows in relevance order, so
     // position in the Vec is the rank.
@@ -121,12 +126,12 @@ pub(crate) async fn run_hybrid_search(
 /// Tags that don't exist are silently dropped. If the caller requested a tag filter
 /// and *no* tags resolve, the search returns zero results (handled by the caller).
 async fn resolve_tag_ids_for_filter(
-    pool: &PgPool,
+    conn: &mut PgConnection,
     tag_names: &[String],
 ) -> anyhow::Result<Vec<i64>> {
     let rows: Vec<(i64,)> = sqlx::query_as("SELECT id FROM tags WHERE name = ANY($1)")
         .bind(tag_names)
-        .fetch_all(pool)
+        .fetch_all(&mut *conn)
         .await
         .context("failed to resolve tag names for filter")?;
 
@@ -138,7 +143,7 @@ async fn resolve_tag_ids_for_filter(
 /// Run the vector (HNSW cosine) top-N query, returning chunk rows ordered by
 /// increasing cosine distance (most similar first).
 async fn execute_vector_query(
-    pool: &PgPool,
+    conn: &mut PgConnection,
     query: &Query,
     query_embedding: &[f32],
     tag_ids: &[i64],
@@ -152,7 +157,7 @@ async fn execute_vector_query(
 
     builder
         .build_query_as::<ChunkRow>()
-        .fetch_all(pool)
+        .fetch_all(&mut *conn)
         .await
         .context("vector search query failed")
 }
@@ -160,7 +165,7 @@ async fn execute_vector_query(
 /// Run the keyword (ts_rank on tsv) top-N query. When `query.text` is empty or
 /// whitespace-only the keyword signal contributes nothing — return an empty list.
 async fn execute_keyword_query(
-    pool: &PgPool,
+    conn: &mut PgConnection,
     query: &Query,
     tag_ids: &[i64],
 ) -> anyhow::Result<Vec<ChunkRow>> {
@@ -185,7 +190,7 @@ async fn execute_keyword_query(
 
     builder
         .build_query_as::<ChunkRow>()
-        .fetch_all(pool)
+        .fetch_all(&mut *conn)
         .await
         .context("keyword search query failed")
 }
@@ -673,47 +678,32 @@ mod tests {
         F: FnOnce(PgStore) -> Fut,
         Fut: std::future::Future<Output = anyhow::Result<()>>,
     {
-        use testcontainers::core::ports::IntoContainerPort;
-        use testcontainers::core::wait::WaitFor;
-        use testcontainers::runners::AsyncRunner;
-        use testcontainers::{GenericImage, ImageExt};
-
-        let container = GenericImage::new("pgvector/pgvector", "pg17")
-            .with_exposed_port(5432u16.tcp())
-            .with_wait_for(WaitFor::message_on_stderr(
-                "database system is ready to accept connections",
-            ))
-            .with_env_var("POSTGRES_USER", "kb")
-            .with_env_var("POSTGRES_PASSWORD", "kb")
-            .with_env_var("POSTGRES_DB", "kb")
-            .start()
-            .await?;
-
-        let host_port = container.get_host_port_ipv4(5432u16.tcp()).await?;
-        let url = format!("postgres://kb:kb@127.0.0.1:{host_port}/kb?sslmode=disable");
-
-        let store = PgStore::new(&url);
+        // Shared per-binary container + fresh DB; search runs as kb_app under RLS (P6-T14).
+        let db = kb_testsupport::fresh_db().await?;
+        let store = PgStore::with_roles(&db.admin_url, &db.app_url);
         store.connect().await?;
 
-        // Insert a tenant (needed for FK constraints).
+        // Insert a tenant (needed for FK constraints) via the privileged pool.
         let pool = store.pool()?;
         sqlx::query("INSERT INTO tenants (slug, name) VALUES ('test', 'Test')")
-            .execute(&pool)
-            .await?;
-
-        // Set tenant for RLS.
-        sqlx::query("SELECT app_set_current_tenant(1)")
             .execute(&pool)
             .await?;
 
         f(store).await
     }
 
-    /// Create a test document and file, returning their ids.
+    /// Process-wide counter so every seeded file gets a unique `sha256` — two files with the
+    /// same `content` (e.g. both `""`) would otherwise collide on `files_tenant_id_sha256_key`
+    /// (the bug-5 class, docs/analysis/07-rls-enforcement-blocker.md).
+    static FILE_SHA_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    /// Create a test document and file, returning their ids. The `content` argument is kept for
+    /// call-site readability but no longer used as the sha (a unique counter guarantees no
+    /// collision regardless of content).
     async fn create_test_document(
         pool: &sqlx::postgres::PgPool,
         kind: &str,
-        content: &str,
+        _content: &str,
     ) -> anyhow::Result<(i64, i64)> {
         let doc_id: i64 = sqlx::query_scalar(
             "INSERT INTO documents (tenant_id, title, kind, status) VALUES (1, 'Test Doc', $1, 'ready') RETURNING id",
@@ -722,12 +712,16 @@ mod tests {
         .fetch_one(pool)
         .await?;
 
+        let n = FILE_SHA_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut sha = vec![0u8; 32];
+        sha[..8].copy_from_slice(&n.to_be_bytes());
+
         let file_id: i64 = sqlx::query_scalar(
             "INSERT INTO files (tenant_id, document_id, page_no, sha256, blob_key, status) \
              VALUES (1, $1, 1, $2, $3, 'ready') RETURNING id",
         )
         .bind(doc_id)
-        .bind(content.as_bytes()) // not a real sha256 but fine for tests
+        .bind(sha)
         .bind(format!("t1/{doc_id}"))
         .fetch_one(pool)
         .await?;

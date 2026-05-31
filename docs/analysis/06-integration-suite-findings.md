@@ -82,3 +82,11 @@ is the lane doing its job.
 > is **blocked** on it. Discrete bugs **1–4** are fixed + verified; bug **5** and harness
 > reliability (B) fold into that rework. Full proof + design options:
 > [`07-rls-enforcement-blocker.md`](./07-rls-enforcement-blocker.md).
+>
+> **Update (P6-T14, 2026-05-31):** ✅ all three resolved. The two-role model (privileged +
+> non-`BYPASSRLS` `kb_app`) + per-transaction tenant GUC was implemented; bug **5** fixed
+> (unique per-file sha); **(B)** fixed via the new `kb-testsupport` crate (one container per
+> test binary + fresh DB per test). The whole `#[ignore]` suite is green under `just
+> ci-integration`, and **part C is signed off** with the cross-tenant suite passing under the
+> RLS-enforcing `kb_app` role. See the *Resolution* section of
+> [`07-rls-enforcement-blocker.md`](./07-rls-enforcement-blocker.md).

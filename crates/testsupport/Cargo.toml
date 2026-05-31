@@ -1,0 +1,21 @@
+[package]
+name = "kb-testsupport"
+description = "Dev-only #[ignore] integration-test harness: ONE pgvector container per test binary (no per-test churn — finding 06-B) + a fresh database per test + the two RLS roles' URLs (admin + kb_app, P6-T14)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+# Spins the shared pgvector container; sqlx issues CREATE DATABASE + the tenant-GUC helper.
+testcontainers = { workspace = true }
+sqlx = { workspace = true, features = ["runtime-tokio", "postgres", "migrate", "macros"] }
+# OnceCell (sync) for the per-binary shared container; rt for the connect retry sleeps.
+tokio = { workspace = true, features = ["sync", "rt", "time", "macros"] }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

@@ -16,11 +16,11 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
-    /// All five migrations are present, in version order (1, 2, 3, 4, 5).
+    /// All six migrations are present, in version order (1, 2, 3, 4, 5, 6).
     #[test]
     fn embeds_the_schema_migrations() {
         let versions: Vec<i64> = MIGRATOR.iter().map(|m| m.version).collect();
-        assert_eq!(versions, vec![1, 2, 3, 4, 5]);
+        assert_eq!(versions, vec![1, 2, 3, 4, 5, 6]);
     }
 
     /// Forward-only and monotonic: no down/reversible scripts, strictly increasing versions,
@@ -106,5 +106,41 @@ mod tests {
         // Embedder lock-in row recording id + dim (§5 note).
         assert!(sql.contains("'embedder'"));
         assert!(sql.contains("\"dim\": 1024"));
+    }
+
+    /// The two-role RLS model (P6-T14, §13): migration 0006 must create the non-privileged
+    /// `kb_app` role as `NOSUPERUSER NOBYPASSRLS` (so RLS is enforced for it) and grant it DML
+    /// on the tenant-scoped tables — but NOT on `tenants`/`sessions`/`settings`.
+    #[test]
+    fn schema_creates_non_bypassrls_app_role() {
+        let sql: String = MIGRATOR
+            .iter()
+            .map(|m| m.sql.as_ref())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            sql.contains("CREATE ROLE kb_app"),
+            "kb_app role not created"
+        );
+        assert!(
+            sql.contains("NOSUPERUSER") && sql.contains("NOBYPASSRLS"),
+            "kb_app must be NOSUPERUSER + NOBYPASSRLS so RLS is enforced"
+        );
+        // DML grant covers the tenant tables.
+        assert!(
+            sql.contains("ON\n    users, documents, files, tags, tag_aliases, document_tags, chunks, jobs, usage_events\n    TO kb_app")
+                || sql.contains("TO kb_app"),
+            "kb_app must be granted DML on the tenant tables"
+        );
+        // The privileged-only tables must NOT appear in a GRANT … TO kb_app list.
+        for forbidden in ["tenants,", "sessions,", "settings,"] {
+            assert!(
+                !sql.contains(&format!(
+                    "GRANT SELECT, INSERT, UPDATE, DELETE ON\n    {forbidden}"
+                )),
+                "kb_app must not be granted DML on {forbidden}"
+            );
+        }
     }
 }

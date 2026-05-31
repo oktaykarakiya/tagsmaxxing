@@ -19,10 +19,6 @@ use std::time::Duration;
 use kb_store::MIGRATOR;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Row};
-use testcontainers::core::ports::IntoContainerPort;
-use testcontainers::core::wait::WaitFor;
-use testcontainers::runners::AsyncRunner;
-use testcontainers::{GenericImage, ImageExt};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -46,21 +42,10 @@ async fn connect_with_retry(url: &str) -> PgPool {
 #[tokio::test]
 #[ignore = "requires Podman + image pull; run with --ignored"]
 async fn migrations_apply_on_fresh_pgvector() -> TestResult {
-    // A fresh pgvector image — nothing pre-created. POSTGRES_DB ensures the `kb` database exists.
-    let container = GenericImage::new("pgvector/pgvector", "pg17")
-        .with_exposed_port(5432u16.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", "kb")
-        .with_env_var("POSTGRES_PASSWORD", "kb")
-        .with_env_var("POSTGRES_DB", "kb")
-        .start()
-        .await?;
-
-    let port = container.get_host_port_ipv4(5432u16.tcp()).await?;
-    let url = format!("postgres://kb:kb@127.0.0.1:{port}/kb?sslmode=disable");
-    let pool = connect_with_retry(&url).await;
+    // A fresh, empty database in the shared pgvector container. Migrations run as the
+    // privileged role (admin_url), exactly as `PgStore::connect` does.
+    let db = kb_testsupport::fresh_db().await?;
+    let pool = connect_with_retry(&db.admin_url).await;
 
     // Apply forward-only migrations against the empty database.
     MIGRATOR.run(&pool).await?;
@@ -116,6 +101,25 @@ async fn migrations_apply_on_fresh_pgvector() -> TestResult {
         .bind(1_i64)
         .execute(&pool)
         .await?;
+
+    // Migration 0006: the kb_app application role exists and is the non-privileged role RLS
+    // requires — NOT a superuser and NOT BYPASSRLS (P6-T14, §13). This is the property the
+    // whole isolation model rests on.
+    let app_role = sqlx::query(
+        "SELECT rolsuper, rolbypassrls, rolcanlogin FROM pg_roles WHERE rolname = 'kb_app'",
+    )
+    .fetch_optional(&pool)
+    .await?
+    .expect("migration 0006 must create the kb_app role");
+    let is_super: bool = app_role.try_get("rolsuper")?;
+    let bypass_rls: bool = app_role.try_get("rolbypassrls")?;
+    let can_login: bool = app_role.try_get("rolcanlogin")?;
+    assert!(!is_super, "kb_app must NOT be a superuser");
+    assert!(
+        !bypass_rls,
+        "kb_app must NOT have BYPASSRLS (else RLS is a no-op)"
+    );
+    assert!(can_login, "kb_app must be able to LOGIN for the app pool");
 
     // The embedder lock-in row records id + dim (plan §5 note).
     let embedder = sqlx::query(

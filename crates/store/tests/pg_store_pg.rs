@@ -22,17 +22,13 @@ use kb_core::store::Store;
 use kb_store::PgStore;
 use sqlx::PgPool;
 use sqlx::Row;
-use testcontainers::core::ports::IntoContainerPort;
-use testcontainers::core::wait::WaitFor;
-use testcontainers::runners::AsyncRunner;
-use testcontainers::{GenericImage, ImageExt};
 
-/// Concrete setup type so each test gets a clean container without fighting the
+/// Concrete setup type so each test gets a clean database without fighting the
 /// `TestResult` alias (which maps to `Result<(), …>`).
 struct Setup {
-    _container: testcontainers::ContainerAsync<GenericImage>,
     store: Arc<PgStore>,
-    /// The pool extracted from the store for direct queries.
+    /// The **privileged** pool for direct seeding + verification reads (BYPASSRLS). Tenant-data
+    /// writes go through the store, which uses its kb_app pool under RLS.
     pool: PgPool,
     tenant_id: i64,
     document_id: i64,
@@ -40,24 +36,11 @@ struct Setup {
 
 // ── Fixture ──────────────────────────────────────────────────────────────────
 
-/// Spin up a container, run migrations, insert a tenant + document, and return
-/// everything the tests need.
+/// Provision a fresh DB in the shared container, run migrations (two-role), insert a tenant +
+/// document via the privileged pool, and return everything the tests need.
 async fn setup_store() -> anyhow::Result<Setup> {
-    let container = GenericImage::new("pgvector/pgvector", "pg17")
-        .with_exposed_port(5432u16.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", "kb")
-        .with_env_var("POSTGRES_PASSWORD", "kb")
-        .with_env_var("POSTGRES_DB", "kb")
-        .start()
-        .await?;
-
-    let host_port = container.get_host_port_ipv4(5432u16.tcp()).await?;
-    let url = format!("postgres://kb:kb@127.0.0.1:{host_port}/kb?sslmode=disable");
-
-    let store = Arc::new(PgStore::new(&url));
+    let db = kb_testsupport::fresh_db().await?;
+    let store = Arc::new(PgStore::with_roles(&db.admin_url, &db.app_url));
     store.connect().await?;
 
     let pool = store.pool()?;
@@ -75,7 +58,6 @@ async fn setup_store() -> anyhow::Result<Setup> {
     .await?;
 
     Ok(Setup {
-        _container: container,
         store,
         pool,
         tenant_id,

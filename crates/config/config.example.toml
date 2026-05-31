@@ -4,8 +4,15 @@
 # TOML needs one key per line, as below.)
 
 [storage]
-# The only durable state. May also be supplied via the POSTGRES_URL env var.
+# Privileged (owner/superuser) URL: migrations, the cross-tenant job queue, admin/usage
+# roll-ups. The only durable state. May also be supplied via the POSTGRES_URL env var.
 postgres_url = "postgres://kb:kb@localhost/kb"
+# Application URL: the non-privileged `kb_app` role (NOSUPERUSER NOBYPASSRLS, auto-created by
+# migration 0006) used for all tenant-scoped data so Postgres RLS is enforced (§13). Rotate the
+# default `kb_app` password (ALTER ROLE kb_app PASSWORD '…') for any real deployment and update
+# this URL — it is read at connect time, so rotation needs no restart. Leave empty to run
+# single-role (RLS then relies on the explicit tenant_id filters only). Env: APP_POSTGRES_URL.
+app_postgres_url = "postgres://kb_app:kb_app@localhost/kb"
 
 [api]
 # Not in the §6 sketch; the HTTP API serve port (defaults to 9999 when omitted).

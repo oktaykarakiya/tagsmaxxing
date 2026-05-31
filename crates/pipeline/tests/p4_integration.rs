@@ -88,26 +88,10 @@ mod tests {
     /// migrations, insert a tenant row, and set `app.current_tenant` for
     /// RLS compatibility.
     async fn setup_store() -> anyhow::Result<PgStore> {
-        use testcontainers::core::ports::IntoContainerPort;
-        use testcontainers::core::wait::WaitFor;
-        use testcontainers::runners::AsyncRunner;
-        use testcontainers::{GenericImage, ImageExt};
-
-        let container = GenericImage::new("pgvector/pgvector", "pg17")
-            .with_exposed_port(5432u16.tcp())
-            .with_wait_for(WaitFor::message_on_stderr(
-                "database system is ready to accept connections",
-            ))
-            .with_env_var("POSTGRES_USER", "kb")
-            .with_env_var("POSTGRES_PASSWORD", "kb")
-            .with_env_var("POSTGRES_DB", "kb")
-            .start()
-            .await?;
-
-        let host_port = container.get_host_port_ipv4(5432u16.tcp()).await?;
-        let url = format!("postgres://kb:kb@127.0.0.1:{host_port}/kb?sslmode=disable");
-
-        let store = PgStore::new(&url);
+        // Shared per-binary container + fresh DB. Seeding below runs on the privileged pool;
+        // the retrieval pipeline searches as kb_app under RLS (P6-T14).
+        let db = kb_testsupport::fresh_db().await?;
+        let store = PgStore::with_roles(&db.admin_url, &db.app_url);
         store.connect().await?;
 
         let pool = store.pool()?;
@@ -115,12 +99,20 @@ mod tests {
             .execute(&pool)
             .await?;
 
-        // Set app.current_tenant so RLS allows queries on tenant-scoped tables.
-        sqlx::query("SELECT app_set_current_tenant(1)")
-            .execute(&pool)
-            .await?;
-
         Ok(store)
+    }
+
+    /// A process-wide counter so every seeded file gets a unique `sha256` (fixes bug 5:
+    /// `files_tenant_id_sha256_key` collided when two files shared a short title —
+    /// docs/analysis/07-rls-enforcement-blocker.md).
+    static FILE_SHA_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    /// A unique 32-byte sha256 for a seeded file (the first 8 bytes encode a monotonic counter).
+    fn unique_sha() -> Vec<u8> {
+        let n = FILE_SHA_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut sha = vec![0u8; 32];
+        sha[..8].copy_from_slice(&n.to_be_bytes());
+        sha
     }
 
     /// Create a test document + one file row, returning `(doc_id, file_id)`.
@@ -138,12 +130,13 @@ mod tests {
         .fetch_one(pool)
         .await?;
 
+        // Unique sha per file — never collides on (tenant_id, sha256), even for identical titles.
         let file_id: i64 = sqlx::query_scalar(
             "INSERT INTO files (tenant_id, document_id, page_no, sha256, blob_key, status) \
              VALUES (1, $1, 1, $2, $3, 'ready') RETURNING id",
         )
         .bind(doc_id)
-        .bind(title.as_bytes())
+        .bind(unique_sha())
         .bind(format!("t1/{doc_id}"))
         .fetch_one(pool)
         .await?;

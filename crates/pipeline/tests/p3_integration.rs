@@ -52,26 +52,10 @@ mod tests {
     /// Helper: connect to pgvector via testcontainers, apply migrations, and
     /// insert a tenant row.
     async fn setup_store() -> anyhow::Result<PgStore> {
-        use testcontainers::core::ports::IntoContainerPort;
-        use testcontainers::core::wait::WaitFor;
-        use testcontainers::runners::AsyncRunner;
-        use testcontainers::{GenericImage, ImageExt};
-
-        let container = GenericImage::new("pgvector/pgvector", "pg17")
-            .with_exposed_port(5432u16.tcp())
-            .with_wait_for(WaitFor::message_on_stderr(
-                "database system is ready to accept connections",
-            ))
-            .with_env_var("POSTGRES_USER", "kb")
-            .with_env_var("POSTGRES_PASSWORD", "kb")
-            .with_env_var("POSTGRES_DB", "kb")
-            .start()
-            .await?;
-
-        let host_port = container.get_host_port_ipv4(5432u16.tcp()).await?;
-        let url = format!("postgres://kb:kb@127.0.0.1:{host_port}/kb?sslmode=disable");
-
-        let store = PgStore::new(&url);
+        // Shared per-binary container + fresh DB. Two-role: the pipeline writes tenant data as
+        // kb_app under RLS; raw verification reads below use the privileged pool (P6-T14).
+        let db = kb_testsupport::fresh_db().await?;
+        let store = PgStore::with_roles(&db.admin_url, &db.app_url);
         store.connect().await?;
 
         let pool = store.pool()?;
@@ -113,11 +97,10 @@ mod tests {
             })
             .to_string(),
         );
-        mock.scenario().lock().await.embed_content = Some(vec![
-            vec![0.1, 0.2, 0.3],
-            vec![0.4, 0.5, 0.6],
-            vec![0.7, 0.8, 0.9],
-        ]);
+        // Deterministic per-input 1024-dim embeddings (matches the VECTOR(1024) schema): the
+        // three distinct tag names get three distinct, near-orthogonal vectors, so the
+        // canonicalizer keeps them as 3 separate tags rather than merging them.
+        mock.scenario().lock().await.embed_dim = Some(1024);
 
         let backend = Arc::new(Backend::new(
             "mock-e2e",

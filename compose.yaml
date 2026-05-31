@@ -18,6 +18,12 @@ name: local-kb
 services:
   # ── Postgres + pgvector — metadata, tags, vectors, keyword index (plan §5) ──────
   postgres:
+    # Two-role RLS model (P6-T14, §13): POSTGRES_USER is the PRIVILEGED owner/superuser the app's
+    # admin pool uses (POSTGRES_URL in .env) for migrations + the cross-tenant job queue. Migration
+    # 0006 auto-creates the non-privileged `kb_app` role (NOSUPERUSER NOBYPASSRLS) that the app's
+    # tenant-data pool connects as (APP_POSTGRES_URL in .env) so RLS is actually enforced. Rotate
+    # kb_app's default password (ALTER ROLE kb_app PASSWORD '…') for real deployments.
+    #
     # Image is fully qualified (docker.io/… = the Docker Hub registry) to satisfy Podman's
     # strict short-name policy with no interactive registry prompt.
     image: ${POSTGRES_IMAGE:-docker.io/pgvector/pgvector:pg17}

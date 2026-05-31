@@ -1,10 +1,25 @@
 //! `PgStore` — the [`Store`](kb_core::store::Store) implementation over Postgres + pgvector
 //! (plan §5/§7/§13), connecting via sqlx.
 //!
-//! This module implements `upsert_file` and `upsert_chunks` (P2-T2); `hybrid_search` is
-//! deferred to P4. The connection URL is hot-swappable behind [`arc_swap::ArcSwap`] so an
-//! operator can point at a different Postgres instance without restarting (the hot-swap
-//! rule, CLAUDE.md / §20).
+//! # Two connection roles (RLS enforcement, P6-T14)
+//!
+//! Tenant isolation rests on Postgres Row-Level Security (migration `0003_rls.sql`), but RLS
+//! is bypassed by superusers and by `BYPASSRLS` roles. So `PgStore` keeps **two pools**:
+//!
+//! * the **admin pool** ([`admin_pool`](PgStore::admin_pool)) — the privileged owner/superuser
+//!   role; runs migrations and every legitimately cross-tenant path (the job queue, admin and
+//!   usage roll-ups, the `tenants` / `sessions` / `settings` tables that carry no `tenant_id`);
+//! * the **app pool** ([`app_pool`](PgStore::app_pool)) — the non-privileged `kb_app` role
+//!   (`NOSUPERUSER NOBYPASSRLS`, migration `0006_app_role.sql`); used for **all** tenant-scoped
+//!   data. Every such operation runs inside a transaction opened by [`begin_tenant_tx`], which
+//!   sets the `app.current_tenant` GUC transaction-locally so the GUC and the query share one
+//!   connection and the setting is discarded on commit — a pooled connection can never leak one
+//!   tenant's context to the next checkout. See docs/analysis/07-rls-enforcement-blocker.md.
+//!
+//! Both connection URLs are hot-swappable behind [`arc_swap::ArcSwap`] so an operator can
+//! rotate credentials or relocate the database without restarting (the hot-swap rule,
+//! CLAUDE.md / §20). When no distinct app URL is configured, the app pool falls back to the
+//! admin URL (single-role mode — RLS then relies on the explicit `tenant_id` filters only).
 
 use std::sync::Arc;
 
@@ -24,92 +39,178 @@ use crate::MIGRATOR;
 
 // ── PgStore ──────────────────────────────────────────────────────────────────
 
-/// A Postgres-backed implementation of the core [`Store`] trait, connecting via a sqlx
-/// [`PgPool`]. The connection URL is hot-swappable so an operator can relocate the database
-/// without restarting.
+/// A Postgres-backed implementation of the core [`Store`] trait, connecting via sqlx
+/// [`PgPool`]s. Both connection URLs are hot-swappable so an operator can rotate credentials
+/// or relocate the database without restarting.
 ///
 /// # Lifecycle
 ///
-/// 1. Construct with [`PgStore::new`].
-/// 2. Call [`PgStore::connect`] to establish the pool and auto-apply schema migrations.
-/// 3. Use [`Store::upsert_file`] and [`Store::upsert_chunks`].
+/// 1. Construct with [`PgStore::new`] (single role) or [`PgStore::with_roles`] (admin +
+///    `kb_app`).
+/// 2. Call [`PgStore::connect`] to establish both pools and auto-apply schema migrations.
+/// 3. Use the [`Store`] trait methods (tenant-scoped data → `kb_app`) and the inherent admin
+///    methods (`create_tenant`, the job queue's pool, …).
 ///
-/// Call [`PgStore::set_url`] then [`PgStore::connect`] again to hot-swap to a new Postgres
-/// instance.
+/// Call [`PgStore::set_url`] / [`PgStore::set_app_url`] then [`PgStore::connect`] again to
+/// hot-swap to new credentials or a new Postgres instance.
 pub struct PgStore {
-    /// Hot-swappable connection URL. Read at [`connect`](PgStore::connect) time so rotation
-    /// never needs a restart.
-    url: ArcSwap<String>,
-    /// The active connection pool, replaced atomically on each connect.
-    pool: ArcSwap<Option<PgPool>>,
+    /// Hot-swappable **privileged** (admin/owner) connection URL — migrations, the job queue,
+    /// admin/usage roll-ups, and the non-tenant tables. Read at [`connect`](PgStore::connect)
+    /// time so rotation never needs a restart.
+    admin_url: ArcSwap<String>,
+    /// Hot-swappable **application** (`kb_app`) connection URL for tenant-scoped data. Empty
+    /// means "single-role mode": the app pool falls back to [`admin_url`](PgStore::admin_url).
+    app_url: ArcSwap<String>,
+    /// The active privileged pool, replaced atomically on each connect.
+    admin_pool: ArcSwap<Option<PgPool>>,
+    /// The active `kb_app` pool. Shares the admin pool when no distinct app URL is configured.
+    app_pool: ArcSwap<Option<PgPool>>,
 }
 
 impl PgStore {
-    /// Create a new `PgStore` with the given connection URL, not yet connected.
+    /// Create a new single-role `PgStore` with the given connection URL, not yet connected.
+    ///
+    /// Both the admin and app pools use this URL — RLS is then enforced only to the extent the
+    /// role itself enforces it (a superuser bypasses it). Use [`with_roles`](PgStore::with_roles)
+    /// to connect tenant-scoped queries as the non-privileged `kb_app` role.
     ///
     /// Call [`connect`](PgStore::connect) before using the [`Store`] trait methods.
     #[must_use]
     pub fn new(url: impl Into<String>) -> Self {
         Self {
-            url: ArcSwap::new(Arc::new(url.into())),
-            pool: ArcSwap::new(Arc::new(None)),
+            admin_url: ArcSwap::new(Arc::new(url.into())),
+            app_url: ArcSwap::new(Arc::new(String::new())),
+            admin_pool: ArcSwap::new(Arc::new(None)),
+            app_pool: ArcSwap::new(Arc::new(None)),
         }
     }
 
-    /// Hot-swap the database URL. The change takes effect on the **next** call to
-    /// [`connect`](PgStore::connect) — active connections are not disrupted.
-    pub fn set_url(&self, url: impl Into<String>) {
-        self.url.store(Arc::new(url.into()));
-    }
-
-    /// Read the current URL snapshot.
-    fn current_url(&self) -> Arc<String> {
-        self.url.load_full()
-    }
-
-    /// Establish (or re-establish) the connection pool using the current URL, then
-    /// auto-apply the forward-only schema migrations. Migrations already applied are
-    /// skipped (the `_sqlx_migrations` ledger makes it idempotent).
+    /// Create a two-role `PgStore`: `admin_url` (privileged) for migrations / queue / admin
+    /// paths, and `app_url` (the non-privileged `kb_app` role) for all tenant-scoped data so
+    /// Row-Level Security is enforced (P6-T14, §13).
     ///
-    /// If a previous pool exists it is closed gracefully before the new one replaces it.
+    /// Call [`connect`](PgStore::connect) before using the [`Store`] trait methods.
+    #[must_use]
+    pub fn with_roles(admin_url: impl Into<String>, app_url: impl Into<String>) -> Self {
+        Self {
+            admin_url: ArcSwap::new(Arc::new(admin_url.into())),
+            app_url: ArcSwap::new(Arc::new(app_url.into())),
+            admin_pool: ArcSwap::new(Arc::new(None)),
+            app_pool: ArcSwap::new(Arc::new(None)),
+        }
+    }
+
+    /// Hot-swap the **privileged** database URL. The change takes effect on the **next** call
+    /// to [`connect`](PgStore::connect) — active connections are not disrupted.
+    pub fn set_url(&self, url: impl Into<String>) {
+        self.admin_url.store(Arc::new(url.into()));
+    }
+
+    /// Hot-swap the **application** (`kb_app`) database URL. Takes effect on the next
+    /// [`connect`](PgStore::connect). Set to empty to fall back to single-role mode.
+    pub fn set_app_url(&self, url: impl Into<String>) {
+        self.app_url.store(Arc::new(url.into()));
+    }
+
+    /// Read the current privileged URL snapshot.
+    fn current_admin_url(&self) -> Arc<String> {
+        self.admin_url.load_full()
+    }
+
+    /// Read the URL the app pool should use: the configured app URL, or the admin URL when no
+    /// distinct app URL is set (single-role mode).
+    fn resolved_app_url(&self) -> Arc<String> {
+        let app = self.app_url.load_full();
+        if app.is_empty() {
+            self.current_admin_url()
+        } else {
+            app
+        }
+    }
+
+    /// Establish (or re-establish) both connection pools using the current URLs, then
+    /// auto-apply the forward-only schema migrations **as the privileged role**. Migrations
+    /// already applied are skipped (the `_sqlx_migrations` ledger makes it idempotent).
+    ///
+    /// Order matters: the admin pool connects and migrates first (creating the `kb_app` role
+    /// and its grants), and only then does the app pool connect — so `kb_app` exists by the
+    /// time it is used. When the app URL is unset or identical to the admin URL, the app pool
+    /// reuses the admin pool (no redundant connections).
+    ///
+    /// If previous pools exist they are closed gracefully before the new ones replace them.
     ///
     /// # Errors
-    /// Returns an error if the connection fails or migrations cannot be applied.
+    /// Returns an error if either connection fails or migrations cannot be applied.
     pub async fn connect(&self) -> anyhow::Result<()> {
-        let url = self.current_url();
-        let pool = PgPoolOptions::new()
+        let admin_url = self.current_admin_url();
+        let admin = PgPoolOptions::new()
             .max_connections(10)
-            .connect(url.as_ref())
+            .connect(admin_url.as_ref())
             .await
-            .context("failed to connect to Postgres")?;
+            .context("failed to connect to Postgres (admin role)")?;
         MIGRATOR
-            .run(&pool)
+            .run(&admin)
             .await
             .context("failed to apply schema migrations")?;
 
-        let old = self.pool.swap(Arc::new(Some(pool.clone())));
-        if let Some(old_pool) = old.as_ref().as_ref() {
+        // Connect the app pool only after migrations have created the kb_app role + grants.
+        let app_url = self.resolved_app_url();
+        let app = if app_url.as_str() == admin_url.as_str() {
+            admin.clone()
+        } else {
+            PgPoolOptions::new()
+                .max_connections(10)
+                .connect(app_url.as_ref())
+                .await
+                .context("failed to connect to Postgres (app role)")?
+        };
+
+        let old_admin = self.admin_pool.swap(Arc::new(Some(admin)));
+        let old_app = self.app_pool.swap(Arc::new(Some(app)));
+        if let Some(old_pool) = old_app.as_ref().as_ref() {
+            old_pool.close().await;
+        }
+        if let Some(old_pool) = old_admin.as_ref().as_ref() {
             old_pool.close().await;
         }
 
         Ok(())
     }
 
-    /// Obtain a clone of the current connection pool.
+    /// Obtain a clone of the **privileged** connection pool (migrations / job queue / admin
+    /// and usage roll-ups / non-tenant tables). This is the pool to hand to
+    /// [`JobQueue`](https://docs.rs/kb-pipeline) and [`PgSessionStore`](crate::PgSessionStore).
+    ///
+    /// # Errors
+    /// Returns an error if [`connect`](PgStore::connect) has not been called yet.
+    pub fn admin_pool(&self) -> anyhow::Result<PgPool> {
+        Self::loaded(&self.admin_pool)
+    }
+
+    /// Obtain a clone of the **application** (`kb_app`) pool used for tenant-scoped data.
+    /// Falls back to the admin pool in single-role mode.
+    ///
+    /// # Errors
+    /// Returns an error if [`connect`](PgStore::connect) has not been called yet.
+    pub fn app_pool(&self) -> anyhow::Result<PgPool> {
+        Self::loaded(&self.app_pool)
+    }
+
+    /// Obtain a clone of the privileged pool. Retained as the back-compatible name for callers
+    /// (the job queue, session store, bootstrap, test seeding) that predate the two-role split;
+    /// equivalent to [`admin_pool`](PgStore::admin_pool).
     ///
     /// # Errors
     /// Returns an error if [`connect`](PgStore::connect) has not been called yet.
     pub fn pool(&self) -> anyhow::Result<PgPool> {
-        self.pool
-            .load_full()
-            .as_ref()
-            .as_ref()
-            .cloned()
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "PgStore is not connected — call connect() before using Store methods"
-                )
-            })
+        self.admin_pool()
+    }
+
+    /// Shared accessor: clone the pool out of an `ArcSwap<Option<PgPool>>` or error if unset.
+    fn loaded(slot: &ArcSwap<Option<PgPool>>) -> anyhow::Result<PgPool> {
+        slot.load_full().as_ref().as_ref().cloned().ok_or_else(|| {
+            anyhow::anyhow!("PgStore is not connected — call connect() before using Store methods")
+        })
     }
 }
 
@@ -130,38 +231,53 @@ pub(crate) fn format_vector(v: &[f32]) -> String {
     buf
 }
 
-/// Call counter for [`set_tenant`] — used as a lightweight spy in test assertions
-/// to verify every PgStore method invokes the RLS GUC setter.
+/// Call counter for [`begin_tenant_tx`] — a lightweight spy used in test assertions to verify
+/// every tenant-scoped PgStore method opens a tenant transaction.
 #[cfg(test)]
 static SET_TENANT_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// Set the `app.current_tenant` Postgres GUC for the current transaction so
-/// Row-Level Security policies can enforce tenant isolation (plan §13, P5-T1).
+/// The parameterised SQL that sets the per-transaction tenant GUC. Calls
+/// `set_config('app.current_tenant', $tenant, true)` via the `app_set_current_tenant($1)`
+/// wrapper function (migration `0003_rls.sql`).
+pub(crate) const SET_TENANT_SQL: &str = "SELECT app_set_current_tenant($1)";
+
+/// Begin a transaction on `pool` with the `app.current_tenant` GUC set transaction-locally,
+/// so **every** statement run on the returned transaction is scoped to `tenant_id` by
+/// Row-Level Security (plan §13, P6-T14).
 ///
-/// Must be called before any query on tenant-scoped tables. Uses
-/// `set_config('app.current_tenant', $tenant, true)` via the
-/// `app_set_current_tenant($1)` wrapper function created by migration 0003.
-/// The `is_local => true` scoping means the setting is transaction-local —
-/// pooled connections never leak one tenant's GUC into the next checkout.
+/// This is the linchpin of tenant isolation: the GUC and the subsequent queries share one
+/// connection within one transaction (the previous design set the GUC on a *separate*
+/// round-trip, so under a non-`BYPASSRLS` role it reverted before the query and denied every
+/// row — see docs/analysis/07-rls-enforcement-blocker.md). Because the GUC is set with
+/// `is_local => true`, it is discarded when the transaction commits or rolls back, so a pooled
+/// connection can never leak one tenant's context to the next checkout (reset-on-release).
+///
+/// Callers run their queries on `&mut *tx` and `tx.commit().await` at the end.
 ///
 /// # Errors
-/// Returns an error if the database query fails (e.g. connection lost).
-pub(crate) async fn set_tenant(pool: &PgPool, tenant_id: i64) -> anyhow::Result<()> {
+/// Returns an error if the transaction cannot begin or the GUC cannot be set.
+pub(crate) async fn begin_tenant_tx(
+    pool: &PgPool,
+    tenant_id: i64,
+) -> anyhow::Result<sqlx::Transaction<'static, Postgres>> {
     #[cfg(test)]
     {
         use std::sync::atomic::Ordering;
         SET_TENANT_CALLS.fetch_add(1, Ordering::Relaxed);
     }
-    sqlx::query("SELECT app_set_current_tenant($1)")
+    let mut tx = pool
+        .begin()
+        .await
+        .context("failed to begin tenant transaction")?;
+    sqlx::query(SET_TENANT_SQL)
         .bind(tenant_id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await
         .context("failed to set app.current_tenant for RLS")?;
-    Ok(())
+    Ok(tx)
 }
 
-/// Returns the number of times [`set_tenant`] has been called during tests.
-/// Useful as a lightweight spy to verify each method invokes the RLS GUC setter.
+/// Returns the number of times [`begin_tenant_tx`] has been called during tests.
 #[cfg(test)]
 fn set_tenant_call_count() -> u64 {
     use std::sync::atomic::Ordering;
@@ -213,9 +329,9 @@ impl Store for PgStore {
     /// # Errors
     /// Returns an error if the database is not connected or the query fails.
     async fn upsert_file(&self, rec: &FileRecord) -> anyhow::Result<i64> {
-        let pool = self.pool()?;
-        set_tenant(&pool, rec.tenant_id).await?;
-        sqlx::query_scalar::<Postgres, i64>(
+        let pool = self.app_pool()?;
+        let mut tx = begin_tenant_tx(&pool, rec.tenant_id).await?;
+        let id = sqlx::query_scalar::<Postgres, i64>(
             "INSERT INTO files (tenant_id,document_id,page_no,page_label,sha256,blob_key,path,mime,size_bytes,meta,status,ingested_at) \
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) \
              ON CONFLICT (tenant_id,sha256) DO UPDATE SET document_id=EXCLUDED.document_id,page_no=EXCLUDED.page_no,page_label=EXCLUDED.page_label,blob_key=EXCLUDED.blob_key,path=EXCLUDED.path,mime=EXCLUDED.mime,size_bytes=EXCLUDED.size_bytes,meta=EXCLUDED.meta,status=EXCLUDED.status,ingested_at=EXCLUDED.ingested_at \
@@ -226,8 +342,10 @@ impl Store for PgStore {
         .bind(&rec.blob_key).bind(&rec.path).bind(&rec.mime)
         .bind(rec.size_bytes).bind(&rec.meta)
         .bind(rec.status.as_str()).bind(rec.ingested_at)
-        .fetch_one(&pool).await
-        .context("failed to upsert file record")
+        .fetch_one(&mut *tx).await
+        .context("failed to upsert file record")?;
+        tx.commit().await.context("failed to commit upsert_file")?;
+        Ok(id)
     }
 
     /// Atomically replace the chunks belonging to a file.
@@ -235,25 +353,26 @@ impl Store for PgStore {
     /// # Errors
     /// Returns an error if the database is not connected or the query fails.
     async fn upsert_chunks(&self, file_id: i64, chunks: &[Chunk]) -> anyhow::Result<()> {
-        let pool = self.pool()?;
         // RLS: determine tenant_id from first chunk (all chunks share the same tenant).
-        // When chunks is empty we look up the file's tenant — this is an edge case
-        // (normal callers always pass the file's chunks, even if empty, from
-        // transactional_ingest where the GUC is already set).
+        // When chunks is empty we look up the file's tenant via the privileged pool — under
+        // the RLS-enforced kb_app role that lookup would itself need a tenant context we don't
+        // yet have, so this disambiguation runs on the admin pool (the actual delete then runs
+        // tenant-scoped). Normal callers pass the file's chunks, so this is a rare edge case.
         let tenant_id = if let Some(first) = chunks.first() {
             first.tenant_id
         } else {
+            let admin = self.admin_pool()?;
             sqlx::query_scalar::<Postgres, i64>("SELECT tenant_id FROM files WHERE id = $1")
                 .bind(file_id)
-                .fetch_optional(&pool)
+                .fetch_optional(&admin)
                 .await
                 .context("failed to look up file tenant for empty-chunks upsert")?
                 .ok_or_else(|| {
                     anyhow::anyhow!("file {file_id} not found — cannot determine tenant for RLS")
                 })?
         };
-        set_tenant(&pool, tenant_id).await?;
-        let mut tx = pool.begin().await.context("failed to begin transaction")?;
+        let pool = self.app_pool()?;
+        let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
         sqlx::query("DELETE FROM chunks WHERE file_id = $1")
             .bind(file_id)
             .execute(&mut *tx)
@@ -302,8 +421,8 @@ impl PgStore {
         name: &str,
         embedding: &[f32],
     ) -> anyhow::Result<i64> {
-        let pool = self.pool()?;
-        set_tenant(&pool, tenant_id).await?;
+        let pool = self.app_pool()?;
+        let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
         let vec_str = format_vector(embedding);
 
         let id = sqlx::query_scalar::<Postgres, i64>(
@@ -315,10 +434,11 @@ impl PgStore {
         .bind(tenant_id)
         .bind(name)
         .bind(&vec_str)
-        .fetch_one(&pool)
+        .fetch_one(&mut *tx)
         .await
         .context("failed to upsert tag")?;
 
+        tx.commit().await.context("failed to commit upsert_tag")?;
         Ok(id)
     }
 
@@ -328,18 +448,19 @@ impl PgStore {
     /// # Errors
     /// Returns an error if the database is not connected or the query fails.
     pub async fn lookup_alias(&self, tenant_id: i64, alias: &str) -> anyhow::Result<Option<i64>> {
-        let pool = self.pool()?;
-        set_tenant(&pool, tenant_id).await?;
+        let pool = self.app_pool()?;
+        let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
 
         let tag_id: Option<i64> = sqlx::query_scalar(
             "SELECT tag_id FROM tag_aliases WHERE tenant_id = $1 AND alias = $2",
         )
         .bind(tenant_id)
         .bind(alias)
-        .fetch_optional(&pool)
+        .fetch_optional(&mut *tx)
         .await
         .context("failed to look up tag alias")?;
 
+        tx.commit().await.context("failed to commit lookup_alias")?;
         Ok(tag_id)
     }
 
@@ -349,8 +470,8 @@ impl PgStore {
     /// # Errors
     /// Returns an error if the database is not connected or the query fails.
     pub async fn find_similar_tags(&self, tenant_id: i64) -> anyhow::Result<Vec<(i64, Vec<f32>)>> {
-        let pool = self.pool()?;
-        set_tenant(&pool, tenant_id).await?;
+        let pool = self.app_pool()?;
+        let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
 
         #[derive(sqlx::FromRow)]
         struct TagRow {
@@ -364,9 +485,13 @@ impl PgStore {
              WHERE tenant_id = $1 AND embedding IS NOT NULL",
         )
         .bind(tenant_id)
-        .fetch_all(&pool)
+        .fetch_all(&mut *tx)
         .await
         .context("failed to fetch similar tags")?;
+
+        tx.commit()
+            .await
+            .context("failed to commit find_similar_tags")?;
 
         rows.into_iter()
             .map(|r| {
@@ -387,8 +512,8 @@ impl PgStore {
         alias: &str,
         tag_id: i64,
     ) -> anyhow::Result<()> {
-        let pool = self.pool()?;
-        set_tenant(&pool, tenant_id).await?;
+        let pool = self.app_pool()?;
+        let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
 
         sqlx::query(
             "INSERT INTO tag_aliases (tenant_id, alias, tag_id) \
@@ -398,10 +523,13 @@ impl PgStore {
         .bind(tenant_id)
         .bind(alias)
         .bind(tag_id)
-        .execute(&pool)
+        .execute(&mut *tx)
         .await
         .context("failed to insert tag alias")?;
 
+        tx.commit()
+            .await
+            .context("failed to commit insert_tag_alias")?;
         Ok(())
     }
 
@@ -427,12 +555,8 @@ impl PgStore {
             return Ok(());
         }
 
-        let pool = self.pool()?;
-        set_tenant(&pool, tenant_id).await?;
-        let mut tx = pool
-            .begin()
-            .await
-            .context("failed to begin transaction for insert_document_tags")?;
+        let pool = self.app_pool()?;
+        let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
 
         for &tag_id in tag_ids {
             sqlx::query(
@@ -466,10 +590,10 @@ impl PgStore {
     /// # Errors
     /// Returns an error if the database is not connected or the query fails.
     pub async fn upsert_document(&self, doc: &Document) -> anyhow::Result<i64> {
-        let pool = self.pool()?;
-        set_tenant(&pool, doc.tenant_id).await?;
+        let pool = self.app_pool()?;
+        let mut tx = begin_tenant_tx(&pool, doc.tenant_id).await?;
         let st = doc.status.as_str();
-        if doc.id > 0 {
+        let id = if doc.id > 0 {
             sqlx::query_scalar::<Postgres, i64>(DOC_UPDATE_SQL)
                 .bind(doc.tenant_id)
                 .bind(&doc.title)
@@ -480,9 +604,9 @@ impl PgStore {
                 .bind(doc.page_count)
                 .bind(st)
                 .bind(doc.id)
-                .fetch_one(&pool)
+                .fetch_one(&mut *tx)
                 .await
-                .context("failed to update document")
+                .context("failed to update document")?
         } else {
             sqlx::query_scalar::<Postgres, i64>(DOC_INSERT_SQL)
                 .bind(doc.tenant_id)
@@ -493,10 +617,14 @@ impl PgStore {
                 .bind(&doc.meta)
                 .bind(doc.page_count)
                 .bind(st)
-                .fetch_one(&pool)
+                .fetch_one(&mut *tx)
                 .await
-                .context("failed to insert document")
-        }
+                .context("failed to insert document")?
+        };
+        tx.commit()
+            .await
+            .context("failed to commit upsert_document")?;
+        Ok(id)
     }
 
     /// Record a single model-call usage event, returning the new row's id.
@@ -504,9 +632,9 @@ impl PgStore {
     /// # Errors
     /// Returns an error if the database is not connected or the query fails.
     pub async fn insert_usage_event(&self, event: &UsageEvent) -> anyhow::Result<i64> {
-        let pool = self.pool()?;
-        set_tenant(&pool, event.tenant_id).await?;
-        sqlx::query_scalar::<Postgres, i64>(USAGE_INSERT_SQL)
+        let pool = self.app_pool()?;
+        let mut tx = begin_tenant_tx(&pool, event.tenant_id).await?;
+        let id = sqlx::query_scalar::<Postgres, i64>(USAGE_INSERT_SQL)
             .bind(event.tenant_id)
             .bind(event.user_id)
             .bind(&event.model)
@@ -515,9 +643,13 @@ impl PgStore {
             .bind(event.prompt_tokens)
             .bind(event.completion_tokens)
             .bind(event.latency_ms)
-            .fetch_one(&pool)
+            .fetch_one(&mut *tx)
             .await
-            .context("failed to insert usage event")
+            .context("failed to insert usage event")?;
+        tx.commit()
+            .await
+            .context("failed to commit insert_usage_event")?;
+        Ok(id)
     }
 
     /// Atomically upsert a document and all its files, tags, and chunks in one
@@ -545,9 +677,8 @@ impl PgStore {
             );
         }
 
-        let pool = self.pool()?;
-        set_tenant(&pool, doc.tenant_id).await?;
-        let mut tx = pool.begin().await.context("failed to begin transaction")?;
+        let pool = self.app_pool()?;
+        let mut tx = begin_tenant_tx(&pool, doc.tenant_id).await?;
 
         // 1. Upsert document, forcing status='ready'.
         let doc_id = if doc.id > 0 {
@@ -643,8 +774,8 @@ impl PgStore {
         password_hash: &str,
         role: kb_core::user::UserRole,
     ) -> anyhow::Result<i64> {
-        let pool = self.pool()?;
-        set_tenant(&pool, tenant_id).await?;
+        let pool = self.app_pool()?;
+        let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
         let role_str = role.as_str();
         let id = sqlx::query_scalar::<Postgres, i64>(
             "INSERT INTO users (tenant_id, email, password_hash, role) \
@@ -656,10 +787,11 @@ impl PgStore {
         .bind(email)
         .bind(password_hash)
         .bind(role_str)
-        .fetch_optional(&pool)
+        .fetch_optional(&mut *tx)
         .await
         .context("failed to insert user row")?
         .ok_or_else(|| anyhow::anyhow!("user '{email}' already exists in tenant {tenant_id}"))?;
+        tx.commit().await.context("failed to commit create_user")?;
         Ok(id)
     }
 
@@ -676,8 +808,8 @@ impl PgStore {
         tenant_id: i64,
         email: &str,
     ) -> anyhow::Result<Option<kb_core::user::User>> {
-        let pool = self.pool()?;
-        set_tenant(&pool, tenant_id).await?;
+        let pool = self.app_pool()?;
+        let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
 
         #[derive(sqlx::FromRow)]
         struct UserRow {
@@ -695,9 +827,13 @@ impl PgStore {
         )
         .bind(tenant_id)
         .bind(email)
-        .fetch_optional(&pool)
+        .fetch_optional(&mut *tx)
         .await
         .context("failed to look up user by email")?;
+
+        tx.commit()
+            .await
+            .context("failed to commit find_user_by_email")?;
 
         match row {
             Some(r) => {
@@ -796,8 +932,8 @@ impl PgStore {
     /// # Errors
     /// Returns an error if the database is not connected or the query fails.
     pub async fn get_storage_usage(&self, tenant_id: i64) -> anyhow::Result<i64> {
-        let pool = self.pool()?;
-        set_tenant(&pool, tenant_id).await?;
+        let pool = self.app_pool()?;
+        let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
         // `SUM(bigint)` is typed `NUMERIC` in Postgres (guards against i64 overflow on the
         // running total), which sqlx cannot decode into an `i64`. We cap a single tenant's
         // storage well inside i64, so cast the aggregate back to `BIGINT` for decoding.
@@ -805,9 +941,12 @@ impl PgStore {
             "SELECT COALESCE(SUM(size_bytes), 0)::BIGINT FROM files WHERE tenant_id = $1",
         )
         .bind(tenant_id)
-        .fetch_one(&pool)
+        .fetch_one(&mut *tx)
         .await
         .context("failed to query storage usage")?;
+        tx.commit()
+            .await
+            .context("failed to commit get_storage_usage")?;
         Ok(total)
     }
 
@@ -821,16 +960,19 @@ impl PgStore {
     /// # Errors
     /// Returns an error if the database is not connected or the query fails.
     pub async fn get_token_usage(&self, tenant_id: i64) -> anyhow::Result<i64> {
-        let pool = self.pool()?;
-        set_tenant(&pool, tenant_id).await?;
+        let pool = self.app_pool()?;
+        let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
         let total: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(SUM(COALESCE(prompt_tokens,0) + COALESCE(completion_tokens,0)), 0) \
+            "SELECT COALESCE(SUM(COALESCE(prompt_tokens,0) + COALESCE(completion_tokens,0)), 0)::BIGINT \
              FROM usage_events WHERE tenant_id = $1",
         )
         .bind(tenant_id)
-        .fetch_one(&pool)
+        .fetch_one(&mut *tx)
         .await
         .context("failed to query token usage")?;
+        tx.commit()
+            .await
+            .context("failed to commit get_token_usage")?;
         Ok(total)
     }
 
@@ -913,16 +1055,19 @@ impl PgStore {
     /// # Errors
     /// Returns an error if the database is not connected or the query fails.
     pub async fn list_documents(&self, tenant_id: i64) -> anyhow::Result<Vec<Document>> {
-        let pool = self.pool()?;
-        set_tenant(&pool, tenant_id).await?;
+        let pool = self.app_pool()?;
+        let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
         let rows: Vec<DocumentRow> = sqlx::query_as(
             "SELECT id, tenant_id, title, summary, user_note, kind, meta, page_count, status, created_at \
              FROM documents WHERE tenant_id = $1 ORDER BY id",
         )
         .bind(tenant_id)
-        .fetch_all(&pool)
+        .fetch_all(&mut *tx)
         .await
         .context("failed to list documents for export")?;
+        tx.commit()
+            .await
+            .context("failed to commit list_documents")?;
         rows.into_iter().map(document_from_row).collect()
     }
 
@@ -931,17 +1076,18 @@ impl PgStore {
     /// # Errors
     /// Returns an error if the database is not connected or the query fails.
     pub async fn list_files(&self, tenant_id: i64) -> anyhow::Result<Vec<FileRecord>> {
-        let pool = self.pool()?;
-        set_tenant(&pool, tenant_id).await?;
+        let pool = self.app_pool()?;
+        let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
         let rows: Vec<FileRow> = sqlx::query_as(
             "SELECT id, tenant_id, document_id, page_no, page_label, sha256, blob_key, path, \
              mime, size_bytes, meta, status, ingested_at \
              FROM files WHERE tenant_id = $1 ORDER BY document_id, page_no",
         )
         .bind(tenant_id)
-        .fetch_all(&pool)
+        .fetch_all(&mut *tx)
         .await
         .context("failed to list files for export")?;
+        tx.commit().await.context("failed to commit list_files")?;
         rows.into_iter().map(file_from_row).collect()
     }
 
@@ -950,8 +1096,8 @@ impl PgStore {
     /// # Errors
     /// Returns an error if the database is not connected or the query fails.
     pub async fn list_tags(&self, tenant_id: i64) -> anyhow::Result<Vec<kb_core::tag::Tag>> {
-        let pool = self.pool()?;
-        set_tenant(&pool, tenant_id).await?;
+        let pool = self.app_pool()?;
+        let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
         #[derive(sqlx::FromRow)]
         struct Row {
             id: i64,
@@ -964,9 +1110,10 @@ impl PgStore {
              FROM tags WHERE tenant_id = $1 ORDER BY id",
         )
         .bind(tenant_id)
-        .fetch_all(&pool)
+        .fetch_all(&mut *tx)
         .await
         .context("failed to list tags for export")?;
+        tx.commit().await.context("failed to commit list_tags")?;
         rows.into_iter()
             .map(|r| {
                 let embedding = r
@@ -988,8 +1135,8 @@ impl PgStore {
     /// # Errors
     /// Returns an error if the database is not connected or the query fails.
     pub async fn list_tag_aliases(&self, tenant_id: i64) -> anyhow::Result<Vec<(String, i64)>> {
-        let pool = self.pool()?;
-        set_tenant(&pool, tenant_id).await?;
+        let pool = self.app_pool()?;
+        let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
         #[derive(sqlx::FromRow)]
         struct Row {
             alias: String,
@@ -999,9 +1146,12 @@ impl PgStore {
             "SELECT alias, tag_id FROM tag_aliases WHERE tenant_id = $1 ORDER BY alias",
         )
         .bind(tenant_id)
-        .fetch_all(&pool)
+        .fetch_all(&mut *tx)
         .await
         .context("failed to list tag aliases for export")?;
+        tx.commit()
+            .await
+            .context("failed to commit list_tag_aliases")?;
         Ok(rows.into_iter().map(|r| (r.alias, r.tag_id)).collect())
     }
 
@@ -1010,8 +1160,8 @@ impl PgStore {
     /// # Errors
     /// Returns an error if the database is not connected or the query fails.
     pub async fn list_document_tags(&self, tenant_id: i64) -> anyhow::Result<Vec<(i64, i64)>> {
-        let pool = self.pool()?;
-        set_tenant(&pool, tenant_id).await?;
+        let pool = self.app_pool()?;
+        let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
         #[derive(sqlx::FromRow)]
         struct Row {
             document_id: i64,
@@ -1025,9 +1175,12 @@ impl PgStore {
              ORDER BY dt.document_id, dt.tag_id",
         )
         .bind(tenant_id)
-        .fetch_all(&pool)
+        .fetch_all(&mut *tx)
         .await
         .context("failed to list document tags for export")?;
+        tx.commit()
+            .await
+            .context("failed to commit list_document_tags")?;
         Ok(rows
             .into_iter()
             .map(|r| (r.document_id, r.tag_id))
@@ -1039,8 +1192,8 @@ impl PgStore {
     /// # Errors
     /// Returns an error if the database is not connected or the query fails.
     pub async fn list_chunks(&self, tenant_id: i64) -> anyhow::Result<Vec<kb_core::chunk::Chunk>> {
-        let pool = self.pool()?;
-        set_tenant(&pool, tenant_id).await?;
+        let pool = self.app_pool()?;
+        let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
         #[derive(sqlx::FromRow)]
         struct Row {
             id: i64,
@@ -1060,9 +1213,10 @@ impl PgStore {
              ORDER BY document_id, file_id, idx",
         )
         .bind(tenant_id)
-        .fetch_all(&pool)
+        .fetch_all(&mut *tx)
         .await
         .context("failed to list chunks for export")?;
+        tx.commit().await.context("failed to commit list_chunks")?;
         rows.into_iter()
             .map(|r| {
                 let embedding = parse_vector_text(&r.embedding_text)
@@ -1232,18 +1386,15 @@ mod tests {
         assert!(f.len() > 2048);
     }
 
-    // ── set_tenant ─────────────────────────────────────────────────────
+    // ── begin_tenant_tx ─────────────────────────────────────────────────
 
-    /// The `SELECT app_set_current_tenant($1)` SQL must be a valid parameterised
-    /// statement. This test guards against accidental edits or typos.
+    /// The tenant-GUC SQL ([`SET_TENANT_SQL`]) must be a valid parameterised statement.
+    /// This test guards against accidental edits or typos.
     #[test]
     fn set_tenant_sql_is_well_formed() {
-        // The function calls sqlx::query with exactly this SQL.
-        // Verify the constant form.
-        const SQL: &str = "SELECT app_set_current_tenant($1)";
-        assert!(SQL.starts_with("SELECT app_set_current_tenant"));
-        assert!(SQL.contains("$1"));
-        assert!(!SQL.contains("PERFORM")); // PERFORM is plpgsql; we use SELECT
+        assert!(SET_TENANT_SQL.starts_with("SELECT app_set_current_tenant"));
+        assert!(SET_TENANT_SQL.contains("$1"));
+        assert!(!SET_TENANT_SQL.contains("PERFORM")); // PERFORM is plpgsql; we use SELECT
     }
 
     /// Verify that `set_tenant_call_count` is readable and `reset_set_tenant_calls`
@@ -1252,7 +1403,6 @@ mod tests {
     fn set_tenant_spy_counter_works() {
         reset_set_tenant_calls();
         assert_eq!(set_tenant_call_count(), 0);
-        // Call set_tenant via a tiny helper that hits the counter path.
         // We can't call the real async function without a connected pool, so
         // we just verify the spy primitives are reachable.
         reset_set_tenant_calls();
@@ -1264,15 +1414,15 @@ mod tests {
     #[test]
     fn new_stores_url() {
         let store = PgStore::new("postgres://localhost/kb");
-        assert_eq!(*store.current_url(), "postgres://localhost/kb");
+        assert_eq!(*store.current_admin_url(), "postgres://localhost/kb");
     }
 
     #[test]
     fn set_url_hot_swaps() {
         let store = PgStore::new("postgres://old/db");
-        assert_eq!(*store.current_url(), "postgres://old/db");
+        assert_eq!(*store.current_admin_url(), "postgres://old/db");
         store.set_url("postgres://new/db");
-        assert_eq!(*store.current_url(), "postgres://new/db");
+        assert_eq!(*store.current_admin_url(), "postgres://new/db");
     }
 
     #[test]
@@ -1280,7 +1430,34 @@ mod tests {
         let store = PgStore::new("postgres://a/db");
         store.set_url("postgres://b/db");
         store.set_url("postgres://c/db");
-        assert_eq!(*store.current_url(), "postgres://c/db");
+        assert_eq!(*store.current_admin_url(), "postgres://c/db");
+    }
+
+    /// In single-role mode (`new`), the app URL is empty so it resolves to the admin URL.
+    #[test]
+    fn new_app_url_falls_back_to_admin() {
+        let store = PgStore::new("postgres://localhost/kb");
+        assert_eq!(*store.resolved_app_url(), "postgres://localhost/kb");
+        // Hot-swapping the admin URL also moves the fallback app URL.
+        store.set_url("postgres://relocated/kb");
+        assert_eq!(*store.resolved_app_url(), "postgres://relocated/kb");
+    }
+
+    /// `with_roles` keeps the two URLs distinct, and `set_app_url` hot-swaps only the app URL.
+    #[test]
+    fn with_roles_keeps_urls_distinct_and_hot_swappable() {
+        let store = PgStore::with_roles("postgres://kb_admin@h/kb", "postgres://kb_app@h/kb");
+        assert_eq!(*store.current_admin_url(), "postgres://kb_admin@h/kb");
+        assert_eq!(*store.resolved_app_url(), "postgres://kb_app@h/kb");
+
+        store.set_app_url("postgres://kb_app_rotated@h/kb");
+        assert_eq!(*store.resolved_app_url(), "postgres://kb_app_rotated@h/kb");
+        // Admin URL is unaffected by an app-URL rotation.
+        assert_eq!(*store.current_admin_url(), "postgres://kb_admin@h/kb");
+
+        // Clearing the app URL reverts to single-role fallback.
+        store.set_app_url("");
+        assert_eq!(*store.resolved_app_url(), "postgres://kb_admin@h/kb");
     }
 
     #[test]
@@ -1290,6 +1467,25 @@ mod tests {
         assert!(
             err.to_string().contains("not connected"),
             "expected 'not connected' error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn app_and_admin_pools_error_before_connect() {
+        let store = PgStore::with_roles("postgres://a/db", "postgres://b/db");
+        assert!(
+            store
+                .admin_pool()
+                .unwrap_err()
+                .to_string()
+                .contains("not connected")
+        );
+        assert!(
+            store
+                .app_pool()
+                .unwrap_err()
+                .to_string()
+                .contains("not connected")
         );
     }
 
@@ -1461,26 +1657,10 @@ mod tests {
             F: FnOnce(PgStore) -> Fut,
             Fut: std::future::Future<Output = anyhow::Result<()>>,
         {
-            use testcontainers::core::ports::IntoContainerPort;
-            use testcontainers::core::wait::WaitFor;
-            use testcontainers::runners::AsyncRunner;
-            use testcontainers::{GenericImage, ImageExt};
-
-            let container = GenericImage::new("pgvector/pgvector", "pg17")
-                .with_exposed_port(5432u16.tcp())
-                .with_wait_for(WaitFor::message_on_stderr(
-                    "database system is ready to accept connections",
-                ))
-                .with_env_var("POSTGRES_USER", "kb")
-                .with_env_var("POSTGRES_PASSWORD", "kb")
-                .with_env_var("POSTGRES_DB", "kb")
-                .start()
-                .await?;
-
-            let host_port = container.get_host_port_ipv4(5432u16.tcp()).await?;
-            let url = format!("postgres://kb:kb@127.0.0.1:{host_port}/kb?sslmode=disable");
-
-            let store = PgStore::new(&url);
+            // Shared per-binary container + fresh database; tenant data runs as the
+            // non-privileged kb_app role so RLS is enforced (P6-T14).
+            let db = kb_testsupport::fresh_db().await?;
+            let store = PgStore::with_roles(&db.admin_url, &db.app_url);
             store.connect().await?;
 
             // FK constraints on tags require a tenant row.
@@ -1832,26 +2012,10 @@ mod tests {
             F: FnOnce(PgStore) -> Fut,
             Fut: std::future::Future<Output = anyhow::Result<()>>,
         {
-            use testcontainers::core::ports::IntoContainerPort;
-            use testcontainers::core::wait::WaitFor;
-            use testcontainers::runners::AsyncRunner;
-            use testcontainers::{GenericImage, ImageExt};
-
-            let container = GenericImage::new("pgvector/pgvector", "pg17")
-                .with_exposed_port(5432u16.tcp())
-                .with_wait_for(WaitFor::message_on_stderr(
-                    "database system is ready to accept connections",
-                ))
-                .with_env_var("POSTGRES_USER", "kb")
-                .with_env_var("POSTGRES_PASSWORD", "kb")
-                .with_env_var("POSTGRES_DB", "kb")
-                .start()
-                .await?;
-
-            let host_port = container.get_host_port_ipv4(5432u16.tcp()).await?;
-            let url = format!("postgres://kb:kb@127.0.0.1:{host_port}/kb?sslmode=disable");
-
-            let store = PgStore::new(&url);
+            // Shared per-binary container + fresh database; tenant data runs as the
+            // non-privileged kb_app role so RLS is enforced (P6-T14).
+            let db = kb_testsupport::fresh_db().await?;
+            let store = PgStore::with_roles(&db.admin_url, &db.app_url);
             store.connect().await?;
 
             let pool = store.pool()?;
@@ -2185,12 +2349,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_user_calls_set_tenant() {
-        // Spy verification: create_user must invoke set_tenant before the INSERT.
-        // Since we can't call the real async set_tenant without a connected pool,
-        // we verify each user method is on the list of tenant-scoped methods.
+    async fn create_user_is_tenant_scoped() {
+        // create_user is a tenant-scoped method: it acquires the app pool and opens a tenant
+        // transaction. Without a connected store it fails fast on the pool lookup (we can't
+        // exercise begin_tenant_tx without a real DB — that path is integration-tested).
         let store = PgStore::new("postgres://localhost/db");
-        // Call that fails fast — but verifies our test harness can reach create_user.
         let err = store
             .create_user(1, "test@example.com", "hash", UserRole::Member)
             .await
@@ -2211,26 +2374,10 @@ mod tests {
             F: FnOnce(PgStore) -> Fut,
             Fut: std::future::Future<Output = anyhow::Result<()>>,
         {
-            use testcontainers::core::ports::IntoContainerPort;
-            use testcontainers::core::wait::WaitFor;
-            use testcontainers::runners::AsyncRunner;
-            use testcontainers::{GenericImage, ImageExt};
-
-            let container = GenericImage::new("pgvector/pgvector", "pg17")
-                .with_exposed_port(5432u16.tcp())
-                .with_wait_for(WaitFor::message_on_stderr(
-                    "database system is ready to accept connections",
-                ))
-                .with_env_var("POSTGRES_USER", "kb")
-                .with_env_var("POSTGRES_PASSWORD", "kb")
-                .with_env_var("POSTGRES_DB", "kb")
-                .start()
-                .await?;
-
-            let host_port = container.get_host_port_ipv4(5432u16.tcp()).await?;
-            let url = format!("postgres://kb:kb@127.0.0.1:{host_port}/kb?sslmode=disable");
-
-            let store = PgStore::new(&url);
+            // Shared per-binary container + fresh database; tenant data runs as the
+            // non-privileged kb_app role so RLS is enforced (P6-T14).
+            let db = kb_testsupport::fresh_db().await?;
+            let store = PgStore::with_roles(&db.admin_url, &db.app_url);
             store.connect().await?;
 
             let pool = store.pool()?;
@@ -2556,26 +2703,10 @@ mod tests {
             F: FnOnce(PgStore) -> Fut,
             Fut: std::future::Future<Output = anyhow::Result<()>>,
         {
-            use testcontainers::core::ports::IntoContainerPort;
-            use testcontainers::core::wait::WaitFor;
-            use testcontainers::runners::AsyncRunner;
-            use testcontainers::{GenericImage, ImageExt};
-
-            let container = GenericImage::new("pgvector/pgvector", "pg17")
-                .with_exposed_port(5432u16.tcp())
-                .with_wait_for(WaitFor::message_on_stderr(
-                    "database system is ready to accept connections",
-                ))
-                .with_env_var("POSTGRES_USER", "kb")
-                .with_env_var("POSTGRES_PASSWORD", "kb")
-                .with_env_var("POSTGRES_DB", "kb")
-                .start()
-                .await?;
-
-            let host_port = container.get_host_port_ipv4(5432u16.tcp()).await?;
-            let url = format!("postgres://kb:kb@127.0.0.1:{host_port}/kb?sslmode=disable");
-
-            let store = PgStore::new(&url);
+            // Shared per-binary container + fresh database; tenant data runs as the
+            // non-privileged kb_app role so RLS is enforced (P6-T14).
+            let db = kb_testsupport::fresh_db().await?;
+            let store = PgStore::with_roles(&db.admin_url, &db.app_url);
             store.connect().await?;
 
             // Insert a tenant with both quotas set.

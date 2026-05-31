@@ -1,10 +1,11 @@
 # 07 — RLS is not actually enforced (P6-T13 §31.5 blocker)
 
-**Status:** BLOCKER — needs a human design decision before the §31.5 cross-tenant
-isolation checkpoint can be signed off. **Discovered:** 2026-05-31, building ledger task
-**P6-T13** (triage the `#[ignore]` integration-suite failures the P6-T0 Podman lane exposed,
-incl. the part-C cross-tenant RLS re-verification). **Severity:** critical (tenant
-isolation / §13 / §31.5).
+**Status:** ✅ RESOLVED in **P6-T14** (the connection-role rework). The two-role model below was
+implemented and the cross-tenant isolation suite now passes **under the non-superuser `kb_app`
+role** — see the *Resolution* section at the end. The original blocker write-up is kept intact
+for the record. **Discovered:** 2026-05-31, building ledger task **P6-T13** (triage the
+`#[ignore]` integration-suite failures the P6-T0 Podman lane exposed, incl. the part-C
+cross-tenant RLS re-verification). **Severity:** critical (tenant isolation / §13 / §31.5).
 
 ## TL;DR
 
@@ -155,3 +156,40 @@ suite to green *under the non-superuser role* — the only way the §31.5 sign-o
 
 See also [`06-integration-suite-findings.md`](./06-integration-suite-findings.md) (the P6-T0
 lane that first ran these suites).
+
+## Resolution (P6-T14, 2026-05-31)
+
+The recommended two-role model was implemented and **verified on real pgvector via Podman**.
+RLS is now genuinely enforced for the application's own queries.
+
+**1. Two roles (migration `0006_app_role.sql`).** `kb_app` is created `LOGIN NOSUPERUSER
+NOBYPASSRLS`, owns nothing, and is granted only DML on the nine tenant-scoped tables (+ sequence
+usage + EXECUTE on `app_set_current_tenant`) — explicitly **not** on `tenants` / `sessions` /
+`settings`. The bootstrap superuser stays the privileged role for migrations, the job queue, and
+admin/usage roll-ups.
+
+**2. Two pools, per-transaction GUC (`kb-store`).** `PgStore` now holds an `admin_pool`
+(privileged) and an `app_pool` (`kb_app`). Every tenant-scoped method (~20 of them) and
+`hybrid_search` run through `begin_tenant_tx(app_pool, tenant)`, which `BEGIN`s a transaction and
+sets `app.current_tenant` **transaction-locally on that same connection**, so the GUC and the
+query share one connection and the setting is discarded on commit (no leak across pooled
+checkouts — the Probe 3c failure mode is gone). Cross-tenant paths (`create_tenant`,
+`tenant_count`, quotas' tenant-limit lookup, the queue) use the admin pool. Both URLs are wired
+through `kb-config` (`storage.app_postgres_url` / `APP_POSTGRES_URL`, hot-swappable) and
+`compose.yaml`/`.env.example`.
+
+**3. Verified.** The cross-tenant suite was rewritten to seed via the privileged pool and run
+every tenant-data assertion as `kb_app` inside a tenant transaction. **doc-07 Probe 1 now returns
+0** (`tenant_b_cannot_read_tenant_a_document`), and all nine isolation tests + the P5 E2E
+isolation test pass under `kb_app`. `migrations_pg` additionally asserts `kb_app` is
+`NOSUPERUSER`/`NOBYPASSRLS`.
+
+**4. Bug 5 + harness (finding 06-B).** Fixed by deriving a unique `sha256` per seeded file
+(p4 + the hybrid_search fixture). Harness reliability solved by the new `kb-testsupport` crate:
+**one pgvector container per test binary** (a `OnceCell`) with a **fresh database per test** and
+the container's `max_connections` raised — eliminating per-test container churn. (Subtlety found
++ fixed: a sqlx pool cannot be shared across the separate tokio runtimes that `#[tokio::test]`
+creates, so each `fresh_db()` opens its own short-lived maintenance connection.)
+
+The §31.5 sign-off is therefore based on the isolation suite passing **under the role that
+actually enforces RLS**, not under the superuser.

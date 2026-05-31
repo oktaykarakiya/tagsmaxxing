@@ -20,12 +20,15 @@ pub fn env_from_process() -> EnvMap {
 
 /// Overlay recognized environment variables onto `cfg`, overriding file values.
 ///
-/// Recognized variables: `POSTGRES_URL`, `PORT`, `KB_ACQUIRE_TIMEOUT_SECS`,
-/// `KB_HEALTH_INTERVAL_SECS`, `KB_MAX_RETRIES`. Other `KB_*` variables are left for
-/// other subsystems (e.g. the secrets store, plan §24).
+/// Recognized variables: `POSTGRES_URL`, `APP_POSTGRES_URL`, `PORT`,
+/// `KB_ACQUIRE_TIMEOUT_SECS`, `KB_HEALTH_INTERVAL_SECS`, `KB_MAX_RETRIES`. Other `KB_*`
+/// variables are left for other subsystems (e.g. the secrets store, plan §24).
 pub fn apply_env(cfg: &mut Config, env: &EnvMap) -> Result<(), ConfigError> {
     if let Some(v) = env.get("POSTGRES_URL") {
         cfg.storage.postgres_url = v.clone();
+    }
+    if let Some(v) = env.get("APP_POSTGRES_URL") {
+        cfg.storage.app_postgres_url = v.clone();
     }
     if let Some(v) = env.get("PORT") {
         cfg.api.port = parse_env("PORT", v)?;
@@ -75,6 +78,31 @@ mod tests {
         .unwrap();
         assert_eq!(cfg.storage.postgres_url, "postgres://x");
         assert_eq!(cfg.api.port, 8080);
+    }
+
+    #[test]
+    fn overlay_sets_app_postgres_url_independently() {
+        let mut cfg = Config::default();
+        apply_env(
+            &mut cfg,
+            &map(&[
+                ("POSTGRES_URL", "postgres://kb@h/kb"),
+                ("APP_POSTGRES_URL", "postgres://kb_app@h/kb"),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(cfg.storage.postgres_url, "postgres://kb@h/kb");
+        assert_eq!(cfg.storage.app_postgres_url, "postgres://kb_app@h/kb");
+    }
+
+    #[test]
+    fn app_postgres_url_defaults_empty_when_unset() {
+        let mut cfg = Config::default();
+        apply_env(&mut cfg, &map(&[("POSTGRES_URL", "postgres://x")])).unwrap();
+        assert!(
+            cfg.storage.app_postgres_url.is_empty(),
+            "app URL stays empty (single-role fallback) when APP_POSTGRES_URL is unset"
+        );
     }
 
     #[test]

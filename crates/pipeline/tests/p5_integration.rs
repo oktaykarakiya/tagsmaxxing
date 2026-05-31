@@ -111,9 +111,11 @@ impl Reranker for PassThroughReranker {
 /// `_container` field is held for its Drop impl). The [`MockBackend`] is returned
 /// separately from [`setup_two_tenants`] so the test can shut it down explicitly.
 struct TwoTenantInfra {
-    _container: testcontainers::ContainerAsync<testcontainers::GenericImage>,
     store: Arc<PgStore>,
+    /// Privileged pool — provisioning, the `tenants` table, cross-tenant seeding/verification.
     pool: sqlx::PgPool,
+    /// The kb_app pool — RLS-enforced tenant-data assertions (P6-T14).
+    app_pool: sqlx::PgPool,
     blob: Arc<dyn Blob>,
     _tmpdir: tempfile::TempDir,
     tenant_a: i64,
@@ -132,28 +134,12 @@ struct TwoTenantInfra {
 /// call `mock.shutdown().await` at the end of each test to gracefully stop the
 /// mock HTTP server.
 async fn setup_two_tenants() -> anyhow::Result<(TwoTenantInfra, MockBackend)> {
-    use testcontainers::core::ports::IntoContainerPort;
-    use testcontainers::core::wait::WaitFor;
-    use testcontainers::runners::AsyncRunner;
-    use testcontainers::{GenericImage, ImageExt};
-
-    let container = GenericImage::new("pgvector/pgvector", "pg17")
-        .with_exposed_port(5432u16.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", "kb")
-        .with_env_var("POSTGRES_PASSWORD", "kb")
-        .with_env_var("POSTGRES_DB", "kb")
-        .start()
-        .await?;
-
-    let host_port = container.get_host_port_ipv4(5432u16.tcp()).await?;
-    let url = format!("postgres://kb:kb@127.0.0.1:{host_port}/kb?sslmode=disable");
-
-    let store = Arc::new(PgStore::new(&url));
+    // Shared per-binary container + fresh DB; tenant data runs as kb_app under RLS (P6-T14).
+    let db = kb_testsupport::fresh_db().await?;
+    let store = Arc::new(PgStore::with_roles(&db.admin_url, &db.app_url));
     store.connect().await?;
     let pool = store.pool()?;
+    let app_pool = store.app_pool()?;
 
     // Create two tenants.
     let tenant_a = store.create_tenant("tenant-a", "Tenant Alpha").await?;
@@ -215,9 +201,9 @@ async fn setup_two_tenants() -> anyhow::Result<(TwoTenantInfra, MockBackend)> {
     let embedder = Arc::new(ChunkEmbedder::new(Arc::clone(&llm), "bge-m3".into(), 1024));
 
     let infra = TwoTenantInfra {
-        _container: container,
         store,
         pool,
+        app_pool,
         blob,
         _tmpdir: tmp,
         tenant_a,
@@ -428,28 +414,25 @@ async fn e2e_multi_tenant_ingest_and_search_isolation() {
     assert!(infra.sessions.validate(&session_a).await.unwrap().is_some());
     assert!(infra.sessions.validate(&session_b).await.unwrap().is_some());
 
-    // ── Confirming document count per tenant ───────────────────────────────
-    let pool = &infra.pool;
-    sqlx::query("SELECT app_set_current_tenant($1)")
-        .bind(infra.tenant_a)
-        .execute(pool)
-        .await
-        .unwrap();
-    let count_a: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM documents")
-        .fetch_one(pool)
-        .await
-        .unwrap();
+    // ── Confirming document count per tenant under RLS (as kb_app) ──────────
+    // Each count runs in its tenant's transaction on the kb_app pool, so RLS scopes it —
+    // proving each tenant sees exactly its own one document (not the global two).
+    let count_a = kb_testsupport::count_as_tenant(
+        &infra.app_pool,
+        infra.tenant_a,
+        "SELECT COUNT(*) FROM documents",
+    )
+    .await
+    .unwrap();
     assert_eq!(count_a, 1, "tenant A should see exactly 1 document");
 
-    sqlx::query("SELECT app_set_current_tenant($1)")
-        .bind(infra.tenant_b)
-        .execute(pool)
-        .await
-        .unwrap();
-    let count_b: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM documents")
-        .fetch_one(pool)
-        .await
-        .unwrap();
+    let count_b = kb_testsupport::count_as_tenant(
+        &infra.app_pool,
+        infra.tenant_b,
+        "SELECT COUNT(*) FROM documents",
+    )
+    .await
+    .unwrap();
     assert_eq!(count_b, 1, "tenant B should see exactly 1 document");
 
     mock.shutdown().await;

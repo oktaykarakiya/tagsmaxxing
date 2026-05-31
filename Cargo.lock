@@ -1680,6 +1680,7 @@ dependencies = [
  "kb-mock-backend",
  "kb-scheduler",
  "kb-store",
+ "kb-testsupport",
  "reqwest",
  "serde",
  "serde_json",
@@ -1717,9 +1718,20 @@ dependencies = [
  "bytes",
  "chrono",
  "kb-core",
+ "kb-testsupport",
  "serde_json",
  "sqlx",
  "tempfile",
+ "testcontainers",
+ "tokio",
+]
+
+[[package]]
+name = "kb-testsupport"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "sqlx",
  "testcontainers",
  "tokio",
 ]

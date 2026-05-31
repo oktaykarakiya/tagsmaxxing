@@ -70,6 +70,10 @@ mod tests {
         let cfg = load_str(src, &empty_env()).unwrap();
         assert_eq!(cfg.api.port, 9999);
         assert_eq!(cfg.storage.postgres_url, "postgres://kb:kb@localhost/kb");
+        assert_eq!(
+            cfg.storage.app_postgres_url,
+            "postgres://kb_app:kb_app@localhost/kb"
+        );
         assert_eq!(cfg.scheduler.acquire_timeout_secs, 120);
         assert_eq!(cfg.scheduler.health_interval_secs, 5);
         assert_eq!(cfg.scheduler.max_retries, 2);

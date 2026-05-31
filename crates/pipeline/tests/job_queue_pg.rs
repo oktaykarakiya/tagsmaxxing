@@ -18,39 +18,26 @@ use std::time::Duration;
 use kb_core::job::{JobKind, JobStatus};
 use kb_pipeline::{JobQueue, run_worker_pool};
 use sqlx::PgPool;
-use testcontainers::core::ports::IntoContainerPort;
-use testcontainers::core::wait::WaitFor;
-use testcontainers::runners::AsyncRunner;
-use testcontainers::{GenericImage, ImageExt};
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
 struct Setup {
-    _container: testcontainers::ContainerAsync<GenericImage>,
     queue: Arc<JobQueue>,
     pool: PgPool,
     tenant_id: i64,
 }
 
-/// Spin up a pgvector container, run migrations, insert a tenant, and return a
+/// Provision a fresh DB in the shared container, run migrations, insert a tenant, and return a
 /// connected `JobQueue` + direct `PgPool` for assertions.
+///
+/// The job queue is **intrinsically cross-tenant** (`claim` scans all tenants with no GUC), so
+/// it runs on the **privileged** pool (admin_url) — under the RLS-enforced kb_app role it would
+/// be denied every row. This is the two-role design (P6-T14).
 async fn setup_queue(min_backoff_ms: i64, max_retries: i32) -> anyhow::Result<Setup> {
-    let container = GenericImage::new("pgvector/pgvector", "pg17")
-        .with_exposed_port(5432u16.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", "kb")
-        .with_env_var("POSTGRES_PASSWORD", "kb")
-        .with_env_var("POSTGRES_DB", "kb")
-        .start()
-        .await?;
+    let db = kb_testsupport::fresh_db().await?;
 
-    let host_port = container.get_host_port_ipv4(5432u16.tcp()).await?;
-    let url = format!("postgres://kb:kb@127.0.0.1:{host_port}/kb?sslmode=disable");
-
-    // Create a pool, run migrations.
-    let pool = sqlx::PgPool::connect(&url).await?;
+    // Create the privileged pool, run migrations.
+    let pool = sqlx::PgPool::connect(&db.admin_url).await?;
     kb_store::MIGRATOR.run(&pool).await?;
 
     // Insert a tenant (tenants table has no RLS, so this always works).
@@ -62,7 +49,6 @@ async fn setup_queue(min_backoff_ms: i64, max_retries: i32) -> anyhow::Result<Se
     let queue = Arc::new(JobQueue::new(pool.clone(), min_backoff_ms, max_retries));
 
     Ok(Setup {
-        _container: container,
         queue,
         pool,
         tenant_id,

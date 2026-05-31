@@ -34,3 +34,5 @@ kb-store = { workspace = true }
 kb-mock-backend = { workspace = true }
 kb-scheduler = { workspace = true }
 reqwest = { workspace = true }
+# Shared #[ignore] integration harness: one pgvector container per binary + the two RLS roles.
+kb-testsupport = { workspace = true }

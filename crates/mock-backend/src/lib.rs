@@ -63,6 +63,13 @@ pub struct Scenario {
     /// When `Some`, the embed endpoint returns these vectors as `data[i].embedding`
     /// instead of the default `[0.1, 0.2, 0.3]`. Useful for canonicalization tests.
     pub embed_content: Option<Vec<Vec<f32>>>,
+    /// When `Some(dim)` (and `embed_content` is `None`), the embed endpoint returns **one
+    /// deterministic `dim`-dimensional vector per input text**, derived from a hash of the
+    /// text. Distinct texts get distinct (near-orthogonal) vectors and identical texts get
+    /// identical ones — so a real embedder's "different words → different vectors" behaviour is
+    /// modelled. Needed by full-pipeline canonicalization tests that must keep N distinct tags
+    /// distinct against a `VECTOR(1024)` schema.
+    pub embed_dim: Option<usize>,
     /// Behaviour for `POST /v1/rerank`.
     pub rerank: ResponseMode,
     /// When `Some`, the rerank endpoint returns these floats as `results[i].relevance_score`
@@ -317,29 +324,63 @@ async fn handle_chat(State(st): State<AppState>) -> Response {
     .await
 }
 
-async fn handle_embed(State(st): State<AppState>) -> Response {
+/// A deterministic `dim`-dimensional unit "embedding" for `text`: a single 1.0 spike at
+/// `hash(text) % dim`. Distinct texts map to (almost always) distinct indices → orthogonal
+/// vectors (cosine 0); identical texts map to the same vector. Stable across runs because
+/// `DefaultHasher` is seeded with fixed keys (§31.3 determinism).
+fn hash_embedding(text: &str, dim: usize) -> Vec<f32> {
+    use std::hash::{Hash, Hasher};
+    let mut v = vec![0.0f32; dim];
+    if dim > 0 {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        text.hash(&mut h);
+        v[(h.finish() as usize) % dim] = 1.0;
+    }
+    v
+}
+
+async fn handle_embed(
+    State(st): State<AppState>,
+    body: Option<axum::extract::Json<Value>>,
+) -> Response {
     let scenario = st.scenario.lock().await;
     let mode = scenario.embed.clone();
     let content = scenario.embed_content.clone();
+    let embed_dim = scenario.embed_dim;
     drop(scenario);
 
-    let data: Vec<Value> = match content.clone() {
-        Some(vectors) => vectors
+    let data: Vec<Value> = if let Some(vectors) = content {
+        vectors
             .into_iter()
             .enumerate()
-            .map(|(i, emb)| {
-                json!({
-                    "object": "embedding",
-                    "index": i,
-                    "embedding": emb
-                })
+            .map(|(i, emb)| json!({"object": "embedding", "index": i, "embedding": emb}))
+            .collect()
+    } else if let Some(dim) = embed_dim {
+        // One deterministic vector per input text (a real embedder maps distinct text to
+        // distinct vectors). Falls back to a single vector if the body has no `input` array.
+        let inputs: Vec<String> = body
+            .and_then(|axum::extract::Json(v)| {
+                v.get("input").and_then(|i| i.as_array().cloned())
             })
-            .collect(),
-        None => vec![json!({
+            .map(|arr| {
+                arr.into_iter()
+                    .map(|t| t.as_str().unwrap_or_default().to_string())
+                    .collect()
+            })
+            .unwrap_or_else(|| vec![String::new()]);
+        inputs
+            .into_iter()
+            .enumerate()
+            .map(|(i, text)| {
+                json!({"object": "embedding", "index": i, "embedding": hash_embedding(&text, dim)})
+            })
+            .collect()
+    } else {
+        vec![json!({
             "object": "embedding",
             "index": 0,
             "embedding": [0.1, 0.2, 0.3]
-        })],
+        })]
     };
 
     apply_mode(
