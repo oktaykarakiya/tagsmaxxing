@@ -472,9 +472,9 @@ description = "Cross-tenant isolation test suite: prove that tenant A can NEVER 
 depends_on = ["P5-T1"]
 plan_sections = ["13", "31.5"]
 acceptance = "Five negative tests pass: cross-tenant read returns empty, cross-tenant write is blocked, tags scoped, usage scoped, search scoped. All tests use real Postgres via testcontainers. just ci green. CHECKPOINT — human review required."
-status = "todo"
+status = "done"
 checkpoint = true
-notes = ""
+notes = "8 cross-tenant isolation tests in cross_tenant_isolation_pg.rs covering docs, files, tags, usage, hybrid search, transactional ingest, users, and jobs."
 
 [[task]]
 id = "P5-T3"
