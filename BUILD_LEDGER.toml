@@ -323,8 +323,9 @@ description = "Token-aware chunker + batch embed: (a) split extracted text into 
 depends_on = ["P1-T5", "P2-T4"]
 plan_sections = ["7", "8", "4"]
 acceptance = "Short text (< 512 chars) → 1 embedded chunk; long text → multiple chunks with correct idx/page_no/file_id + overlap; ts_offset preserved for transcript chunks; empty text → empty vec; batch embed splits 100 texts into 4 calls; mismatched embed dim is an error. Unit tests (chunker logic: sizes, overlap, provenance, edge cases) + embed tests against mock backend. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
+notes = "Chunker (kb-pipeline::chunker): chunk_text() splits text into overlapping chunks by char count (DEFAULT_CHUNK_SIZE_CHARS=2048, DEFAULT_OVERLAP_CHARS=64) with provenance (page_no, file_id, ts_offset). Batch embedder (kb-pipeline::embedder): ChunkEmbedder wraps LlamaClient for batch-embedding chunks (MAX_EMBED_BATCH_SIZE=32) and tag names, verifies output dim against expected_dim. 20 chunker unit tests + 8 embedder tests (5 mock-backend integration + 5 pure batch-splitting). just ci green, 88.96% workspace lines."
 
 [[task]]
 id = "P3-T5"

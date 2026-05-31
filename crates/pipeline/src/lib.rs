@@ -10,8 +10,14 @@
 //!   keys before any DB I/O.
 //! - The **tag canonicalizer** (plan §6.5, P3-T3): deduplicates raw LLM-proposed tags
 //!   against a tenant's existing tag set via alias lookup and cosine similarity.
+//! - The **token-aware chunker** (plan §7, §8, P3-T4): splits extracted text into
+//!   overlapping chunks with page/file provenance and transcript `ts_offset` support.
+//! - The **batch embedder** (plan §7, P3-T4): batches chunk content (and tag names)
+//!   through [`LlamaClient`], verifying output dimensions against the schema.
 
+pub mod chunker;
 pub mod document_builder;
+pub mod embedder;
 pub mod job_queue;
 pub mod tag_canonicalizer;
 

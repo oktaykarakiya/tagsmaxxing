@@ -24,3 +24,6 @@ tree_magic_mini = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
 testcontainers = { workspace = true }
 kb-store = { workspace = true }
+kb-mock-backend = { workspace = true }
+kb-scheduler = { workspace = true }
+reqwest = { workspace = true }
