@@ -86,6 +86,7 @@ impl Default for Scenario {
             embed: ResponseMode::Healthy,
             chat_content: None,
             embed_content: None,
+            embed_dim: None,
             rerank: ResponseMode::Healthy,
             rerank_content: None,
         }
