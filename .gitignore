@@ -13,6 +13,9 @@
 # Autonomous build-loop state
 /.build-loop/
 
+# Claude Code session artifacts
+/.claude/
+
 # Editor noise
 *.rs.bk
 .DS_Store
