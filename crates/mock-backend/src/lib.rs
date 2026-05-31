@@ -63,6 +63,12 @@ pub struct Scenario {
     /// When `Some`, the embed endpoint returns these vectors as `data[i].embedding`
     /// instead of the default `[0.1, 0.2, 0.3]`. Useful for canonicalization tests.
     pub embed_content: Option<Vec<Vec<f32>>>,
+    /// Behaviour for `POST /v1/rerank`.
+    pub rerank: ResponseMode,
+    /// When `Some`, the rerank endpoint returns these floats as `results[i].relevance_score`
+    /// instead of default descending scores `[1.0, 0.9, 0.8, …]`. Useful for tests that
+    /// need specific score values or length-mismatch scenarios.
+    pub rerank_content: Option<Vec<f32>>,
 }
 
 impl Default for Scenario {
@@ -73,6 +79,8 @@ impl Default for Scenario {
             embed: ResponseMode::Healthy,
             chat_content: None,
             embed_content: None,
+            rerank: ResponseMode::Healthy,
+            rerank_content: None,
         }
     }
 }
@@ -128,6 +136,7 @@ impl MockBackend {
             .route("/v1/health", get(handle_health))
             .route("/v1/chat/completions", post(handle_chat))
             .route("/v1/embeddings", post(handle_embed))
+            .route("/v1/rerank", post(handle_rerank))
             .with_state(app_state);
 
         let listener = match TcpListener::bind("127.0.0.1:0").await {
@@ -348,6 +357,48 @@ async fn handle_embed(State(st): State<AppState>) -> Response {
     .await
 }
 
+async fn handle_rerank(
+    State(st): State<AppState>,
+    axum::extract::Json(body): axum::extract::Json<serde_json::Value>,
+) -> Response {
+    let scenario = st.scenario.lock().await;
+    let mode = scenario.rerank.clone();
+    let content = scenario.rerank_content.clone();
+    let doc_count = body
+        .get("documents")
+        .and_then(|d| d.as_array())
+        .map_or(0, |a| a.len());
+    drop(scenario);
+
+    let results: Vec<Value> = match content {
+        Some(scores) => scores
+            .into_iter()
+            .enumerate()
+            .map(|(i, score)| json!({"index": i, "relevance_score": score}))
+            .collect(),
+        None => (0..doc_count)
+            .map(|i| {
+                let score = 1.0_f32 - (i as f32 * 0.1);
+                json!({"index": i, "relevance_score": score.max(0.0)})
+            })
+            .collect(),
+    };
+
+    apply_mode(
+        &mode,
+        json!({
+            "object": "list",
+            "model": "mock-rerank-model",
+            "results": results,
+            "usage": {
+                "prompt_tokens": 10,
+                "total_tokens": 10
+            }
+        }),
+    )
+    .await
+}
+
 // ── unit tests ─────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -500,6 +551,92 @@ mod tests {
         mock.shutdown().await;
     }
 
+    /// Rerank endpoint returns a realistic-looking rerank body with
+    /// scores aligned to input document count.
+    #[tokio::test]
+    async fn rerank_returns_scores_shape() {
+        let mock = MockBackend::start().await;
+
+        let client = reqwest::Client::new();
+        let body: Value = client
+            .post(mock.url("/v1/rerank"))
+            .json(&json!({
+                "model": "mock-rerank",
+                "query": "test query",
+                "documents": ["doc a", "doc b", "doc c"]
+            }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+
+        assert_eq!(body["object"], "list");
+        assert_eq!(body["model"], "mock-rerank-model");
+        let results = body["results"].as_array().unwrap();
+        assert_eq!(results.len(), 3);
+        // Default scores descend from 1.0
+        assert!((results[0]["relevance_score"].as_f64().unwrap() - 1.0_f64).abs() < 0.01);
+        assert!((results[1]["relevance_score"].as_f64().unwrap() - 0.9_f64).abs() < 0.01);
+        assert!((results[2]["relevance_score"].as_f64().unwrap() - 0.8_f64).abs() < 0.01);
+        assert!(body["usage"]["total_tokens"].is_number());
+
+        mock.shutdown().await;
+    }
+
+    /// Rerank with custom scores via `rerank_content`.
+    #[tokio::test]
+    async fn rerank_with_custom_content() {
+        let mock = MockBackend::start().await;
+        mock.scenario().lock().await.rerank_content = Some(vec![0.42, 0.73, 0.15]);
+
+        let client = reqwest::Client::new();
+        let body: Value = client
+            .post(mock.url("/v1/rerank"))
+            .json(&json!({
+                "model": "mock-rerank",
+                "query": "test",
+                "documents": ["a", "b", "c"]
+            }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+
+        let results = body["results"].as_array().unwrap();
+        assert_eq!(results.len(), 3);
+        assert!((results[0]["relevance_score"].as_f64().unwrap() - 0.42_f64).abs() < 0.01);
+        assert!((results[1]["relevance_score"].as_f64().unwrap() - 0.73_f64).abs() < 0.01);
+        assert!((results[2]["relevance_score"].as_f64().unwrap() - 0.15_f64).abs() < 0.01);
+
+        mock.shutdown().await;
+    }
+
+    /// Rerank with ServerError mode.
+    #[tokio::test]
+    async fn rerank_returns_500() {
+        let mock = MockBackend::start().await;
+        mock.scenario().lock().await.rerank = ResponseMode::ServerError;
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(mock.url("/v1/rerank"))
+            .json(&json!({
+                "model": "x",
+                "query": "q",
+                "documents": ["a"]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 500);
+
+        mock.shutdown().await;
+    }
+
     /// Scenario::default() starts healthy on all endpoints.
     #[tokio::test]
     async fn default_scenario_all_healthy() {
@@ -524,6 +661,16 @@ mod tests {
             client
                 .post(mock.url("/v1/embeddings"))
                 .json(&json!({"model":"x","input":"x"}))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            200
+        );
+        assert_eq!(
+            client
+                .post(mock.url("/v1/rerank"))
+                .json(&json!({"model":"x","query":"q","documents":["a"]}))
                 .send()
                 .await
                 .unwrap()

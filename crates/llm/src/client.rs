@@ -114,6 +114,30 @@ struct OpenAiUsage {
     completion_tokens: u32,
 }
 
+/// OpenAI-compatible rerank request body (plan §8, llama.cpp `/rerank`).
+#[derive(Debug, Serialize)]
+struct OpenAiRerankBody<'a> {
+    model: &'a str,
+    query: &'a str,
+    documents: &'a [String],
+}
+
+/// One rerank result.
+#[derive(Debug, serde::Deserialize)]
+struct OpenAiRerankResult {
+    index: u32,
+    relevance_score: f32,
+}
+
+/// OpenAI-compatible rerank response.
+#[derive(Debug, serde::Deserialize)]
+struct OpenAiRerankResp {
+    results: Vec<OpenAiRerankResult>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    usage: Option<OpenAiUsage>,
+}
+
 // ── LlamaClient ─────────────────────────────────────────────────────────────
 
 /// An OpenAI-compatible HTTP client that acquires a slot via the
@@ -269,6 +293,57 @@ impl LlamaClient {
                 completion_tokens: u.completion_tokens,
             }),
         })
+    }
+
+    /// Send a rerank request through the pool with failover.
+    ///
+    /// `model` is sent in the OpenAI request body. Calls `POST /rerank` on the
+    /// selected backend (which is joined with the `/v1` base URL prefix — see
+    /// [`MockBackend::url`]).
+    ///
+    /// The response results are sorted by `index` to guarantee output scores are
+    /// aligned with input `documents` order. If the response contains fewer or
+    /// more results than input documents, an error is returned — the backend must
+    /// return exactly one score per document.
+    ///
+    /// # Errors
+    ///
+    /// - [`LlmError::Scheduler`] — `pool.acquire` failed (no backend / timeout).
+    /// - [`LlmError::AllFailed`] — every attempt exhausted retries.
+    /// - [`LlmError::AllCooldown`] — every candidate is circuit-breaker-blocked.
+    /// - [`LlmError::Deserialize`] — response length ≠ input length, or bad JSON.
+    pub async fn rerank(
+        &self,
+        model: &str,
+        query: &str,
+        documents: &[String],
+    ) -> Result<Vec<f32>, LlmError> {
+        let body = OpenAiRerankBody {
+            model,
+            query,
+            documents,
+        };
+
+        let raw: OpenAiRerankResp = self
+            .call_with_failover(Role::Rerank, "/rerank", &body)
+            .await?;
+
+        let n_docs = documents.len();
+        if raw.results.len() != n_docs {
+            return Err(LlmError::Deserialize(format!(
+                "rerank response length mismatch: got {} results, expected {n_docs}",
+                raw.results.len()
+            )));
+        }
+
+        // Sort by index so output is aligned with input order.
+        let mut scored: Vec<(u32, f32)> = raw
+            .results
+            .into_iter()
+            .map(|r| (r.index, r.relevance_score))
+            .collect();
+        scored.sort_by_key(|(i, _)| *i);
+        Ok(scored.into_iter().map(|(_, s)| s).collect())
     }
 
     // ── failover core ───────────────────────────────────────────────────
@@ -908,5 +983,128 @@ mod tests {
         // After success, no circuit-breaker entry (backend not failed).
         assert_eq!(client.circuit_count(), 0);
         mock.shutdown().await;
+    }
+
+    // ── rerank ───────────────────────────────────────────────────────────
+
+    /// The happy path: a healthy mock returns valid rerank scores.
+    #[tokio::test]
+    async fn rerank_success_path() {
+        let mock = MockBackend::start().await;
+        let base_url = mock.url("/v1");
+        let backend = Arc::new(Backend::new("mock-1", base_url, vec![Role::Rerank], 0, 2));
+        let pool = Pool::new(vec![backend], Duration::from_secs(5));
+        let client = LlamaClient::new(pool, Client::new(), 2, 3, Duration::from_millis(200));
+
+        let documents = vec![
+            "doc a".to_string(),
+            "doc b".to_string(),
+            "doc c".to_string(),
+        ];
+        let scores = client.rerank("model", "query", &documents).await.unwrap();
+        assert_eq!(scores.len(), 3);
+        // Default mock scores: [1.0, 0.9, 0.8]
+        assert!((scores[0] - 1.0_f32).abs() < 0.01);
+        assert!((scores[1] - 0.9_f32).abs() < 0.01);
+        assert!((scores[2] - 0.8_f32).abs() < 0.01);
+
+        mock.shutdown().await;
+    }
+
+    /// Custom scores via `rerank_content`.
+    #[tokio::test]
+    async fn rerank_custom_scores() {
+        let mock = MockBackend::start().await;
+        mock.scenario().lock().await.rerank_content = Some(vec![0.12, 0.34, 0.56]);
+        let base_url = mock.url("/v1");
+        let backend = Arc::new(Backend::new("mock-1", base_url, vec![Role::Rerank], 0, 2));
+        let pool = Pool::new(vec![backend], Duration::from_secs(5));
+        let client = LlamaClient::new(pool, Client::new(), 2, 3, Duration::from_millis(200));
+
+        let documents = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let scores = client.rerank("model", "query", &documents).await.unwrap();
+        assert_eq!(scores, vec![0.12_f32, 0.34_f32, 0.56_f32]);
+
+        mock.shutdown().await;
+    }
+
+    /// Empty documents → empty scores.
+    #[tokio::test]
+    async fn rerank_empty_documents() {
+        let mock = MockBackend::start().await;
+        let base_url = mock.url("/v1");
+        let backend = Arc::new(Backend::new("mock-1", base_url, vec![Role::Rerank], 0, 2));
+        let pool = Pool::new(vec![backend], Duration::from_secs(5));
+        let client = LlamaClient::new(pool, Client::new(), 2, 3, Duration::from_millis(200));
+
+        let documents: Vec<String> = vec![];
+        let scores = client.rerank("model", "query", &documents).await.unwrap();
+        assert!(scores.is_empty());
+
+        mock.shutdown().await;
+    }
+
+    /// Length mismatch between input and response returns an error.
+    #[tokio::test]
+    async fn rerank_length_mismatch_error() {
+        let mock = MockBackend::start().await;
+        // Return only 1 score for 3 documents → mismatch.
+        mock.scenario().lock().await.rerank_content = Some(vec![0.5]);
+        let base_url = mock.url("/v1");
+        let backend = Arc::new(Backend::new("mock-1", base_url, vec![Role::Rerank], 0, 2));
+        let pool = Pool::new(vec![backend], Duration::from_secs(5));
+        let client = LlamaClient::new(pool, Client::new(), 2, 3, Duration::from_millis(200));
+
+        let documents = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let err = client
+            .rerank("model", "query", &documents)
+            .await
+            .unwrap_err();
+        match err {
+            LlmError::Deserialize(msg) => {
+                assert!(
+                    msg.contains("length mismatch"),
+                    "expected length mismatch, got: {msg}"
+                );
+                assert!(msg.contains("got 1"), "{msg}");
+                assert!(msg.contains("expected 3"), "{msg}");
+            }
+            other => panic!("expected Deserialize error, got {other:?}"),
+        }
+
+        mock.shutdown().await;
+    }
+
+    /// Failover on 5xx for rerank.
+    #[tokio::test]
+    async fn rerank_failover_on_5xx() {
+        let mock1 = MockBackend::start().await;
+        let mock2 = MockBackend::start().await;
+        let b1 = Arc::new(Backend::new(
+            "mock-1",
+            mock1.url("/v1"),
+            vec![Role::Rerank],
+            0,
+            2,
+        ));
+        let b2 = Arc::new(Backend::new(
+            "mock-2",
+            mock2.url("/v1"),
+            vec![Role::Rerank],
+            10,
+            2,
+        ));
+        let pool = Pool::new(vec![Arc::clone(&b1), b2], Duration::from_secs(5));
+        let client = LlamaClient::new(pool, Client::new(), 2, 3, Duration::from_millis(200));
+
+        mock1.scenario().lock().await.rerank = ResponseMode::ServerError;
+
+        let documents = vec!["doc a".to_string()];
+        let scores = client.rerank("model", "query", &documents).await.unwrap();
+        assert_eq!(scores.len(), 1);
+        assert!(!b1.healthy.load(Ordering::Acquire));
+
+        mock1.shutdown().await;
+        mock2.shutdown().await;
     }
 }

@@ -25,8 +25,10 @@
 
 mod client;
 mod error;
+mod reranker;
 mod tagger;
 
 pub use client::LlamaClient;
 pub use error::LlmError;
+pub use reranker::LlamaReranker;
 pub use tagger::JsonSchemaTagger;
