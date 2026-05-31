@@ -21,6 +21,7 @@ pub mod embedder;
 pub mod ingest;
 pub mod job_queue;
 pub mod metadata_merge;
+pub mod rrf;
 pub mod tag_canonicalizer;
 pub mod tag_store;
 
