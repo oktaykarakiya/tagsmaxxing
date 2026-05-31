@@ -25,6 +25,7 @@ pub mod job;
 pub mod kind;
 pub mod provider;
 pub mod query;
+pub mod quota;
 pub mod reranker;
 pub mod role;
 pub mod session;

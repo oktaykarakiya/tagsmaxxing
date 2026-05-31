@@ -785,6 +785,123 @@ impl PgStore {
     }
 }
 
+// ── Quota enforcement methods (plan §13 P5-T6) ────────────────────────────────
+
+impl PgStore {
+    /// Query the current total bytes stored by a tenant (sum of `files.size_bytes`).
+    ///
+    /// Files with `NULL` `size_bytes` are treated as 0 via COALESCE. The query is
+    /// scoped to the tenant by the `app.current_tenant` GUC (RLS also enforces it).
+    ///
+    /// # Errors
+    /// Returns an error if the database is not connected or the query fails.
+    pub async fn get_storage_usage(&self, tenant_id: i64) -> anyhow::Result<i64> {
+        let pool = self.pool()?;
+        set_tenant(&pool, tenant_id).await?;
+        let total: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(size_bytes), 0) FROM files WHERE tenant_id = $1",
+        )
+        .bind(tenant_id)
+        .fetch_one(&pool)
+        .await
+        .context("failed to query storage usage")?;
+        Ok(total)
+    }
+
+    /// Query the current token usage for a tenant (sum of `usage_events.prompt_tokens`
+    /// + `usage_events.completion_tokens`).
+    ///
+    /// `NULL` token columns are treated as 0 via COALESCE. The sum covers all rows
+    /// recorded so far; a billing-period filter will be added in P11 when billing
+    /// plans are implemented.
+    ///
+    /// # Errors
+    /// Returns an error if the database is not connected or the query fails.
+    pub async fn get_token_usage(&self, tenant_id: i64) -> anyhow::Result<i64> {
+        let pool = self.pool()?;
+        set_tenant(&pool, tenant_id).await?;
+        let total: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(COALESCE(prompt_tokens,0) + COALESCE(completion_tokens,0)), 0) \
+             FROM usage_events WHERE tenant_id = $1",
+        )
+        .bind(tenant_id)
+        .fetch_one(&pool)
+        .await
+        .context("failed to query token usage")?;
+        Ok(total)
+    }
+
+    /// Fetch a tenant's quota limits from the `tenants` table.
+    ///
+    /// Returns `(quota_bytes, quota_tokens)`, where `None` means unlimited.
+    ///
+    /// This method does **not** call [`set_tenant`] — the `tenants` table is
+    /// outside RLS (the tenant row must be readable before any tenant context
+    /// exists).
+    ///
+    /// # Errors
+    /// Returns an error if the database is not connected, the tenant does not
+    /// exist, or the query fails.
+    pub async fn get_tenant_quota_limits(
+        &self,
+        tenant_id: i64,
+    ) -> anyhow::Result<(Option<i64>, Option<i64>)> {
+        let pool = self.pool()?;
+        let (quota_bytes, quota_tokens): (Option<i64>, Option<i64>) =
+            sqlx::query_as("SELECT quota_bytes, quota_tokens FROM tenants WHERE id = $1")
+                .bind(tenant_id)
+                .fetch_optional(&pool)
+                .await
+                .context("failed to look up tenant quota limits")?
+                .ok_or_else(|| anyhow::anyhow!("tenant {tenant_id} not found"))?;
+        Ok((quota_bytes, quota_tokens))
+    }
+
+    /// Check whether adding `additional_bytes` would exceed the tenant's storage
+    /// quota. Queries the current usage from the DB and the limit from the
+    /// `tenants` table, then delegates to [`kb_core::quota::check_bytes_quota`].
+    ///
+    /// This is a **best-effort** check — it is not transactional, so concurrent
+    /// uploads may briefly exceed the cap.
+    ///
+    /// # Errors
+    /// - Returns a [`kb_core::quota::QuotaError::StorageExceeded`] (wrapped via
+    ///   `anyhow`) if the quota would be exceeded.
+    /// - Returns a generic error if the database is not connected or the queries fail.
+    pub async fn check_storage_quota(
+        &self,
+        tenant_id: i64,
+        additional_bytes: i64,
+    ) -> anyhow::Result<()> {
+        let current = self.get_storage_usage(tenant_id).await?;
+        let (limit, _) = self.get_tenant_quota_limits(tenant_id).await?;
+        kb_core::quota::check_bytes_quota(current, limit, additional_bytes)?;
+        Ok(())
+    }
+
+    /// Check whether adding `additional_tokens` would exceed the tenant's token
+    /// quota. Queries the current usage from the DB and the limit from the
+    /// `tenants` table, then delegates to [`kb_core::quota::check_token_quota`].
+    ///
+    /// This is a **best-effort** check — it is not transactional, so concurrent
+    /// calls may briefly exceed the cap.
+    ///
+    /// # Errors
+    /// - Returns a [`kb_core::quota::QuotaError::TokensExceeded`] (wrapped via
+    ///   `anyhow`) if the quota would be exceeded.
+    /// - Returns a generic error if the database is not connected or the queries fail.
+    pub async fn check_token_quota(
+        &self,
+        tenant_id: i64,
+        additional_tokens: i64,
+    ) -> anyhow::Result<()> {
+        let current = self.get_token_usage(tenant_id).await?;
+        let (_, limit) = self.get_tenant_quota_limits(tenant_id).await?;
+        kb_core::quota::check_token_quota(current, limit, additional_tokens)?;
+        Ok(())
+    }
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1891,6 +2008,303 @@ mod tests {
                 let err = store.create_tenant("acme", "Duplicate").await.unwrap_err();
                 assert!(err.to_string().contains("already exists"));
 
+                Ok(())
+            })
+            .await
+            .unwrap();
+        }
+    }
+
+    // ── P5-T6 quota enforcement unit tests ────────────────────────────────
+
+    #[tokio::test]
+    async fn get_storage_usage_errors_before_connect() {
+        let store = PgStore::new("postgres://localhost/db");
+        let err = store.get_storage_usage(1).await.unwrap_err();
+        assert!(err.to_string().contains("not connected"));
+    }
+
+    #[tokio::test]
+    async fn get_token_usage_errors_before_connect() {
+        let store = PgStore::new("postgres://localhost/db");
+        let err = store.get_token_usage(1).await.unwrap_err();
+        assert!(err.to_string().contains("not connected"));
+    }
+
+    #[tokio::test]
+    async fn get_tenant_quota_limits_errors_before_connect() {
+        let store = PgStore::new("postgres://localhost/db");
+        let err = store.get_tenant_quota_limits(1).await.unwrap_err();
+        assert!(err.to_string().contains("not connected"));
+    }
+
+    #[tokio::test]
+    async fn check_storage_quota_errors_before_connect() {
+        let store = PgStore::new("postgres://localhost/db");
+        let err = store.check_storage_quota(1, 100).await.unwrap_err();
+        assert!(err.to_string().contains("not connected"));
+    }
+
+    #[tokio::test]
+    async fn check_token_quota_errors_before_connect() {
+        let store = PgStore::new("postgres://localhost/db");
+        let err = store.check_token_quota(1, 500).await.unwrap_err();
+        assert!(err.to_string().contains("not connected"));
+    }
+
+    // ── P5-T6 quota DB-integration tests (#[ignore]) ────────────────────
+
+    #[cfg(test)]
+    mod quota_integration {
+        #![allow(clippy::unwrap_used, clippy::expect_used)]
+        use super::*;
+
+        async fn with_connected_store<F, Fut>(f: F) -> anyhow::Result<()>
+        where
+            F: FnOnce(PgStore) -> Fut,
+            Fut: std::future::Future<Output = anyhow::Result<()>>,
+        {
+            use testcontainers::core::ports::IntoContainerPort;
+            use testcontainers::core::wait::WaitFor;
+            use testcontainers::runners::AsyncRunner;
+            use testcontainers::{GenericImage, ImageExt};
+
+            let container = GenericImage::new("pgvector/pgvector", "pg17")
+                .with_exposed_port(5432u16.tcp())
+                .with_wait_for(WaitFor::message_on_stderr(
+                    "database system is ready to accept connections",
+                ))
+                .with_env_var("POSTGRES_USER", "kb")
+                .with_env_var("POSTGRES_PASSWORD", "kb")
+                .with_env_var("POSTGRES_DB", "kb")
+                .start()
+                .await?;
+
+            let host_port = container.get_host_port_ipv4(5432u16.tcp()).await?;
+            let url = format!("postgres://kb:kb@127.0.0.1:{host_port}/kb?sslmode=disable");
+
+            let store = PgStore::new(&url);
+            store.connect().await?;
+
+            // Insert a tenant with both quotas set.
+            let pool = store.pool()?;
+            sqlx::query(
+                "INSERT INTO tenants (slug, name, quota_bytes, quota_tokens) \
+                 VALUES ('test', 'Test', 10000, 5000)",
+            )
+            .execute(&pool)
+            .await?;
+
+            f(store).await
+        }
+
+        #[ignore]
+        #[tokio::test]
+        async fn storage_usage_zero_for_empty_tenant() {
+            with_connected_store(|store| async move {
+                let usage = store.get_storage_usage(1).await?;
+                assert_eq!(usage, 0, "empty tenant should have zero storage usage");
+                Ok(())
+            })
+            .await
+            .unwrap();
+        }
+
+        #[ignore]
+        #[tokio::test]
+        async fn token_usage_zero_for_empty_tenant() {
+            with_connected_store(|store| async move {
+                let usage = store.get_token_usage(1).await?;
+                assert_eq!(usage, 0, "empty tenant should have zero token usage");
+                Ok(())
+            })
+            .await
+            .unwrap();
+        }
+
+        #[ignore]
+        #[tokio::test]
+        async fn storage_usage_sums_file_bytes() {
+            with_connected_store(|store| async move {
+                // Insert files with known sizes via raw SQL. The files table has
+                // RLS — set_tenant is called internally by get_storage_usage.
+                let pool = store.pool()?;
+
+                // Need document rows for FK constraints.
+                sqlx::query("INSERT INTO documents (tenant_id, kind) VALUES (1, 'document')")
+                    .execute(&pool)
+                    .await?;
+
+                // Insert files with known sizes.
+                for (sha_hex, key, size) in [
+                    (
+                        "aaaa1111bbbb2222cccc3333ddddd44e",
+                        "key-a",
+                        100i64,
+                    ),
+                    (
+                        "bbbb2222cccc3333dddd4444eeeee55f",
+                        "key-b",
+                        250,
+                    ),
+                    (
+                        "cccc3333dddd4444eeee5555fffff66a",
+                        "key-c",
+                        50,
+                    ),
+                ] {
+                    sqlx::query(
+                        "INSERT INTO files (tenant_id, document_id, page_no, sha256, blob_key, \
+                         path, mime, size_bytes, meta, status) \
+                         VALUES (1, 1, 1, decode($1,'hex'), $2, $3, 'text/plain', $4, '{}', 'ready')",
+                    )
+                    .bind(sha_hex)
+                    .bind(key)
+                    .bind(key)
+                    .bind(size)
+                    .execute(&pool)
+                    .await?;
+                }
+
+                let usage = store.get_storage_usage(1).await?;
+                assert_eq!(usage, 400, "expected 100+250+50 = 400");
+                Ok(())
+            })
+            .await
+            .unwrap();
+        }
+
+        #[ignore]
+        #[tokio::test]
+        async fn token_usage_sums_event_tokens() {
+            with_connected_store(|store| async move {
+                let pool = store.pool()?;
+
+                // Insert usage events directly.
+                for (prompt, completion) in [(100i32, 50i32), (200, 0), (0, 75)] {
+                    sqlx::query(
+                        "INSERT INTO usage_events (tenant_id, model, role, prompt_tokens, completion_tokens) \
+                         VALUES (1, 'bge-m3', 'embed', $1, $2)",
+                    )
+                    .bind(prompt)
+                    .bind(completion)
+                    .execute(&pool)
+                    .await?;
+                }
+
+                let usage = store.get_token_usage(1).await?;
+                // 100+50 + 200+0 + 0+75 = 425
+                assert_eq!(usage, 425, "expected (100+50)+(200+0)+(0+75) = 425");
+                Ok(())
+            })
+            .await
+            .unwrap();
+        }
+
+        #[ignore]
+        #[tokio::test]
+        async fn check_storage_quota_under_limit() {
+            with_connected_store(|store| async move {
+                // No files yet → usage=0, quota_bytes=10000, adding 5000 should succeed.
+                store.check_storage_quota(1, 5000).await?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        }
+
+        #[ignore]
+        #[tokio::test]
+        async fn check_storage_quota_over_limit() {
+            with_connected_store(|store| async move {
+                // quota_bytes=10000, try to add 15000 → exceeded.
+                let err = store.check_storage_quota(1, 15_000).await.unwrap_err();
+                let msg = err.to_string();
+                assert!(
+                    msg.contains("storage quota exceeded"),
+                    "expected 'storage quota exceeded', got: {msg}"
+                );
+                assert!(msg.contains("limit is 10000"));
+                Ok(())
+            })
+            .await
+            .unwrap();
+        }
+
+        #[ignore]
+        #[tokio::test]
+        async fn check_token_quota_under_limit() {
+            with_connected_store(|store| async move {
+                // No usage events yet → usage=0, quota_tokens=5000, adding 1000 should work.
+                store.check_token_quota(1, 1000).await?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        }
+
+        #[ignore]
+        #[tokio::test]
+        async fn check_token_quota_over_limit() {
+            with_connected_store(|store| async move {
+                // quota_tokens=5000, try to add 6000 → exceeded.
+                let err = store.check_token_quota(1, 6000).await.unwrap_err();
+                let msg = err.to_string();
+                assert!(
+                    msg.contains("token quota exceeded"),
+                    "expected 'token quota exceeded', got: {msg}"
+                );
+                assert!(msg.contains("limit is 5000"));
+                Ok(())
+            })
+            .await
+            .unwrap();
+        }
+
+        #[ignore]
+        #[tokio::test]
+        async fn null_quota_means_unlimited() {
+            with_connected_store(|store| async move {
+                let pool = store.pool()?;
+                // Create a second tenant with NULL quotas.
+                sqlx::query(
+                    "INSERT INTO tenants (slug, name, quota_bytes, quota_tokens) \
+                     VALUES ('unlimited', 'Unlimited', NULL, NULL)",
+                )
+                .execute(&pool)
+                .await?;
+
+                // Both checks should succeed for any amount.
+                store.check_storage_quota(2, 1_000_000_000_i64).await?;
+                store.check_token_quota(2, 1_000_000_000_i64).await?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        }
+
+        #[ignore]
+        #[tokio::test]
+        async fn get_tenant_quota_limits_returns_correct_values() {
+            with_connected_store(|store| async move {
+                let (bytes, tokens) = store.get_tenant_quota_limits(1).await?;
+                assert_eq!(bytes, Some(10000));
+                assert_eq!(tokens, Some(5000));
+                Ok(())
+            })
+            .await
+            .unwrap();
+        }
+
+        #[ignore]
+        #[tokio::test]
+        async fn get_tenant_quota_limits_for_nonexistent_tenant_is_error() {
+            with_connected_store(|store| async move {
+                let err = store.get_tenant_quota_limits(999).await.unwrap_err();
+                assert!(
+                    err.to_string().contains("tenant 999 not found"),
+                    "expected 'not found' error, got: {err}"
+                );
                 Ok(())
             })
             .await
