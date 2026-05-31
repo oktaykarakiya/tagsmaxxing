@@ -798,8 +798,11 @@ impl PgStore {
     pub async fn get_storage_usage(&self, tenant_id: i64) -> anyhow::Result<i64> {
         let pool = self.pool()?;
         set_tenant(&pool, tenant_id).await?;
+        // `SUM(bigint)` is typed `NUMERIC` in Postgres (guards against i64 overflow on the
+        // running total), which sqlx cannot decode into an `i64`. We cap a single tenant's
+        // storage well inside i64, so cast the aggregate back to `BIGINT` for decoding.
         let total: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(SUM(size_bytes), 0) FROM files WHERE tenant_id = $1",
+            "SELECT COALESCE(SUM(size_bytes), 0)::BIGINT FROM files WHERE tenant_id = $1",
         )
         .bind(tenant_id)
         .fetch_one(&pool)
@@ -1493,17 +1496,21 @@ mod tests {
         #[tokio::test]
         async fn upsert_tag_inserts_and_is_idempotent() {
             with_connected_store(|store| async move {
-                let id1 = store.upsert_tag(1, "invoice", &[0.1, 0.2, 0.3]).await?;
+                let id1 = store
+                    .upsert_tag(1, "invoice", &emb1024(&[0.1, 0.2, 0.3]))
+                    .await?;
                 assert!(id1 > 0, "expected positive tag id");
 
                 // Same (tenant, name) → same id.
                 let id2 = store
-                    .upsert_tag(1, "invoice", &[0.999, 0.888, 0.777])
+                    .upsert_tag(1, "invoice", &emb1024(&[0.999, 0.888, 0.777]))
                     .await?;
                 assert_eq!(id2, id1, "idempotent upsert must return same id");
 
                 // Different name → different id.
-                let id3 = store.upsert_tag(1, "receipt", &[0.1, 0.2, 0.3]).await?;
+                let id3 = store
+                    .upsert_tag(1, "receipt", &emb1024(&[0.1, 0.2, 0.3]))
+                    .await?;
                 assert_ne!(id3, id1);
 
                 Ok(())
@@ -1516,7 +1523,9 @@ mod tests {
         #[tokio::test]
         async fn lookup_alias_finds_exact_match() {
             with_connected_store(|store| async move {
-                let tag_id = store.upsert_tag(1, "invoice", &[0.1, 0.2, 0.3]).await?;
+                let tag_id = store
+                    .upsert_tag(1, "invoice", &emb1024(&[0.1, 0.2, 0.3]))
+                    .await?;
                 store.insert_tag_alias(1, "bill", tag_id).await?;
 
                 let found = store.lookup_alias(1, "bill").await?;
@@ -1537,8 +1546,12 @@ mod tests {
         async fn find_similar_tags_returns_tags_with_embeddings() {
             with_connected_store(|store| async move {
                 // Insert a few tags with embeddings.
-                store.upsert_tag(1, "invoice", &[1.0, 0.0, 0.0]).await?;
-                store.upsert_tag(1, "receipt", &[0.0, 1.0, 0.0]).await?;
+                store
+                    .upsert_tag(1, "invoice", &emb1024(&[1.0, 0.0, 0.0]))
+                    .await?;
+                store
+                    .upsert_tag(1, "receipt", &emb1024(&[0.0, 1.0, 0.0]))
+                    .await?;
 
                 let tags: Vec<(i64, Vec<f32>)> = store.find_similar_tags(1).await?;
                 assert_eq!(tags.len(), 2, "expected 2 tags with embeddings");
@@ -1567,8 +1580,8 @@ mod tests {
                 .fetch_one(&pool)
                 .await?;
 
-                let tag1 = store.upsert_tag(1, "alpha", &[0.1, 0.2]).await?;
-                let tag2 = store.upsert_tag(1, "beta", &[0.3, 0.4]).await?;
+                let tag1 = store.upsert_tag(1, "alpha", &emb1024(&[0.1, 0.2])).await?;
+                let tag2 = store.upsert_tag(1, "beta", &emb1024(&[0.3, 0.4])).await?;
 
                 store.insert_document_tags(1, doc_id, &[tag1, tag2]).await?;
 
@@ -1599,7 +1612,9 @@ mod tests {
         #[tokio::test]
         async fn insert_tag_alias_is_idempotent() {
             with_connected_store(|store| async move {
-                let tag_id = store.upsert_tag(1, "primary", &[0.5, 0.5]).await?;
+                let tag_id = store
+                    .upsert_tag(1, "primary", &emb1024(&[0.5, 0.5]))
+                    .await?;
 
                 store.insert_tag_alias(1, "secondary", tag_id).await?;
                 // Second insert should not error.
@@ -1691,6 +1706,42 @@ mod tests {
             ts_offset: None,
             embedding: vec![0.0f32; embedding_dim],
         }
+    }
+
+    /// Pad a short seed into the full 1024-component width that the schema's
+    /// `VECTOR(1024)` columns (`tags.embedding`, `chunks.embedding`) require — pgvector
+    /// rejects a mismatched-dimension insert (`expected 1024 dimensions, not N`). Test
+    /// fixtures only care about a few leading components, so the tail is zero-filled.
+    fn emb1024(seed: &[f32]) -> Vec<f32> {
+        let mut v = vec![0.0f32; 1024];
+        let n = seed.len().min(1024);
+        v[..n].copy_from_slice(&seed[..n]);
+        v
+    }
+
+    #[test]
+    fn emb1024_pads_to_full_width_preserving_seed() {
+        let v = emb1024(&[1.0, 2.0, 3.0]);
+        assert_eq!(v.len(), 1024, "must match the VECTOR(1024) column width");
+        assert_eq!(&v[..3], &[1.0, 2.0, 3.0], "leading seed preserved");
+        assert!(v[3..].iter().all(|&x| x == 0.0), "tail zero-filled");
+    }
+
+    #[test]
+    fn emb1024_truncates_oversized_seed() {
+        let v = emb1024(&[0.5f32; 2048]);
+        assert_eq!(
+            v.len(),
+            1024,
+            "an over-long seed is truncated, never overflows"
+        );
+    }
+
+    #[test]
+    fn emb1024_handles_empty_seed() {
+        let v = emb1024(&[]);
+        assert_eq!(v.len(), 1024);
+        assert!(v.iter().all(|&x| x == 0.0));
     }
 
     // ── SQL constant validation ─────────────────────────────────────────
@@ -1922,8 +1973,8 @@ mod tests {
                 ];
                 // Pre-create the tags so FK constraint is satisfied.
                 let pool = store.pool()?;
-                let tag1 = store.upsert_tag(1, "alpha", &[0.1, 0.2]).await?;
-                let tag2 = store.upsert_tag(1, "beta", &[0.3, 0.4]).await?;
+                let tag1 = store.upsert_tag(1, "alpha", &emb1024(&[0.1, 0.2])).await?;
+                let tag2 = store.upsert_tag(1, "beta", &emb1024(&[0.3, 0.4])).await?;
 
                 let c1 = make_chunk(1, 0, 0, 0, "chunk A content", 1024);
                 let c2 = make_chunk(1, 0, 0, 1, "chunk B content", 1024);
@@ -1982,7 +2033,9 @@ mod tests {
                     "only",
                     b"unique1111unique2222unique3333",
                 )];
-                let tag_id = store.upsert_tag(1, "single-tag", &[0.5, 0.5]).await?;
+                let tag_id = store
+                    .upsert_tag(1, "single-tag", &emb1024(&[0.5, 0.5]))
+                    .await?;
 
                 let c = make_chunk(1, 0, 0, 0, "single chunk", 1024);
 

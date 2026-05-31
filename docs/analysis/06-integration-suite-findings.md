@@ -73,3 +73,12 @@ fix the discrete real bugs (1–5) as small commits; make the testcontainers har
 (B); then re-run `just ci-integration` until green and obtain §31.5 sign-off on the
 cross-tenant isolation suite (C). Until then the integration lane is correctly **red** — that
 is the lane doing its job.
+
+> **Update (P6-T13, 2026-05-31):** triaging **part C** found that RLS is **not actually
+> enforced** — the connection role `kb` is a superuser with `BYPASSRLS`, and even under a
+> non-superuser the store sets the tenant GUC on a *separate* round-trip from the query so it
+> reverts (deny-all); the job queue is intrinsically cross-tenant. Part C therefore cannot be
+> made *genuinely* green without a connection-role redesign — a §31.5 human decision. P6-T13
+> is **blocked** on it. Discrete bugs **1–4** are fixed + verified; bug **5** and harness
+> reliability (B) fold into that rework. Full proof + design options:
+> [`07-rls-enforcement-blocker.md`](./07-rls-enforcement-blocker.md).

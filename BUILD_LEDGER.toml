@@ -574,9 +574,9 @@ description = "Triage + fix the pre-existing #[ignore] integration-suite failure
 depends_on = ["P6-T0", "P3-T7", "P5-T2"]
 plan_sections = ["13", "31.3", "31.5"]
 acceptance = "Each real bug (1-5) fixed in its own commit with the relevant #[ignore] test green; testcontainers harness reliable (no spurious pool/startup timeouts); `just ci-integration` green end-to-end (all #[ignore] suites pass + coverage floors met); cross-tenant isolation suite green WITH §31.5 human sign-off. just ci green."
-status = "todo"
+status = "blocked"
 checkpoint = true
-notes = ""
+notes = "BLOCKED on a §31.5 design decision (see docs/analysis/07-rls-enforcement-blocker.md). Triaging part C revealed RLS is NOT actually enforced: (a) the connection role `kb` is a superuser w/ BYPASSRLS (FORCE RLS doesn't reach a superuser) so isolation asserts would FAIL not pass; (b) set_tenant runs set_config(local=true) on the pool then queries in a SEPARATE round-trip, so the tenant GUC reverts before the query (deny-all under a real RLS role); (c) JobQueue::claim() is intrinsically cross-tenant (no GUC) so the queue needs a privileged conn — a two-role model. All verified on real pgvector (probes in doc 07). Making the isolation suite GENUINELY green needs a connection-role redesign (non-superuser kb_app + privileged kb_admin/worker + per-connection/transaction tenant GUC) across kb-store(~20 methods)+queue+config+compose+harness — beyond '5 small bugs' and a human-owned §31.5 decision; will NOT make it falsely green. FIXED+VERIFIED meanwhile (role-independent, green on real PG): bug1 claim() stale Queued->Running via UPDATE..RETURNING; bug2 get_storage_usage NUMERIC SUM ->::BIGINT; bug3 tag fixtures padded to VECTOR(1024) via unit-tested emb1024(); bug4 jobs_are_tenant_scoped job_type/payload->kind/status (query valid; its isolation assert awaits the RLS rework). Remaining: bug5 (p4 create_test_document sha=title, no ON CONFLICT -> dup-key) + harness reliability (06-B churn timeouts, reproduced) folded into the RLS/harness rework. Fast just ci green."
 
 [[task]]
 id = "P6-T1"

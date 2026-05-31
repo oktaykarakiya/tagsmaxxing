@@ -126,9 +126,11 @@ impl JobQueue {
     /// Atomically claim the next eligible job.
     ///
     /// Picks the candidate with the lowest `priority` (smaller runs first) and earliest
-    /// `run_after`. Uses `FOR UPDATE SKIP LOCKED` so concurrent claimants **never**
-    /// receive the same row. Once selected, the job's status is set to `running` in the
-    /// same transaction.
+    /// `run_after`. Uses `FOR UPDATE SKIP LOCKED` in the selecting sub-query so concurrent
+    /// claimants **never** receive the same row, and flips its status to `running` in the
+    /// **same statement** via `UPDATE … RETURNING`. Returning the post-update row (rather
+    /// than the pre-update one) means the returned [`Job::status`] is the authoritative
+    /// `Running`, matching the row now committed to the database.
     ///
     /// Returns `Ok(None)` when no job is eligible (all are either already claimed,
     /// completed, or have `run_after` in the future).
@@ -137,45 +139,28 @@ impl JobQueue {
     ///
     /// Returns an error if the database operation fails.
     pub async fn claim(&self) -> anyhow::Result<Option<Job>> {
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .context("failed to begin claim transaction")?;
-
+        // Single-statement claim: the sub-query locks the chosen row with
+        // `FOR UPDATE SKIP LOCKED`, the outer `UPDATE` flips it to 'running', and
+        // `RETURNING` yields the *post-update* row — so the returned Job.status is the
+        // authoritative 'running', never a stale 'queued' read of the pre-update row.
         let row = sqlx::query(
-            "SELECT id, tenant_id, file_id, kind, priority, status, attempts, \
-             last_error, run_after, created_at \
-             FROM jobs \
-             WHERE status IN ('queued', 'failed') \
-               AND run_after <= now() \
-             ORDER BY priority ASC, run_after ASC, id ASC \
-             LIMIT 1 \
-             FOR UPDATE SKIP LOCKED",
+            "UPDATE jobs SET status = 'running' \
+             WHERE id = ( \
+                 SELECT id FROM jobs \
+                 WHERE status IN ('queued', 'failed') \
+                   AND run_after <= now() \
+                 ORDER BY priority ASC, run_after ASC, id ASC \
+                 LIMIT 1 \
+                 FOR UPDATE SKIP LOCKED \
+             ) \
+             RETURNING id, tenant_id, file_id, kind, priority, status, attempts, \
+                       last_error, run_after, created_at",
         )
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&self.pool)
         .await
-        .context("failed to select next job for claim")?;
+        .context("failed to claim next job")?;
 
-        let job = match row {
-            Some(r) => {
-                let id: i64 = r.get("id");
-                sqlx::query("UPDATE jobs SET status = 'running' WHERE id = $1")
-                    .bind(id)
-                    .execute(&mut *tx)
-                    .await
-                    .context("failed to update job status to running")?;
-
-                Some(row_to_job(&r)?)
-            }
-            None => None,
-        };
-
-        tx.commit()
-            .await
-            .context("failed to commit claim transaction")?;
-
-        Ok(job)
+        row.map(|r| row_to_job(&r)).transpose()
     }
 
     /// Mark a running job as successfully completed.

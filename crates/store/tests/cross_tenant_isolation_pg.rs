@@ -754,8 +754,8 @@ async fn jobs_are_tenant_scoped() -> anyhow::Result<()> {
     // ── Enqueue a job as tenant A ──
     switch_tenant(&s.pool, s.tenant_a).await;
     let job_a: i64 = sqlx::query_scalar(
-        "INSERT INTO jobs (tenant_id, job_type, payload, status) \
-         VALUES ($1, 'ingest', '{}', 'queued') RETURNING id",
+        "INSERT INTO jobs (tenant_id, kind, status) \
+         VALUES ($1, 'ingest', 'queued') RETURNING id",
     )
     .bind(s.tenant_a)
     .fetch_one(&s.pool)
