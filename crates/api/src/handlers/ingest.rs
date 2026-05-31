@@ -3,6 +3,10 @@
 //! Accepts one or more files, an optional `user_note` text field, and an
 //! optional `group_as_document` flag. Each file's bytes are stored in the
 //! blob store and an ingest job is enqueued via the job queue.
+//!
+//! The shared [`process_upload_files`] function is used by both the JSON API
+//! handler and the Web UI upload handler (`POST /upload`), avoiding duplicate
+//! blob-storage + job-enqueue logic.
 
 use std::sync::Arc;
 
@@ -10,8 +14,10 @@ use axum::Extension;
 use axum::extract::{Multipart, State};
 use axum::http::StatusCode;
 use axum::response::Json;
+use kb_core::blob::Blob;
 use kb_core::job::JobKind;
 use kb_pipeline::ingest::IngestFile;
+use kb_pipeline::job_queue::JobQueue;
 use serde::Serialize;
 
 use crate::AppState;
@@ -40,7 +46,7 @@ pub struct ErrorResponse {
 }
 
 /// Payload size limit for ingest requests: 100 MiB.
-const MAX_PAYLOAD_BYTES: u64 = 100 * 1024 * 1024;
+pub const MAX_PAYLOAD_BYTES: u64 = 100 * 1024 * 1024;
 
 // ── Handler ────────────────────────────────────────────────────────────────────
 
@@ -88,42 +94,14 @@ pub async fn ingest(
         .as_ref()
         .ok_or_else(|| internal_error(anyhow::anyhow!("ingest: job queue not configured")))?;
 
-    // ── Store each file's bytes in the blob store ────────────────────────────
-    // Compute sha256, store blob, and build an IngestFile for each upload.
-    for f in &parsed.files {
-        let sha256 = compute_blob_key(&f.bytes);
-        blob.put(&sha256, bytes::Bytes::copy_from_slice(&f.bytes))
-            .await
-            .map_err(internal_error)?;
-    }
-
-    // ── Enqueue job(s) ───────────────────────────────────────────────────────
-    // When group_as_document is true, enqueue one job for all files together.
-    // When false, enqueue one job per file (each becomes a 1-page document).
-    let job_id = if parsed.group_as_document {
-        // Store combined metadata: use the first file's blob key as the
-        // job reference; the worker resolves all files from the blob store.
-        job_queue
-            .enqueue(auth_user.tenant_id, None, JobKind::Ingest, 100)
-            .await
-            .map_err(internal_error)?
-    } else {
-        // For simplicity, enqueue one job per file.
-        // The first job id is returned as the primary handle.
-        let mut first_id: Option<i64> = None;
-        for _f in &parsed.files {
-            let id = job_queue
-                .enqueue(auth_user.tenant_id, None, JobKind::Ingest, 100)
-                .await
-                .map_err(internal_error)?;
-            if first_id.is_none() {
-                first_id = Some(id);
-            }
-        }
-        first_id.unwrap_or(0)
-    };
-
-    let file_count = parsed.files.len();
+    let (job_id, file_count) = process_upload_files(
+        blob.as_ref(),
+        job_queue.as_ref(),
+        auth_user.tenant_id,
+        &parsed,
+    )
+    .await
+    .map_err(internal_error)?;
 
     Ok((
         StatusCode::ACCEPTED,
@@ -135,17 +113,68 @@ pub async fn ingest(
     ))
 }
 
+/// Store file bytes in the blob store and enqueue ingest job(s).
+///
+/// Shared between the JSON API handler and the Web UI upload handler.
+/// This is the core upload processing logic, extracted so both paths can
+/// reuse it without duplication.
+///
+/// # Returns
+///
+/// `(first_job_id, file_count)` on success.
+///
+/// # Errors
+///
+/// Returns an error if blob storage or job enqueue fails.
+pub(crate) async fn process_upload_files(
+    blob: &dyn Blob,
+    job_queue: &JobQueue,
+    tenant_id: i64,
+    parsed: &ParsedUpload,
+) -> anyhow::Result<(i64, usize)> {
+    // ── Store each file's bytes in the blob store ───────────────────────────
+    for f in &parsed.files {
+        let sha256 = compute_blob_key(&f.bytes);
+        blob.put(&sha256, bytes::Bytes::copy_from_slice(&f.bytes))
+            .await?;
+    }
+
+    // ── Enqueue job(s) ──────────────────────────────────────────────────────
+    // When group_as_document is true, enqueue one job for all files together.
+    // When false, enqueue one job per file (each becomes a 1-page document).
+    let job_id = if parsed.group_as_document {
+        job_queue
+            .enqueue(tenant_id, None, JobKind::Ingest, 100)
+            .await?
+    } else {
+        let mut first_id: Option<i64> = None;
+        for _f in &parsed.files {
+            let id = job_queue
+                .enqueue(tenant_id, None, JobKind::Ingest, 100)
+                .await?;
+            if first_id.is_none() {
+                first_id = Some(id);
+            }
+        }
+        first_id.unwrap_or(0)
+    };
+
+    Ok((job_id, parsed.files.len()))
+}
+
 // ── Multipart parsing ──────────────────────────────────────────────────────────
 
 /// Parsed multipart upload data.
-#[allow(dead_code)]
-struct ParsedUpload {
+pub(crate) struct ParsedUpload {
     /// File contents and metadata.
-    files: Vec<IngestFile>,
+    pub files: Vec<IngestFile>,
     /// Optional user note.
-    user_note: Option<String>,
+    #[allow(dead_code)]
+    pub user_note: Option<String>,
     /// Whether files should be grouped into one document.
-    group_as_document: bool,
+    pub group_as_document: bool,
+    /// CSRF token from the form (set by Web UI; empty for API clients).
+    pub csrf_token: String,
 }
 
 /// Parse a multipart form body into [`ParsedUpload`].
@@ -154,13 +183,18 @@ struct ParsedUpload {
 /// Enforces `max_total_bytes` as a soft payload limit (reading stops early
 /// when the total exceeds the limit, but the entire body has already been
 /// buffered by axum — this is a best-effort gate).
-async fn parse_multipart(
+///
+/// Extracts the optional `csrf_token` form field for Web UI double-submit
+/// cookie validation. For pure API clients (no form), the field is absent
+/// and the token will be an empty string.
+pub(crate) async fn parse_multipart(
     mut multipart: Multipart,
     max_total_bytes: u64,
 ) -> anyhow::Result<ParsedUpload> {
     let mut files = Vec::new();
     let mut user_note: Option<String> = None;
     let mut group_as_document = false;
+    let mut csrf_token = String::new();
     let mut total_bytes: u64 = 0;
 
     loop {
@@ -213,6 +247,13 @@ async fn parse_multipart(
                     .map_err(|e| anyhow::anyhow!("failed to read group_as_document: {e}"))?;
                 group_as_document = text.trim().eq_ignore_ascii_case("true");
             }
+            "csrf_token" => {
+                let text = field
+                    .text()
+                    .await
+                    .map_err(|e| anyhow::anyhow!("failed to read csrf_token: {e}"))?;
+                csrf_token = text;
+            }
             _ => {
                 // Ignore unknown fields.
             }
@@ -223,6 +264,7 @@ async fn parse_multipart(
         files,
         user_note,
         group_as_document,
+        csrf_token,
     })
 }
 

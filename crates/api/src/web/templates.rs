@@ -26,6 +26,25 @@ pub(crate) struct LoginPage {
     pub error: String,
 }
 
+/// `GET /upload` — the upload page with drag-and-drop zone, file picker,
+/// group-as-document toggle, user-note textarea with mic button, and
+/// progress bar (P6-T5 search page sibling, P6-T6).
+///
+/// The page uses JavaScript for file selection/preview/reorder, voice
+/// recording via MediaRecorder, and async form submission with progress
+/// polling. CSRF token is included in the hidden form field.
+#[derive(Debug, Template)]
+#[template(path = "upload.html")]
+pub(crate) struct UploadPage {
+    /// CSRF token (always present, generated per page load).
+    pub csrf_token: String,
+    /// Error message to display (empty = no error). Reserved for re-render
+    /// after a failed form submission; the current upload flow returns JSON
+    /// errors instead.
+    #[allow(dead_code)]
+    pub error: String,
+}
+
 /// `GET /register` — the registration page HTML form.
 ///
 /// Identical structure to [`LoginPage`], renders into `register.html`.

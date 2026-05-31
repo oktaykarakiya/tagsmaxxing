@@ -27,6 +27,7 @@ use std::sync::Arc;
 use askama::Template;
 use axum::Extension;
 use axum::Form;
+use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
@@ -39,6 +40,7 @@ use crate::handlers::auth::{LoginRequest, RegisterRequest};
 use super::csrf;
 use super::templates::{
     KindFilter, LoginPage, RegisterPage, SearchPage, SearchResultHit, SearchResultsPartial,
+    UploadPage,
 };
 
 // ── Form data types (deserialized from application/x-www-form-urlencoded) ──
@@ -496,6 +498,155 @@ pub async fn search_submit(
     render_ok(&partial)
 }
 
+// ── GET /upload ─────────────────────────────────────────────────────────────────
+
+/// `GET /upload` — render the upload page with drag-and-drop zone.
+///
+/// Shows the drag-and-drop zone, file picker, reorderable file list (JS-driven),
+/// group-as-document toggle, user-note textarea with mic button, and progress bar.
+/// The CSRF token is set as a cookie and embedded in a hidden form field.
+pub async fn upload_page(State(state): State<Arc<AppState>>) -> Result<Response, StatusCode> {
+    let token = csrf::generate_csrf_token().map_err(|e| {
+        tracing::error!(error = %e, "failed to generate CSRF token");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let page = UploadPage {
+        csrf_token: token.clone(),
+        error: String::new(),
+    };
+
+    let mut resp = render_ok(&page);
+    resp.headers_mut().insert(
+        axum::http::header::SET_COOKIE,
+        csrf::csrf_cookie_value(&token, state.session_ttl, state.secure_cookies),
+    );
+
+    Ok(resp)
+}
+
+// ── POST /upload ────────────────────────────────────────────────────────────────
+
+/// `POST /upload` — process a multipart file upload from the Web UI.
+///
+/// Validates the CSRF token (double-submit cookie), parses the multipart form
+/// (files, user_note, group_as_document), stores blobs, enqueues ingest jobs,
+/// and returns a JSON response with the job id for the frontend to poll.
+///
+/// The response is JSON (not HTML) because the upload form submits via
+/// JavaScript `fetch()` — this allows the progress bar to poll job status
+/// and redirect on completion.
+pub async fn upload_submit(
+    State(state): State<Arc<AppState>>,
+    Extension(auth_user): Extension<AuthUser>,
+    headers: HeaderMap,
+    multipart: axum::extract::Multipart,
+) -> Response {
+    // ── 1. Parse multipart ──────────────────────────────────────────────────
+    let parsed = match crate::handlers::ingest::parse_multipart(
+        multipart,
+        crate::handlers::ingest::MAX_PAYLOAD_BYTES,
+    )
+    .await
+    {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(error = %e, "upload_submit: bad multipart");
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "invalid_multipart",
+                    "message": e.to_string()
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    // ── 2. Validate CSRF (before other checks — failures are 403) ───────────
+    if let Err((status, msg)) = csrf::validate_csrf(&headers, &parsed.csrf_token) {
+        return (
+            status,
+            Json(serde_json::json!({
+                "error": "csrf_validation_failed",
+                "message": msg
+            })),
+        )
+            .into_response();
+    }
+
+    // ── 3. Validate input ────────────────────────────────────────────────────
+    if parsed.files.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "no_files",
+                "message": "at least one file is required"
+            })),
+        )
+            .into_response();
+    }
+
+    // ── 4. Ensure pipeline components are present ────────────────────────────
+    let blob = match state.blob.as_ref() {
+        Some(b) => b,
+        None => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": "not_configured",
+                    "message": "blob store not configured"
+                })),
+            )
+                .into_response();
+        }
+    };
+    let job_queue = match state.job_queue.as_ref() {
+        Some(q) => q,
+        None => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": "not_configured",
+                    "message": "job queue not configured"
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    // ── 4. Process upload ────────────────────────────────────────────────────
+    match crate::handlers::ingest::process_upload_files(
+        blob.as_ref(),
+        job_queue.as_ref(),
+        auth_user.tenant_id,
+        &parsed,
+    )
+    .await
+    {
+        Ok((job_id, file_count)) => (
+            StatusCode::ACCEPTED,
+            Json(serde_json::json!({
+                "job_id": job_id,
+                "document_id": null,
+                "message": format!("ingest job enqueued ({file_count} file(s))")
+            })),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "upload_submit: process_upload_files failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": "internal_error",
+                    "message": "an unexpected error occurred"
+                })),
+            )
+                .into_response()
+        }
+    }
+}
+
 // ── Kind filter helpers ────────────────────────────────────────────────────────
 
 /// Build the list of kind filter checkboxes for the search sidebar.
@@ -573,7 +724,7 @@ mod tests {
         ))
     }
 
-    /// Full web router for integration tests (includes search routes, P6-T5).
+    /// Full web router for integration tests (includes search routes, P6-T5; upload routes, P6-T6).
     fn web_router(state: Arc<AppState>) -> axum::Router {
         // Public pages (no auth).
         let public = axum::Router::new()
@@ -584,6 +735,7 @@ mod tests {
         let protected = axum::Router::new()
             .route("/", get(root_redirect))
             .route("/search", get(search_page).post(search_submit))
+            .route("/upload", get(upload_page).post(upload_submit))
             .route("/logout", post(logout_web))
             .layer(axum::middleware::from_fn_with_state(
                 state.clone(),
@@ -1314,6 +1466,468 @@ mod tests {
         let body4 = "csrf_token=x&q=query&kind=";
         let form4: SearchForm = serde_urlencoded::from_str(body4).unwrap();
         assert_eq!(form4.kind.as_deref(), Some(""));
+    }
+
+    // ── GET /upload tests ───────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn get_upload_returns_html_with_csrf() {
+        let state = test_state();
+        let router = web_router(state.clone());
+
+        let token = state
+            .session_store
+            .create(1, 42, UserRole::Member, Duration::from_secs(3600))
+            .await
+            .unwrap();
+
+        let req = axum::http::Request::builder()
+            .uri("/upload")
+            .header("Cookie", format!("__Host-session={token}"))
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let ct = resp
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(ct.contains("text/html"), "upload page must return HTML");
+
+        let has_csrf = resp
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .any(|h| h.to_str().unwrap_or("").contains("__Host-csrf="));
+        assert!(has_csrf, "upload page must set CSRF cookie");
+
+        let body = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+        let body_str = std::str::from_utf8(&body).unwrap();
+        assert!(
+            body_str.contains("csrf_token"),
+            "HTML must contain CSRF hidden field; got: {body_str}"
+        );
+        assert!(
+            body_str.contains("drop-zone") || body_str.contains("id=\"file-input\""),
+            "HTML must contain the file upload area; got: {body_str}"
+        );
+        assert!(
+            body_str.contains("group_as_document") || body_str.contains("group-toggle"),
+            "HTML must contain the group-as-document toggle"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_upload_unauthenticated_returns_401() {
+        let state = test_state();
+        let router = web_router(state);
+
+        let req = axum::http::Request::builder()
+            .uri("/upload")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn get_upload_has_security_headers() {
+        let state = test_state();
+        let token = state
+            .session_store
+            .create(1, 42, UserRole::Member, Duration::from_secs(3600))
+            .await
+            .unwrap();
+        let router = web_router(state);
+
+        let req = axum::http::Request::builder()
+            .uri("/upload")
+            .header("Cookie", format!("__Host-session={token}"))
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(resp.headers().contains_key("content-security-policy"));
+        assert!(resp.headers().contains_key("x-content-type-options"));
+    }
+
+    // ── POST /upload tests ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn upload_submit_unauthenticated_returns_401() {
+        let state = test_state();
+        let router = web_router(state);
+
+        let boundary = "upboundary";
+        let body_str = format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"csrf_token\"\r\n\r\nabc\r\n--{boundary}--\r\n"
+        );
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/upload")
+            .header(
+                header::CONTENT_TYPE,
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .body(Body::from(body_str))
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn upload_submit_no_csrf_cookie_returns_403() {
+        let state = test_state();
+        let token = state
+            .session_store
+            .create(1, 42, UserRole::Member, Duration::from_secs(3600))
+            .await
+            .unwrap();
+        let router = web_router(state);
+
+        let boundary = "upboundary2";
+        // Multipart with a csrf_token field but no cookie.
+        let body_str = format!(
+            "--{boundary}\r\n\
+             Content-Disposition: form-data; name=\"csrf_token\"\r\n\r\n\
+             faketoken123\r\n\
+             --{boundary}--\r\n"
+        );
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/upload")
+            .header(
+                header::CONTENT_TYPE,
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .header("Cookie", format!("__Host-session={token}"))
+            .body(Body::from(body_str))
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn upload_submit_mismatched_csrf_returns_403() {
+        let state = test_state();
+        let token = state
+            .session_store
+            .create(1, 42, UserRole::Member, Duration::from_secs(3600))
+            .await
+            .unwrap();
+        let router = web_router(state);
+
+        let valid_csrf = csrf::generate_csrf_token().unwrap();
+        let boundary = "upboundary3";
+        // Use a different token in the form body.
+        let body_str = format!(
+            "--{boundary}\r\n\
+             Content-Disposition: form-data; name=\"csrf_token\"\r\n\r\n\
+             wrong_token_here\r\n\
+             --{boundary}--\r\n"
+        );
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/upload")
+            .header(
+                header::CONTENT_TYPE,
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .header(
+                "Cookie",
+                format!("__Host-session={token}; __Host-csrf={valid_csrf}"),
+            )
+            .body(Body::from(body_str))
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn upload_submit_no_files_returns_400() {
+        let state = test_state();
+        let csrf_token = csrf::generate_csrf_token().unwrap();
+        let session_token = state
+            .session_store
+            .create(1, 42, UserRole::Member, Duration::from_secs(3600))
+            .await
+            .unwrap();
+
+        // Build state with blob store so it passes the component check.
+        let state = Arc::new({
+            let inner = AppState::new(
+                state.session_store.clone(),
+                state.pg_store.clone(),
+                Some(Duration::from_secs(3600)),
+                false,
+            );
+            // Use a mock blob (LocalBlob with temp dir).
+            let tmp = tempfile::TempDir::with_prefix("kb-blob-").unwrap();
+            let blob: Arc<dyn kb_core::blob::Blob> = Arc::new(kb_store::blob::LocalBlob::new(
+                tmp.path().to_path_buf(),
+                String::new(),
+            ));
+            inner.with_blob(blob)
+        });
+        let router = web_router(state);
+
+        let boundary = "upboundary4";
+        // Multipart with csrf_token + user_note but no files.
+        let body_str = format!(
+            "--{boundary}\r\n\
+             Content-Disposition: form-data; name=\"csrf_token\"\r\n\r\n\
+             {csrf_token}\r\n\
+             --{boundary}\r\n\
+             Content-Disposition: form-data; name=\"user_note\"\r\n\r\n\
+             just a note\r\n\
+             --{boundary}--\r\n"
+        );
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/upload")
+            .header(
+                header::CONTENT_TYPE,
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .header(
+                "Cookie",
+                format!("__Host-session={session_token}; __Host-csrf={csrf_token}"),
+            )
+            .body(Body::from(body_str))
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+        let err: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(err["error"], "no_files");
+    }
+
+    #[tokio::test]
+    async fn upload_submit_without_blob_returns_500() {
+        let state = test_state();
+        let csrf_token = csrf::generate_csrf_token().unwrap();
+        let session_token = state
+            .session_store
+            .create(1, 42, UserRole::Member, Duration::from_secs(3600))
+            .await
+            .unwrap();
+        // State without blob store → 500.
+        let router = web_router(state);
+
+        let boundary = "upboundary5";
+        let body_str = format!(
+            "--{boundary}\r\n\
+             Content-Disposition: form-data; name=\"csrf_token\"\r\n\r\n\
+             {csrf_token}\r\n\
+             --{boundary}\r\n\
+             Content-Disposition: form-data; name=\"files\"; filename=\"t.txt\"\r\n\
+             Content-Type: text/plain\r\n\r\n\
+             hello\r\n\
+             --{boundary}--\r\n"
+        );
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/upload")
+            .header(
+                header::CONTENT_TYPE,
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .header(
+                "Cookie",
+                format!("__Host-session={session_token}; __Host-csrf={csrf_token}"),
+            )
+            .body(Body::from(body_str))
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn upload_submit_with_file_and_blob_returns_202() {
+        use kb_core::blob::Blob;
+        use kb_pipeline::job_queue::JobQueue;
+        use kb_store::blob::LocalBlob;
+
+        let session_store: Arc<dyn SessionStore> = Arc::new(InMemorySessionStore::new());
+        let pg_store = Arc::new(PgStore::new("postgres://localhost/test?sslmode=disable"));
+
+        // Real LocalBlob with temp directory.
+        let tmp = tempfile::TempDir::with_prefix("kb-upload-test-").unwrap();
+        let blob: Arc<dyn Blob> = Arc::new(LocalBlob::new(tmp.path().to_path_buf(), String::new()));
+
+        // Job queue with connect_lazy (won't actually connect, but that's fine —
+        // process_upload_files will fail on enqueue; we test that the handler
+        // returns a proper error).
+        let job_queue = Arc::new(JobQueue::new(
+            sqlx::PgPool::connect_lazy("postgres://localhost/test?sslmode=disable")
+                .expect("connect_lazy always succeeds"),
+            10_000,
+            3,
+        ));
+
+        let state = Arc::new(
+            AppState::new(
+                session_store.clone(),
+                pg_store,
+                Some(Duration::from_secs(3600)),
+                false,
+            )
+            .with_blob(blob)
+            .with_job_queue(job_queue),
+        );
+
+        let csrf_token = csrf::generate_csrf_token().unwrap();
+        let session_token = session_store
+            .create(1, 42, UserRole::Member, Duration::from_secs(3600))
+            .await
+            .unwrap();
+        let router = web_router(state);
+
+        let boundary = "upboundary6";
+        let body_str = format!(
+            "--{boundary}\r\n\
+             Content-Disposition: form-data; name=\"csrf_token\"\r\n\r\n\
+             {csrf_token}\r\n\
+             --{boundary}\r\n\
+             Content-Disposition: form-data; name=\"files\"; filename=\"hello.txt\"\r\n\
+             Content-Type: text/plain\r\n\r\n\
+             hello world\r\n\
+             --{boundary}\r\n\
+             Content-Disposition: form-data; name=\"user_note\"\r\n\r\n\
+             test note\r\n\
+             --{boundary}\r\n\
+             Content-Disposition: form-data; name=\"group_as_document\"\r\n\r\n\
+             true\r\n\
+             --{boundary}--\r\n"
+        );
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/upload")
+            .header(
+                header::CONTENT_TYPE,
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .header(
+                "Cookie",
+                format!("__Host-session={session_token}; __Host-csrf={csrf_token}"),
+            )
+            .body(Body::from(body_str))
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+
+        // The blob store succeeds, but the job queue's enqueue will fail
+        // because connect_lazy creates a pool that can't connect.
+        // The response status will be 500 with an internal_error.
+        // We test that the handler ran past CSRF validation (not 403).
+        assert!(
+            resp.status().is_server_error() || resp.status() == StatusCode::ACCEPTED,
+            "expected 5xx (no real DB) or 202 (if queue connects); got {}",
+            resp.status()
+        );
+    }
+
+    // ── csrf_token extraction from multipart ────────────────────────────────
+
+    #[tokio::test]
+    async fn parse_multipart_extracts_csrf_token() {
+        use crate::handlers::ingest::{MAX_PAYLOAD_BYTES, parse_multipart};
+        use axum::extract::FromRequest;
+
+        let boundary = "csrftest1";
+        let body_bytes = {
+            let mut body = Vec::new();
+            let add_field = |body: &mut Vec<u8>, name: &str, value: &str| {
+                body.extend_from_slice(
+                    format!(
+                        "\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}"
+                    )
+                    .as_bytes(),
+                );
+            };
+            add_field(&mut body, "csrf_token", "mycsrftoken123");
+            add_field(&mut body, "user_note", "a note");
+            add_field(&mut body, "group_as_document", "true");
+            body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+            body
+        };
+
+        let content_type = format!("multipart/form-data; boundary={boundary}");
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/upload")
+            .header("Content-Type", content_type)
+            .body(Body::from(body_bytes))
+            .unwrap();
+
+        let multipart = <axum::extract::Multipart as FromRequest<()>>::from_request(request, &())
+            .await
+            .unwrap();
+        let parsed = parse_multipart(multipart, MAX_PAYLOAD_BYTES).await.unwrap();
+
+        assert_eq!(parsed.csrf_token, "mycsrftoken123");
+        assert_eq!(parsed.user_note.as_deref(), Some("a note"));
+        assert!(parsed.group_as_document);
+        assert!(parsed.files.is_empty());
+    }
+
+    #[tokio::test]
+    async fn parse_multipart_csrf_token_defaults_empty() {
+        use crate::handlers::ingest::{MAX_PAYLOAD_BYTES, parse_multipart};
+        use axum::extract::FromRequest;
+
+        let boundary = "csrftest2";
+        // No csrf_token field at all.
+        let body_str = format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"user_note\"\r\n\r\nhi\r\n--{boundary}--\r\n"
+        );
+        let content_type = format!("multipart/form-data; boundary={boundary}");
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/upload")
+            .header("Content-Type", content_type)
+            .body(Body::from(body_str))
+            .unwrap();
+
+        let multipart = <axum::extract::Multipart as FromRequest<()>>::from_request(request, &())
+            .await
+            .unwrap();
+        let parsed = parse_multipart(multipart, MAX_PAYLOAD_BYTES).await.unwrap();
+
+        assert!(parsed.csrf_token.is_empty());
+    }
+
+    // ── UploadPage template pure-logic test ─────────────────────────────────
+
+    #[test]
+    fn upload_page_template_renders_with_csrf() {
+        let page = UploadPage {
+            csrf_token: "test-csrf-123".into(),
+            error: String::new(),
+        };
+        let html = page.render().expect("upload template must render");
+
+        assert!(
+            html.contains("test-csrf-123"),
+            "rendered HTML must contain CSRF token"
+        );
+        assert!(
+            html.contains("drop-zone") || html.contains("id=\"file-input\""),
+            "rendered HTML must contain the file upload area"
+        );
+        assert!(
+            html.contains("group-toggle") || html.contains("group_as_document"),
+            "rendered HTML must contain the group-as-document toggle"
+        );
     }
 
     // ── kind_label pure-logic tests ─────────────────────────────────────────

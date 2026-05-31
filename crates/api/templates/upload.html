@@ -1,0 +1,577 @@
+{% extends "base.html" %}
+
+{% block title %}Upload{% endblock %}
+
+{% block head_extra %}
+<script src="https://unpkg.com/htmx.org@2.0.4"></script>
+{% endblock %}
+
+{% block content %}
+<div class="min-h-screen flex flex-col">
+    {# ── Navigation bar ──────────────────────────────────────────────────── #}
+    <nav class="bg-white shadow-sm border-b border-gray-200">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between h-14 items-center">
+                <span class="text-lg font-semibold text-indigo-600">Local KB</span>
+                <div class="flex items-center space-x-4">
+                    <a href="/search" class="text-sm text-gray-700 hover:text-indigo-600">Search</a>
+                    <a href="/upload" class="text-sm font-medium text-indigo-700">Upload</a>
+                    <form method="post" action="/logout" class="inline">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                        <button type="submit" class="text-sm text-gray-500 hover:text-red-600">
+                            Log out
+                        </button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    {# ── Upload area ─────────────────────────────────────────────────────── #}
+    <div class="flex-1 max-w-3xl mx-auto px-4 py-8 w-full">
+        <h1 class="text-2xl font-bold text-gray-900 mb-6">Upload files</h1>
+
+        <form id="upload-form"
+              onsubmit="handleUploadSubmit(event)"
+              enctype="multipart/form-data">
+
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+            {# ── Drop zone + file picker ─────────────────────────────────── #}
+            <div id="drop-zone"
+                 class="relative border-2 border-dashed border-gray-300 rounded-xl p-10 text-center
+                        hover:border-indigo-400 hover:bg-indigo-50/50 transition cursor-pointer
+                        {% raw %}{% if false %}border-indigo-500 bg-indigo-50{% endif %}{% endraw %}"
+                 ondragover="onDragOver(event)"
+                 ondragleave="onDragLeave(event)"
+                 ondrop="onDrop(event)"
+                 onclick="document.getElementById('file-input').click()">
+                <input type="file"
+                       id="file-input"
+                       name="files"
+                       multiple
+                       class="hidden"
+                       onchange="onFilesSelected(this.files)"
+                       accept="*/*">
+                <div class="space-y-3">
+                    <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                              d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
+                    </svg>
+                    <p class="text-base text-gray-600">
+                        <span class="font-semibold text-indigo-600">Choose files</span>
+                        or drag and drop
+                    </p>
+                    <p class="text-xs text-gray-400">Any file type — up to 100 MiB total</p>
+                </div>
+            </div>
+
+            {# ── File list ──────────────────────────────────────────────── #}
+            <div id="file-list" class="mt-6 space-y-3 hidden"></div>
+
+            {# ── Controls (hidden until files selected) ──────────────────── #}
+            <div id="upload-controls" class="mt-6 space-y-5 hidden">
+
+                {# ── Ingest-as-one-document toggle ───────────────────────── #}
+                <label class="flex items-center gap-3 cursor-pointer select-none">
+                    <input type="checkbox"
+                           name="group_as_document"
+                           value="true"
+                           id="group-toggle"
+                           class="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+                    <span class="text-sm text-gray-700">Ingest as one document</span>
+                    <span class="text-xs text-gray-400">(all files become pages of a single document)</span>
+                </label>
+
+                {# ── User note ───────────────────────────────────────────── #}
+                <div>
+                    <div class="flex items-center gap-2 mb-1.5">
+                        <label for="user-note" class="text-sm font-medium text-gray-700">
+                            Note / description (optional)
+                        </label>
+                        <button type="button"
+                                id="mic-btn"
+                                onclick="toggleRecording()"
+                                title="Record voice note"
+                                class="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium
+                                       bg-gray-100 text-gray-600 hover:bg-red-50 hover:text-red-600
+                                       border border-gray-200 hover:border-red-300 transition">
+                            <svg id="mic-icon" class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                      d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/>
+                            </svg>
+                            <span id="mic-label">Record</span>
+                        </button>
+                        <span id="recording-indicator" class="hidden text-xs text-red-600 animate-pulse">
+                            ● Recording
+                        </span>
+                    </div>
+                    <textarea id="user-note"
+                              name="user_note"
+                              rows="3"
+                              placeholder="Describe what these files are about…"
+                              class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900
+                                     placeholder-gray-400 focus:border-indigo-500 focus:outline-none
+                                     focus:ring-2 focus:ring-indigo-500/30 resize-y"></textarea>
+                </div>
+
+                {# ── Max size warning ────────────────────────────────────── #}
+                <div id="size-warning" class="hidden rounded-md bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-700">
+                    Total upload size exceeds the limit. Please remove some files.
+                </div>
+
+                {# ── Submit ──────────────────────────────────────────────── #}
+                <button type="submit"
+                        id="submit-btn"
+                        class="w-full rounded-lg bg-indigo-600 px-6 py-3 text-sm font-semibold text-white
+                               shadow-sm hover:bg-indigo-500 focus:outline-none focus:ring-2
+                               focus:ring-indigo-500 focus:ring-offset-2 transition disabled:opacity-50
+                               disabled:cursor-not-allowed">
+                    Upload
+                </button>
+            </div>
+        </form>
+
+        {# ── Progress area (hidden until submit) ─────────────────────────── #}
+        <div id="progress-area" class="mt-6 hidden">
+            <div class="rounded-lg border border-indigo-200 bg-indigo-50 p-6 text-center">
+                <div class="mb-3">
+                    <div class="h-2 w-full bg-indigo-100 rounded-full overflow-hidden">
+                        <div id="progress-bar"
+                             class="h-full bg-indigo-500 rounded-full transition-all duration-500"
+                             style="width: 0%"></div>
+                    </div>
+                </div>
+                <p id="progress-text" class="text-sm text-indigo-700 font-medium">
+                    Uploading and enqueuing…
+                </p>
+                <p id="progress-detail" class="text-xs text-indigo-500 mt-1">
+                    Your files are being processed. You'll be redirected when ready.
+                </p>
+                <div id="progress-error" class="hidden mt-3">
+                    <p class="text-sm text-red-700 mb-2">Something went wrong.</p>
+                    <button onclick="resetUpload()"
+                            class="text-xs text-indigo-600 hover:text-indigo-500 font-medium">
+                        Try again
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  // ── Constants ──────────────────────────────────────────────────────────────
+  const MAX_TOTAL_BYTES = 100 * 1024 * 1024; // 100 MiB
+  const MAX_JOB_POLL_MS = 300_000;           // 5 minutes max wait
+  const POLL_INTERVAL_MS = 2000;              // 2 seconds
+
+  let selectedFiles = [];  // { id, file, name, size, objectUrl }
+
+  // ── Drag-and-drop ──────────────────────────────────────────────────────────
+  function onDragOver(e) {
+      e.preventDefault();
+      document.getElementById('drop-zone').classList.add('border-indigo-500', 'bg-indigo-50');
+  }
+
+  function onDragLeave(e) {
+      e.preventDefault();
+      document.getElementById('drop-zone').classList.remove('border-indigo-500', 'bg-indigo-50');
+  }
+
+  function onDrop(e) {
+      e.preventDefault();
+      document.getElementById('drop-zone').classList.remove('border-indigo-500', 'bg-indigo-50');
+      if (e.dataTransfer.files.length > 0) {
+          onFilesSelected(e.dataTransfer.files);
+      }
+  }
+
+  function onFilesSelected(fileList) {
+      for (let i = 0; i < fileList.length; i++) {
+          let f = fileList[i];
+          let obj = {
+              id: crypto.randomUUID ? crypto.randomUUID() : Date.now() + '-' + i,
+              file: f,
+              name: f.name || 'unknown',
+              size: f.size,
+              objectUrl: f.type.startsWith('image/') ? URL.createObjectURL(f) : null
+          };
+          selectedFiles.push(obj);
+      }
+      renderFileList();
+  }
+
+  // ── File list rendering ────────────────────────────────────────────────────
+  function renderFileList() {
+      const container = document.getElementById('file-list');
+      const controls = document.getElementById('upload-controls');
+      const warning = document.getElementById('size-warning');
+      const btn = document.getElementById('submit-btn');
+
+      if (selectedFiles.length === 0) {
+          container.classList.add('hidden');
+          controls.classList.add('hidden');
+          return;
+      }
+
+      container.classList.remove('hidden');
+      controls.classList.remove('hidden');
+
+      // Compute total size
+      let total = 0;
+      selectedFiles.forEach(f => total += f.size);
+
+      // Show/hide size warning
+      if (total > MAX_TOTAL_BYTES) {
+          warning.classList.remove('hidden');
+          btn.disabled = true;
+      } else {
+          warning.classList.add('hidden');
+          btn.disabled = false;
+      }
+
+      // Build list HTML
+      let html = '<h3 class="text-sm font-medium text-gray-700 mb-2">' +
+                 selectedFiles.length + ' file' + (selectedFiles.length !== 1 ? 's' : '') +
+                 ' selected <span class="text-gray-400 font-normal">(' +
+                 formatBytes(total) + ' total)</span></h3>';
+
+      selectedFiles.forEach((f, idx) => {
+          html += '<div class="flex items-center gap-3 rounded-lg border border-gray-200 bg-white p-3 shadow-sm">';
+
+          // Thumbnail
+          if (f.objectUrl) {
+              html += '<img src="' + f.objectUrl + '" alt="" ' +
+                      'class="h-12 w-12 rounded object-cover shrink-0 border border-gray-100">';
+          } else {
+              html += '<div class="h-12 w-12 rounded bg-gray-100 flex items-center justify-center shrink-0 border border-gray-200">' +
+                      '<svg class="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">' +
+                      '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" ' +
+                      'd="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/>' +
+                      '</svg></div>';
+          }
+
+          // Filename + size
+          html += '<div class="flex-1 min-w-0">' +
+                  '<p class="text-sm font-medium text-gray-800 truncate">' + escapeHtml(f.name) + '</p>' +
+                  '<p class="text-xs text-gray-400">' + formatBytes(f.size) + '</p>' +
+                  '</div>';
+
+          // Reorder buttons
+          html += '<div class="flex flex-col gap-0.5 shrink-0">';
+          if (idx > 0) {
+              html += '<button type="button" onclick="moveFileUp(' + idx + ')" ' +
+                      'title="Move up" class="text-gray-400 hover:text-indigo-600 p-0.5">' +
+                      '<svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">' +
+                      '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7"/>' +
+                      '</svg></button>';
+          } else {
+              html += '<span class="h-4 w-4 p-0.5"></span>';
+          }
+          if (idx < selectedFiles.length - 1) {
+              html += '<button type="button" onclick="moveFileDown(' + idx + ')" ' +
+                      'title="Move down" class="text-gray-400 hover:text-indigo-600 p-0.5">' +
+                      '<svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">' +
+                      '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>' +
+                      '</svg></button>';
+          } else {
+              html += '<span class="h-4 w-4 p-0.5"></span>';
+          }
+          html += '</div>';
+
+          // Remove button
+          html += '<button type="button" onclick="removeFile(' + idx + ')" ' +
+                  'title="Remove" class="text-gray-400 hover:text-red-600 p-1 shrink-0">' +
+                  '<svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">' +
+                  '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>' +
+                  '</svg></button>';
+
+          html += '</div>';
+      });
+
+      container.innerHTML = html;
+  }
+
+  function moveFileUp(idx) {
+      if (idx <= 0) return;
+      [selectedFiles[idx - 1], selectedFiles[idx]] = [selectedFiles[idx], selectedFiles[idx - 1]];
+      renderFileList();
+  }
+
+  function moveFileDown(idx) {
+      if (idx >= selectedFiles.length - 1) return;
+      [selectedFiles[idx], selectedFiles[idx + 1]] = [selectedFiles[idx + 1], selectedFiles[idx]];
+      renderFileList();
+  }
+
+  function removeFile(idx) {
+      let f = selectedFiles[idx];
+      if (f.objectUrl) URL.revokeObjectURL(f.objectUrl);
+      selectedFiles.splice(idx, 1);
+      if (selectedFiles.length === 0) {
+          // Reset file input so the same file can be selected again
+          document.getElementById('file-input').value = '';
+      }
+      renderFileList();
+  }
+
+  // ── Form submission ────────────────────────────────────────────────────────
+  async function handleUploadSubmit(e) {
+      e.preventDefault();
+
+      if (selectedFiles.length === 0) return;
+
+      // Check total size
+      let total = 0;
+      selectedFiles.forEach(f => total += f.size);
+      if (total > MAX_TOTAL_BYTES) {
+          document.getElementById('size-warning').classList.remove('hidden');
+          return;
+      }
+
+      // Hide form, show progress
+      document.getElementById('upload-form').classList.add('hidden');
+      const progressArea = document.getElementById('progress-area');
+      progressArea.classList.remove('hidden');
+      document.getElementById('progress-error').classList.add('hidden');
+      document.getElementById('progress-bar').style.width = '0%';
+      document.getElementById('progress-text').textContent = 'Uploading…';
+
+      // Build FormData
+      const formData = new FormData();
+      formData.append('csrf_token', document.querySelector('input[name="csrf_token"]').value);
+
+      const groupToggle = document.getElementById('group-toggle');
+      if (groupToggle.checked) {
+          formData.append('group_as_document', 'true');
+      }
+
+      const userNote = document.getElementById('user-note').value.trim();
+      if (userNote) {
+          formData.append('user_note', userNote);
+      }
+
+      selectedFiles.forEach(f => {
+          formData.append('files', f.file, f.name);
+      });
+
+      // Submit to the web upload endpoint
+      try {
+          const resp = await fetch('/upload', {
+              method: 'POST',
+              body: formData
+          });
+
+          if (!resp.ok) {
+              const errData = await resp.json().catch(() => ({}));
+              showUploadError(errData.message || 'Upload failed (' + resp.status + ')');
+              return;
+          }
+
+          const data = await resp.json();
+          const jobId = data.job_id;
+
+          document.getElementById('progress-text').textContent = 'Processing your files…';
+          document.getElementById('progress-bar').style.width = '10%';
+          document.getElementById('progress-detail').textContent =
+              'Job #' + jobId + ' — this may take a moment.';
+
+          // Start polling job status
+          pollJobStatus(jobId, Date.now());
+
+      } catch (err) {
+          showUploadError(err.message || 'Network error — please check your connection and try again.');
+      }
+  }
+
+  async function pollJobStatus(jobId, startTime) {
+      // Check timeout
+      if (Date.now() - startTime > MAX_JOB_POLL_MS) {
+          showUploadError('Processing timed out. The job may still complete — check your documents.');
+          return;
+      }
+
+      try {
+          const resp = await fetch('/api/jobs/' + jobId);
+          if (!resp.ok) {
+              // Retry on server errors
+              setTimeout(() => pollJobStatus(jobId, startTime), POLL_INTERVAL_MS);
+              return;
+          }
+
+          const job = await resp.json();
+          updateProgress(job);
+
+          if (job.status === 'done') {
+              // Success — redirect to document detail
+              document.getElementById('progress-bar').style.width = '100%';
+              document.getElementById('progress-text').textContent = 'Done! Redirecting…';
+              document.getElementById('progress-detail').textContent = '';
+
+              // Fetch the document_id from the job payload or just redirect to search
+              // The job response includes document context; redirect to search as fallback
+              setTimeout(() => {
+                  window.location.href = '/search';
+              }, 800);
+              return;
+          }
+
+          if (job.status === 'failed' || job.status === 'dead') {
+              const errMsg = job.last_error || 'Job failed with an unknown error.';
+              showUploadError(errMsg);
+              return;
+          }
+
+          // Still processing — poll again
+          setTimeout(() => pollJobStatus(jobId, startTime), POLL_INTERVAL_MS);
+
+      } catch (err) {
+          // Network error — retry
+          setTimeout(() => pollJobStatus(jobId, startTime), POLL_INTERVAL_MS);
+      }
+  }
+
+  function updateProgress(job) {
+      const bar = document.getElementById('progress-bar');
+      if (job.status === 'queued') {
+          bar.style.width = '15%';
+          document.getElementById('progress-text').textContent = 'Queued…';
+      } else if (job.status === 'running') {
+          // Simulate progress between 20% and 90%
+          let w = parseInt(bar.style.width) || 15;
+          if (w < 85) {
+              w += Math.floor(Math.random() * 10) + 2;
+              if (w > 85) w = 85;
+              bar.style.width = w + '%';
+          }
+          document.getElementById('progress-text').textContent =
+              'Processing… (attempt ' + (job.attempts || 1) + ')';
+      }
+  }
+
+  function showUploadError(msg) {
+      document.getElementById('progress-text').textContent = 'Upload failed';
+      document.getElementById('progress-detail').textContent = msg;
+      document.getElementById('progress-bar').style.width = '100%';
+      document.getElementById('progress-bar').classList.add('bg-red-500');
+      document.getElementById('progress-error').classList.remove('hidden');
+  }
+
+  function resetUpload() {
+      document.getElementById('upload-form').classList.remove('hidden');
+      document.getElementById('progress-area').classList.add('hidden');
+      document.getElementById('progress-bar').style.width = '0%';
+      document.getElementById('progress-bar').classList.remove('bg-red-500');
+      document.getElementById('progress-error').classList.add('hidden');
+  }
+
+  // ── Microphone / MediaRecorder ─────────────────────────────────────────────
+  let mediaRecorder = null;
+  let audioChunks = [];
+
+  async function toggleRecording() {
+      const micBtn = document.getElementById('mic-btn');
+      const micLabel = document.getElementById('mic-label');
+      const micIcon = document.getElementById('mic-icon');
+      const recIndicator = document.getElementById('recording-indicator');
+
+      if (mediaRecorder && mediaRecorder.state === 'recording') {
+          // Stop recording
+          mediaRecorder.stop();
+          micBtn.classList.remove('bg-red-100', 'text-red-700', 'border-red-300');
+          micBtn.classList.add('bg-gray-100', 'text-gray-600', 'border-gray-200');
+          micLabel.textContent = 'Processing…';
+          recIndicator.classList.add('hidden');
+          return;
+      }
+
+      // Start recording
+      try {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          mediaRecorder = new MediaRecorder(stream, { mimeType: MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm' });
+          audioChunks = [];
+
+          mediaRecorder.ondataavailable = (e) => {
+              if (e.data.size > 0) audioChunks.push(e.data);
+          };
+
+          mediaRecorder.onstop = () => {
+              // Stop all tracks to release the mic
+              stream.getTracks().forEach(t => t.stop());
+
+              micLabel.textContent = 'Record';
+              micBtn.classList.remove('bg-red-100', 'text-red-700', 'border-red-300');
+              micBtn.classList.add('bg-gray-100', 'text-gray-600', 'border-gray-200');
+              recIndicator.classList.add('hidden');
+
+              if (audioChunks.length === 0) return;
+
+              // Transcribe via existing whisper endpoint
+              const blob = new Blob(audioChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
+              transcribeAudio(blob);
+          };
+
+          mediaRecorder.start();
+          micBtn.classList.remove('bg-gray-100', 'text-gray-600', 'border-gray-200');
+          micBtn.classList.add('bg-red-100', 'text-red-700', 'border-red-300');
+          micLabel.textContent = 'Stop';
+          recIndicator.classList.remove('hidden');
+
+      } catch (err) {
+          console.error('Microphone access denied:', err);
+          micLabel.textContent = 'Denied';
+          setTimeout(() => { micLabel.textContent = 'Record'; }, 2000);
+      }
+  }
+
+  async function transcribeAudio(blob) {
+      const formData = new FormData();
+      formData.append('audio', blob, 'recording.webm');
+      formData.append('csrf_token', document.querySelector('input[name="csrf_token"]').value);
+
+      try {
+          // POST to the transcription endpoint (reusing the audio extractor's whisper backend)
+          const resp = await fetch('/api/ingest/transcribe', {
+              method: 'POST',
+              body: formData
+          });
+
+          if (!resp.ok) {
+              console.error('Transcription failed:', resp.status);
+              return;
+          }
+
+          const data = await resp.json();
+          if (data.text) {
+              const textarea = document.getElementById('user-note');
+              const current = textarea.value.trim();
+              textarea.value = current + (current ? ' ' : '') + data.text;
+          }
+      } catch (err) {
+          console.error('Transcription error:', err);
+      }
+  }
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
+  function formatBytes(bytes) {
+      if (bytes === 0) return '0 B';
+      const units = ['B', 'KiB', 'MiB', 'GiB'];
+      let i = 0;
+      let n = bytes;
+      while (n >= 1024 && i < units.length - 1) {
+          n /= 1024;
+          i++;
+      }
+      return (i === 0 ? n : n.toFixed(1)) + ' ' + units[i];
+  }
+
+  function escapeHtml(str) {
+      const div = document.createElement('div');
+      div.appendChild(document.createTextNode(str));
+      return div.innerHTML;
+  }
+</script>
+{% endblock %}

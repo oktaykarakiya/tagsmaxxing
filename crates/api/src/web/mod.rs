@@ -44,6 +44,8 @@ pub(crate) mod templates;
 /// | POST   | `/logout`  | yes   | Revoke session, redirect        |
 /// | GET    | `/search`   | yes   | Search page (P6-T5)             |
 /// | POST   | `/search`   | yes   | HTMX search fragment (P6-T5)    |
+/// | GET    | `/upload`   | yes   | Upload page (P6-T6)             |
+/// | POST   | `/upload`   | yes   | Multipart upload submit (P6-T6) |
 pub(crate) fn build_web_router(
     state: std::sync::Arc<crate::AppState>,
 ) -> axum::Router<std::sync::Arc<crate::AppState>> {
@@ -67,6 +69,10 @@ pub(crate) fn build_web_router(
         .route(
             "/search",
             get(handlers::search_page).post(handlers::search_submit),
+        )
+        .route(
+            "/upload",
+            get(handlers::upload_page).post(handlers::upload_submit),
         )
         .route("/logout", post(handlers::logout_web))
         .layer(from_fn_with_state(

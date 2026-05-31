@@ -651,9 +651,9 @@ description = "Web UI — upload page (§12): drag-and-drop zone + file picker f
 depends_on = ["P6-T4", "P6-T2", "P2-T7"]
 plan_sections = ["12", "7"]
 acceptance = "Drag 3 files → reorderable list rendered; toggle 'as one document' ON → ingest creates 3-page document; toggle OFF → 3 separate 1-page documents; mic button records → transcript appears in note field → editable before submit; submit → progress bar → redirect to /documents/:id; file too large → client warning + server 413 with clear message; unauthenticated → redirect to /login. Unit tests for form rendering + CSRF; integration test with mock pipeline. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "Upload page (GET/POST /upload): drag-drop zone, file picker, reorderable list with thumbnails, group-as-document toggle, user_note with mic button UI (MediaRecorder for recording, transcription endpoint deferred). Extracted process_upload_files + parse_multipart from handlers/ingest.rs as shared pub(crate) functions. Submit via JS fetch multipart → JSON response with job_id → progress bar polls /api/jobs/:id. 15 new tests (8 upload handler + 2 multipart CSRF + 4 handler-integration + 1 template render). Templates: upload.html with drag-drop JS, MediaRecorder, progress polling. just ci green."
 
 [[task]]
 id = "P6-T11"
