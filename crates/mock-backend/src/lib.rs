@@ -57,6 +57,9 @@ pub struct Scenario {
     pub chat: ResponseMode,
     /// Behaviour for `POST /v1/embeddings`.
     pub embed: ResponseMode,
+    /// When `Some`, the chat endpoint returns this string as the `choices[0].message.content`
+    /// instead of the default `"mock response"`. Useful for structured-output tests.
+    pub chat_content: Option<String>,
 }
 
 impl Default for Scenario {
@@ -65,6 +68,7 @@ impl Default for Scenario {
             health: ResponseMode::Healthy,
             chat: ResponseMode::Healthy,
             embed: ResponseMode::Healthy,
+            chat_content: None,
         }
     }
 }
@@ -268,7 +272,13 @@ async fn handle_health(State(st): State<AppState>) -> Response {
 }
 
 async fn handle_chat(State(st): State<AppState>) -> Response {
-    let mode = st.scenario.lock().await.chat.clone();
+    let scenario = st.scenario.lock().await;
+    let mode = scenario.chat.clone();
+    let content = scenario
+        .chat_content
+        .clone()
+        .unwrap_or_else(|| "mock response".to_string());
+    drop(scenario);
     apply_mode(
         &mode,
         json!({
@@ -280,7 +290,7 @@ async fn handle_chat(State(st): State<AppState>) -> Response {
                 "index": 0,
                 "message": {
                     "role": "assistant",
-                    "content": "mock response"
+                    "content": content
                 },
                 "finish_reason": "stop"
             }],

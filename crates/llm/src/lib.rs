@@ -25,6 +25,8 @@
 
 mod client;
 mod error;
+mod tagger;
 
 pub use client::LlamaClient;
 pub use error::LlmError;
+pub use tagger::JsonSchemaTagger;

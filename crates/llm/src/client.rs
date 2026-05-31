@@ -41,6 +41,25 @@ struct OpenAiChatBody<'a> {
     max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response_format: Option<ResponseFormat>,
+}
+
+/// The `response_format` field sent to OpenAI-compatible backends when
+/// `ChatReq.json_schema` is set (plan §9 grammar-constrained structured output).
+#[derive(Debug, Serialize)]
+struct ResponseFormat {
+    #[serde(rename = "type")]
+    type_: &'static str,
+    json_schema: ResponseFormatSchema,
+}
+
+#[derive(Debug, Serialize)]
+struct ResponseFormatSchema {
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    strict: Option<bool>,
+    schema: serde_json::Value,
 }
 
 #[derive(Debug, Serialize)]
@@ -177,6 +196,19 @@ impl LlamaClient {
     /// - [`LlmError::AllFailed`] — every attempt exhausted retries.
     /// - [`LlmError::AllCooldown`] — every candidate is circuit-breaker-blocked.
     pub async fn chat(&self, role: Role, model: &str, req: &ChatReq) -> Result<ChatResp, LlmError> {
+        let response_format = req.json_schema.as_ref().map(|schema| ResponseFormat {
+            type_: "json_schema",
+            json_schema: ResponseFormatSchema {
+                name: req
+                    .json_schema_name
+                    .as_deref()
+                    .unwrap_or("output")
+                    .to_string(),
+                strict: Some(true),
+                schema: schema.clone(),
+            },
+        });
+
         let body = OpenAiChatBody {
             model,
             messages: req
@@ -189,6 +221,7 @@ impl LlamaClient {
                 .collect(),
             max_tokens: req.max_tokens,
             temperature: req.temperature,
+            response_format,
         };
 
         let raw: OpenAiChatResp = self

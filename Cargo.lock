@@ -1492,6 +1492,8 @@ dependencies = [
 name = "kb-llm"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "async-trait",
  "dashmap",
  "kb-core",
  "kb-mock-backend",

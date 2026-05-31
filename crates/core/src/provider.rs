@@ -53,6 +53,9 @@ pub struct ChatReq {
     pub messages: Vec<ChatMessage>,
     /// Optional JSON Schema for grammar-constrained structured output (plan §9).
     pub json_schema: Option<serde_json::Value>,
+    /// Name for the `response_format.json_schema.name` field in the OpenAI wire format.
+    /// Required by the API when `json_schema` is set; defaults to "output" if omitted.
+    pub json_schema_name: Option<String>,
     /// Optional cap on generated tokens.
     pub max_tokens: Option<u32>,
     /// Optional sampling temperature.

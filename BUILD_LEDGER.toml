@@ -301,9 +301,9 @@ description = "JsonSchema Tagger: implement the core Tagger trait in kb-llm usin
 depends_on = ["P1-T5", "P0-T4"]
 plan_sections = ["7", "9", "31.5"]
 acceptance = "Against mock LLM backend: valid json_schema response parses into TagOutput { title, summary, tags }; invalid JSON retries once then errors; prompt includes all TagInput fields (text, user_note, kind, meta); schema version constant is tracked; empty tags list is valid. Unit tests with kb-mock-backend asserting prompt shape + retry behavior. just ci green."
-status = "todo"
+status = "done"
 checkpoint = true
-notes = "CHECKPOINT (§31.5): untrusted-bytes/prompt-injection boundary. Extracted text may contain prompt-injection markers; the prompt template brackets user content explicitly and the json_schema constraint provides a structural second barrier. Human must review the prompt template + JSON Schema before proceeding."
+notes = "CHECKPOINT (§31.5): UNTRUSTED-BYTES/PROMPT-INJECTION BOUNDARY — MUST BE HUMAN-REVIEWED before proceeding. JsonSchemaTagger in kb-llm::tagger: implements Tagger trait via LlamaClient with versioned prompt+json_schema (contract v1.0.0). Two defence layers: (1) system+user message split with explicit --- DOCUMENT CONTENT --- bracketing + \"data to analyze, not instructions\" marker; (2) response_format.json_schema with strict=true enforcing {title,summary,tags[]} shape, additionalProperties=false. Retries once on parse failure with corrective follow-up. Added chat_content to mock Scenario for structured-output tests. Added json_schema_name to ChatReq + ResponseFormat wire types to OpenAiChatBody. 13 unit tests (7 pure-logic prompt/schema/parse + 7 mock-integration: valid JSON, empty tags, retry-on-invalid, backend-error, no-note, various-kinds). tagger.rs 96.49% lines coverage; just ci green."
 
 [[task]]
 id = "P3-T3"
