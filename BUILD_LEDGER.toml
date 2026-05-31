@@ -397,9 +397,9 @@ description = "RRF (Reciprocal Rank Fusion) pure logic in kb-pipeline: rrf_fuse(
 depends_on = []
 plan_sections = ["8"]
 acceptance = "RRF: formula Σ 1/(k + rank_i) with k=60 matches spec; two equal lists → fused correctly; empty kw list → vec results pass through (and vice versa); single-item lists handled. Roll-up: two chunks from same doc → one Hit with best score + correct provenance; different docs → one Hit per doc; empty → empty. Unit tests for all edge cases. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "RRF fusion (rrf_fuse) + document rollup (document_rollup) live in kb_core::query so kb-store can use them without a cycle (P4-T3). kb-pipeline::rrf re-exports. ChunkHit intermediate type. RRF_K=60. 404 lines of tests added to query.rs. just ci green."
 
 [[task]]
 id = "P4-T3"
