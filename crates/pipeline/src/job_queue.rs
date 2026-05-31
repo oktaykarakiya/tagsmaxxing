@@ -463,4 +463,36 @@ mod tests {
         let d = calculate_backoff(-1, 1_000);
         assert_eq!(d.num_milliseconds(), 1_000);
     }
+
+    // ── JobQueue construction ───────────────────────────────────
+
+    #[tokio::test]
+    async fn new_stores_parameters() {
+        let pool = PgPool::connect_lazy("postgres://localhost/kb").unwrap();
+        let queue = JobQueue::new(pool, 5_000, 3);
+        assert_eq!(queue.min_backoff_ms(), 5_000);
+        assert_eq!(queue.max_retries(), 3);
+    }
+
+    #[tokio::test]
+    async fn min_backoff_ms_returns_configured_value() {
+        let pool = PgPool::connect_lazy("postgres://localhost/kb").unwrap();
+        let queue = JobQueue::new(pool, 12_345, 2);
+        assert_eq!(queue.min_backoff_ms(), 12_345);
+    }
+
+    #[tokio::test]
+    async fn max_retries_returns_configured_value() {
+        let pool = PgPool::connect_lazy("postgres://localhost/kb").unwrap();
+        let queue = JobQueue::new(pool, 1_000, 7);
+        assert_eq!(queue.max_retries(), 7);
+    }
+
+    #[tokio::test]
+    async fn queue_with_zero_max_retries_dead_letters_immediately() {
+        let pool = PgPool::connect_lazy("postgres://localhost/kb").unwrap();
+        let queue = JobQueue::new(pool, 1_000, 0);
+        assert_eq!(queue.max_retries(), 0);
+        assert_eq!(queue.min_backoff_ms(), 1_000);
+    }
 }

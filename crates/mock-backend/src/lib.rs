@@ -60,6 +60,9 @@ pub struct Scenario {
     /// When `Some`, the chat endpoint returns this string as the `choices[0].message.content`
     /// instead of the default `"mock response"`. Useful for structured-output tests.
     pub chat_content: Option<String>,
+    /// When `Some`, the embed endpoint returns these vectors as `data[i].embedding`
+    /// instead of the default `[0.1, 0.2, 0.3]`. Useful for canonicalization tests.
+    pub embed_content: Option<Vec<Vec<f32>>>,
 }
 
 impl Default for Scenario {
@@ -69,6 +72,7 @@ impl Default for Scenario {
             chat: ResponseMode::Healthy,
             embed: ResponseMode::Healthy,
             chat_content: None,
+            embed_content: None,
         }
     }
 }
@@ -305,17 +309,36 @@ async fn handle_chat(State(st): State<AppState>) -> Response {
 }
 
 async fn handle_embed(State(st): State<AppState>) -> Response {
-    let mode = st.scenario.lock().await.embed.clone();
+    let scenario = st.scenario.lock().await;
+    let mode = scenario.embed.clone();
+    let content = scenario.embed_content.clone();
+    drop(scenario);
+
+    let data: Vec<Value> = match content.clone() {
+        Some(vectors) => vectors
+            .into_iter()
+            .enumerate()
+            .map(|(i, emb)| {
+                json!({
+                    "object": "embedding",
+                    "index": i,
+                    "embedding": emb
+                })
+            })
+            .collect(),
+        None => vec![json!({
+            "object": "embedding",
+            "index": 0,
+            "embedding": [0.1, 0.2, 0.3]
+        })],
+    };
+
     apply_mode(
         &mode,
         json!({
             "object": "list",
             "model": "mock-embed-model",
-            "data": [{
-                "object": "embedding",
-                "index": 0,
-                "embedding": [0.1, 0.2, 0.3]
-            }],
+            "data": data,
             "usage": {
                 "prompt_tokens": 3,
                 "total_tokens": 3

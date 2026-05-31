@@ -74,4 +74,19 @@ mod tests {
         assert!(msg.contains("cooldown"), "{msg}");
         assert!(msg.contains("30s"), "{msg}");
     }
+
+    #[test]
+    fn deserialize_error_displays_message() {
+        let err = LlmError::Deserialize("missing field `title`".into());
+        let msg = err.to_string();
+        assert!(msg.contains("deserialize"), "{msg}");
+        assert!(msg.contains("missing field"), "{msg}");
+    }
+
+    /// Verify `LlmError` impls `Send + Sync` (required by anyhow/async boundaries).
+    #[test]
+    fn error_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<LlmError>();
+    }
 }

@@ -20,5 +20,7 @@ pub mod document_builder;
 pub mod embedder;
 pub mod job_queue;
 pub mod tag_canonicalizer;
+pub mod tag_store;
 
 pub use job_queue::{JobQueue, run_worker_pool};
+pub use tag_store::TagStore;

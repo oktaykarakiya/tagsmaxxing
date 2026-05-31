@@ -887,4 +887,26 @@ mod tests {
 
         mock.shutdown().await;
     }
+
+    // ── circuit-breaker helpers ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn circuit_count_starts_at_zero() {
+        let b = Arc::new(Backend::new("b1", "http://x:8001", vec![Role::Text], 0, 2));
+        let pool = Pool::new(vec![b], Duration::from_secs(1));
+        let client = LlamaClient::new(pool, Client::new(), 2, 3, Duration::from_millis(200));
+        assert_eq!(client.circuit_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn circuit_count_after_single_success() {
+        let (client, mock) = client_with_one_backend(Role::Text, 2).await;
+        let _ = client
+            .chat(Role::Text, "model", &chat_req("hello"))
+            .await
+            .unwrap();
+        // After success, no circuit-breaker entry (backend not failed).
+        assert_eq!(client.circuit_count(), 0);
+        mock.shutdown().await;
+    }
 }
