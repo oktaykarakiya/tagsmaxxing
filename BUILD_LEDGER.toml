@@ -8,8 +8,14 @@
 #   5. commit (one task = one commit, message references the id, §31.6), set status = "done";
 #   6. if `checkpoint = true`, STOP and request human review before proceeding (§31.5).
 #
-# P0, P1, P2, and P3 are complete. P4 is decomposed below; P5+ remain to be authored when
-# their preceding phases complete — "current phase first" (§31.1).
+# P0-P5 are complete (44 tasks). P6-P12 (60 tasks) are authored and todo. This file was hardened
+# in the review/p6-readiness pass (see docs/analysis/): added P6-T0 (re-armed CI + Podman
+# integration lane for the #[ignore] RLS/auth suites), P7-T7 (the MISSED §31.5 extractor
+# untrusted-bytes checkpoint + sandboxing), P6-T11 (tag provenance/locking + retag job kind),
+# P6-T12 (retrieval eval-set CI gate), P8-T13 (ingest-time thumbnails + B2/Cloudflare egress),
+# P9-T12 (per-user job priority + aging), P9-T13 (bandwidth + hour/day + time-of-day controls);
+# fixed the P8-T5/P10-T1 encryption-ordering so the KEK trait isn't built twice; and recorded a
+# deferred P13 enterprise backlog (SSO/SCIM/RBAC/BYOK). Build "current phase first" (§31.1).
 
 [meta]
 generated = "2026-05-31"
@@ -518,7 +524,7 @@ plan_sections = ["13", "29", "15"]
 acceptance = "Bytes quota: upload under limit succeeds, over limit gets 413 with clear message, unlimited (NULL) always succeeds. Token quota: LLM call under limit succeeds, over gets 429, NULL = unlimited. Edge case: multiple concurrent uploads don't panic, just may briefly overshoot (documented). Unit tests for count-check logic + #[ignore] integration tests against Postgres. just ci green."
 status = "done"
 checkpoint = false
-notes = "export.rs (~1000 lines): ExportStore trait, ExportPipeline, streaming ZIP+JSONL+manifest, process_export_job, safe_zip_path. PgStore: 7 list_* methods. 19 unit tests."
+notes = "export.rs (~1000 lines): ExportStore trait, ExportPipeline, streaming ZIP+JSONL+manifest, process_export_job, safe_zip_path. PgStore: 7 list_* methods. 19 unit tests. [REVIEW FLAG (p6-readiness): these notes look SWAPPED with P5-T7's — they describe export.rs, which is P5-T7's deliverable, not quota enforcement. Verify the actual quota code (413 when bytes>quota_bytes, 429 when tokens>quota_tokens, counting logic) genuinely shipped before P11-T5/P9-T10 build on it.]"
 
 [[task]]
 id = "P5-T7"
@@ -549,6 +555,17 @@ checkpoint = false
 # watcher for hands-off auto-ingest, a server-rendered Web UI (Askama + HTMX + Tailwind)
 # for search/upload/document-detail, an admin panel for tenant/user/routing management,
 # and Prometheus metrics + Grafana dashboard for observability (§15).
+
+[[task]]
+id = "P6-T0"
+phase = "P6"
+description = "Re-armed CI + Podman integration lane (review/p6-readiness; CLAUDE.md §31.2). Context: the loop had silently lowered the coverage gate 85->79 and neutered it with a trailing `|| true` so it could never fail; the #[ignore] testcontainers suites (incl. the P5-T2 cross-tenant isolation suite, auth, pg_store, job_queue) never run in `just ci`. This task: (a) add `just ci-integration` that targets the Podman socket (DOCKER_HOST=unix://$XDG_RUNTIME_DIR/podman/podman.sock) and runs `cargo test --workspace -- --ignored`, so the security-critical DB code is actually exercised; (b) measure coverage WITH the integration tests and enforce >=85 lines overall plus per-crate floors >=85 on kb-store and the auth paths (§31.2 'higher on store/auth'); keep fast `just ci` cov a real (un-masked) floor; (c) add a CI job (GitHub Actions service or documented runner) that runs `just ci-integration` against Podman; (d) a regression test asserting the `cov` recipe contains no `|| true` / `--fail-under-lines 0` masking. Build this FIRST so every later phase's integration tests run as they land."
+depends_on = ["P0-T2", "P5-T2"]
+plan_sections = ["31", "31.2", "31.3", "13"]
+acceptance = "`just ci-integration` runs the #[ignore] suites against a real Podman/testcontainers Postgres and fails the build if any fail; coverage including integration tests is >=85 overall with >=85 per-crate floors on kb-store + auth; the fast `just ci` cov gate is real (no `|| true`); a test asserts the cov recipe isn't masked; CI runs the integration lane. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
 
 [[task]]
 id = "P6-T1"
@@ -617,10 +634,21 @@ checkpoint = false
 notes = ""
 
 [[task]]
+id = "P6-T11"
+phase = "P6"
+description = "Tag provenance + locking (review/p6-readiness; doc 04 item 6, §6.5). Add a `source` column to document_tags (CHECK IN ('llm','user'), default 'llm') and a `locked` boolean (default false). When a user adds or confirms a tag in the UI, set source='user', locked=true. The re-tag flow (P6-T7) and the canonicalizer (P3-T3) must NEVER remove or overwrite a locked/user tag — re-tag only adds/updates llm-sourced tags. Also add the missing `retag` job kind to the queue (the jobs schema only has ingest|reembed|export): a retag job re-runs the tagger+canonicalizer on a document's current text and merges results while preserving locked user tags. Migration adds the columns + CHECK; PgStore methods set/clear source+locked; the canonicalizer excludes locked tags from deletion."
+depends_on = ["P3-T3", "P2-T3"]
+plan_sections = ["6.5", "12", "16"]
+acceptance = "User-added tag has source='user', locked=true; re-tag / re-canonicalize never deletes a locked tag; llm tags can still be replaced; the `retag` job kind enqueues and a worker re-tags while preserving locked tags; migration applies forward-only. Unit tests for lock-preservation logic + #[ignore] integration test for the retag job. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
 id = "P6-T7"
 phase = "P6"
-description = "Web UI — document detail page (§12): title, summary, user_note, kind badge, status, created_at, page_count. Canonical tags displayed as chips with X-to-remove; inline 'add tag' input → POST re-tag (calls tagger + canonicalizer). Page thumbnail strip (front/back/p1…pN) — each thumbnail links to file download; reorder pages via drag-and-drop → PUT /api/documents/:id/reorder. 'Add page' button → upload additional file(s) → appended to document → re-tag. Combined metadata section (per-page fields namespaced). Per-page original download link. Re-tag button (re-runs tagger on current text)."
-depends_on = ["P6-T4", "P6-T2"]
+description = "Web UI — document detail page (§12): title, summary, user_note, kind badge, status, created_at, page_count. Canonical tags displayed as chips with X-to-remove; inline 'add tag' input → POST re-tag (calls tagger + canonicalizer). Page thumbnail strip (front/back/p1…pN) — each thumbnail links to file download; reorder pages via drag-and-drop → PUT /api/documents/:id/reorder. 'Add page' button → upload additional file(s) → appended to document → re-tag. Combined metadata section (per-page fields namespaced). Per-page original download link. Re-tag button (re-runs tagger on current text). Re-tag MUST preserve locked/user tags (P6-T11)."
+depends_on = ["P6-T4", "P6-T2", "P6-T11"]
 plan_sections = ["12", "7"]
 acceptance = "Document detail loads with all fields; tag chips render with remove buttons → DELETE removes; add-tag autocomplete from tenant's existing tags; page strip shows thumbnails in order; drag-to-reorder persists new order; add-page uploads + tags update; per-page download streams correct blob; re-tag button updates tags; CSRF on all mutating actions. Unit tests for template rendering + integration test with mock store. just ci green."
 status = "todo"
@@ -641,7 +669,7 @@ notes = ""
 [[task]]
 id = "P6-T9"
 phase = "P6"
-description = "Prometheus metrics + Grafana dashboard (§15): (a) Export metrics via `metrics` + `metrics-exporter-prometheus` on a separate port or /metrics endpoint: per-backend (healthy, free_slots/total_slots or rate-limit headroom, cooldown), queue (depth, waiters, oldest_job_age_secs), requests (count, p50/p95/p99 latency, error_rate by role/model), throughput (requests/sec), storage (bytes_used per tenant), spend (dollars per tenant/provider), active_users (by tenant). (b) Ship a grafana-dashboard.json with panels for: backend health grid, queue depth + latency heatmap, throughput + error rate, per-tenant storage/spend, top queries. Use metric labels (backend_id, role, tenant_id) so a single dashboard works for all."
+description = "Prometheus metrics + Grafana dashboard (§15): (a) Export metrics via `metrics` + `metrics-exporter-prometheus` on a separate port or /metrics endpoint: per-backend (healthy, free_slots/total_slots or rate-limit headroom, cooldown), queue (depth, waiters, oldest_job_age_secs), requests (count, p50/p95/p99 latency, error_rate by role/model), throughput (requests/sec), storage (bytes_used per tenant), spend (dollars per tenant/provider), active_users (by tenant). (b) Ship a grafana-dashboard.json with panels for: backend health grid, queue depth + latency heatmap, throughput + error rate, per-tenant storage/spend, top queries. Use metric labels (backend_id, role, tenant_id) so a single dashboard works for all. Also wire an optional OpenTelemetry export (tracing-opentelemetry → OTLP to Jaeger/Tempo), enabled via env, per §18."
 depends_on = ["P1-T4", "P2-T3", "P5-T6"]
 plan_sections = ["15"]
 acceptance = "GET /metrics returns Prometheus-formatted metrics; all listed metrics present with correct labels; histogram quantiles computed correctly; grafana-dashboard.json is valid JSON and imports without errors; metrics update in real time (no caching/staleness). Unit tests asserting metric increments + gauge values. just ci green."
@@ -650,10 +678,21 @@ checkpoint = false
 notes = ""
 
 [[task]]
+id = "P6-T12"
+phase = "P6"
+description = "Retrieval eval set + regression gate (review/p6-readiness; §19). Build a small labelled eval set (queries -> expected document ids) over a fixture corpus, plus a harness that ingests the corpus (mock LLM, deterministic embeddings), runs RetrievalPipeline (P4-T5), and computes recall@k / MRR. Tune RRF weights (P4-T2), rerank top-K, and TAG_MERGE_THRESHOLD against it. Add a CI check (in `just ci-integration`, needs Postgres) that fails if a metric regresses below a committed baseline, so retrieval-quality changes are regression-tested (§19: 'keep it in CI')."
+depends_on = ["P4-T5"]
+plan_sections = ["19", "8"]
+acceptance = "Labelled eval set committed; harness computes recall@k + MRR deterministically; baseline metrics recorded; a regression below baseline fails the integration gate; documented how to intentionally update the baseline. #[ignore] in fast `just ci`; runs in `just ci-integration`. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
 id = "P6-T10"
 phase = "P6"
 description = "P6 phase integration test: end-to-end through the CLI, API, and Web UI fronts. (1) CLI: `kb ingest file.txt` → polls → done; `kb search 'query'` → prints ranked results. (2) API: authenticated POST /api/ingest (multipart, 2 files grouped) → 202 → poll job → done → GET /api/documents/:id → correct files+tags; GET /api/search → results with deep-links; cross-tenant isolation (tenant B's API key → 404 on tenant A's doc). (3) Web UI: GET /search → HTML page; POST search → HTMX fragment with results; GET /documents/:id → detail page with tags + page strip. (4) Admin: super-admin creates tenant + user; tenant-admin manages users. (5) Metrics: GET /metrics returns valid Prometheus output. All use mock LLM backends + real PgStore via testcontainers (#[ignore] in just ci). P6 PHASE COMPLETE."
-depends_on = ["P6-T1", "P6-T2", "P6-T3", "P6-T4", "P6-T5", "P6-T6", "P6-T7", "P6-T8", "P6-T9"]
+depends_on = ["P6-T0", "P6-T1", "P6-T2", "P6-T3", "P6-T4", "P6-T5", "P6-T6", "P6-T7", "P6-T8", "P6-T9", "P6-T11"]
 plan_sections = ["10", "12", "15", "31"]
 acceptance = "CLI ingest+search round-trip; API multi-file grouped ingest → search → document detail; Web UI search returns HTML; admin tenant+user CRUD works across scopes; folder watch auto-ingests dropped files; metrics endpoint returns valid Prometheus output. All gates green. just ci green."
 status = "todo"
@@ -722,10 +761,21 @@ checkpoint = false
 notes = ""
 
 [[task]]
+id = "P7-T7"
+phase = "P7"
+description = "Extractor untrusted-bytes security review + sandboxing (review/p6-readiness; MISSED §31.5 checkpoint). The §31.5 checkpoint for 'the extractor untrusted-bytes/prompt-injection boundary' was only HALF satisfied: P3-T2 gated the LLM prompt-injection side, but the untrusted-BYTES parsers (P2-T5 Tika, P2-T6 image/EXIF, P2-T7/T8 ffmpeg+whisper, P2-T9 file/strings/archive recursion) all shipped checkpoint=false and were never security-reviewed, and there is no process sandboxing. This task: (a) human security review of the P2 extractor boundary (resource/time limits, archive-bomb + zip-slip guards, EXIF/codec parser CVE exposure, ffmpeg/Tika hardening); (b) run the untrusted-input subprocesses (ffmpeg, Tika, file) sandboxed in the container — non-root, read-only rootfs, dropped capabilities, seccomp profile, no network, CPU/mem/time ulimits (Podman --security-opt/--cap-drop); (c) wire the §17 upload-edge guards that currently have no task: MIME+size validation (also extend P6-T2), path-traversal/zip-slip guards, SSRF guards on any URL fetch, optional clamav scan; (d) document the trust boundary in ARCHITECTURE.md."
+depends_on = ["P2-T9", "P7-T1", "P6-T2"]
+plan_sections = ["17", "31.5", "7"]
+acceptance = "Security review documented (findings + mitigations); extractor subprocesses run sandboxed (verified: non-root, caps dropped, no network, resource-limited); malicious fixtures (zip-slip, archive bomb, oversize, bad-MIME) rejected safely; SSRF + path-traversal guards in place; optional clamav wired. CHECKPOINT — human sign-off required (§31.5). just ci green."
+status = "todo"
+checkpoint = true
+notes = "CHECKPOINT (§31.5): extractor untrusted-bytes boundary — retroactive review of the P2 parsers (which shipped un-gated) + process sandboxing. Added in the review/p6-readiness hardening pass."
+
+[[task]]
 id = "P7-T6"
 phase = "P7"
 description = "P7 phase verification: `podman build` the Containerfile, `podman compose up` the full stack (CPU profile), run a smoke test (CLI ingest + search via `podman exec` or API curl), verify logs capped, verify health endpoints, `podman compose down -v`. This task verifies packaging end-to-end — no new Rust code, just verification + any packaging fixes discovered. P7 PHASE COMPLETE."
-depends_on = ["P7-T1", "P7-T2", "P7-T3", "P7-T4", "P7-T5"]
+depends_on = ["P7-T1", "P7-T2", "P7-T3", "P7-T4", "P7-T5", "P7-T7"]
 plan_sections = ["14", "31"]
 acceptance = "Full podman build + compose up → smoke test passes → clean down. All containers reach healthy. Log rotation working. Quadlet files validated. Docs complete + accurate. just ci green."
 status = "todo"
@@ -743,7 +793,7 @@ notes = ""
 [[task]]
 id = "P8-T1"
 phase = "P8"
-description = "B2 blob backend: implement the core Blob trait using `object_store` with a Backblaze B2 S3-compatible endpoint. Content-addressed key layout (`{tenant_id}/{sha256_hex}`) — same as LocalBlob (P2-T1). Supports: put (streaming, idempotent via content-addressing), get (streaming), get_range (HTTP Range for byte slices), exists (HEAD), delete, presigned_get_url (time-limited download URL via B2's presigned mechanism). Configured via env vars: B2_APPLICATION_KEY_ID, B2_APPLICATION_KEY, B2_BUCKET_NAME, B2_ENDPOINT (default s3.us-west-004.backblazeb2.com). Hot-swappable endpoint + credentials (ArcSwap reload from env/file-notify). Multipart upload for files > 5 MB (streaming, never buffers full file in RAM)."
+description = "B2 blob backend: implement the core Blob trait using `object_store` with a Backblaze B2 S3-compatible endpoint. Content-addressed key layout (`{tenant_id}/{sha256_hex}`) — same as LocalBlob (P2-T1). Supports: put (streaming, idempotent via content-addressing), get (streaming), get_range (HTTP Range for byte slices), exists (HEAD), delete, presigned_get_url (time-limited download URL via B2's presigned mechanism). Configured via env vars: B2_APPLICATION_KEY_ID, B2_APPLICATION_KEY, B2_BUCKET_NAME, B2_ENDPOINT (default s3.us-west-004.backblazeb2.com). Hot-swappable endpoint + credentials (ArcSwap reload from env/file-notify). Multipart upload for files > 5 MB (streaming, never buffers full file in RAM). Also configure/document B2 bucket VERSIONING + Object Lock + lifecycle version-expiry on the data bucket (§20/§21: ransomware + accidental-delete protection), and use a least-privilege application key scoped to this bucket only, separate from the backup-bucket key (§24)."
 depends_on = ["P2-T1"]
 plan_sections = ["20"]
 acceptance = "put → get returns identical bytes; get_range returns correct byte slice; exists returns true after put, false after delete; presigned_get_url is valid and time-limited; same content → same key → idempotent put (no error); multipart upload for 50 MB file works; B2 unreachable → clear anyhow error (not panic); hot-swap credentials picks up new key without restart. Unit tests with a mock S3 server (or object_store's in-memory backend) + integration tests against real B2 (#[ignore] in just ci). just ci green."
@@ -787,13 +837,13 @@ notes = ""
 [[task]]
 id = "P8-T5"
 phase = "P8"
-description = "Envelope encryption for B2 blobs (§20, §24): before storing a blob, generate a random 256-bit Data Encryption Key (DEK). Encrypt the blob bytes with the DEK (XChaCha20-Poly1305 or AES-256-GCM). Wrap (encrypt) the DEK with a Key Encryption Key (KEK) — initially loaded from env (BLOB_KEK_B64, a 256-bit key), with the understanding that P10 will move the KEK into a KMS/HSM. Store the wrapped DEK alongside the ciphertext (or in a separate metadata column). On get: unwrap DEK with KEK → decrypt blob bytes. This means B2 never sees plaintext. The encryption layer sits between the Blob trait caller and the B2 transport — it is a Blob impl wrapper (EncryptedBlob<B: Blob>) so it works with any backend."
+description = "Envelope encryption for B2 blobs (§20, §24): before storing a blob, generate a random 256-bit Data Encryption Key (DEK). Encrypt the blob bytes with the DEK (XChaCha20-Poly1305 or AES-256-GCM). Wrap (encrypt) the DEK with a Key Encryption Key (KEK). IMPORTANT (review/p6-readiness): define the `KeyEncryptionKey` trait in kb-core HERE (wrap/unwrap) plus a `FileKek` impl (256-bit key from env BLOB_KEK_B64 / file BLOB_KEK_FILE), and have EncryptedBlob hold an `Arc<dyn KeyEncryptionKey>` — do NOT inline an ad-hoc env KEK. P10-T1 then adds the KMS/Vault impl behind the SAME trait, so there is no throwaway crypto to retrofit. Store the wrapped DEK alongside the ciphertext (or in a separate metadata column). On get: unwrap DEK with KEK → decrypt blob bytes. This means B2 never sees plaintext. The encryption layer sits between the Blob trait caller and the B2 transport — it is a Blob impl wrapper (EncryptedBlob<B: Blob>) so it works with any backend."
 depends_on = ["P8-T1"]
 plan_sections = ["20", "24", "28"]
 acceptance = "put → encrypted bytes stored in B2 (verify by reading raw B2 object); get → decrypted correctly; wrong KEK → get returns error; DEK is random per file (two puts of same content → different ciphertext due to unique DEK, but dedup is by plaintext SHA256 which happens before encryption); EncryptedBlob wraps any Blob impl (test with both B2 + LocalBlob). Unit tests for encrypt/decrypt round-trip + wrong-KEK error + DEK uniqueness + KEK rotation (re-wrap). just ci green."
 status = "todo"
 checkpoint = true
-notes = "CHECKPOINT (§31.5): encryption & key handling — human review required. KEK from env is a temporary bridge; P10 moves to KMS/HSM."
+notes = "CHECKPOINT (§31.5): encryption & key handling — human review required. review/p6-readiness: P8-T5 now OWNS the KeyEncryptionKey trait + FileKek impl; P10-T1 only adds the KMS/Vault impl behind the same trait (no throwaway env-KEK). NOTE: derived DB columns (chunks.content, documents.summary/user_note) stay PLAINTEXT at rest until P10-T2 — do NOT onboard real sensitive tenant data before P10 ships; the 'zero plaintext at rest' claim (doc 02) holds only from P10-T2 on."
 
 [[task]]
 id = "P8-T6"
@@ -862,10 +912,21 @@ checkpoint = false
 notes = ""
 
 [[task]]
+id = "P8-T13"
+phase = "P8"
+description = "Ingest-time thumbnails + B2 egress economics (review/p6-readiness; doc 04 item 5 / doc 05, §20). (a) At ingest, generate small derived preview/thumbnail blobs (image: downscaled JPEG/WebP; PDF/doc: first-page raster; video: a keyframe) and store them as separate content-addressed blobs, so the browse/grid/search UI serves tiny cached thumbnails and NEVER pulls the full original from B2; originals are fetched only on explicit click (presigned, P8-T3). (b) Support a Cloudflare-in-front-of-B2 deployment (B2 + Cloudflare are in the Bandwidth Alliance => B2->Cloudflare egress is free + edge-cached): a configurable public CDN base URL that presigned/static blob URLs are rewritten through, documented. This is the primary COGS lever for a low-priced product. Thumbnails respect encryption (P8-T5) and the local cache (P8-T2)."
+depends_on = ["P8-T1", "P8-T3", "P2-T6"]
+plan_sections = ["20", "12"]
+acceptance = "Ingest produces a thumbnail blob per document; the browse/search UI references thumbnails, not originals (verified: a grid render issues no full-original B2 GET); thumbnail generation handles image/pdf/video kinds; a configured CDN base URL rewrites blob URLs; the egress path (Cloudflare Bandwidth Alliance) is documented. Unit tests for thumbnail generation + URL rewriting. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
 id = "P8-T12"
 phase = "P8"
 description = "P8 phase integration test: (a) B2 mock: put → encrypt → store → get → decrypt → verify; multipart large file; presigned URL generation; cache hit/miss/eviction; hot-swap credentials. (b) Degradation: B2 mock returns errors → ingest pauses, cache serves reads, X-Degraded header, circuit breaker opens/closes. (c) Orphan GC: create orphan blob → GC deletes after grace period. (d) Integrity scan: verify blob hash matches. (e) Maintenance scheduler: VACUUM runs, re-embed triggered. All use mock B2 server + real PgStore via testcontainers (#[ignore] in just ci). P8 PHASE COMPLETE."
-depends_on = ["P8-T1", "P8-T2", "P8-T3", "P8-T4", "P8-T5", "P8-T8", "P8-T9", "P8-T10", "P8-T11"]
+depends_on = ["P8-T1", "P8-T2", "P8-T3", "P8-T4", "P8-T5", "P8-T8", "P8-T9", "P8-T10", "P8-T11", "P8-T13"]
 plan_sections = ["20", "22", "23", "31"]
 acceptance = "Full encrypted blob round-trip through mock B2; multipart upload + download; degradation matrix works; GC cleans orphans; integrity scan validates hashes; all gates green. just ci green."
 status = "todo"
@@ -984,9 +1045,31 @@ notes = ""
 id = "P9-T10"
 phase = "P9"
 description = "Cost tracking + budget alerts (§26.6): on every LLM call (chat/embed/rerank), record usage_events (already done, P3-T5). For remote backends with pricing, multiply tokens × $/Mtok → cost, store in usage_events (add cost_micros column via migration). Per-tenant budget: add `budget_monthly_cents` to tenants (NULL = unlimited). A background check on each call: sum this month's costs → if > budget, log WARN + set Prometheus gauge `budget_exceeded`. Optional hard cap mode (TENANT_HARD_BUDGET_CAP=true) → reject calls with 429 when budget exceeded. Admin dashboard shows per-tenant spend vs budget. Alerts: Prometheus alert rule for budget > 80% and > 100%."
-depends_on = ["P9-T4", "P5-T6", "P6-T9"]
+depends_on = ["P9-T4", "P9-T5", "P5-T6", "P6-T9"]
 plan_sections = ["26.6"]
 acceptance = "Remote call → cost calculated from tokens × pricing; usage_events.cost_micros populated; monthly sum under budget → allowed; over budget → WARN + gauge; hard cap mode → 429; NULL budget → unlimited; per-tenant spend visible in admin; Prometheus alert rules defined. Unit tests for cost calc + budget check + hard cap. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P9-T12"
+phase = "P9"
+description = "Per-user job priority + fairness (review/p6-readiness; doc 04 item 2). The admin sets an unbounded integer priority per tenant/user (higher = served first; default 0). (a) Add `priority INT NOT NULL DEFAULT 0` to jobs (derived from the tenant/user at enqueue); the SKIP-LOCKED claim orders by priority DESC, run_after ASC. (b) AGING to prevent starvation: effective_priority = priority + floor(age_seconds / AGING_STEP_SECS) so old low-priority jobs eventually rise. (c) Make the scheduler's interactive acquire() priority-aware (a priority-ordered waiter queue) so priority bites on inference contention too, not just the ingest queue. (d) Keep per-plan rate caps so a high-priority free/comp account can't starve paying users. (e) Audit every priority change (admin action -> audit log)."
+depends_on = ["P2-T3", "P9-T6", "P5-T6", "P6-T8"]
+plan_sections = ["16", "6", "15"]
+acceptance = "Higher-priority job claimed before lower-priority; aging lifts a starved low-priority job after the threshold; interactive acquire() prefers higher-priority waiters; per-plan rate caps still bound free accounts; a priority change writes an audit row; concurrent claims never double-serve. Unit tests for ordering + aging math (injected clock) + #[ignore] integration test. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P9-T13"
+phase = "P9"
+description = "Granular endpoint controls: bandwidth + longer windows + time-of-day (review/p6-readiness; doc 04 item 3, §26.2). Extend the Capacity model beyond P9-T3's per-minute RPM/TPM: (a) per-HOUR and per-DAY token/request windows (TokenBucket variants with longer refill periods) so an operator can cap, e.g., daily spend on a metered endpoint; (b) a per-backend BANDWIDTH throttle (MB/s) via a rate-limited HTTP client/reader (the one control that isn't just a config row); (c) time-of-day routing gates (e.g., 'use this expensive cloud endpoint only 09:00-17:00', 'heavy local GPU only at night') as a config-driven predicate in candidate selection. All hot-reloadable from the DB routing config (§26.5)."
+depends_on = ["P9-T3", "P9-T6"]
+plan_sections = ["26.2", "26.5", "6"]
+acceptance = "Hour/day windows throttle correctly (deterministic, injected clock); the bandwidth throttle bounds per-backend throughput to the configured MB/s; a time-of-day gate excludes a backend outside its window; all settings hot-reload without restart. Unit tests for window math + bandwidth limiter + time-of-day predicate. just ci green."
 status = "todo"
 checkpoint = false
 notes = ""
@@ -995,7 +1078,7 @@ notes = ""
 id = "P9-T11"
 phase = "P9"
 description = "P9 phase integration test: (a) Mock providers: local (free) + remote (DeepSeek compat mock, $2/Mtok) + remote (Anthropic mock, $15/Mtok). (b) Tiered routing: text role → Tier 0 local (CostAsc), Tier 1 DeepSeek ($2), Tier 2 Anthropic ($15). Test: local available → used (free); local at capacity → waits spill_after → spills to DeepSeek; DeepSeek returns 429 → cooldown → next call uses Anthropic. (c) Embed role: only Tier 0 used (no spill across models — §11 lock). (d) Data residency: tenant with local_only → only local backends, even if remote is cheaper. (e) Cost tracking: calls accrue correctly, budget exceeded → 429 (hard cap mode). (f) Hot-reload: insert new provider via DB → LISTEN/NOTIFY → Pool picks it up. All use mock servers + real PgStore via testcontainers (#[ignore] in just ci). P9 PHASE COMPLETE."
-depends_on = ["P9-T1", "P9-T2", "P9-T3", "P9-T4", "P9-T5", "P9-T6", "P9-T7", "P9-T8", "P9-T9", "P9-T10"]
+depends_on = ["P9-T1", "P9-T2", "P9-T3", "P9-T4", "P9-T5", "P9-T6", "P9-T7", "P9-T8", "P9-T9", "P9-T10", "P9-T12", "P9-T13"]
 plan_sections = ["26", "31"]
 acceptance = "Tier spill works; 429 cooldown works; embed never spills; local_only filters remote; costs accrue + budget enforced; hot-reload picks up DB changes; all gates green. just ci green."
 status = "todo"
@@ -1012,13 +1095,13 @@ notes = ""
 [[task]]
 id = "P10-T1"
 phase = "P10"
-description = "Key hierarchy: define a `KeyEncryptionKey` trait in kb-core: `async fn wrap(&self, plaintext: &[u8]) -> anyhow::Result<Vec<u8>>` + `async fn unwrap(&self, ciphertext: &[u8]) -> anyhow::Result<Vec<u8>>`. Two impls: (a) `FileKek` — loads a 256-bit key from a file path (env BLOB_KEK_FILE), used for dev/test/single-node (the P8-T5 bridge). (b) `VaultTransitKek` — uses HashiCorp Vault's Transit engine (or cloud KMS: AWS KMS, GCP KMS) for wrap/unwrap — the KEK never enters the app process. Also define a `DataKey` struct: `{ id: Uuid, wrapped_dek: Vec<u8>, kek_id: String }` for tracking which KEK wrapped each DEK (enables rotation). The KEK trait and DataKey are pure abstractions — unit-testable without real KMS. The actual KMS integration tests are #[ignore]."
-depends_on = ["P5-T3"]
+description = "Key hierarchy (production KMS hardening). The `KeyEncryptionKey` trait (wrap/unwrap) + the `FileKek` impl already exist from P8-T5 (review/p6-readiness built them there so blob encryption consumes the trait from day one) — do NOT redefine them. This task ADDS only the production impl: (b) `VaultTransitKek` — uses HashiCorp Vault's Transit engine (or cloud KMS: AWS KMS, GCP KMS) for wrap/unwrap — the KEK never enters the app process. Also define a `DataKey` struct: `{ id: Uuid, wrapped_dek: Vec<u8>, kek_id: String }` for tracking which KEK wrapped each DEK (enables rotation). DataKey is a pure abstraction — unit-testable without real KMS; the actual KMS integration tests are #[ignore]."
+depends_on = ["P8-T5", "P5-T3"]
 plan_sections = ["28", "24"]
-acceptance = "FileKek wrap → unwrap returns original; different FileKek → unwrap fails; VaultTransitKek calls correct API path (mock Vault server in tests); DataKey serializes/deserializes; KEK rotation: unwrap with old KEK, re-wrap with new KEK (no bulk re-encryption). Unit tests for FileKek + mock Vault. just ci green."
+acceptance = "VaultTransitKek calls correct API path (mock Vault server in tests); DataKey serializes/deserializes; KEK rotation: unwrap a DEK with the old KEK, re-wrap with the new KEK (no bulk re-encryption). The FileKek trait/impl from P8-T5 is reused unchanged. Unit tests for rotation + mock Vault. just ci green."
 status = "todo"
 checkpoint = true
-notes = "CHECKPOINT (§31.5): encryption & key handling — human must review KEK design before proceeding. The FileKek is dev-only; production keying requires KMS/HSM."
+notes = "CHECKPOINT (§31.5): encryption & key handling — human must review the KEK/KMS design before proceeding. review/p6-readiness: the KeyEncryptionKey trait + FileKek now live in P8-T5; this task ADDS VaultTransitKek/KMS behind the same trait + DataKey rotation (no duplicated crypto). depends_on now includes P8-T5."
 
 [[task]]
 id = "P10-T2"
@@ -1253,3 +1336,55 @@ acceptance = "Full onboarding → checkout → first upload → search → API t
 status = "todo"
 checkpoint = false
 notes = ""
+
+# ── Phase P13 — Enterprise (POST-v1 BACKLOG — NOT auto-built) ──────────────────
+#
+# Added in the review/p6-readiness pass (doc 03). These are deliberately status="deferred" so
+# the autonomous loop SKIPS them (ledger.py treats only "todo" as eligible — confirmed). They
+# are recorded so they are not silently dropped; promote to "todo" only after an explicit
+# product decision, once v1 (P0-P12) ships and the up-market/enterprise motion is chosen. They
+# extend existing substrate (per-tenant DEKs, residency, RBAC roles), not greenfield.
+
+[[task]]
+id = "P13-T1"
+phase = "P13"
+description = "SSO: SAML 2.0 + OIDC federation for enterprise tenants (login via the customer's IdP). Extends P5-T5 auth."
+depends_on = ["P5-T5"]
+plan_sections = ["13"]
+acceptance = "Deferred — see phase header. Promote to todo only by explicit product decision."
+status = "deferred"
+checkpoint = false
+notes = "POST-v1 backlog (doc 03). Not auto-built."
+
+[[task]]
+id = "P13-T2"
+phase = "P13"
+description = "SCIM 2.0 user/group provisioning + deprovisioning for enterprise directory sync."
+depends_on = ["P5-T5"]
+plan_sections = ["13"]
+acceptance = "Deferred — see phase header."
+status = "deferred"
+checkpoint = false
+notes = "POST-v1 backlog (doc 03). Not auto-built."
+
+[[task]]
+id = "P13-T3"
+phase = "P13"
+description = "Fine-grained RBAC: custom roles + per-collection/per-document ACLs beyond owner/admin/member."
+depends_on = ["P5-T5"]
+plan_sections = ["13", "15"]
+acceptance = "Deferred — see phase header."
+status = "deferred"
+checkpoint = false
+notes = "POST-v1 backlog (doc 03). Not auto-built."
+
+[[task]]
+id = "P13-T4"
+phase = "P13"
+description = "BYOK / customer-managed keys: a tenant supplies its own KMS/KEK (extends the P10 KeyEncryptionKey trait + per-tenant DEK), plus per-tenant data-residency region selection."
+depends_on = ["P10-T1"]
+plan_sections = ["28", "24"]
+acceptance = "Deferred — see phase header."
+status = "deferred"
+checkpoint = false
+notes = "POST-v1 backlog (doc 03). Extends the per-tenant DEK substrate. Not auto-built."

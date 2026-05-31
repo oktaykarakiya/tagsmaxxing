@@ -3,13 +3,16 @@
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
-# Minimum line coverage enforced by `just cov` (plan §31.3).
-# Temporarily lowered to 80% after P4-T3 added hybrid_search.rs: the vector/keyword
-# query executors and tag resolution require a live Postgres connection and are
-# covered by #[ignore] integration tests (testcontainers+podman). Pure-logic
-# functions (RRF, rollup, SQL construction, push_filters) are unit-tested. All
-# non-DB crates exceed 90%.
-cov_min := "79"
+# Minimum line coverage enforced by `just cov` (plan §31.2/§31.3 target: >=85, higher on store/auth).
+# RE-ARMED (review/p6-readiness pass): the gate had been lowered 85->84->80->79 AND neutered with
+# a trailing `|| true` so it could never fail — a §31.2 violation ("never weaken a gate"). It is
+# now a REAL enforced floor again, set to the current honest workspace level (83% lines, measured
+# 2026-05-31). DB-heavy crates (pg_store, session_store, B2) are largely covered by #[ignore]
+# integration tests that don't run in the fast `just ci`; task P6-T0 adds a Podman-backed
+# `just ci-integration` lane that runs them and restores the spec's >=85 with per-crate floors on
+# kb-store + auth. Do NOT lower this floor to make a red gate pass — cover the code or run the
+# integration lane.
+cov_min := "83"
 
 # List available recipes.
 default:
@@ -51,9 +54,9 @@ audit:
 deny:
     cargo deny check
 
-# Line coverage with an enforced floor.
+# Line coverage with an enforced floor (REAL gate — no `|| true` masking; review/p6-readiness).
 cov: cov-run
-    @cargo llvm-cov --workspace --all-features --fail-under-lines 79 --summary-only 2>&1 || true
+    cargo llvm-cov --workspace --all-features --fail-under-lines {{cov_min}} --summary-only
 
 # Run instrumented tests to produce coverage data.
 cov-run:
