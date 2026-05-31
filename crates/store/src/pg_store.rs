@@ -32,6 +32,7 @@ use kb_core::file::FileRecord;
 use kb_core::job::Job;
 use kb_core::query::{Hit, Query};
 use kb_core::store::Store;
+use kb_core::tag::TagSource;
 use kb_core::usage::UsageEvent;
 use sqlx::Postgres;
 use sqlx::Row;
@@ -542,6 +543,10 @@ impl PgStore {
     /// querying the `document_tags` table (whose RLS policy gateways through
     /// the parent document's tenant).
     ///
+    /// The `source` parameter determines the provenance (`llm` or `user`) and drives
+    /// the `locked` flag: user-assigned tags are locked by default so they survive
+    /// re-tag operations (plan §6.5, P6-T11). LLM-assigned tags are not locked.
+    ///
     /// Runs inside a short transaction so that an error on one row doesn't leave
     /// the set half-inserted (the caller can retry the whole batch).
     ///
@@ -552,22 +557,26 @@ impl PgStore {
         tenant_id: i64,
         document_id: i64,
         tag_ids: &[i64],
+        source: TagSource,
     ) -> anyhow::Result<()> {
         if tag_ids.is_empty() {
             return Ok(());
         }
 
+        let locked = matches!(source, TagSource::User);
         let pool = self.app_pool()?;
         let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
 
         for &tag_id in tag_ids {
             sqlx::query(
-                "INSERT INTO document_tags (document_id, tag_id) \
-                 VALUES ($1, $2) \
-                 ON CONFLICT (document_id, tag_id) DO NOTHING",
+                "INSERT INTO document_tags (document_id, tag_id, source, locked) \
+                 VALUES ($1, $2, $3, $4) \
+                 ON CONFLICT (document_id, tag_id) DO UPDATE SET source = EXCLUDED.source, locked = EXCLUDED.locked",
             )
             .bind(document_id)
             .bind(tag_id)
+            .bind(source.as_str())
+            .bind(locked)
             .execute(&mut *tx)
             .await
             .context("failed to insert document_tag row")?;
@@ -578,6 +587,103 @@ impl PgStore {
             .context("failed to commit insert_document_tags")?;
 
         Ok(())
+    }
+
+    /// Remove all LLM-sourced, non-locked document-tag links for a document.
+    ///
+    /// This is the "clear" step before a re-tag: locked user-assigned tags are preserved,
+    /// while stale LLM tags are deleted so fresh ones can be inserted.
+    ///
+    /// # Errors
+    /// Returns an error if the database is not connected or the query fails.
+    pub async fn clear_llm_document_tags(
+        &self,
+        tenant_id: i64,
+        document_id: i64,
+    ) -> anyhow::Result<u64> {
+        let pool = self.app_pool()?;
+        let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
+
+        let rows = sqlx::query(
+            "DELETE FROM document_tags \
+             WHERE document_id = $1 AND source = 'llm' AND locked = false",
+        )
+        .bind(document_id)
+        .execute(&mut *tx)
+        .await
+        .context("failed to clear llm document tags")?
+        .rows_affected();
+
+        tx.commit()
+            .await
+            .context("failed to commit clear_llm_document_tags")?;
+
+        Ok(rows)
+    }
+
+    /// Return the canonical tag ids that are locked for a document (user-assigned and
+    /// explicitly confirmed). Used by re-tag to merge these into the new result set.
+    ///
+    /// # Errors
+    /// Returns an error if the database is not connected or the query fails.
+    pub async fn get_locked_document_tags(
+        &self,
+        tenant_id: i64,
+        document_id: i64,
+    ) -> anyhow::Result<Vec<i64>> {
+        let pool = self.app_pool()?;
+        let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
+
+        let ids: Vec<i64> = sqlx::query_scalar(
+            "SELECT tag_id FROM document_tags \
+             WHERE document_id = $1 AND locked = true",
+        )
+        .bind(document_id)
+        .fetch_all(&mut *tx)
+        .await
+        .context("failed to fetch locked document tags")?;
+
+        tx.commit()
+            .await
+            .context("failed to commit get_locked_document_tags")?;
+
+        Ok(ids)
+    }
+
+    /// Set the `locked` flag on a specific document-tag link. When `locked` is true the
+    /// tag survives re-tag; when false it may be cleared by a future re-tag.
+    ///
+    /// Returns the number of rows affected (0 or 1).
+    ///
+    /// # Errors
+    /// Returns an error if the database is not connected or the query fails.
+    pub async fn set_document_tag_locked(
+        &self,
+        tenant_id: i64,
+        document_id: i64,
+        tag_id: i64,
+        locked: bool,
+    ) -> anyhow::Result<u64> {
+        let pool = self.app_pool()?;
+        let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
+
+        let rows = sqlx::query(
+            "UPDATE document_tags SET locked = $1 \
+             WHERE document_id = $2 AND tag_id = $3",
+        )
+        .bind(locked)
+        .bind(document_id)
+        .bind(tag_id)
+        .execute(&mut *tx)
+        .await
+        .context("failed to set document_tag locked flag")?
+        .rows_affected();
+
+        tx.commit()
+            .await
+            .context("failed to commit set_document_tag_locked")?;
+
+        Ok(rows)
     }
 }
 
@@ -723,12 +829,18 @@ impl PgStore {
             file_ids.push(fid);
         }
 
-        // 3. Insert document tags.
+        // 3. Insert document tags (LLM-sourced, not locked — plan §6.5, P6-T11).
         for &tag_id in tag_ids {
-            sqlx::query("INSERT INTO document_tags (document_id,tag_id) VALUES ($1,$2) ON CONFLICT (document_id,tag_id) DO NOTHING")
-                .bind(doc_id).bind(tag_id)
-                .execute(&mut *tx).await
-                .context("failed to insert document_tag")?;
+            sqlx::query(
+                "INSERT INTO document_tags (document_id, tag_id, source, locked) \
+                 VALUES ($1, $2, 'llm', false) \
+                 ON CONFLICT (document_id, tag_id) DO NOTHING",
+            )
+            .bind(doc_id)
+            .bind(tag_id)
+            .execute(&mut *tx)
+            .await
+            .context("failed to insert document_tag")?;
         }
 
         // 4. Replace chunks for each file.
@@ -1408,7 +1520,7 @@ impl PgStore {
         use std::str::FromStr;
         let pool = self.pool()?;
         let row: Option<sqlx::postgres::PgRow> = sqlx::query(
-            "SELECT id, tenant_id, file_id, kind, priority, status, attempts, \
+            "SELECT id, tenant_id, file_id, document_id, kind, priority, status, attempts, \
              last_error, run_after, created_at \
              FROM jobs WHERE id = $1 AND tenant_id = $2",
         )
@@ -1425,6 +1537,7 @@ impl PgStore {
                     id: r.try_get("id")?,
                     tenant_id: r.try_get("tenant_id")?,
                     file_id: r.try_get("file_id")?,
+                    document_id: r.try_get("document_id")?,
                     kind: JobKind::from_str(&kind_str)
                         .with_context(|| format!("invalid job kind: '{kind_str}'"))?,
                     priority: r.try_get("priority")?,
@@ -1814,7 +1927,7 @@ mod tests {
     async fn insert_document_tags_errors_before_connect() {
         let store = PgStore::new("postgres://localhost/db");
         let err = store
-            .insert_document_tags(1, 1, &[10, 20])
+            .insert_document_tags(1, 1, &[10, 20], TagSource::Llm)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("not connected"));
@@ -1824,7 +1937,10 @@ mod tests {
     async fn insert_document_tags_empty_is_noop() {
         // Empty tag list is a no-op even without a connection (early return).
         let store = PgStore::new("postgres://localhost/db");
-        store.insert_document_tags(1, 1, &[]).await.unwrap();
+        store
+            .insert_document_tags(1, 1, &[], TagSource::Llm)
+            .await
+            .unwrap();
     }
 
     // ── Tag integration tests (require Postgres + pgvector) ───────────────
@@ -1950,7 +2066,9 @@ mod tests {
                 let tag1 = store.upsert_tag(1, "alpha", &emb1024(&[0.1, 0.2])).await?;
                 let tag2 = store.upsert_tag(1, "beta", &emb1024(&[0.3, 0.4])).await?;
 
-                store.insert_document_tags(1, doc_id, &[tag1, tag2]).await?;
+                store
+                    .insert_document_tags(1, doc_id, &[tag1, tag2], TagSource::Llm)
+                    .await?;
 
                 // Verify they're in the table.
                 let count: i64 =
@@ -1961,13 +2079,149 @@ mod tests {
                 assert_eq!(count, 2);
 
                 // Idempotent re-insert does not duplicate.
-                store.insert_document_tags(1, doc_id, &[tag1, tag2]).await?;
+                store
+                    .insert_document_tags(1, doc_id, &[tag1, tag2], TagSource::Llm)
+                    .await?;
                 let count2: i64 =
                     sqlx::query_scalar("SELECT COUNT(*) FROM document_tags WHERE document_id = $1")
                         .bind(doc_id)
                         .fetch_one(&pool)
                         .await?;
                 assert_eq!(count2, 2);
+
+                Ok(())
+            })
+            .await
+            .unwrap();
+        }
+
+        #[ignore]
+        #[tokio::test]
+        async fn document_tag_source_and_locked_columns_are_populated() {
+            with_connected_store(|store| async move {
+                let pool = store.pool()?;
+                let doc_id: i64 = sqlx::query_scalar(
+                    "INSERT INTO documents (tenant_id, kind) \
+                     VALUES (1, 'document') RETURNING id",
+                )
+                .fetch_one(&pool)
+                .await?;
+
+                let tag_id = store
+                    .upsert_tag(1, "confetti", &emb1024(&[0.7, 0.8]))
+                    .await?;
+
+                // LLM tag: source='llm', locked=false.
+                store
+                    .insert_document_tags(1, doc_id, &[tag_id], TagSource::Llm)
+                    .await?;
+                let (src, lck): (String, bool) = sqlx::query_as(
+                    "SELECT source, locked FROM document_tags WHERE document_id = $1 AND tag_id = $2",
+                )
+                .bind(doc_id)
+                .bind(tag_id)
+                .fetch_one(&pool)
+                .await?;
+                assert_eq!(src, "llm");
+                assert!(!lck, "LLM tags must not be locked");
+
+                // Re-insert with User source: ON CONFLICT DO UPDATE flips both columns.
+                store
+                    .insert_document_tags(1, doc_id, &[tag_id], TagSource::User)
+                    .await?;
+                let (src2, lck2): (String, bool) = sqlx::query_as(
+                    "SELECT source, locked FROM document_tags WHERE document_id = $1 AND tag_id = $2",
+                )
+                .bind(doc_id)
+                .bind(tag_id)
+                .fetch_one(&pool)
+                .await?;
+                assert_eq!(src2, "user");
+                assert!(lck2, "User tags must be locked");
+
+                Ok(())
+            })
+            .await
+            .unwrap();
+        }
+
+        #[ignore]
+        #[tokio::test]
+        async fn clear_llm_tags_preserves_locked_user_tags() {
+            with_connected_store(|store| async move {
+                let pool = store.pool()?;
+                let doc_id: i64 = sqlx::query_scalar(
+                    "INSERT INTO documents (tenant_id, kind) \
+                     VALUES (1, 'document') RETURNING id",
+                )
+                .fetch_one(&pool)
+                .await?;
+
+                let llm_tag = store
+                    .upsert_tag(1, "llm-tag", &emb1024(&[0.1, 0.2]))
+                    .await?;
+                let user_tag = store
+                    .upsert_tag(1, "user-tag", &emb1024(&[0.5, 0.6]))
+                    .await?;
+
+                // One LLM tag, one user tag (locked).
+                store
+                    .insert_document_tags(1, doc_id, &[llm_tag], TagSource::Llm)
+                    .await?;
+                store
+                    .insert_document_tags(1, doc_id, &[user_tag], TagSource::User)
+                    .await?;
+
+                // Clear LLM tags.
+                let removed = store.clear_llm_document_tags(1, doc_id).await?;
+                assert_eq!(removed, 1, "only the LLM tag should be removed");
+
+                // User tag remains.
+                let locked_ids = store.get_locked_document_tags(1, doc_id).await?;
+                assert_eq!(locked_ids, vec![user_tag]);
+
+                Ok(())
+            })
+            .await
+            .unwrap();
+        }
+
+        #[ignore]
+        #[tokio::test]
+        async fn set_document_tag_locked_toggles_flag() {
+            with_connected_store(|store| async move {
+                let pool = store.pool()?;
+                let doc_id: i64 = sqlx::query_scalar(
+                    "INSERT INTO documents (tenant_id, kind) \
+                     VALUES (1, 'document') RETURNING id",
+                )
+                .fetch_one(&pool)
+                .await?;
+
+                let tag_id = store
+                    .upsert_tag(1, "togglable", &emb1024(&[0.3, 0.4]))
+                    .await?;
+
+                // Plant an LLM (unlocked) tag.
+                store
+                    .insert_document_tags(1, doc_id, &[tag_id], TagSource::Llm)
+                    .await?;
+
+                // Lock it.
+                let affected = store
+                    .set_document_tag_locked(1, doc_id, tag_id, true)
+                    .await?;
+                assert_eq!(affected, 1);
+
+                // Unlock it.
+                let affected2 = store
+                    .set_document_tag_locked(1, doc_id, tag_id, false)
+                    .await?;
+                assert_eq!(affected2, 1);
+
+                // Now it should be cleared by clear_llm_document_tags.
+                let removed = store.clear_llm_document_tags(1, doc_id).await?;
+                assert_eq!(removed, 1);
 
                 Ok(())
             })
@@ -2754,6 +3008,30 @@ mod tests {
     async fn list_document_tags_errors_before_connect() {
         let store = PgStore::new("postgres://localhost/db");
         let err = store.list_document_tags(1).await.unwrap_err();
+        assert!(err.to_string().contains("not connected"));
+    }
+
+    #[tokio::test]
+    async fn clear_llm_document_tags_errors_before_connect() {
+        let store = PgStore::new("postgres://localhost/db");
+        let err = store.clear_llm_document_tags(1, 1).await.unwrap_err();
+        assert!(err.to_string().contains("not connected"));
+    }
+
+    #[tokio::test]
+    async fn get_locked_document_tags_errors_before_connect() {
+        let store = PgStore::new("postgres://localhost/db");
+        let err = store.get_locked_document_tags(1, 1).await.unwrap_err();
+        assert!(err.to_string().contains("not connected"));
+    }
+
+    #[tokio::test]
+    async fn set_document_tag_locked_errors_before_connect() {
+        let store = PgStore::new("postgres://localhost/db");
+        let err = store
+            .set_document_tag_locked(1, 1, 42, true)
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("not connected"));
     }
 

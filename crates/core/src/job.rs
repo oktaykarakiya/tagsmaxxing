@@ -14,6 +14,10 @@ str_enum! {
         Reembed = "reembed",
         /// Stream a tenant's data out as a ZIP (plan §13).
         Export = "export",
+        /// Re-run the tagger + canonicalizer on a document's current text,
+        /// merging results while preserving locked user-assigned tags
+        /// (plan §6.5, P6-T11).
+        Retag = "retag",
     }
 }
 
@@ -42,8 +46,10 @@ pub struct Job {
     pub id: i64,
     /// Owning tenant.
     pub tenant_id: i64,
-    /// Target file, if the job is file-scoped.
+    /// Target file, if the job is file-scoped (ingest, reembed).
     pub file_id: Option<i64>,
+    /// Target document, if the job is document-scoped (retag).
+    pub document_id: Option<i64>,
     /// What the job does.
     pub kind: JobKind,
     /// Lower runs first; interactive queries bypass the queue entirely (plan §16).
@@ -72,6 +78,7 @@ mod tests {
         assert_eq!(JobKind::Ingest.as_str(), "ingest");
         assert_eq!(JobKind::Reembed.as_str(), "reembed");
         assert_eq!(JobKind::Export.as_str(), "export");
+        assert_eq!(JobKind::Retag.as_str(), "retag");
     }
 
     #[test]

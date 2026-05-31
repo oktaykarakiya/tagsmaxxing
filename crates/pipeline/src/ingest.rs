@@ -26,6 +26,7 @@ use kb_core::file::FileRecord;
 use kb_core::job::Job;
 use kb_core::kind::DocKind;
 use kb_core::status::ProcessingStatus;
+use kb_core::tag::TagSource;
 use kb_core::tagger::{TagInput, Tagger};
 
 use crate::chunker::{DEFAULT_CHUNK_SIZE_CHARS, DEFAULT_OVERLAP_CHARS, chunk_text};
@@ -377,6 +378,152 @@ where
         .map_err(|e| e.to_string())
 }
 
+// ── Retag pipeline ────────────────────────────────────────────────────────────
+
+/// Database operations needed by the retag workflow (plan §6.5, P6-T11).
+///
+/// Extracted from [`PgStore`](kb_store::PgStore) so the retag logic can be
+/// tested without a live Postgres instance.
+#[async_trait]
+pub trait RetagStore: Send + Sync {
+    /// Return tag ids that are locked (user-assigned) for a document.
+    async fn get_locked_document_tags(
+        &self,
+        tenant_id: i64,
+        document_id: i64,
+    ) -> anyhow::Result<Vec<i64>>;
+
+    /// Remove all LLM-sourced, non-locked document-tag links for a document.
+    async fn clear_llm_document_tags(
+        &self,
+        tenant_id: i64,
+        document_id: i64,
+    ) -> anyhow::Result<u64>;
+
+    /// Insert document tags with the given provenance.
+    async fn insert_document_tags(
+        &self,
+        tenant_id: i64,
+        document_id: i64,
+        tag_ids: &[i64],
+        source: TagSource,
+    ) -> anyhow::Result<()>;
+}
+
+/// Production implementation: delegates to the real Postgres store.
+#[async_trait]
+impl RetagStore for kb_store::PgStore {
+    async fn get_locked_document_tags(
+        &self,
+        tenant_id: i64,
+        document_id: i64,
+    ) -> anyhow::Result<Vec<i64>> {
+        <kb_store::PgStore>::get_locked_document_tags(self, tenant_id, document_id).await
+    }
+
+    async fn clear_llm_document_tags(
+        &self,
+        tenant_id: i64,
+        document_id: i64,
+    ) -> anyhow::Result<u64> {
+        <kb_store::PgStore>::clear_llm_document_tags(self, tenant_id, document_id).await
+    }
+
+    async fn insert_document_tags(
+        &self,
+        tenant_id: i64,
+        document_id: i64,
+        tag_ids: &[i64],
+        source: TagSource,
+    ) -> anyhow::Result<()> {
+        <kb_store::PgStore>::insert_document_tags(self, tenant_id, document_id, tag_ids, source)
+            .await
+    }
+}
+
+/// Run a retag job (plan §6.5, P6-T11): re-tag a document while preserving
+/// user-assigned locked tags.
+///
+/// Steps:
+/// 1. Fetch the locked (user-assigned) tag ids for the document.
+/// 2. Clear all LLM-sourced, non-locked tags.
+/// 3. Run the tagger over the provided `document_text`.
+/// 4. Canonicalize the new tags.
+/// 5. Insert the canonicalized LLM tags.
+/// 6. Re-ensure every locked tag is still present (insert with `User` source).
+///
+/// Returns the canonical tag ids now assigned to the document
+/// (locked ids ∪ newly canonicalized ids).
+///
+/// # Errors
+///
+/// Returns an error string suitable for `jobs.last_error` if any step fails.
+pub async fn process_retag_job(
+    tenant_id: i64,
+    document_id: i64,
+    document_text: &str,
+    tagger: &dyn Tagger,
+    canonicalizer: &TagCanonicalizer,
+    store: &dyn RetagStore,
+) -> Result<Vec<i64>, String> {
+    // 1. Snapshot locked tags before clearing.
+    let locked_ids = store
+        .get_locked_document_tags(tenant_id, document_id)
+        .await
+        .map_err(|e| format!("failed to fetch locked tags: {e}"))?;
+
+    // 2. Clear stale LLM tags (locked user tags survive).
+    store
+        .clear_llm_document_tags(tenant_id, document_id)
+        .await
+        .map_err(|e| format!("failed to clear llm tags: {e}"))?;
+
+    // 3. Tag the document.
+    let tag_input = TagInput {
+        text: document_text.to_string(),
+        user_note: None,
+        kind: DocKind::Document,
+        meta: serde_json::Value::Null,
+    };
+    let tag_output = tagger
+        .tag(&tag_input)
+        .await
+        .map_err(|e| format!("tagger failed: {e}"))?;
+
+    // 4. Canonicalize.
+    let new_tag_ids = canonicalizer
+        .canonicalize(tenant_id, &tag_output.tags)
+        .await
+        .map_err(|e| format!("canonicalizer failed: {e}"))?;
+
+    // 5. Insert LLM tags.
+    if !new_tag_ids.is_empty() {
+        store
+            .insert_document_tags(tenant_id, document_id, &new_tag_ids, TagSource::Llm)
+            .await
+            .map_err(|e| format!("failed to insert llm tags: {e}"))?;
+    }
+
+    // 6. Re-ensure locked tags are present (they may have been removed by
+    //    a previous operation; re-insert with User source).
+    if !locked_ids.is_empty() {
+        store
+            .insert_document_tags(tenant_id, document_id, &locked_ids, TagSource::User)
+            .await
+            .map_err(|e| format!("failed to re-insert locked tags: {e}"))?;
+    }
+
+    // Merge and deduplicate the full set.
+    let mut all_ids: Vec<i64> = locked_ids;
+    for id in new_tag_ids {
+        if !all_ids.contains(&id) {
+            all_ids.push(id);
+        }
+    }
+
+    Ok(all_ids)
+}
+
 // ── infer_kind_from_mime ────────────────────────────────────────────────────
 
 /// Map a MIME type to a [`DocKind`] for extractor routing.
@@ -428,6 +575,9 @@ mod tests {
     use kb_core::tagger::TagOutput;
 
     use super::*;
+    use crate::tag_canonicalizer::TAG_MERGE_THRESHOLD;
+    use crate::tag_store::TagStore;
+    use crate::tag_store::mock::MockTagStore;
 
     // ── Mock types ─────────────────────────────────────────────────────────
 
@@ -1281,6 +1431,7 @@ mod tests {
             id: 100,
             tenant_id: 1,
             file_id: Some(200),
+            document_id: None,
             kind: JobKind::Ingest,
             priority: 10,
             status: JobStatus::Running,
@@ -1326,6 +1477,7 @@ mod tests {
             id: 101,
             tenant_id: 1,
             file_id: None,
+            document_id: None,
             kind: JobKind::Ingest,
             priority: 10,
             status: JobStatus::Running,
@@ -1483,5 +1635,303 @@ mod tests {
         // object is constructible.
         let pg = kb_store::PgStore::new("postgres://localhost/test");
         let _store: Arc<dyn IngestStore> = Arc::new(pg);
+    }
+
+    // ── Retag pipeline tests ──────────────────────────────────────────────
+
+    /// An in-memory [`RetagStore`] for deterministic retag tests.
+    struct MockRetagStore {
+        locked_tags: Mutex<Vec<i64>>,
+        llm_tags: Mutex<Vec<i64>>,
+        inserted_user_tags: Mutex<Vec<(i64, Vec<i64>)>>,
+        inserted_llm_tags: Mutex<Vec<(i64, Vec<i64>)>>,
+        cleared_count: Mutex<u64>,
+    }
+
+    impl MockRetagStore {
+        fn new(locked_tags: Vec<i64>) -> Self {
+            Self {
+                locked_tags: Mutex::new(locked_tags),
+                llm_tags: Mutex::new(Vec::new()),
+                inserted_user_tags: Mutex::new(Vec::new()),
+                inserted_llm_tags: Mutex::new(Vec::new()),
+                cleared_count: Mutex::new(0),
+            }
+        }
+
+        fn inserted_llm_count(&self) -> usize {
+            self.inserted_llm_tags.lock().unwrap().len()
+        }
+
+        fn inserted_user_count(&self) -> usize {
+            self.inserted_user_tags.lock().unwrap().len()
+        }
+    }
+
+    #[async_trait]
+    impl RetagStore for MockRetagStore {
+        async fn get_locked_document_tags(
+            &self,
+            _tenant_id: i64,
+            _document_id: i64,
+        ) -> anyhow::Result<Vec<i64>> {
+            Ok(self.locked_tags.lock().unwrap().clone())
+        }
+
+        async fn clear_llm_document_tags(
+            &self,
+            _tenant_id: i64,
+            _document_id: i64,
+        ) -> anyhow::Result<u64> {
+            let len = self.llm_tags.lock().unwrap().len() as u64;
+            self.llm_tags.lock().unwrap().clear();
+            *self.cleared_count.lock().unwrap() += len;
+            Ok(len)
+        }
+
+        async fn insert_document_tags(
+            &self,
+            _tenant_id: i64,
+            document_id: i64,
+            tag_ids: &[i64],
+            source: TagSource,
+        ) -> anyhow::Result<()> {
+            match source {
+                TagSource::User => {
+                    self.inserted_user_tags
+                        .lock()
+                        .unwrap()
+                        .push((document_id, tag_ids.to_vec()));
+                }
+                TagSource::Llm => {
+                    self.inserted_llm_tags
+                        .lock()
+                        .unwrap()
+                        .push((document_id, tag_ids.to_vec()));
+                }
+            }
+            Ok(())
+        }
+    }
+
+    /// Build a test TagCanonicalizer with a mock store + mock LLM backend.
+    async fn retag_canonicalizer_with_mock(
+        store: Arc<MockTagStore>,
+    ) -> (TagCanonicalizer, kb_mock_backend::MockBackend) {
+        use kb_mock_backend::MockBackend;
+        use kb_scheduler::{Backend, Pool};
+
+        let mock = MockBackend::start().await;
+        let base_url = mock.url("/v1");
+        let backend = Arc::new(Backend::new(
+            "mock-embed",
+            base_url,
+            vec![kb_core::role::Role::Embed],
+            0,
+            4,
+        ));
+        let pool = Pool::new(vec![backend], Duration::from_secs(5));
+        let llm = Arc::new(kb_llm::LlamaClient::new(
+            pool,
+            reqwest::Client::new(),
+            0,
+            0,
+            Duration::from_millis(200),
+        ));
+        let canon = TagCanonicalizer::new(
+            store as Arc<dyn TagStore>,
+            llm,
+            "test-model".into(),
+            TAG_MERGE_THRESHOLD,
+        );
+        (canon, mock)
+    }
+
+    /// A tagger that returns a fixed TagOutput.
+    struct FixedTagger {
+        output: TagOutput,
+    }
+
+    #[async_trait]
+    impl Tagger for FixedTagger {
+        async fn tag(&self, _input: &TagInput) -> anyhow::Result<TagOutput> {
+            Ok(self.output.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn retag_preserves_locked_tags_and_adds_llm_tags() {
+        let tag_store = Arc::new(MockTagStore::new());
+        // Pre-seed one locked tag and one canonical tag the LLM will produce.
+        tag_store.seed_tag(1, "existing", 100, vec![1.0, 0.0]);
+        let retag_store = MockRetagStore::new(vec![100]); // tag 100 is locked
+
+        let (canon, mock) = retag_canonicalizer_with_mock(tag_store.clone()).await;
+        mock.scenario().lock().await.embed_content = Some(vec![vec![1.0, 0.0]]);
+
+        let tagger = FixedTagger {
+            output: TagOutput {
+                title: "Re-tagged".into(),
+                summary: "Summary".into(),
+                tags: vec!["existing".into(), "newtopic".into()],
+            },
+        };
+
+        let result = process_retag_job(1, 42, "document text", &tagger, &canon, &retag_store)
+            .await
+            .unwrap();
+
+        // Locked tag 100 + LLM tags should all be present.
+        assert!(result.contains(&100), "locked tag must be in result");
+        // "existing" raw tag → alias-match to tag 100; "newtopic" → new tag.
+        let llm_inserts = retag_store.inserted_llm_count();
+        assert_eq!(llm_inserts, 1, "one batch of LLM tags inserted");
+        let user_inserts = retag_store.inserted_user_count();
+        assert_eq!(user_inserts, 1, "locked tags re-inserted as user");
+
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn retag_no_locked_tags_all_llm() {
+        let tag_store = Arc::new(MockTagStore::new());
+        let retag_store = MockRetagStore::new(vec![]); // no locked tags
+
+        let (canon, mock) = retag_canonicalizer_with_mock(tag_store.clone()).await;
+        mock.scenario().lock().await.embed_content = Some(vec![vec![0.5, 0.5]]);
+
+        let tagger = FixedTagger {
+            output: TagOutput {
+                title: "Fresh".into(),
+                summary: "Fresh summary".into(),
+                tags: vec!["a".into(), "b".into()],
+            },
+        };
+
+        let result = process_retag_job(1, 42, "text", &tagger, &canon, &retag_store)
+            .await
+            .unwrap();
+
+        // Both raw tags converge (same mock embedding) → 1 canonical id.
+        assert_eq!(result.len(), 1, "both tags converge to same canonical");
+        assert_eq!(
+            retag_store.inserted_user_count(),
+            0,
+            "no locked tags → no user inserts"
+        );
+        assert_eq!(
+            retag_store.inserted_llm_count(),
+            1,
+            "one batch of LLM tags inserted"
+        );
+
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn retag_locked_tags_only_no_llm_tags() {
+        let tag_store = Arc::new(MockTagStore::new());
+        let retag_store = MockRetagStore::new(vec![10, 20]);
+
+        let (canon, mock) = retag_canonicalizer_with_mock(tag_store.clone()).await;
+        mock.scenario().lock().await.embed_content = Some(vec![vec![0.3, 0.7]]);
+
+        let tagger = FixedTagger {
+            output: TagOutput {
+                title: "N".into(),
+                summary: "S".into(),
+                tags: vec![], // no tags from LLM
+            },
+        };
+
+        let result = process_retag_job(1, 42, "text", &tagger, &canon, &retag_store)
+            .await
+            .unwrap();
+
+        assert_eq!(result, vec![10, 20], "only locked tags survive");
+        assert_eq!(retag_store.inserted_llm_count(), 0, "no llm tags to insert");
+        assert_eq!(
+            retag_store.inserted_user_count(),
+            1,
+            "locked tags re-inserted"
+        );
+
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn retag_tagger_error_is_propagated() {
+        struct ErrorTagger;
+        #[async_trait]
+        impl Tagger for ErrorTagger {
+            async fn tag(&self, _input: &TagInput) -> anyhow::Result<TagOutput> {
+                anyhow::bail!("tag service unavailable");
+            }
+        }
+
+        let tag_store = Arc::new(MockTagStore::new());
+        let retag_store = MockRetagStore::new(vec![]);
+
+        let (canon, mock) = retag_canonicalizer_with_mock(tag_store).await;
+        // Set embed content just so the mock doesn't 500 before we even reach
+        // the tagger.
+        mock.scenario().lock().await.embed_content = Some(vec![vec![0.1, 0.2]]);
+
+        let err = process_retag_job(1, 42, "text", &ErrorTagger, &canon, &retag_store)
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("tag service unavailable"),
+            "error should be propagated: {err}"
+        );
+
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn retag_locked_tags_deduped_with_llm_ids() {
+        let tag_store = Arc::new(MockTagStore::new());
+        tag_store.seed_tag(1, "saved", 7, vec![1.0, 0.0]);
+        // Locked tag 7 is already present.
+        let retag_store = MockRetagStore::new(vec![7]);
+
+        let (canon, mock) = retag_canonicalizer_with_mock(tag_store.clone()).await;
+        // The mock embed returns [1.0, 0.0] so "saved" matches existing tag 7.
+        mock.scenario().lock().await.embed_content = Some(vec![vec![1.0, 0.0]]);
+
+        let tagger = FixedTagger {
+            output: TagOutput {
+                title: "X".into(),
+                summary: "Y".into(),
+                tags: vec!["saved".into()],
+            },
+        };
+
+        let result = process_retag_job(1, 99, "text", &tagger, &canon, &retag_store)
+            .await
+            .unwrap();
+
+        // Result should contain tag 7 exactly once (deduped).
+        assert_eq!(
+            result.iter().filter(|&&id| id == 7).count(),
+            1,
+            "tag 7 must appear only once (deduped)"
+        );
+        // The locked_id insertion should still happen (idempotent via ON CONFLICT).
+        assert_eq!(
+            retag_store.inserted_user_count(),
+            1,
+            "locked tags re-inserted"
+        );
+        assert_eq!(retag_store.inserted_llm_count(), 1, "LLM tags inserted");
+
+        mock.shutdown().await;
+    }
+
+    #[test]
+    fn retag_store_delegation_check() {
+        // Verify RetagStore impl for PgStore compiles and is constructible.
+        let pg = kb_store::PgStore::new("postgres://localhost/test");
+        let _store: Arc<dyn RetagStore> = Arc::new(pg);
     }
 }

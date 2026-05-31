@@ -49,7 +49,7 @@ fn calculate_backoff(attempts: i32, min_backoff_ms: i64) -> chrono::Duration {
 ///
 /// # async fn example(pool: sqlx::PgPool) -> anyhow::Result<()> {
 /// let queue = Arc::new(JobQueue::new(pool, 10_000, 3));
-/// let job_id = queue.enqueue(1, None, kb_core::job::JobKind::Ingest, 100).await?;
+/// let job_id = queue.enqueue(1, None, None, kb_core::job::JobKind::Ingest, 100).await?;
 /// # Ok(())
 /// # }
 /// ```
@@ -103,17 +103,19 @@ impl JobQueue {
         &self,
         tenant_id: i64,
         file_id: Option<i64>,
+        document_id: Option<i64>,
         kind: JobKind,
         priority: i32,
     ) -> anyhow::Result<i64> {
         let row = sqlx::query_scalar::<_, i64>(
             "INSERT INTO jobs \
-             (tenant_id, file_id, kind, priority, status, attempts, run_after, created_at) \
-             VALUES ($1, $2, $3, $4, 'queued', 0, now(), now()) \
+             (tenant_id, file_id, document_id, kind, priority, status, attempts, run_after, created_at) \
+             VALUES ($1, $2, $3, $4, $5, 'queued', 0, now(), now()) \
              RETURNING id",
         )
         .bind(tenant_id)
         .bind(file_id)
+        .bind(document_id)
         .bind(kind.as_str())
         .bind(priority)
         .fetch_one(&self.pool)
@@ -153,7 +155,7 @@ impl JobQueue {
                  LIMIT 1 \
                  FOR UPDATE SKIP LOCKED \
              ) \
-             RETURNING id, tenant_id, file_id, kind, priority, status, attempts, \
+             RETURNING id, tenant_id, file_id, document_id, kind, priority, status, attempts, \
                        last_error, run_after, created_at",
         )
         .fetch_optional(&self.pool)
@@ -280,6 +282,7 @@ fn row_to_job(row: &PgRow) -> anyhow::Result<Job> {
         id: row.try_get("id")?,
         tenant_id: row.try_get("tenant_id")?,
         file_id: row.try_get("file_id")?,
+        document_id: row.try_get("document_id")?,
         kind: JobKind::from_str(&kind_str)
             .map_err(|e| anyhow::anyhow!("invalid job kind '{kind_str}' in database: {e}"))?,
         priority: row.try_get("priority")?,

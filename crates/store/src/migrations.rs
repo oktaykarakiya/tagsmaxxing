@@ -16,11 +16,11 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
-    /// All six migrations are present, in version order (1, 2, 3, 4, 5, 6).
+    /// All seven migrations are present, in version order (1, 2, 3, 4, 5, 6, 7).
     #[test]
     fn embeds_the_schema_migrations() {
         let versions: Vec<i64> = MIGRATOR.iter().map(|m| m.version).collect();
-        assert_eq!(versions, vec![1, 2, 3, 4, 5, 6]);
+        assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7]);
     }
 
     /// Forward-only and monotonic: no down/reversible scripts, strictly increasing versions,
@@ -106,6 +106,43 @@ mod tests {
         // Embedder lock-in row recording id + dim (§5 note).
         assert!(sql.contains("'embedder'"));
         assert!(sql.contains("\"dim\": 1024"));
+    }
+
+    /// Migration 0007 (P6-T11): tag provenance columns (`source`, `locked`) must be present,
+    /// the jobs CHECK must include `'retag'`, and `document_id` must exist on jobs.
+    #[test]
+    fn schema_adds_tag_provenance_and_retag_kind() {
+        let sql: String = MIGRATOR
+            .iter()
+            .map(|m| m.sql.as_ref())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // document_tags gains source + locked.
+        assert!(
+            sql.contains("document_tags\n    ADD COLUMN IF NOT EXISTS source"),
+            "missing source column on document_tags"
+        );
+        assert!(
+            sql.contains("document_tags\n    ADD COLUMN IF NOT EXISTS locked"),
+            "missing locked column on document_tags"
+        );
+        assert!(
+            sql.contains("'llm'") && sql.contains("'user'"),
+            "source CHECK must allow 'llm' and 'user'"
+        );
+
+        // jobs.kind CHECK now includes 'retag'.
+        assert!(
+            sql.contains("'retag'"),
+            "jobs kind CHECK must include 'retag'"
+        );
+
+        // jobs has document_id column.
+        assert!(
+            sql.contains("ADD COLUMN IF NOT EXISTS document_id"),
+            "jobs must gain document_id column"
+        );
     }
 
     /// The two-role RLS model (P6-T14, §13): migration 0006 must create the non-privileged

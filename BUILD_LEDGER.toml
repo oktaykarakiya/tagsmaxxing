@@ -662,9 +662,9 @@ description = "Tag provenance + locking (review/p6-readiness; doc 04 item 6, §6
 depends_on = ["P3-T3", "P2-T3"]
 plan_sections = ["6.5", "12", "16"]
 acceptance = "User-added tag has source='user', locked=true; re-tag / re-canonicalize never deletes a locked tag; llm tags can still be replaced; the `retag` job kind enqueues and a worker re-tags while preserving locked tags; migration applies forward-only. Unit tests for lock-preservation logic + #[ignore] integration test for the retag job. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "Migration 0007 adds source/locked to document_tags + retag to jobs.kind + document_id to jobs. TagSource enum (llm/user) in kb-core. PgStore: insert_document_tags with source, clear_llm_document_tags, get_locked_document_tags, set_document_tag_locked. RetagStore trait + process_retag_job with lock preservation. 5 retag unit tests + 4 DB integration tests (#[ignore]). just ci green."
 
 [[task]]
 id = "P6-T7"

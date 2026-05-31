@@ -34,7 +34,8 @@ pub use folder_watcher::{
     matches_ignore_pattern, should_ingest,
 };
 pub use ingest::{
-    ExtractorRouter, IngestFile, IngestOutput, IngestPipeline, IngestStore, process_ingest_job,
+    ExtractorRouter, IngestFile, IngestOutput, IngestPipeline, IngestStore, RetagStore,
+    process_ingest_job, process_retag_job,
 };
 pub use job_queue::{JobQueue, run_worker_pool};
 pub use retrieval::RetrievalPipeline;

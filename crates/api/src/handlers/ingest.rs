@@ -144,13 +144,13 @@ pub(crate) async fn process_upload_files(
     // When false, enqueue one job per file (each becomes a 1-page document).
     let job_id = if parsed.group_as_document {
         job_queue
-            .enqueue(tenant_id, None, JobKind::Ingest, 100)
+            .enqueue(tenant_id, None, None, JobKind::Ingest, 100)
             .await?
     } else {
         let mut first_id: Option<i64> = None;
         for _f in &parsed.files {
             let id = job_queue
-                .enqueue(tenant_id, None, JobKind::Ingest, 100)
+                .enqueue(tenant_id, None, None, JobKind::Ingest, 100)
                 .await?;
             if first_id.is_none() {
                 first_id = Some(id);
