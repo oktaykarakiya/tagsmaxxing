@@ -213,7 +213,11 @@ impl Store for PgStore {
     ///
     /// # Errors
     /// Always returns an error indicating this method is not yet available.
-    async fn hybrid_search(&self, _query: &Query) -> anyhow::Result<Vec<Hit>> {
+    async fn hybrid_search(
+        &self,
+        _query: &Query,
+        _query_embedding: &[f32],
+    ) -> anyhow::Result<Vec<Hit>> {
         anyhow::bail!("hybrid_search is not yet implemented (deferred to P4, plan §8)")
     }
 }
@@ -630,7 +634,7 @@ mod tests {
             filters: Default::default(),
             top_k: 10,
         };
-        let err = store.hybrid_search(&q).await.unwrap_err();
+        let err = store.hybrid_search(&q, &[0.1_f32; 1024]).await.unwrap_err();
         assert!(
             err.to_string().contains("not yet implemented"),
             "expected deferred error, got: {err}"

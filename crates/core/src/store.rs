@@ -26,7 +26,15 @@ pub trait Store: Send + Sync {
     /// Run hybrid (vector + keyword) search, fuse with RRF, and roll results up to documents
     /// (deduplicated), each carrying its winning chunk's deep-link provenance (plan §8).
     ///
+    /// `query_embedding` is the embedded form of `query.text`, produced by the caller
+    /// (usually via [`crate::embedder::Embedder::embed`] with [`crate::embedder::EmbedKind::Query`]).
+    /// Its dimension must match the embedder configured in the schema.
+    ///
     /// # Errors
     /// Returns an error if the database operation fails.
-    async fn hybrid_search(&self, query: &Query) -> anyhow::Result<Vec<Hit>>;
+    async fn hybrid_search(
+        &self,
+        query: &Query,
+        query_embedding: &[f32],
+    ) -> anyhow::Result<Vec<Hit>>;
 }
