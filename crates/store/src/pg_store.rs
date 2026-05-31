@@ -902,6 +902,287 @@ impl PgStore {
     }
 }
 
+// ── Export listing methods (plan §13 P5-T7) ───────────────────────────────────
+
+impl PgStore {
+    /// List all documents for a tenant, ordered by `id`.
+    ///
+    /// # Errors
+    /// Returns an error if the database is not connected or the query fails.
+    pub async fn list_documents(&self, tenant_id: i64) -> anyhow::Result<Vec<Document>> {
+        let pool = self.pool()?;
+        set_tenant(&pool, tenant_id).await?;
+        let rows: Vec<DocumentRow> = sqlx::query_as(
+            "SELECT id, tenant_id, title, summary, user_note, kind, meta, page_count, status, created_at \
+             FROM documents WHERE tenant_id = $1 ORDER BY id",
+        )
+        .bind(tenant_id)
+        .fetch_all(&pool)
+        .await
+        .context("failed to list documents for export")?;
+        rows.into_iter().map(document_from_row).collect()
+    }
+
+    /// List all files for a tenant, ordered by `document_id`, `page_no`.
+    ///
+    /// # Errors
+    /// Returns an error if the database is not connected or the query fails.
+    pub async fn list_files(&self, tenant_id: i64) -> anyhow::Result<Vec<FileRecord>> {
+        let pool = self.pool()?;
+        set_tenant(&pool, tenant_id).await?;
+        let rows: Vec<FileRow> = sqlx::query_as(
+            "SELECT id, tenant_id, document_id, page_no, page_label, sha256, blob_key, path, \
+             mime, size_bytes, meta, status, ingested_at \
+             FROM files WHERE tenant_id = $1 ORDER BY document_id, page_no",
+        )
+        .bind(tenant_id)
+        .fetch_all(&pool)
+        .await
+        .context("failed to list files for export")?;
+        rows.into_iter().map(file_from_row).collect()
+    }
+
+    /// List all tags for a tenant, ordered by `id`.
+    ///
+    /// # Errors
+    /// Returns an error if the database is not connected or the query fails.
+    pub async fn list_tags(&self, tenant_id: i64) -> anyhow::Result<Vec<kb_core::tag::Tag>> {
+        let pool = self.pool()?;
+        set_tenant(&pool, tenant_id).await?;
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            id: i64,
+            tenant_id: i64,
+            name: String,
+            embedding_text: Option<String>,
+        }
+        let rows: Vec<Row> = sqlx::query_as(
+            "SELECT id, tenant_id, name, embedding::text AS embedding_text \
+             FROM tags WHERE tenant_id = $1 ORDER BY id",
+        )
+        .bind(tenant_id)
+        .fetch_all(&pool)
+        .await
+        .context("failed to list tags for export")?;
+        rows.into_iter()
+            .map(|r| {
+                let embedding = r
+                    .embedding_text
+                    .map(|t| parse_vector_text(&t))
+                    .transpose()?;
+                Ok(kb_core::tag::Tag {
+                    id: r.id,
+                    tenant_id: r.tenant_id,
+                    name: r.name,
+                    embedding,
+                })
+            })
+            .collect()
+    }
+
+    /// List all tag aliases for a tenant as `(alias, tag_id)` pairs.
+    ///
+    /// # Errors
+    /// Returns an error if the database is not connected or the query fails.
+    pub async fn list_tag_aliases(&self, tenant_id: i64) -> anyhow::Result<Vec<(String, i64)>> {
+        let pool = self.pool()?;
+        set_tenant(&pool, tenant_id).await?;
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            alias: String,
+            tag_id: i64,
+        }
+        let rows: Vec<Row> = sqlx::query_as(
+            "SELECT alias, tag_id FROM tag_aliases WHERE tenant_id = $1 ORDER BY alias",
+        )
+        .bind(tenant_id)
+        .fetch_all(&pool)
+        .await
+        .context("failed to list tag aliases for export")?;
+        Ok(rows.into_iter().map(|r| (r.alias, r.tag_id)).collect())
+    }
+
+    /// List all document-tag links for a tenant as `(document_id, tag_id)` pairs.
+    ///
+    /// # Errors
+    /// Returns an error if the database is not connected or the query fails.
+    pub async fn list_document_tags(&self, tenant_id: i64) -> anyhow::Result<Vec<(i64, i64)>> {
+        let pool = self.pool()?;
+        set_tenant(&pool, tenant_id).await?;
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            document_id: i64,
+            tag_id: i64,
+        }
+        let rows: Vec<Row> = sqlx::query_as(
+            "SELECT dt.document_id, dt.tag_id \
+             FROM document_tags dt \
+             JOIN documents d ON dt.document_id = d.id \
+             WHERE d.tenant_id = $1 \
+             ORDER BY dt.document_id, dt.tag_id",
+        )
+        .bind(tenant_id)
+        .fetch_all(&pool)
+        .await
+        .context("failed to list document tags for export")?;
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.document_id, r.tag_id))
+            .collect())
+    }
+
+    /// List all chunks for a tenant, ordered by `document_id`, `file_id`, `idx`.
+    ///
+    /// # Errors
+    /// Returns an error if the database is not connected or the query fails.
+    pub async fn list_chunks(&self, tenant_id: i64) -> anyhow::Result<Vec<kb_core::chunk::Chunk>> {
+        let pool = self.pool()?;
+        set_tenant(&pool, tenant_id).await?;
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            id: i64,
+            tenant_id: i64,
+            document_id: i64,
+            file_id: i64,
+            page_no: Option<i32>,
+            idx: i32,
+            content: String,
+            ts_offset: Option<f64>,
+            embedding_text: String,
+        }
+        let rows: Vec<Row> = sqlx::query_as(
+            "SELECT id, tenant_id, document_id, file_id, page_no, idx, content, \
+             ts_offset, embedding::text AS embedding_text \
+             FROM chunks WHERE tenant_id = $1 \
+             ORDER BY document_id, file_id, idx",
+        )
+        .bind(tenant_id)
+        .fetch_all(&pool)
+        .await
+        .context("failed to list chunks for export")?;
+        rows.into_iter()
+            .map(|r| {
+                let embedding = parse_vector_text(&r.embedding_text)
+                    .context("failed to parse chunk embedding")?;
+                Ok(kb_core::chunk::Chunk {
+                    id: r.id,
+                    tenant_id: r.tenant_id,
+                    document_id: r.document_id,
+                    file_id: r.file_id,
+                    page_no: r.page_no,
+                    idx: r.idx,
+                    content: r.content,
+                    ts_offset: r.ts_offset,
+                    embedding,
+                })
+            })
+            .collect()
+    }
+
+    /// Get a tenant's slug by id.
+    ///
+    /// This method does **not** call [`set_tenant`] — the `tenants` table is outside RLS.
+    ///
+    /// # Errors
+    /// Returns an error if the database is not connected, the tenant does not exist,
+    /// or the query fails.
+    pub async fn get_tenant_slug(&self, tenant_id: i64) -> anyhow::Result<String> {
+        let pool = self.pool()?;
+        let slug: Option<String> = sqlx::query_scalar("SELECT slug FROM tenants WHERE id = $1")
+            .bind(tenant_id)
+            .fetch_optional(&pool)
+            .await
+            .context("failed to look up tenant slug")?;
+        slug.ok_or_else(|| anyhow::anyhow!("tenant {tenant_id} not found"))
+    }
+}
+
+// ── sqlx row type aliases + conversion helpers ────────────────────────────────
+
+/// A raw row from the `documents` table, used by [`list_documents`](PgStore::list_documents).
+#[derive(sqlx::FromRow)]
+struct DocumentRow {
+    id: i64,
+    tenant_id: i64,
+    title: Option<String>,
+    summary: Option<String>,
+    user_note: Option<String>,
+    kind: String,
+    meta: serde_json::Value,
+    page_count: i32,
+    status: String,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Convert a [`DocumentRow`] into a [`Document`].
+fn document_from_row(r: DocumentRow) -> anyhow::Result<Document> {
+    use std::str::FromStr;
+    let kind = kb_core::kind::DocKind::from_str(&r.kind)
+        .with_context(|| format!("invalid DocKind in documents table: {}", r.kind))?;
+    let status = kb_core::status::ProcessingStatus::from_str(&r.status)
+        .with_context(|| format!("invalid ProcessingStatus in documents table: {}", r.status))?;
+    Ok(Document {
+        id: r.id,
+        tenant_id: r.tenant_id,
+        title: r.title,
+        summary: r.summary,
+        user_note: r.user_note,
+        kind,
+        meta: r.meta,
+        page_count: r.page_count,
+        status,
+        created_at: r.created_at,
+    })
+}
+
+/// A raw row from the `files` table, used by [`list_files`](PgStore::list_files).
+#[derive(sqlx::FromRow)]
+struct FileRow {
+    id: i64,
+    tenant_id: i64,
+    document_id: i64,
+    page_no: i32,
+    page_label: Option<String>,
+    sha256: Vec<u8>,
+    blob_key: String,
+    path: Option<String>,
+    mime: Option<String>,
+    size_bytes: Option<i64>,
+    meta: serde_json::Value,
+    status: String,
+    ingested_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Convert a [`FileRow`] into a [`FileRecord`].
+fn file_from_row(r: FileRow) -> anyhow::Result<FileRecord> {
+    use std::str::FromStr;
+    let mut hash = [0u8; 32];
+    if r.sha256.len() != 32 {
+        anyhow::bail!(
+            "invalid sha256 length in files table: {} bytes",
+            r.sha256.len()
+        );
+    }
+    hash.copy_from_slice(&r.sha256);
+    let status = kb_core::status::ProcessingStatus::from_str(&r.status)
+        .with_context(|| format!("invalid ProcessingStatus in files table: {}", r.status))?;
+    Ok(FileRecord {
+        id: r.id,
+        tenant_id: r.tenant_id,
+        document_id: r.document_id,
+        page_no: r.page_no,
+        page_label: r.page_label,
+        sha256: kb_core::hash::Sha256::from_bytes(hash),
+        blob_key: r.blob_key,
+        path: r.path,
+        mime: r.mime,
+        size_bytes: r.size_bytes,
+        meta: r.meta,
+        status,
+        ingested_at: r.ingested_at,
+    })
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -2050,6 +2331,164 @@ mod tests {
         let store = PgStore::new("postgres://localhost/db");
         let err = store.check_token_quota(1, 500).await.unwrap_err();
         assert!(err.to_string().contains("not connected"));
+    }
+
+    // ── P5-T7 export listing error-before-connect ───────────────────────
+
+    #[tokio::test]
+    async fn list_documents_errors_before_connect() {
+        let store = PgStore::new("postgres://localhost/db");
+        let err = store.list_documents(1).await.unwrap_err();
+        assert!(err.to_string().contains("not connected"));
+    }
+
+    #[tokio::test]
+    async fn list_files_errors_before_connect() {
+        let store = PgStore::new("postgres://localhost/db");
+        let err = store.list_files(1).await.unwrap_err();
+        assert!(err.to_string().contains("not connected"));
+    }
+
+    #[tokio::test]
+    async fn list_tags_errors_before_connect() {
+        let store = PgStore::new("postgres://localhost/db");
+        let err = store.list_tags(1).await.unwrap_err();
+        assert!(err.to_string().contains("not connected"));
+    }
+
+    #[tokio::test]
+    async fn list_tag_aliases_errors_before_connect() {
+        let store = PgStore::new("postgres://localhost/db");
+        let err = store.list_tag_aliases(1).await.unwrap_err();
+        assert!(err.to_string().contains("not connected"));
+    }
+
+    #[tokio::test]
+    async fn list_document_tags_errors_before_connect() {
+        let store = PgStore::new("postgres://localhost/db");
+        let err = store.list_document_tags(1).await.unwrap_err();
+        assert!(err.to_string().contains("not connected"));
+    }
+
+    #[tokio::test]
+    async fn list_chunks_errors_before_connect() {
+        let store = PgStore::new("postgres://localhost/db");
+        let err = store.list_chunks(1).await.unwrap_err();
+        assert!(err.to_string().contains("not connected"));
+    }
+
+    #[tokio::test]
+    async fn get_tenant_slug_errors_before_connect() {
+        let store = PgStore::new("postgres://localhost/db");
+        let err = store.get_tenant_slug(1).await.unwrap_err();
+        assert!(err.to_string().contains("not connected"));
+    }
+
+    #[test]
+    fn document_from_row_valid() {
+        let row = DocumentRow {
+            id: 1,
+            tenant_id: 42,
+            title: Some("Test".into()),
+            summary: Some("Summary".into()),
+            user_note: None,
+            kind: "document".into(),
+            meta: serde_json::json!({}),
+            page_count: 1,
+            status: "ready".into(),
+            created_at: chrono::Utc::now(),
+        };
+        let doc = document_from_row(row).unwrap();
+        assert_eq!(doc.id, 1);
+        assert_eq!(doc.tenant_id, 42);
+        assert_eq!(doc.title.as_deref(), Some("Test"));
+        assert_eq!(doc.kind, kb_core::kind::DocKind::Document);
+        assert_eq!(doc.status, kb_core::status::ProcessingStatus::Ready);
+    }
+
+    #[test]
+    fn document_from_row_invalid_kind() {
+        let row = DocumentRow {
+            id: 1,
+            tenant_id: 1,
+            title: None,
+            summary: None,
+            user_note: None,
+            kind: "not_a_valid_kind".into(),
+            meta: serde_json::json!({}),
+            page_count: 1,
+            status: "ready".into(),
+            created_at: chrono::Utc::now(),
+        };
+        let err = document_from_row(row).unwrap_err();
+        assert!(err.to_string().contains("invalid DocKind"));
+    }
+
+    #[test]
+    fn file_from_row_valid() {
+        let sha = vec![0u8; 32];
+        let row = FileRow {
+            id: 10,
+            tenant_id: 1,
+            document_id: 5,
+            page_no: 1,
+            page_label: Some("front".into()),
+            sha256: sha.clone(),
+            blob_key: "key".into(),
+            path: Some("/tmp/test.txt".into()),
+            mime: Some("text/plain".into()),
+            size_bytes: Some(100),
+            meta: serde_json::json!({}),
+            status: "ready".into(),
+            ingested_at: chrono::Utc::now(),
+        };
+        let file = file_from_row(row).unwrap();
+        assert_eq!(file.id, 10);
+        assert_eq!(file.document_id, 5);
+        assert_eq!(file.page_label.as_deref(), Some("front"));
+        assert_eq!(file.status, kb_core::status::ProcessingStatus::Ready);
+    }
+
+    #[test]
+    fn file_from_row_invalid_sha_length() {
+        let row = FileRow {
+            id: 1,
+            tenant_id: 1,
+            document_id: 1,
+            page_no: 1,
+            page_label: None,
+            sha256: vec![0u8; 16], // wrong length
+            blob_key: "key".into(),
+            path: None,
+            mime: None,
+            size_bytes: None,
+            meta: serde_json::json!({}),
+            status: "ready".into(),
+            ingested_at: chrono::Utc::now(),
+        };
+        let err = file_from_row(row).unwrap_err();
+        assert!(err.to_string().contains("invalid sha256 length"));
+    }
+
+    #[test]
+    fn file_from_row_invalid_status() {
+        let row = FileRow {
+            id: 1,
+            tenant_id: 1,
+            document_id: 1,
+            page_no: 1,
+            page_label: None,
+            sha256: vec![0u8; 32],
+            blob_key: "key".into(),
+            path: None,
+            mime: None,
+            size_bytes: None,
+            meta: serde_json::json!({}),
+            status: "bad_status".into(),
+            ingested_at: chrono::Utc::now(),
+        };
+        let err = file_from_row(row).unwrap_err();
+        assert!(err.to_string().contains("invalid ProcessingStatus"));
     }
 
     // ── P5-T6 quota DB-integration tests (#[ignore]) ────────────────────

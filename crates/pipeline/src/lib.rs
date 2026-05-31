@@ -18,6 +18,7 @@
 pub mod chunker;
 pub mod document_builder;
 pub mod embedder;
+pub mod export;
 pub mod ingest;
 pub mod job_queue;
 pub mod metadata_merge;
@@ -26,6 +27,7 @@ pub mod rrf;
 pub mod tag_canonicalizer;
 pub mod tag_store;
 
+pub use export::{ExportPipeline, ExportStore, process_export_job};
 pub use ingest::{
     ExtractorRouter, IngestFile, IngestOutput, IngestPipeline, IngestStore, process_ingest_job,
 };

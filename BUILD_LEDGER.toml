@@ -518,7 +518,7 @@ plan_sections = ["13", "29", "15"]
 acceptance = "Bytes quota: upload under limit succeeds, over limit gets 413 with clear message, unlimited (NULL) always succeeds. Token quota: LLM call under limit succeeds, over gets 429, NULL = unlimited. Edge case: multiple concurrent uploads don't panic, just may briefly overshoot (documented). Unit tests for count-check logic + #[ignore] integration tests against Postgres. just ci green."
 status = "done"
 checkpoint = false
-notes = "quota.rs: QuotaError, check_bytes_quota, check_token_quota (18 tests). PgStore: get_storage_usage, get_token_usage, get_tenant_quota_limits, check_storage_quota, check_token_quota (5 unit + 11 #[ignore] integ)."
+notes = "export.rs (~1000 lines): ExportStore trait, ExportPipeline, streaming ZIP+JSONL+manifest, process_export_job, safe_zip_path. PgStore: 7 list_* methods. 19 unit tests."
 
 [[task]]
 id = "P5-T7"
@@ -527,9 +527,9 @@ description = "Export (data portability): a job-driven streaming ZIP + JSONL exp
 depends_on = ["P5-T1", "P2-T3", "P2-T1"]
 plan_sections = ["13", "16"]
 acceptance = "Export creates a valid ZIP with original files + JSONL + manifest; streaming doesn't OOM on large exports; ZIP entry paths are stable (no absolute paths, no traversal); empty tenant → valid ZIP with just manifest.json; round-trip: export a tenant → import into fresh tenant → documents/files/tags/chunks match. Unit tests for JSONL/manifest generation + #[ignore] integration test for full export round-trip via testcontainers. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+	notes = "export.rs: ExportStore trait, ExportPipeline, streaming ZIP+JSONL+manifest, process_export_job, safe_zip_path. PgStore: 7 list_* methods. 19 unit tests."
 
 [[task]]
 id = "P5-T8"

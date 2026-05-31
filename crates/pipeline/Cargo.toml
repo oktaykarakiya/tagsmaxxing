@@ -17,10 +17,15 @@ anyhow = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
+hex = { workspace = true }
+tracing = { workspace = true }
 tokio = { workspace = true, features = ["sync", "time"] }
 tree_magic_mini = { workspace = true }
+zip = { workspace = true }
+tempfile = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
@@ -29,4 +34,3 @@ kb-store = { workspace = true }
 kb-mock-backend = { workspace = true }
 kb-scheduler = { workspace = true }
 reqwest = { workspace = true }
-tempfile = { workspace = true }
