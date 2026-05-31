@@ -348,7 +348,7 @@ plan_sections = ["7"]
 acceptance = "Single page: text passed through, meta preserved; two pages: both texts present with separators, page_1.* + page_2.* namespaces in meta; dominant kind: 3 images → Image, mixed image+text → Document; empty meta pages handled; page_count matches input count. Unit tests for 1-page, 2-page, 3-page, mixed-kind, empty-meta, empty-text. just ci green."
 status = "done"
 checkpoint = false
-notes = "metadata_merge.rs in kb-pipeline: merge() takes Vec<(FileRecord, Extracted)> → MergedDocument { text, meta, kind, page_count }. Page separators with label support. Per-page meta namespaced under page_N.*. Dominant kind inferred from per-page MIME in meta. mime_to_kind() maps MIME→DocKind. Panics on empty input. 20 unit tests. Workspace 84.68% lines."
+notes = "MetadataMerger in kb-pipeline::metadata_merge: merge() takes &[(FileRecord, Extracted)] → MergedDocument { merged_text, merged_meta, kind, page_count }. Page separators use file.page_no + optional label (file.page_label). Per-page meta namespaced under page_N with FileRecord fields (page_label, mime, path, size_bytes, sha256, blob_key) merged alongside Extracted.meta. Dominant kind reuses document_builder::infer_doc_kind (pub(crate) now). Empty input → page_count=0, Binary, empty text/meta (no panic). 30 unit tests covering separators, merge_text, merge_meta, dominant_kind, and end-to-end. just ci green; metadata_merge.rs 100% lines."
 
 [[task]]
 id = "P3-T7"

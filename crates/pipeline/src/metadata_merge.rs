@@ -1,484 +1,558 @@
-//! Metadata merge: combine per-page [`Extracted`](kb_core::extractor::Extracted) output
-//! into document-level text, namespaced metadata, and a dominant [`DocKind`](kb_core::kind::DocKind)
-//! (plan §7, P3-T6).
+//! Metadata merge: combine per-page `(FileRecord, Extracted)` pairs into
+//! document-level output — merged text, namespaced metadata, and a dominant
+//! [`DocKind`] (plan §7 step 3, P3-T6).
 //!
-//! Pure logic — no I/O, no async.
+//! Pure logic, no I/O. The caller is responsible for sorting pages by
+//! `page_no` before calling [`MetadataMerger::merge`].
 
 use kb_core::extractor::Extracted;
 use kb_core::file::FileRecord;
 use kb_core::kind::DocKind;
 
-/// The merged document-level output from all per-page extractions.
-#[derive(Debug, Clone)]
+use crate::document_builder;
+
+/// The merged document-level output from per-page extractions.
+///
+/// Consumed by downstream pipeline steps: the merged text feeds the tagger
+/// (§7 step 4), the merged meta is stored in `documents.meta` JSONB, and the
+/// dominant kind + page count update the [`Document`](kb_core::document::Document).
+#[derive(Debug, Clone, PartialEq)]
 pub struct MergedDocument {
-    /// All pages' extracted text joined with page separators.
-    pub text: String,
-    /// Per-page meta under `page_N.*` keys, plus a top-level `page_count`.
-    pub meta: serde_json::Value,
-    /// The dominant kind (all-same → that kind; mixed → [`DocKind::Document`]).
+    /// All pages' extracted text joined with page-separator markers.
+    pub merged_text: String,
+    /// Per-page meta under `page_N.*` keys. Each `page_N` value merges the
+    /// page's [`Extracted::meta`] with top-level [`FileRecord`] fields
+    /// (`page_label`, `mime`, `path`, `size_bytes`, `sha256`, `blob_key`).
+    pub merged_meta: serde_json::Value,
+    /// Dominant document kind inferred from pages' MIME types.
     pub kind: DocKind,
-    /// Number of member pages.
+    /// Number of pages (= `pages.len()`).
     pub page_count: i32,
 }
 
-/// Merge per-page extraction results into document-level output.
+/// Merges per-page extraction results into document-level output.
 ///
-/// # Panics
+/// # Examples
 ///
-/// Panics if `pages` is empty (callers must guard against zero-page documents upstream).
-pub fn merge(pages: &[(FileRecord, Extracted)]) -> MergedDocument {
-    assert!(!pages.is_empty(), "merge requires at least one page");
+/// ```rust
+/// use kb_pipeline::metadata_merge::MetadataMerger;
+/// ```
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MetadataMerger;
 
-    let page_count = pages.len() as i32;
+impl MetadataMerger {
+    /// Merge per-page extraction results into a [`MergedDocument`].
+    ///
+    /// Pages **must** be ordered by `page_no`. An empty slice returns
+    /// `page_count = 0`, `kind = Binary`, empty text, and `{}` meta.
+    #[must_use]
+    pub fn merge(pages: &[(FileRecord, Extracted)]) -> MergedDocument {
+        let page_count = pages.len() as i32;
+        let merged_text = merge_text(pages);
+        let merged_meta = merge_meta(pages);
+        let kind = dominant_kind(pages);
 
-    // ── merge text ─────────────────────────────────────────────────────
-    let mut texts: Vec<String> = Vec::with_capacity(pages.len());
+        MergedDocument {
+            merged_text,
+            merged_meta,
+            kind,
+            page_count,
+        }
+    }
+}
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+
+/// Build a page-separator line from the [`FileRecord`]'s `page_no` and
+/// optional `page_label`.
+fn page_separator(file: &FileRecord) -> String {
+    match &file.page_label {
+        Some(label) => format!("--- page {} ({}) ---", file.page_no, label),
+        None => format!("--- page {} ---", file.page_no),
+    }
+}
+
+/// Concatenate all pages' extracted text separated by double-newlines, each
+/// prefixed with a page-separator marker.
+///
+/// When a page's text is empty the separator still appears (so page
+/// boundaries are always visible), but no trailing text line is appended.
+fn merge_text(pages: &[(FileRecord, Extracted)]) -> String {
+    if pages.is_empty() {
+        return String::new();
+    }
+
+    let mut out = String::new();
     for (i, (file, extracted)) in pages.iter().enumerate() {
-        let label = file.page_label.as_deref().unwrap_or("").to_string();
-        let separator = if label.is_empty() {
-            format!("--- page {} ---", i + 1)
-        } else {
-            format!("--- page {} ({label}) ---", i + 1)
-        };
-        texts.push(separator);
+        if i > 0 {
+            out.push_str("\n\n");
+        }
+        out.push_str(&page_separator(file));
         if !extracted.text.is_empty() {
-            texts.push(extracted.text.clone());
+            out.push('\n');
+            out.push_str(&extracted.text);
         }
     }
-    let text = texts.join("\n");
-
-    // ── merge meta ─────────────────────────────────────────────────────
-    let mut merged_meta = serde_json::Map::new();
-
-    for (i, (_file, extracted)) in pages.iter().enumerate() {
-        let key = format!("page_{}", i + 1);
-        let page_meta = if extracted.meta.is_object() {
-            extracted.meta.clone()
-        } else if extracted.meta.is_null() {
-            serde_json::json!({})
-        } else {
-            // Scalar/array → wrap under a "value" key so the page slot is
-            // always an object.
-            serde_json::json!({"value": extracted.meta})
-        };
-        merged_meta.insert(key, page_meta);
-    }
-    merged_meta.insert("page_count".to_string(), serde_json::json!(page_count));
-
-    // ── dominant kind ──────────────────────────────────────────────────
-    let first_kind = mime_to_kind(pages[0].1.meta.get("mime").and_then(|v| v.as_str()));
-    let all_same = pages.iter().all(|(_, e)| {
-        let k = mime_to_kind(e.meta.get("mime").and_then(|v| v.as_str()));
-        k == first_kind
-    });
-    let kind = if all_same {
-        first_kind
-    } else {
-        DocKind::Document
-    };
-
-    MergedDocument {
-        text,
-        meta: serde_json::Value::Object(merged_meta),
-        kind,
-        page_count,
-    }
+    out
 }
 
-/// Map a MIME type string to the broadest [`DocKind`].
+/// Merge per-page metadata into a namespaced JSON object.
 ///
-/// This is used to determine the dominant kind from per-page extraction
-/// metadata, where the extractor may have stored a "mime" field.
-fn mime_to_kind(mime: Option<&str>) -> DocKind {
-    match mime {
-        Some(m) if m.starts_with("image/") => DocKind::Image,
-        Some(m) if m.starts_with("audio/") => DocKind::Audio,
-        Some(m) if m.starts_with("video/") => DocKind::Video,
-        Some(m)
-            if m == "text/plain"
-                || m == "text/html"
-                || m == "text/markdown"
-                || m.starts_with("application/pdf")
-                || m.starts_with("application/msword")
-                || m.starts_with("application/vnd.openxmlformats-officedocument")
-                || m.starts_with("application/vnd.oasis.opendocument") =>
-        {
-            DocKind::Document
+/// Each page's entry at `page_N` combines:
+/// 1. The page's [`Extracted::meta`] (shallow-merged keys).
+/// 2. Top-level [`FileRecord`] fields: `page_label`, `mime`, `path`,
+///    `size_bytes`, `sha256`, `blob_key`.
+fn merge_meta(pages: &[(FileRecord, Extracted)]) -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+
+    for (file, extracted) in pages {
+        let key = format!("page_{}", file.page_no);
+        let mut page_obj = serde_json::Map::new();
+
+        // 1. Shallow-merge Extracted.meta.
+        if let serde_json::Value::Object(extracted_map) = &extracted.meta {
+            for (k, v) in extracted_map {
+                page_obj.insert(k.clone(), v.clone());
+            }
         }
-        Some(m)
-            if m == "application/zip"
-                || m == "application/x-tar"
-                || m == "application/gzip"
-                || m == "application/x-bzip2"
-                || m == "application/x-xz"
-                || m == "application/zstd" =>
-        {
-            DocKind::Archive
+
+        // 2. FileRecord top-level fields.
+        if let Some(ref label) = file.page_label {
+            page_obj.insert(
+                "page_label".to_owned(),
+                serde_json::Value::String(label.clone()),
+            );
         }
-        _ => DocKind::Binary,
+        if let Some(ref mime) = file.mime {
+            page_obj.insert("mime".to_owned(), serde_json::Value::String(mime.clone()));
+        }
+        if let Some(ref path) = file.path {
+            page_obj.insert("path".to_owned(), serde_json::Value::String(path.clone()));
+        }
+        if let Some(size) = file.size_bytes {
+            page_obj.insert(
+                "size_bytes".to_owned(),
+                serde_json::Value::Number(serde_json::Number::from(size)),
+            );
+        }
+        page_obj.insert(
+            "sha256".to_owned(),
+            serde_json::Value::String(file.sha256.to_hex()),
+        );
+        page_obj.insert(
+            "blob_key".to_owned(),
+            serde_json::Value::String(file.blob_key.clone()),
+        );
+
+        map.insert(key, serde_json::Value::Object(page_obj));
     }
+
+    serde_json::Value::Object(map)
 }
 
-// ── Tests ────────────────────────────────────────────────────────────────────
+/// Determine the dominant [`DocKind`] from the pages' MIME types.
+///
+/// Delegates to [`document_builder::infer_doc_kind`] for consistency with
+/// the initial document-builder step. Pages with no MIME are treated as
+/// `application/octet-stream` → [`DocKind::Binary`].
+fn dominant_kind(pages: &[(FileRecord, Extracted)]) -> DocKind {
+    if pages.is_empty() {
+        return DocKind::Binary;
+    }
+
+    let mimes: Vec<String> = pages
+        .iter()
+        .map(|(file, _)| {
+            file.mime
+                .clone()
+                .unwrap_or_else(|| "application/octet-stream".to_owned())
+        })
+        .collect();
+
+    document_builder::infer_doc_kind(&mimes)
+}
+
+// ── tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use kb_core::extractor::Extracted;
-    use kb_core::file::FileRecord;
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+    use chrono::Utc;
     use kb_core::hash::Sha256;
-    use kb_core::kind::DocKind;
     use kb_core::status::ProcessingStatus;
 
-    use super::*;
-
-    // ── helpers ────────────────────────────────────────────────────────
-
-    fn file_rec(page_no: i32, label: &str, mime: &str) -> FileRecord {
+    /// Build a minimal [`FileRecord`] for testing.
+    fn test_file(page_no: i32, page_label: Option<&str>, mime: Option<&str>) -> FileRecord {
         let mut hash = [0u8; 32];
         hash[0] = page_no as u8;
-        hash[1] = label.as_bytes().first().copied().unwrap_or(0);
         FileRecord {
             id: 0,
             tenant_id: 1,
             document_id: 0,
             page_no,
-            page_label: if label.is_empty() {
-                None
-            } else {
-                Some(label.to_string())
-            },
+            page_label: page_label.map(String::from),
             sha256: Sha256::from_bytes(hash),
-            blob_key: format!("t1/{label}"),
-            path: Some(format!("/tmp/{label}")),
-            mime: Some(mime.to_string()),
+            blob_key: format!("1/{}", "00".repeat(32)),
+            path: None,
+            mime: mime.map(String::from),
             size_bytes: Some(100),
             meta: serde_json::json!({}),
             status: ProcessingStatus::Pending,
-            ingested_at: chrono::Utc::now(),
+            ingested_at: Utc::now(),
         }
     }
 
-    fn extracted(text: &str, mime: &str) -> Extracted {
+    /// Build [`Extracted`] with text and meta.
+    fn test_extracted(text: &str, meta: serde_json::Value) -> Extracted {
         Extracted {
-            text: text.to_string(),
-            meta: serde_json::json!({"mime": mime, "author": "test"}),
+            text: text.to_owned(),
+            meta,
             page_images: vec![],
         }
     }
 
-    fn empty_extracted() -> Extracted {
-        Extracted {
-            text: String::new(),
-            meta: serde_json::json!({"mime": "text/plain"}),
+    // ── page_separator ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn separator_with_label() {
+        let f = test_file(1, Some("front"), None);
+        assert_eq!(page_separator(&f), "--- page 1 (front) ---");
+    }
+
+    #[test]
+    fn separator_without_label() {
+        let f = test_file(3, None, None);
+        assert_eq!(page_separator(&f), "--- page 3 ---");
+    }
+
+    #[test]
+    fn separator_uses_actual_page_no_not_index() {
+        let f = test_file(5, Some("label"), None);
+        assert_eq!(page_separator(&f), "--- page 5 (label) ---");
+    }
+
+    // ── merge_text ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn merge_text_empty() {
+        assert_eq!(merge_text(&[]), "");
+    }
+
+    #[test]
+    fn merge_text_single_page_no_label() {
+        let f = test_file(1, None, Some("text/plain"));
+        let e = test_extracted("Hello.", serde_json::json!({}));
+        assert_eq!(merge_text(&[(f, e)]), "--- page 1 ---\nHello.");
+    }
+
+    #[test]
+    fn merge_text_single_page_with_label() {
+        let f = test_file(1, Some("front"), Some("text/plain"));
+        let e = test_extracted("Front side.", serde_json::json!({}));
+        assert_eq!(merge_text(&[(f, e)]), "--- page 1 (front) ---\nFront side.");
+    }
+
+    #[test]
+    fn merge_text_single_page_empty_extracted_text() {
+        let f = test_file(1, None, Some("image/png"));
+        let e = test_extracted("", serde_json::json!({}));
+        assert_eq!(merge_text(&[(f, e)]), "--- page 1 ---");
+    }
+
+    #[test]
+    fn merge_text_two_pages() {
+        let f1 = test_file(1, Some("front"), Some("text/plain"));
+        let e1 = test_extracted("First.", serde_json::json!({}));
+        let f2 = test_file(2, Some("back"), Some("text/plain"));
+        let e2 = test_extracted("Second.", serde_json::json!({}));
+
+        let text = merge_text(&[(f1, e1), (f2, e2)]);
+        assert_eq!(
+            text,
+            "--- page 1 (front) ---\nFirst.\n\n--- page 2 (back) ---\nSecond."
+        );
+    }
+
+    #[test]
+    fn merge_text_two_pages_first_empty() {
+        let f1 = test_file(1, None, Some("image/png"));
+        let e1 = test_extracted("", serde_json::json!({}));
+        let f2 = test_file(2, None, Some("text/plain"));
+        let e2 = test_extracted("Notes.", serde_json::json!({}));
+
+        let text = merge_text(&[(f1, e1), (f2, e2)]);
+        assert_eq!(text, "--- page 1 ---\n\n--- page 2 ---\nNotes.");
+    }
+
+    #[test]
+    fn merge_text_three_pages() {
+        let pages: Vec<(FileRecord, Extracted)> = (1..=3)
+            .map(|i| {
+                (
+                    test_file(i, None, Some("text/plain")),
+                    test_extracted(&format!("Content {i}."), serde_json::json!({})),
+                )
+            })
+            .collect();
+
+        let text = merge_text(&pages);
+        assert!(text.contains("--- page 1 ---\nContent 1."));
+        assert!(text.contains("--- page 2 ---\nContent 2."));
+        assert!(text.contains("--- page 3 ---\nContent 3."));
+        assert_eq!(text.matches("\n\n").count(), 2);
+    }
+
+    // ── merge_meta ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn merge_meta_empty() {
+        assert_eq!(merge_meta(&[]), serde_json::json!({}));
+    }
+
+    #[test]
+    fn merge_meta_single_page_file_fields() {
+        let mut f = test_file(1, Some("front"), Some("image/png"));
+        f.path = Some("id.png".into());
+        f.size_bytes = Some(2048);
+        let e = test_extracted("", serde_json::json!({}));
+
+        let meta = merge_meta(&[(f, e)]);
+        let p = &meta["page_1"];
+        assert_eq!(p["page_label"], "front");
+        assert_eq!(p["mime"], "image/png");
+        assert_eq!(p["path"], "id.png");
+        assert_eq!(p["size_bytes"], 2048);
+        assert!(p["sha256"].is_string());
+        assert!(p["blob_key"].is_string());
+    }
+
+    #[test]
+    fn merge_meta_includes_extracted_meta_keys() {
+        let f = test_file(1, None, None);
+        let e = test_extracted("", serde_json::json!({"camera": "Nikon", "iso": 800}));
+
+        let meta = merge_meta(&[(f, e)]);
+        assert_eq!(meta["page_1"]["camera"], "Nikon");
+        assert_eq!(meta["page_1"]["iso"], 800);
+    }
+
+    #[test]
+    fn merge_meta_two_pages_separate_namespaces() {
+        let f1 = test_file(1, Some("front"), Some("image/png"));
+        let e1 = test_extracted("", serde_json::json!({"side": "front"}));
+        let f2 = test_file(2, Some("back"), Some("image/png"));
+        let e2 = test_extracted("", serde_json::json!({"side": "back"}));
+
+        let meta = merge_meta(&[(f1, e1), (f2, e2)]);
+        assert_eq!(meta["page_1"]["side"], "front");
+        assert_eq!(meta["page_1"]["page_label"], "front");
+        assert_eq!(meta["page_2"]["side"], "back");
+        assert_eq!(meta["page_2"]["page_label"], "back");
+        assert!(meta["page_3"].is_null());
+    }
+
+    #[test]
+    fn merge_meta_extracted_meta_null() {
+        let f = test_file(1, Some("p1"), Some("text/plain"));
+        let e = Extracted {
+            text: "x".into(),
+            meta: serde_json::Value::Null,
             page_images: vec![],
-        }
-    }
+        };
 
-    // ── single page ────────────────────────────────────────────────────
-
-    #[test]
-    fn single_page_text_passed_through() {
-        let pages = vec![(
-            file_rec(1, "front", "text/plain"),
-            extracted("Hello world", "text/plain"),
-        )];
-        let merged = merge(&pages);
-        assert!(merged.text.contains("Hello world"));
-        assert!(merged.text.contains("--- page 1 (front) ---"));
-        assert_eq!(merged.page_count, 1);
+        let meta = merge_meta(&[(f, e)]);
+        assert!(meta["page_1"].is_object());
+        assert_eq!(meta["page_1"]["page_label"], "p1");
     }
 
     #[test]
-    fn single_page_meta_preserved() {
-        let pages = vec![(
-            file_rec(1, "main", "text/plain"),
-            extracted("content", "text/plain"),
-        )];
-        let merged = merge(&pages);
-        let page_1 = &merged.meta["page_1"];
-        assert_eq!(page_1["mime"], "text/plain");
-        assert_eq!(page_1["author"], "test");
-        assert_eq!(merged.meta["page_count"], serde_json::json!(1));
+    fn merge_meta_size_bytes_none_omitted() {
+        let mut f = test_file(1, None, None);
+        f.size_bytes = None;
+        let e = test_extracted("", serde_json::json!({}));
+
+        let meta = merge_meta(&[(f, e)]);
+        assert!(meta["page_1"].get("size_bytes").is_none());
     }
 
     #[test]
-    fn single_page_dominant_kind_matches() {
-        let pages = vec![(
-            file_rec(1, "img", "image/png"),
-            Extracted {
-                text: String::new(),
-                meta: serde_json::json!({"mime": "image/png"}),
-                page_images: vec![],
-            },
-        )];
-        let merged = merge(&pages);
-        assert_eq!(merged.kind, DocKind::Image);
+    fn merge_meta_page_label_none_omitted() {
+        let f = test_file(1, None, None);
+        let e = test_extracted("", serde_json::json!({}));
+
+        let meta = merge_meta(&[(f, e)]);
+        assert!(meta["page_1"].get("page_label").is_none());
     }
 
-    // ── multi page ─────────────────────────────────────────────────────
+    // ── dominant_kind ──────────────────────────────────────────────────────────
 
     #[test]
-    fn two_pages_both_texts_present_with_separators() {
-        let pages = vec![
-            (
-                file_rec(1, "front", "text/plain"),
-                extracted("First page content", "text/plain"),
-            ),
-            (
-                file_rec(2, "back", "text/plain"),
-                extracted("Second page content", "text/plain"),
-            ),
-        ];
-        let merged = merge(&pages);
-        assert!(merged.text.contains("--- page 1 (front) ---"));
-        assert!(merged.text.contains("First page content"));
-        assert!(merged.text.contains("--- page 2 (back) ---"));
-        assert!(merged.text.contains("Second page content"));
-        assert_eq!(merged.page_count, 2);
+    fn dominant_kind_empty() {
+        assert_eq!(dominant_kind(&[]), DocKind::Binary);
     }
 
     #[test]
-    fn two_pages_meta_namespaced() {
-        let pages = vec![
-            (
-                file_rec(1, "p1", "text/plain"),
-                extracted("A", "text/plain"),
-            ),
-            (
-                file_rec(2, "p2", "image/png"),
-                Extracted {
-                    text: String::new(),
-                    meta: serde_json::json!({"mime": "image/png", "width": 640}),
-                    page_images: vec![],
-                },
-            ),
-        ];
-        let merged = merge(&pages);
-        assert_eq!(merged.meta["page_1"]["mime"], "text/plain");
-        assert_eq!(merged.meta["page_2"]["mime"], "image/png");
-        assert_eq!(merged.meta["page_2"]["width"], 640);
-        assert_eq!(merged.meta["page_count"], serde_json::json!(2));
+    fn dominant_kind_single_image() {
+        let f = test_file(1, None, Some("image/png"));
+        let e = test_extracted("", serde_json::json!({}));
+        assert_eq!(dominant_kind(&[(f, e)]), DocKind::Image);
     }
 
     #[test]
-    fn three_pages_three_namespaces() {
-        let pages: Vec<(FileRecord, Extracted)> = (1..=3)
-            .map(|i| {
+    fn dominant_kind_three_images() {
+        let mimes = ["image/png", "image/jpeg", "image/gif"];
+        let pages: Vec<_> = mimes
+            .iter()
+            .enumerate()
+            .map(|(i, m)| {
                 (
-                    file_rec(i, &format!("p{i}"), "text/plain"),
-                    extracted(&format!("content {i}"), "text/plain"),
+                    test_file(i as i32 + 1, None, Some(m)),
+                    test_extracted("", serde_json::json!({})),
                 )
             })
             .collect();
-        let merged = merge(&pages);
-        assert!(merged.meta["page_1"].is_object());
-        assert!(merged.meta["page_2"].is_object());
-        assert!(merged.meta["page_3"].is_object());
-        assert_eq!(merged.page_count, 3);
+        assert_eq!(dominant_kind(&pages), DocKind::Image);
     }
 
-    // ── kind inference ─────────────────────────────────────────────────
+    #[test]
+    fn dominant_kind_mixed_image_text() {
+        let f1 = test_file(1, None, Some("image/png"));
+        let e1 = test_extracted("", serde_json::json!({}));
+        let f2 = test_file(2, None, Some("text/plain"));
+        let e2 = test_extracted("notes", serde_json::json!({}));
+        assert_eq!(dominant_kind(&[(f1, e1), (f2, e2)]), DocKind::Document);
+    }
 
     #[test]
-    fn all_images_yields_image_kind() {
-        let pages: Vec<(FileRecord, Extracted)> = (1..=3)
-            .map(|i| {
+    fn dominant_kind_all_documents() {
+        let mimes = ["text/plain", "application/pdf", "text/html"];
+        let pages: Vec<_> = mimes
+            .iter()
+            .enumerate()
+            .map(|(i, m)| {
                 (
-                    file_rec(i, &format!("img{i}"), "image/jpeg"),
-                    Extracted {
-                        text: String::new(),
-                        meta: serde_json::json!({"mime": "image/jpeg"}),
-                        page_images: vec![],
-                    },
+                    test_file(i as i32 + 1, None, Some(m)),
+                    test_extracted("", serde_json::json!({})),
                 )
             })
             .collect();
-        let merged = merge(&pages);
-        assert_eq!(merged.kind, DocKind::Image);
+        assert_eq!(dominant_kind(&pages), DocKind::Document);
     }
 
     #[test]
-    fn mixed_image_and_text_yields_document() {
-        let pages = vec![
-            (
-                file_rec(1, "img", "image/png"),
-                Extracted {
-                    text: String::new(),
-                    meta: serde_json::json!({"mime": "image/png"}),
-                    page_images: vec![],
-                },
-            ),
-            (
-                file_rec(2, "doc", "text/plain"),
-                extracted("some text", "text/plain"),
-            ),
-        ];
-        let merged = merge(&pages);
-        assert_eq!(merged.kind, DocKind::Document);
+    fn dominant_kind_no_mime_is_binary() {
+        let f = test_file(1, None, None);
+        let e = test_extracted("", serde_json::json!({}));
+        assert_eq!(dominant_kind(&[(f, e)]), DocKind::Binary);
+    }
+
+    // ── MetadataMerger::merge (end-to-end) ─────────────────────────────────────
+
+    #[test]
+    fn merge_single_page_e2e() {
+        let mut f = test_file(1, Some("front"), Some("text/plain"));
+        f.path = Some("note.txt".into());
+        let e = test_extracted(
+            "The quick brown fox.",
+            serde_json::json!({"author": "test"}),
+        );
+
+        let m = MetadataMerger::merge(&[(f, e)]);
+
+        assert_eq!(m.page_count, 1);
+        assert_eq!(m.kind, DocKind::Document);
+        assert!(m.merged_text.contains("page 1 (front)"));
+        assert!(m.merged_text.contains("The quick brown fox."));
+        assert_eq!(m.merged_meta["page_1"]["author"], "test");
+        assert_eq!(m.merged_meta["page_1"]["path"], "note.txt");
     }
 
     #[test]
-    fn all_audio_yields_audio_kind() {
-        let pages = vec![(
-            file_rec(1, "track", "audio/mpeg"),
-            Extracted {
-                text: "transcript".to_string(),
-                meta: serde_json::json!({"mime": "audio/mpeg"}),
-                page_images: vec![],
-            },
-        )];
-        let merged = merge(&pages);
-        assert_eq!(merged.kind, DocKind::Audio);
+    fn merge_two_pages_e2e() {
+        let f1 = test_file(1, Some("front"), Some("image/png"));
+        let e1 = test_extracted("", serde_json::json!({"exif": "f/2.8"}));
+        let mut f2 = test_file(2, Some("back"), Some("image/png"));
+        f2.path = Some("back.png".into());
+        let e2 = test_extracted("", serde_json::json!({"exif": "f/4.0"}));
+
+        let m = MetadataMerger::merge(&[(f1, e1), (f2, e2)]);
+
+        assert_eq!(m.page_count, 2);
+        assert_eq!(m.kind, DocKind::Image);
+        assert_eq!(m.merged_meta["page_1"]["exif"], "f/2.8");
+        assert_eq!(m.merged_meta["page_2"]["exif"], "f/4.0");
+        assert_eq!(m.merged_meta["page_2"]["path"], "back.png");
+        assert!(m.merged_text.contains("--- page 1 (front) ---"));
+        assert!(m.merged_text.contains("--- page 2 (back) ---"));
     }
 
     #[test]
-    fn all_video_yields_video_kind() {
-        let pages = vec![(
-            file_rec(1, "clip", "video/mp4"),
-            Extracted {
-                text: "transcript".to_string(),
-                meta: serde_json::json!({"mime": "video/mp4"}),
-                page_images: vec![],
-            },
-        )];
-        let merged = merge(&pages);
-        assert_eq!(merged.kind, DocKind::Video);
+    fn merge_three_pages_e2e() {
+        let pages: Vec<(FileRecord, Extracted)> = (1..=3)
+            .map(|i| {
+                (
+                    test_file(i, None, Some("text/plain")),
+                    test_extracted(&format!("Content {i}"), serde_json::json!({"num": i})),
+                )
+            })
+            .collect();
+
+        let m = MetadataMerger::merge(&pages);
+        assert_eq!(m.page_count, 3);
+        assert_eq!(m.kind, DocKind::Document);
+        assert_eq!(m.merged_meta["page_1"]["num"], 1);
+        assert_eq!(m.merged_meta["page_2"]["num"], 2);
+        assert_eq!(m.merged_meta["page_3"]["num"], 3);
     }
 
     #[test]
-    fn archive_yields_archive_kind() {
-        let pages = vec![(
-            file_rec(1, "bundle", "application/zip"),
-            Extracted {
-                text: String::new(),
-                meta: serde_json::json!({"mime": "application/zip"}),
-                page_images: vec![],
-            },
-        )];
-        let merged = merge(&pages);
-        assert_eq!(merged.kind, DocKind::Archive);
+    fn merge_empty_e2e() {
+        let m = MetadataMerger::merge(&[]);
+        assert_eq!(m.page_count, 0);
+        assert_eq!(m.kind, DocKind::Binary);
+        assert_eq!(m.merged_text, "");
+        assert_eq!(m.merged_meta, serde_json::json!({}));
     }
 
     #[test]
-    fn unknown_mime_yields_binary_kind() {
-        let pages = vec![(
-            file_rec(1, "blob", "application/octet-stream"),
-            Extracted {
-                text: String::new(),
-                meta: serde_json::json!({"mime": "application/octet-stream"}),
-                page_images: vec![],
-            },
-        )];
-        let merged = merge(&pages);
-        assert_eq!(merged.kind, DocKind::Binary);
-    }
-
-    // ── edge cases ─────────────────────────────────────────────────────
-
-    #[test]
-    fn empty_text_pages_still_produce_separators() {
-        let pages = vec![
-            (file_rec(1, "front", "text/plain"), empty_extracted()),
-            (file_rec(2, "back", "text/plain"), empty_extracted()),
-        ];
-        let merged = merge(&pages);
-        assert!(merged.text.contains("--- page 1 (front) ---"));
-        assert!(merged.text.contains("--- page 2 (back) ---"));
-        assert_eq!(merged.page_count, 2);
-    }
-
-    #[test]
-    fn pages_without_labels_use_default_numbering() {
-        let pages = vec![(
-            file_rec(1, "", "text/plain"),
-            extracted("no label", "text/plain"),
-        )];
-        let merged = merge(&pages);
-        assert!(merged.text.contains("--- page 1 ---"));
-        assert!(!merged.text.contains("()"), "should not have empty parens");
-    }
-
-    #[test]
-    fn empty_meta_page_becomes_empty_object() {
-        let pages = vec![(
-            file_rec(1, "p1", "text/plain"),
-            Extracted {
-                text: "x".to_string(),
-                meta: serde_json::json!(null),
-                page_images: vec![],
-            },
-        )];
-        let merged = merge(&pages);
-        assert!(merged.meta["page_1"].is_object());
-        assert_eq!(merged.meta["page_1"], serde_json::json!({}));
-    }
-
-    #[test]
-    fn scalar_meta_value_wrapped_under_value_key() {
-        let pages = vec![(
-            file_rec(1, "p1", "text/plain"),
-            Extracted {
-                text: "x".to_string(),
-                meta: serde_json::json!("just a string"),
-                page_images: vec![],
-            },
-        )];
-        let merged = merge(&pages);
-        assert_eq!(merged.meta["page_1"]["value"], "just a string");
-    }
-
-    #[test]
-    fn mime_to_kind_document_mimes() {
-        let docs = &[
-            "text/plain",
-            "text/html",
-            "text/markdown",
-            "application/pdf",
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        ];
-        for m in docs {
-            assert_eq!(mime_to_kind(Some(m)), DocKind::Document, "failed for {m}");
-        }
-    }
-
-    #[test]
-    fn mime_to_kind_archive_mimes() {
-        let archives = &[
-            "application/zip",
-            "application/x-tar",
-            "application/gzip",
-            "application/x-xz",
-            "application/zstd",
-        ];
-        for m in archives {
-            assert_eq!(mime_to_kind(Some(m)), DocKind::Archive, "failed for {m}");
-        }
-    }
-
-    #[test]
-    fn mime_to_kind_none_is_binary() {
-        assert_eq!(mime_to_kind(None), DocKind::Binary);
-    }
-
-    #[test]
-    #[should_panic(expected = "merge requires at least one page")]
-    fn empty_pages_panics() {
-        merge(&[]);
-    }
-
-    #[test]
-    fn page_count_matches_input_length() {
-        for n in 1..=5 {
-            let pages: Vec<(FileRecord, Extracted)> = (1..=n)
+    fn merge_page_count_matches_input() {
+        for n in [1, 2, 3, 5, 10] {
+            let pages: Vec<_> = (0..n)
                 .map(|i| {
                     (
-                        file_rec(i, &format!("p{i}"), "text/plain"),
-                        extracted("x", "text/plain"),
+                        test_file(i + 1, None, Some("text/plain")),
+                        test_extracted("x", serde_json::json!({})),
                     )
                 })
                 .collect();
-            assert_eq!(merge(&pages).page_count, n);
+            assert_eq!(MetadataMerger::merge(&pages).page_count, n);
         }
+    }
+
+    #[test]
+    fn merge_mixed_kinds_document() {
+        let f1 = test_file(1, None, Some("image/png"));
+        let e1 = test_extracted("", serde_json::json!({}));
+        let f2 = test_file(2, None, Some("audio/mpeg"));
+        let e2 = test_extracted("transcript", serde_json::json!({}));
+        let f3 = test_file(3, None, Some("text/plain"));
+        let e3 = test_extracted("notes", serde_json::json!({}));
+
+        let m = MetadataMerger::merge(&[(f1, e1), (f2, e2), (f3, e3)]);
+        assert_eq!(m.kind, DocKind::Document);
+        assert_eq!(m.page_count, 3);
+    }
+
+    #[test]
+    fn merge_no_key_collision_between_pages() {
+        let f1 = test_file(1, None, Some("text/plain"));
+        let e1 = test_extracted("a", serde_json::json!({"key": "v1"}));
+        let f2 = test_file(2, None, Some("text/plain"));
+        let e2 = test_extracted("b", serde_json::json!({"key": "v2"}));
+
+        let m = MetadataMerger::merge(&[(f1, e1), (f2, e2)]);
+        assert_eq!(m.merged_meta["page_1"]["key"], "v1");
+        assert_eq!(m.merged_meta["page_2"]["key"], "v2");
     }
 }
