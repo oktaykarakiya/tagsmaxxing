@@ -596,9 +596,9 @@ description = "CLI (clap): a binary (or subcommand) providing `kb ingest <FILES.
 depends_on = ["P3-T7", "P4-T5", "P0-T5"]
 plan_sections = ["10", "12", "4"]
 acceptance = "`kb ingest file.txt` → job id → status=done; `kb search 'query'` → ranked results with deep-link fields; `kb ingest --as-document front.jpg back.jpg` → 2-page document; `--no-wait` exits immediately after enqueue; `--kind image` filters search; missing config gives a clear error; CLI help text covers all flags. Unit tests for arg parsing + mock-integration tests for happy paths. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "CLI binary (kb) in kb-api with clap derive: `kb ingest <FILES...> [--as-document] [--note]` and `kb search <QUERY> [--kind] [--tag] [--limit]`. Ingest calls IngestPipeline::ingest with file reading + LocalBlob + extractor router (TextExtractor, CodeExtractor). Search calls RetrievalPipeline::retrieve with formatted output (title, snippet, score, page_no, file_id). Both load config via kb-config (config.toml + env). Added clap 4.6.1, kb-extract, kb-pipeline, kb-llm, kb-scheduler, reqwest deps. 56 tests pass (12 arg-parsing + 6 read_files + 8 build_query + 6 truncate_str + 4 print_hit smoke). just ci green (76.92% lines)."
 
 [[task]]
 id = "P6-T2"

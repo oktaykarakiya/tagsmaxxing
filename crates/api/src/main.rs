@@ -1,0 +1,192 @@
+//! `kb` — the Local File Knowledge Base CLI.
+//!
+//! Entry point for the `kb` binary. Parses arguments via [`clap`], loads
+//! configuration from `config.toml` (overlaid with environment variables, per
+//! plan §6 and P0-T5), wires up the pipeline components, and dispatches to the
+//! appropriate subcommand handler.
+//!
+//! # Quick start
+//!
+//! ```text
+//! kb ingest notes.txt
+//! kb search "quarterly report" --kind document --limit 5
+//! ```
+//!
+//! # Requirements
+//!
+//! - A `config.toml` file in the current directory (or set `KB_CONFIG`).
+//! - A running Postgres instance (see `compose.yaml`).
+//! - At least one configured inference backend for LLM-based tagging,
+//!   embedding, and reranking.
+
+use std::process;
+use std::sync::Arc;
+use std::time::Duration;
+
+use anyhow::Context;
+use clap::Parser;
+use kb_config::AppConfig;
+use kb_core::kind::DocKind;
+use kb_extract::code::CodeExtractor;
+use kb_extract::text::TextExtractor;
+use kb_llm::{JsonSchemaTagger, LlamaClient, LlamaReranker};
+use kb_pipeline::embedder::ChunkEmbedder;
+use kb_pipeline::ingest::{ExtractorRouter, IngestPipeline};
+use kb_pipeline::retrieval::RetrievalPipeline;
+use kb_pipeline::tag_canonicalizer::{TAG_MERGE_THRESHOLD, TagCanonicalizer};
+use kb_scheduler::Pool;
+use kb_store::PgStore;
+
+mod cli;
+mod commands;
+
+use cli::{Cli, Command};
+
+/// Default embedding dimension (matches the schema embedder lock-in, plan §5).
+const EMBED_DIM: usize = 1024;
+
+/// Default model name sent in OpenAI-compatible API requests.
+const DEFAULT_CHAT_MODEL: &str = "default";
+const DEFAULT_EMBED_MODEL: &str = "bge-m3";
+const DEFAULT_RERANK_MODEL: &str = "default";
+
+/// Number of consecutive failures before a per-backend circuit breaker trips.
+const CIRCUIT_THRESHOLD: u32 = 5;
+
+/// How long a tripped circuit breaker stays open.
+const COOLDOWN_SECS: u64 = 30;
+
+#[tokio::main]
+async fn main() {
+    if let Err(err) = run().await {
+        eprintln!("error: {err:#}");
+        process::exit(1);
+    }
+}
+
+/// Parse CLI args, load config, wire up pipeline components, and dispatch
+/// to the correct subcommand handler (ingest or search).
+async fn run() -> anyhow::Result<()> {
+    let cli = Cli::parse();
+
+    // ── Load configuration ─────────────────────────────────────────────────
+    let config_path = std::env::var("KB_CONFIG").unwrap_or_else(|_| "config.toml".into());
+    let app_config = AppConfig::from_path(&config_path).with_context(|| {
+        format!(
+            "failed to load config from '{config_path}' \
+             (create a config.toml or set KB_CONFIG)"
+        )
+    })?;
+
+    let cfg = app_config.current();
+
+    // ── Connect to Postgres ─────────────────────────────────────────────────
+    let pg_store = if cfg.storage.app_postgres_url.is_empty() {
+        // Single-role mode: RLS relies on explicit tenant_id filters.
+        anyhow::ensure!(
+            !cfg.storage.postgres_url.is_empty(),
+            "storage.postgres_url is not set in {config_path} — \
+             a Postgres database is required"
+        );
+        PgStore::new(&cfg.storage.postgres_url)
+    } else {
+        // Two-role mode (privileged + kb_app): RLS enforced by the database.
+        PgStore::with_roles(&cfg.storage.postgres_url, &cfg.storage.app_postgres_url)
+    };
+
+    pg_store
+        .connect()
+        .await
+        .context("failed to connect to Postgres — is the database running?")?;
+
+    let pg_store = Arc::new(pg_store);
+
+    // ── Build shared infrastructure ─────────────────────────────────────────
+    // Pool and HTTP client are Clone — we share them across LlamaClient
+    // instances (one per component group, so circuit-breaker state is isolated
+    // per group while the underlying connection pool and semaphores are shared).
+    let pool = Pool::from_config(&cfg);
+    let http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(120))
+        .build()
+        .context("failed to create HTTP client")?;
+
+    let llm_factory = || {
+        LlamaClient::new(
+            pool.clone(),
+            http.clone(),
+            cfg.scheduler.max_retries,
+            CIRCUIT_THRESHOLD,
+            Duration::from_secs(COOLDOWN_SECS),
+        )
+    };
+
+    // ── Build extractor router ─────────────────────────────────────────────
+    let mut extractors: ExtractorRouter = std::collections::HashMap::new();
+    extractors.insert(DocKind::Document, Arc::new(TextExtractor));
+    extractors.insert(DocKind::Code, Arc::new(CodeExtractor));
+    // Other kinds (Image, Audio, Video, Archive, Binary) fall back to
+    // Extracted::default() — no extraction, just deterministic metadata.
+
+    // ── Dispatch to subcommand ─────────────────────────────────────────────
+    match cli.command {
+        Command::Ingest(args) => {
+            // Owned LlamaClient for the tagger (JsonSchemaTagger takes by value).
+            let tagger = Arc::new(JsonSchemaTagger::new(
+                llm_factory(),
+                DEFAULT_CHAT_MODEL.into(),
+            ));
+            // Shared LlamaClient for embedder + canonicalizer.
+            let embed_llm = Arc::new(llm_factory());
+            let embedder = Arc::new(ChunkEmbedder::new(
+                Arc::clone(&embed_llm),
+                DEFAULT_EMBED_MODEL.into(),
+                EMBED_DIM,
+            ));
+            let canonicalizer = Arc::new(TagCanonicalizer::new(
+                Arc::clone(&pg_store) as Arc<dyn kb_pipeline::TagStore>,
+                Arc::clone(&embed_llm),
+                DEFAULT_EMBED_MODEL.into(),
+                TAG_MERGE_THRESHOLD,
+            ));
+
+            let blob: Arc<dyn kb_core::blob::Blob> = Arc::new(kb_store::LocalBlob::new(
+                "kb-blobs".into(),
+                cli.tenant_id.to_string(),
+            ));
+
+            let pipeline = IngestPipeline::new(
+                blob,
+                extractors,
+                tagger,
+                canonicalizer,
+                embedder,
+                Arc::clone(&pg_store) as Arc<dyn kb_pipeline::ingest::IngestStore>,
+            );
+
+            commands::ingest::run_ingest(&args, &pipeline, cli.tenant_id).await?;
+        }
+        Command::Search(args) => {
+            let embed_llm = Arc::new(llm_factory());
+            let embedder = Arc::new(ChunkEmbedder::new(
+                Arc::clone(&embed_llm),
+                DEFAULT_EMBED_MODEL.into(),
+                EMBED_DIM,
+            ));
+            let reranker = Arc::new(LlamaReranker::new(
+                Arc::clone(&embed_llm),
+                DEFAULT_RERANK_MODEL.into(),
+            ));
+
+            let pipeline = RetrievalPipeline::new(
+                embedder,
+                Arc::clone(&pg_store) as Arc<dyn kb_core::store::Store>,
+                reranker,
+            );
+
+            commands::search::run_search(&args, &pipeline, cli.tenant_id).await?;
+        }
+    }
+
+    Ok(())
+}

@@ -19,6 +19,8 @@ kb-mock-backend = { path = "crates/mock-backend", version = "0.1.0" }
 kb-scheduler = { path = "crates/scheduler", version = "0.1.0" }
 kb-store = { path = "crates/store", version = "0.1.0" }
 kb-llm = { path = "crates/llm", version = "0.1.0" }
+kb-pipeline = { path = "crates/pipeline", version = "0.1.0" }
+kb-extract = { path = "crates/extract", version = "0.1.0" }
 kb-testsupport = { path = "crates/testsupport", version = "0.1.0" }
 # External
 serde = { version = "1.0.228", features = ["derive"] }
@@ -50,6 +52,7 @@ zip = "2"
 sha2 = "0.10"
 argon2 = "0.5"
 rand = "0.10"
+clap = { version = "4.6.1", features = ["derive"] }
 testcontainers = "0.27.3"
 
 # Workspace-wide lints, inherited by every crate via `[lints] workspace = true`.

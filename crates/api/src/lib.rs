@@ -9,6 +9,8 @@
 //! **port 9999** (the configured default, per plan §12).
 
 pub mod bootstrap;
+pub mod cli;
+pub mod commands;
 pub mod handlers;
 pub mod middleware;
 
