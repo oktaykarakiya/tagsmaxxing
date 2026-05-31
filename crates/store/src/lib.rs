@@ -8,11 +8,15 @@
 //!   content-addressed file storage under a hot-swappable root directory;
 //! * **[`PgStore`]** — the Postgres-backed [`Store`](kb_core::store::Store) implementation
 //!   (plan §5/§7/§13): `upsert_file`, `upsert_chunks`, and deferred `hybrid_search` (P4).
+//! * **[`session_store`]** — [`SessionStore`](kb_core::session::SessionStore) implementations:
+//!   [`InMemorySessionStore`](session_store::InMemorySessionStore) for dev/test and
+//!   [`PgSessionStore`](session_store::PgSessionStore) for production (plan §13, P5-T4).
 
 pub mod blob;
 pub(crate) mod hybrid_search;
 mod migrations;
 pub mod pg_store;
+pub mod session_store;
 
 pub use blob::LocalBlob;
 pub use migrations::MIGRATOR;

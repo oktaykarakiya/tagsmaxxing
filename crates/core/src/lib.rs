@@ -27,6 +27,7 @@ pub mod provider;
 pub mod query;
 pub mod reranker;
 pub mod role;
+pub mod session;
 pub mod status;
 pub mod store;
 pub mod tag;

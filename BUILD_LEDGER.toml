@@ -494,9 +494,9 @@ description = "Session management: cookie-based sessions with a SessionStore tra
 depends_on = ["P5-T3", "P2-T2"]
 plan_sections = ["13"]
 acceptance = "Session creation → valid token returned; validate returns (tenant_id, user_id) for valid sessions + None for expired/revoked/unknown; sliding extend bumps expires_at; revoke removes; InMemory impl passes all trait tests; PgSessionStore integration tests (#[ignore]). just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "session.rs (trait+struct), InMemorySessionStore, PgSessionStore, migration 0004, 20 tests (12 InMemory + 1 construct + 7 #[ignore] Pg integ)"
 
 [[task]]
 id = "P5-T5"
