@@ -359,9 +359,7 @@ async fn handle_embed(
         // One deterministic vector per input text (a real embedder maps distinct text to
         // distinct vectors). Falls back to a single vector if the body has no `input` array.
         let inputs: Vec<String> = body
-            .and_then(|axum::extract::Json(v)| {
-                v.get("input").and_then(|i| i.as_array().cloned())
-            })
+            .and_then(|axum::extract::Json(v)| v.get("input").and_then(|i| i.as_array().cloned()))
             .map(|arr| {
                 arr.into_iter()
                     .map(|t| t.as_str().unwrap_or_default().to_string())
