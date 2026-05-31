@@ -13,7 +13,7 @@
 
 [meta]
 generated = "2026-05-31"
-phases_planned = ["P0", "P1", "P2", "P3", "P4"]
+phases_planned = ["P0", "P1", "P2", "P3", "P4", "P5"]
 gate_command = "just ci"
 walking_skeleton = "Complete the P0-P4 vertical slice before adding breadth (§31.6)."
 # Crate versions verified against crates.io on 2026-05-29 (the plan's names had drifted):
@@ -444,3 +444,100 @@ acceptance = "E2E: ingest documents → query → relevant documents returned wi
 status = "done"
 checkpoint = false
 notes = "p4_integration.rs: e2e retrieval test (#[ignore]) via mock LLM + LocalBlob + PgStore via testcontainers. Tests full round-trip: ingest → retrieve → verify deep-link provenance + tag filter + RRF fusion + score ordering. P4 PHASE COMPLETE — walking skeleton done (P0–P4 ingest + retrieve). Next: author P5 ledger (multi-tenancy + auth)."
+
+# ── Phase P5 — Multi-tenancy + auth (§13, §24, §25) ──────────────────────────
+#
+# P5 hardens tenant isolation with RLS enforcement at the application layer,
+# adds authentication (Argon2id password hashing + cookie sessions), per-tenant
+# quota enforcement, and data-portability export. RLS policies already exist in
+# the schema (0003_rls.sql) — the application must call app_set_current_tenant
+# before every query so RLS actually gates access. Cross-tenant negative tests
+# are a mandatory checkpoint (§31.5).
+
+[[task]]
+id = "P5-T1"
+phase = "P5"
+description = "RLS enforcement: every PgStore method that touches tenant-scoped tables must set app.current_tenant before queries. Add a pg_store method `set_tenant(pool, tenant_id)` that runs `PERFORM app_set_current_tenant($1)` (transaction-local, is_local=true). Update PgStore methods (upsert_file, upsert_chunks, upsert_tag, lookup_alias, find_similar_tags, insert_tag_alias, insert_document_tags, upsert_document, insert_usage_event, transactional_ingest, hybrid_search) — and any future methods — to call this at the start of every operation that queries tenant-scoped tables. The tenant_id is already a parameter on most methods; hybrid_search must gain one (the Query struct or a separate param) since RLS alone isn't enough without the GUC being set."
+depends_on = ["P4-T3"]
+plan_sections = ["13", "5"]
+acceptance = "Every PgStore method that touches tenant-scoped data calls set_tenant first; RLS GUC is set transaction-locally so pooled connections don't leak; unit tests verify set_tenant is called (mock/spy pattern); just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P5-T2"
+phase = "P5"
+description = "Cross-tenant isolation test suite: prove that tenant A can NEVER read, write, or search tenant B's data. Tests: (1) tenant A inserts doc → tenant B's queries don't find it, (2) tenant B tries direct file_id access → not found, (3) tag list is tenant-scoped, (4) usage events isolated, (5) hybrid search scoped (tenant B's query doesn't see tenant A's chunks). These tests are the definitive proof that the RLS belt-and-suspenders work. #[ignore] in just ci (needs testcontainers + podman). This is a §31.5 checkpoint — MUST get human sign-off."
+depends_on = ["P5-T1"]
+plan_sections = ["13", "31.5"]
+acceptance = "Five negative tests pass: cross-tenant read returns empty, cross-tenant write is blocked, tags scoped, usage scoped, search scoped. All tests use real Postgres via testcontainers. just ci green. CHECKPOINT — human review required."
+status = "todo"
+checkpoint = true
+notes = ""
+
+[[task]]
+id = "P5-T3"
+phase = "P5"
+description = "Argon2id password hashing: pure functions in kb-core (or a small kb-auth module within kb-core) — hash_password(plaintext) → String (Argon2id PHC string), verify_password(plaintext, hash) → bool. Use the `argon2` crate with recommended params (Argon2id v19, m=19456, t=2, p=1, 32-byte salt from OsRng). No I/O, trivially unit-testable. Also add a `SessionSecret` newtype that validates minimum length (≥32 bytes) so it can't be accidentally weakened."
+depends_on = ["P0-T4"]
+plan_sections = ["13", "24"]
+acceptance = "hash_password → unique per call (random salt); verify_password returns true for correct password + false for wrong; known PHC strings verify correctly (test vector); SessionSecret rejects short secrets. Unit tests for all paths. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P5-T4"
+phase = "P5"
+description = "Session management: cookie-based sessions with a SessionStore trait in kb-core (create, validate, extend, revoke) and two impls — (a) InMemorySessionStore (HashMap + tokio::RwLock) for dev/test, (b) PgSessionStore in kb-store (sessions table + migration for: id, tenant_id, user_id, expires_at, created_at). Generate 32-byte cryptographically random session tokens (rand::OsRng). Sessions have a configurable TTL (default 24h) with sliding expiration (extend on activity). Cookie properties: HttpOnly, Secure (in non-dev), SameSite=Lax, path=/, __Host- prefix."
+depends_on = ["P5-T3", "P2-T2"]
+plan_sections = ["13"]
+acceptance = "Session creation → valid token returned; validate returns (tenant_id, user_id) for valid sessions + None for expired/revoked/unknown; sliding extend bumps expires_at; revoke removes; InMemory impl passes all trait tests; PgSessionStore integration tests (#[ignore]). just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P5-T5"
+phase = "P5"
+description = "Auth middleware + API handlers: (a) axum middleware that extracts the session cookie, validates it via Arc<dyn SessionStore>, and injects (tenant_id, user_id, UserRole) into request extensions (or rejects with 401). (b) Axum handlers for POST /auth/login (verify password → create session → Set-Cookie), POST /auth/register (hash password → INSERT user → create session), POST /auth/logout (revoke session → clear cookie). (c) PgStore methods for user CRUD: create_user, find_user_by_email (per tenant). (d) bootstrap-seed: on first run, if no tenants exist, create a default tenant + admin user from env vars (BOOTSTRAP_ADMIN_EMAIL, BOOTSTRAP_ADMIN_PASSWORD)."
+depends_on = ["P5-T4", "P5-T1"]
+plan_sections = ["13", "12"]
+acceptance = "Middleware: valid cookie → extensions populated; missing/expired → 401. Login: correct password → 200 + Set-Cookie; wrong password → 401. Register: new email → 201 + session; duplicate email → 409. Logout: clears cookie + revokes session. Bootstrap: first run with env vars → tenant + admin user created; second run is idempotent. Unit tests (mock SessionStore for middleware/handlers, real argon2 for login/register) + integration tests (#[ignore] for DB-reliant handlers). just ci green."
+status = "todo"
+checkpoint = true
+notes = "CHECKPOINT (§31.5): AUTH & SESSIONS — human review required."
+
+[[task]]
+id = "P5-T6"
+phase = "P5"
+description = "Per-tenant quota enforcement: (a) on blob upload, sum files.size_bytes for the tenant and check against tenants.quota_bytes (reject with 413 Payload Too Large + clear message if exceeded). (b) On LLM call, sum usage_events (prompt_tokens + completion_tokens) in the current billing period and check against tenants.quota_tokens (reject with 429 + Retry-After if exceeded). Both checks are advisory (best-effort, not transactional — a concurrent upload may briefly exceed the cap). NULL quotas = unlimited. Pure counting logic tested in unit; enforcement integration tested against Postgres."
+depends_on = ["P5-T1", "P2-T1"]
+plan_sections = ["13", "29", "15"]
+acceptance = "Bytes quota: upload under limit succeeds, over limit gets 413 with clear message, unlimited (NULL) always succeeds. Token quota: LLM call under limit succeeds, over gets 429, NULL = unlimited. Edge case: multiple concurrent uploads don't panic, just may briefly overshoot (documented). Unit tests for count-check logic + #[ignore] integration tests against Postgres. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P5-T7"
+phase = "P5"
+description = "Export (data portability): a job-driven streaming ZIP + JSONL export per plan §13. Given a tenant_id: (1) query all documents, files, tags, document_tags, and chunks for the tenant, (2) write a streaming ZIP containing: original blobs (from Blob::get, preserving original paths), an export.jsonl (one JSON object per line: {type: \"document\"|\"file\"|\"tag\"|\"chunk\", data: {...}}), and a manifest.json ({schema_version: 1, embedder_id: \"bge-m3\", embedder_dim: 1024, exported_at, tenant_slug, document_count, file_count, total_bytes}). Uses async-streaming: never buffers the full export in memory. Integrates with the job queue (enqueue export job → worker claims → streams ZIP to a local temp file → stores blob → marks done). Round-trippable: a matching import path reads the same format."
+depends_on = ["P5-T1", "P2-T3", "P2-T1"]
+plan_sections = ["13", "16"]
+acceptance = "Export creates a valid ZIP with original files + JSONL + manifest; streaming doesn't OOM on large exports; ZIP entry paths are stable (no absolute paths, no traversal); empty tenant → valid ZIP with just manifest.json; round-trip: export a tenant → import into fresh tenant → documents/files/tags/chunks match. Unit tests for JSONL/manifest generation + #[ignore] integration test for full export round-trip via testcontainers. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P5-T8"
+phase = "P5"
+description = "P5 phase integration test: multi-tenant end-to-end. (1) Bootstrap two tenants A and B, each with their own admin user. (2) Authenticate as each and ingest documents (mock LLM). (3) Prove isolation: tenant A's search returns only A's docs; tenant B's search returns only B's; cross-tenant access via direct ID manipulation returns 401/404. (4) Prove quota: set tenant A's quota_bytes low, upload exceeds → 413; tenant B (unlimited) unaffected. (5) Prove export: export tenant A → valid ZIP, import into fresh tenant C → documents round-trip. All tests use testcontainers Postgres + podman socket; #[ignore] in just ci. P5 PHASE COMPLETE."
+depends_on = ["P5-T2", "P5-T5", "P5-T6", "P5-T7"]
+plan_sections = ["13", "31"]
+acceptance = "Multi-tenant e2e: isolation, auth, quota, and export all verified in a single test suite against real Postgres. P5 PHASE COMPLETE → generate P6 ledger. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
