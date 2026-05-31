@@ -26,6 +26,8 @@ tokio = { workspace = true, features = ["sync", "time"] }
 tree_magic_mini = { workspace = true }
 zip = { workspace = true }
 tempfile = { workspace = true }
+arc-swap = { workspace = true }
+notify = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }

@@ -37,6 +37,9 @@ pub struct Config {
     /// Inference backends; adding a machine is one `[[backend]]` entry (plan §6).
     #[serde(default, rename = "backend")]
     pub backends: Vec<Backend>,
+    /// Folder-watcher settings (plan §10, P6-T3).
+    #[serde(default, rename = "folder_watch")]
+    pub folder_watch: FolderWatch,
 }
 
 /// Durable-storage configuration.
@@ -112,6 +115,65 @@ pub struct Backend {
     pub priority: u8,
 }
 
+/// Folder-watcher configuration (plan §10, P6-T3).
+///
+/// When enabled, the watcher monitors `watch_root` for new or modified files and
+/// automatically enqueues each as an ingest job. File extensions are filtered by
+/// `allowed_extensions` (an empty list means allow-all), and files matching any
+/// `ignore_patterns` entry are skipped.
+#[derive(Debug, Clone, Deserialize)]
+pub struct FolderWatch {
+    /// Whether the folder watcher starts with the API server.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Absolute path to the watched directory.
+    #[serde(default)]
+    pub watch_root: String,
+    /// File extensions to allow (without leading dot), e.g. `["txt", "pdf"]`.
+    /// An empty list means every extension is allowed.
+    #[serde(default)]
+    pub allowed_extensions: Vec<String>,
+    /// Patterns that cause a file to be ignored. Supports exact filename
+    /// matches (`thumbs.db`), prefix matches (`~*`), and suffix matches
+    /// (`*.tmp`). Path-component matches (e.g. `.git`) are also checked.
+    #[serde(default = "default_ignore_patterns")]
+    pub ignore_patterns: Vec<String>,
+    /// Debounce window in milliseconds. File events within this window are
+    /// coalesced so a rapidly-written file is only ingested once.
+    #[serde(default = "default_debounce_ms")]
+    pub debounce_ms: u64,
+}
+
+/// Default debounce window: 2000 ms (2 seconds).
+const fn default_debounce_ms() -> u64 {
+    2000
+}
+
+/// Default ignore patterns covering editor swap files, OS metadata, and VCS dirs.
+fn default_ignore_patterns() -> Vec<String> {
+    vec![
+        ".git".into(),
+        "thumbs.db".into(),
+        "~*".into(),
+        ".DS_Store".into(),
+        "*.swp".into(),
+        "*.swx".into(),
+        ".~*".into(),
+    ]
+}
+
+impl Default for FolderWatch {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            watch_root: String::new(),
+            allowed_extensions: Vec::new(),
+            ignore_patterns: default_ignore_patterns(),
+            debounce_ms: default_debounce_ms(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -136,5 +198,54 @@ mod tests {
         assert_eq!(s.health_interval_secs, default_health_interval_secs());
         assert_eq!(s.max_retries, default_max_retries());
         assert_eq!(default_slots(), 1);
+    }
+
+    #[test]
+    fn folder_watch_defaults() {
+        let fw = FolderWatch::default();
+        assert!(!fw.enabled);
+        assert!(fw.watch_root.is_empty());
+        assert!(fw.allowed_extensions.is_empty());
+        assert_eq!(fw.debounce_ms, 2000);
+        // Default ignore patterns include common entries.
+        assert!(fw.ignore_patterns.contains(&".git".to_string()));
+        assert!(fw.ignore_patterns.contains(&"thumbs.db".to_string()));
+        assert!(fw.ignore_patterns.contains(&"~*".to_string()));
+    }
+
+    #[test]
+    fn folder_watch_deserialization() {
+        let toml_str = r#"
+[storage]
+postgres_url = "pg://localhost/kb"
+
+[folder_watch]
+enabled = true
+watch_root = "/home/user/docs"
+allowed_extensions = ["txt", "md", "pdf"]
+debounce_ms = 5000
+ignore_patterns = [".git", "*.tmp"]
+"#;
+        let cfg: Config = toml::from_str(toml_str).expect("parse should succeed");
+        assert!(cfg.folder_watch.enabled);
+        assert_eq!(cfg.folder_watch.watch_root, "/home/user/docs");
+        assert_eq!(
+            cfg.folder_watch.allowed_extensions,
+            vec!["txt", "md", "pdf"]
+        );
+        assert_eq!(cfg.folder_watch.debounce_ms, 5000);
+        assert_eq!(cfg.folder_watch.ignore_patterns, vec![".git", "*.tmp"]);
+    }
+
+    #[test]
+    fn folder_watch_default_ignore_patterns_in_deserialized() {
+        let toml_str = "[folder_watch]\nenabled = true";
+        let cfg: Config = toml::from_str(toml_str).expect("parse should succeed");
+        assert!(cfg.folder_watch.ignore_patterns.len() >= 3);
+        assert!(
+            cfg.folder_watch
+                .ignore_patterns
+                .contains(&".git".to_string())
+        );
     }
 }

@@ -16,4 +16,4 @@ pub use app::AppConfig;
 pub use env::{EnvMap, apply_env, env_from_process};
 pub use error::ConfigError;
 pub use load::{load_path, load_str, validate};
-pub use model::{Api, Backend, Config, DEFAULT_PORT, Scheduler, Storage};
+pub use model::{Api, Backend, Config, DEFAULT_PORT, FolderWatch, Scheduler, Storage};

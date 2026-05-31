@@ -618,9 +618,9 @@ description = "Folder watch: a notify-based directory watcher (hot-swappable wat
 depends_on = ["P3-T7", "P2-T3", "P0-T5"]
 plan_sections = ["10", "7"]
 acceptance = "Create a new .txt file in the watched folder → ingest job enqueued within the debounce window; modify an existing file → re-ingested; file matching ignore pattern → NOT enqueued; unsupported extension → skipped + logged; watcher survives a transient permission error on a subdirectory; graceful shutdown drains pending detects. Unit tests with mock IngestPipeline + temp dir. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "FolderWatcher in kb-pipeline::folder_watcher (~300 lines) with FolderWatchHandler trait for testability, notify 8 event bridge via mpsc, debounce (HashMap<PathBuf,JoinHandle>), hot-swappable config via ArcSwap. FolderWatch config section added to kb-config. 25 unit tests: extension/ignore/filter logic, disabled/empty/nonexistent root, detect+ingest, skip-ignored, skip-extension, debounce coalesce, error-survival, graceful shutdown. just ci green (77.59% lines, all gates)."
 
 [[task]]
 id = "P6-T4"
