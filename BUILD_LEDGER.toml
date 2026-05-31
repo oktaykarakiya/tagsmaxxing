@@ -419,9 +419,9 @@ description = "LlamaReranker in kb-llm: implements the core Reranker trait using
 depends_on = ["P1-T5"]
 plan_sections = ["4", "8"]
 acceptance = "Against MockBackend: valid rerank response → Vec<f32> of correct length; empty documents → empty result; length mismatch between input and response → error; backend error → propagated. Unit tests with MockBackend asserting correct scores returned. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "LlamaClient::rerank() + OpenAiRerank wire types. LlamaReranker in kb-llm::reranker (Arc<LlamaClient> + Role::Rerank). MockBackend /v1/rerank route + rerank_content in Scenario. 11 tests (5 client + 6 reranker). just ci green."
 
 [[task]]
 id = "P4-T5"
