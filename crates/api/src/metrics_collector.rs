@@ -96,7 +96,7 @@ mod tests {
             4,
         ));
         // Consume one slot to test free vs total.
-        let _permit = backend.slots.clone().try_acquire_owned().unwrap();
+        let _permit = backend.capacity.try_acquire().unwrap();
         backend.in_flight.store(1, Ordering::Release);
 
         let pool = Pool::new(vec![Arc::clone(&backend)], Duration::from_secs(5));

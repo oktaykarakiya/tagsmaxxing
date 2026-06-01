@@ -993,9 +993,9 @@ description = "Pluggable Capacity enum (§26.2): replace the hardcoded `Semaphor
 depends_on = ["P1-T1"]
 plan_sections = ["26.2"]
 acceptance = "Slots: N concurrent → N+1th waits; Concurrency: same behavior; Rated: RPM bucket drains with requests, refills over time, exhausted → NoCapacity; cooldown backend skipped; free() returns correct numbers; all Capacity variants share a common interface (trait or enum methods). TDD unit tests for token bucket math (refill, burst, exhaustion, fractional rates) using injected clock — deterministic. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "Capacity enum (Slots/Concurrency/Rated) with TokenBucket + Clock trait, CapacityPermit RAII guard, cooldown_until on Backend. 38 capacity tests + 9 backend + 3 pool + 1 lease = 51 new tests. All existing scheduler+llm+pipeline+api tests pass. just ci green."
 
 [[task]]
 id = "P9-T4"

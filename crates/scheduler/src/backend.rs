@@ -1,22 +1,25 @@
-//! [`Backend`]: one inference server with a concurrency-limited slot pool
-//! (plan §6.1–§6.2).
+//! [`Backend`]: one inference server with a pluggable capacity guard
+//! (plan §6.1–§6.2, §26.2).
 
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
+use std::time::Instant;
 
 use kb_config::Backend as BackendConfig;
 use kb_core::role::Role;
-use tokio::sync::Semaphore;
+
+use crate::capacity::Capacity;
 
 /// One OpenAI-compatible inference server the scheduler can route work to.
 ///
 /// A backend advertises the [`Role`]s it can serve and caps concurrency with a
-/// [`Semaphore`] of `slots` permits. The semaphore is the single source of truth
-/// for in-flight load; [`Backend::healthy`] is liveness only (plan §6.5).
+/// [`Capacity`] guard (plan §26.2). The capacity guard is the single source of
+/// truth for in-flight load; [`Backend::healthy`] is liveness only (plan §6.5).
 ///
-/// Cloning a `Backend` shares its live state (semaphore, health flag, in-flight
-/// counter) through the inner `Arc`s, so the same backend registered under
-/// several roles always observes one shared slot pool.
+/// Cloning a `Backend` shares its live state (capacity, health flag, in-flight
+/// counter, cooldown) through the inner `Arc`s, so the same backend registered
+/// under several roles always observes one shared capacity pool.
 #[derive(Debug, Clone)]
 pub struct Backend {
     /// Stable identifier (matches the config `id`).
@@ -27,19 +30,27 @@ pub struct Backend {
     pub roles: Vec<Role>,
     /// Routing priority; **lower is preferred** (plan §6.3).
     pub priority: u8,
-    /// Concurrency permits; one is held per in-flight request via a [`crate::Lease`].
-    pub slots: Arc<Semaphore>,
-    /// Total permit count (the `--parallel N` value, plan §6.2). Stored explicitly
-    /// because [`Semaphore`] does not expose its max permits.
+    /// Pluggable capacity guard (plan §26.2): `Slots`, `Concurrency`, or `Rated`.
+    pub capacity: Capacity,
+    /// Total permit count stored explicitly because `Semaphore` does not expose
+    /// its max permits. Deprecated: prefer `capacity.free()` or other methods.
+    /// Kept for backward compatibility in tests.
     pub max_slots: usize,
     /// Liveness flag set by the health loop (plan §6.5); `true` == eligible.
     pub healthy: Arc<AtomicBool>,
     /// Best-effort in-flight counter for metrics / least-loaded tie-breaks.
     pub in_flight: Arc<AtomicUsize>,
+    /// When set, this backend is in a 429-induced cooldown period (plan §26.3).
+    /// Any `now < cooldown_until` means the backend is skipped in acquire.
+    pub cooldown_until: Arc<Mutex<Option<Instant>>>,
 }
 
 impl Backend {
     /// Build a backend with `slots` concurrency permits, healthy by default.
+    ///
+    /// The `slots` parameter creates a [`Capacity::Slots`] guard (local or
+    /// operator-chosen concurrency). Use [`Self::with_concurrency`] or
+    /// [`Self::with_rated`] for other capacity variants.
     pub fn new(
         id: impl Into<String>,
         base_url: impl Into<String>,
@@ -52,16 +63,17 @@ impl Backend {
             base_url: base_url.into(),
             roles,
             priority,
-            slots: Arc::new(Semaphore::new(slots)),
+            capacity: Capacity::new_slots(slots),
             max_slots: slots,
             healthy: Arc::new(AtomicBool::new(true)),
             in_flight: Arc::new(AtomicUsize::new(0)),
+            cooldown_until: Arc::new(Mutex::new(None)),
         }
     }
 
     /// Build a backend from its typed configuration entry (plan §6.6).
     ///
-    /// The config `slots` count (a `u32`) becomes the semaphore's permit count.
+    /// The config `slots` count (a `u32`) becomes a [`Capacity::Slots`] guard.
     pub fn from_config(cfg: &BackendConfig) -> Self {
         Self::new(
             cfg.id.clone(),
@@ -72,9 +84,44 @@ impl Backend {
         )
     }
 
-    /// Free slots right now — `0` when the semaphore is exhausted (plan §6.2).
+    /// Free concurrency slots right now (plan §6.2).
+    ///
+    /// Delegates to [`Capacity::free`]. For `Slots`/`Concurrency`, this is
+    /// `semaphore.available_permits()`. For `Rated`, it returns concurrency
+    /// headroom; token-bucket headroom is separately queried via
+    /// [`Capacity::is_usable`].
     pub fn free(&self) -> usize {
-        self.slots.available_permits()
+        self.capacity.free()
+    }
+
+    /// Whether this backend is in a cooldown period.
+    ///
+    /// A backend enters cooldown on a `429` response (plan §26.2) and is
+    /// skipped in [`crate::Pool::acquire`] until the cooldown expires.
+    pub fn cooldown_active(&self) -> bool {
+        let guard = self
+            .cooldown_until
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        guard.is_some_and(|until| Instant::now() < until)
+    }
+
+    /// Enter cooldown until `until` (typically `now + Retry-After`).
+    pub fn set_cooldown(&self, until: Instant) {
+        let mut guard = self
+            .cooldown_until
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        *guard = Some(until);
+    }
+
+    /// Clear any active cooldown.
+    pub fn clear_cooldown(&self) {
+        let mut guard = self
+            .cooldown_until
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        *guard = None;
     }
 }
 
@@ -83,6 +130,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use std::sync::atomic::Ordering;
+    use std::time::Duration;
 
     #[test]
     fn new_sets_fields_and_starts_healthy() {
@@ -95,6 +143,7 @@ mod tests {
         assert_eq!(b.free(), 3);
         assert!(b.healthy.load(Ordering::Acquire));
         assert_eq!(b.in_flight.load(Ordering::Acquire), 0);
+        assert!(!b.cooldown_active());
     }
 
     #[test]
@@ -119,7 +168,7 @@ mod tests {
     fn free_tracks_held_permits() {
         let b = Backend::new("b", "u", vec![Role::Text], 0, 2);
         assert_eq!(b.free(), 2);
-        let permit = b.slots.clone().try_acquire_owned().unwrap();
+        let permit = b.capacity.try_acquire().unwrap();
         assert_eq!(b.free(), 1);
         drop(permit);
         assert_eq!(b.free(), 2);
@@ -130,8 +179,51 @@ mod tests {
         let b = Backend::new("b", "u", vec![Role::Text], 0, 1);
         let twin = b.clone();
         assert_eq!(twin.max_slots, 1);
-        let _permit = b.slots.clone().try_acquire_owned().unwrap();
-        // The clone observes the same now-exhausted semaphore.
+        let _permit = b.capacity.try_acquire().unwrap();
+        // The clone observes the same now-exhausted capacity.
         assert_eq!(twin.free(), 0);
+    }
+
+    #[test]
+    fn cooldown_defaults_to_inactive() {
+        let b = Backend::new("b", "u", vec![Role::Text], 0, 1);
+        assert!(!b.cooldown_active());
+    }
+
+    #[test]
+    fn cooldown_active_while_in_effect() {
+        let b = Backend::new("b", "u", vec![Role::Text], 0, 1);
+        let future = Instant::now() + Duration::from_secs(60);
+        b.set_cooldown(future);
+        assert!(b.cooldown_active());
+    }
+
+    #[test]
+    fn cooldown_expired_returns_false() {
+        let b = Backend::new("b", "u", vec![Role::Text], 0, 1);
+        let past = Instant::now() - Duration::from_secs(10);
+        b.set_cooldown(past);
+        assert!(!b.cooldown_active());
+    }
+
+    #[test]
+    fn clear_cooldown_resets() {
+        let b = Backend::new("b", "u", vec![Role::Text], 0, 1);
+        let future = Instant::now() + Duration::from_secs(60);
+        b.set_cooldown(future);
+        assert!(b.cooldown_active());
+        b.clear_cooldown();
+        assert!(!b.cooldown_active());
+    }
+
+    #[test]
+    fn clone_shares_cooldown_state() {
+        let b = Backend::new("b", "u", vec![Role::Text], 0, 1);
+        let twin = b.clone();
+        let future = Instant::now() + Duration::from_secs(60);
+        b.set_cooldown(future);
+        assert!(twin.cooldown_active());
+        twin.clear_cooldown();
+        assert!(!b.cooldown_active());
     }
 }

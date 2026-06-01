@@ -111,7 +111,7 @@ async fn same_priority_picks_most_free_slots() {
     let b_free = backend_for(&mock_free, "free", vec![Role::Embed], 5, 3);
 
     // Exhaust b_busy's only slot so the fast-path skips it.
-    let _hold = b_busy.slots.clone().try_acquire_owned().unwrap();
+    let _hold = b_busy.capacity.try_acquire().unwrap();
 
     let pool = Pool::new(
         vec![Arc::clone(&b_busy), Arc::clone(&b_free)],
@@ -178,7 +178,7 @@ async fn wait_then_acquire_when_slot_frees() {
     let b = backend_for(&mock, "b1", vec![Role::Text], 0, 1);
 
     // Hold the only slot.
-    let hold = b.slots.clone().try_acquire_owned().unwrap();
+    let hold = b.capacity.try_acquire().unwrap();
     let pool = Pool::new(
         vec![Arc::clone(&b)],
         Duration::from_secs(10), /* long enough that wait-path is exercised */
@@ -241,7 +241,7 @@ async fn acquire_timeout_when_all_busy() {
     let b = backend_for(&mock, "b1", vec![Role::Text], 0, 1);
 
     // Hold the only slot forever.
-    let _hold = b.slots.clone().try_acquire_owned().unwrap();
+    let _hold = b.capacity.try_acquire().unwrap();
     let pool = Pool::new(vec![b], Duration::from_millis(10));
     let client = client_with(pool);
 

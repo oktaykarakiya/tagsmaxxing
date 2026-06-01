@@ -18,10 +18,11 @@ use crate::lease::Lease;
 /// The scheduler's registry of backends, indexed by the role they serve.
 ///
 /// A backend that serves several roles is registered under each — by a shared
-/// `Arc`, so all roles see one slot pool. The pool owns live semaphores and is a
-/// long-lived component: build it once at startup with [`Pool::from_config`].
+/// `Arc`, so all roles see one capacity pool. The pool owns live capacity guards
+/// and is a long-lived component: build it once at startup with
+/// [`Pool::from_config`].
 ///
-/// Hot-reload note (CLAUDE.md): because the semaphores hold in-flight
+/// Hot-reload note (CLAUDE.md): because the capacity guards hold in-flight
 /// [`crate::Lease`]s, a config change should *reconcile* the registry and timeout
 /// in place rather than rebuild the pool wholesale. The acquire path therefore
 /// reads the timeout per call via [`Pool::acquire_timeout`] (the live seam); the
@@ -71,28 +72,35 @@ impl Pool {
         self.acquire_timeout
     }
 
-    /// Acquire a slot on any healthy backend serving `role` (plan §6.3).
+    /// Acquire capacity on any healthy backend serving `role` (plan §6.3, §26.2).
+    ///
+    /// **Candidate filtering:** healthy, not in cooldown, capacity is usable
+    /// (`Rated` backends with exhausted RPM buckets are skipped).
     ///
     /// **Fast path:** probe candidates sorted by `(priority, free-slots↓)`
-    /// with [`Backend::try_acquire`](#);
-    /// **wait path:** await all candidates concurrently via
+    /// with [`Capacity::try_acquire`];
+    /// **Wait path:** await all candidates concurrently via
     /// [`FuturesUnordered`], first freed slot wins, bounded by the pool's
     /// [`acquire_timeout`](Self::acquire_timeout).
     ///
-    /// Unhealthy backends are filtered before both steps (dead-host skip).
+    /// Unhealthy and cooldown backends are filtered before both steps
+    /// (dead-host skip).
     ///
     /// # Errors
     ///
-    /// - [`AcquireError::NoBackend`] — no healthy backend serves `role`.
+    /// - [`AcquireError::NoBackend`] — no healthy, usable backend serves `role`.
     /// - [`AcquireError::Timeout`] — every candidate stayed busy for the full
     ///   acquire-timeout.
-    /// - [`AcquireError::Closed`] — all candidate semaphores are closed.
+    /// - [`AcquireError::Closed`] — all candidate capacity guards are closed.
     pub async fn acquire(&self, role: Role) -> Result<Lease, AcquireError> {
-        // 1. Gather healthy candidates (dead-host skip).
+        // 1. Gather healthy candidates (dead-host skip + cooldown skip
+        //    + skip Rated backends with exhausted token buckets).
         let mut cands: Vec<Arc<Backend>> = self
             .backends_for(role)
             .into_iter()
             .filter(|b| b.healthy.load(Ordering::Acquire))
+            .filter(|b| !b.cooldown_active())
+            .filter(|b| b.capacity.is_usable())
             .collect();
 
         if cands.is_empty() {
@@ -102,26 +110,27 @@ impl Pool {
         // 2. Sort by priority (lower = preferred), then by most free slots.
         cands.sort_by_key(|b| (b.priority, usize::MAX.saturating_sub(b.free())));
 
-        // 3. FAST PATH — try a free slot on the best candidate (plan §6.3).
+        // 3. FAST PATH — try capacity on the best candidate (plan §6.3, §26.2).
         for b in &cands {
-            if let Ok(permit) = b.slots.clone().try_acquire_owned() {
-                return Ok(Lease::new(b.id.clone(), b.base_url.clone(), permit));
+            if let Some(guard) = b.capacity.try_acquire() {
+                return Ok(Lease::new(b.id.clone(), b.base_url.clone(), guard));
             }
         }
 
-        // 4. WAIT PATH — whichever frees first wins, bounded by timeout.
+        // 4. WAIT PATH — whichever capacity guard frees first wins, bounded by timeout.
+        //    For Slots/Concurrency this waits on the semaphore; for Rated it also
+        //    checks token buckets after the semaphore frees.
         let mut waiters = FuturesUnordered::new();
         for b in &cands {
-            let slots = Arc::clone(&b.slots);
+            let capacity = b.capacity.clone();
             let id = b.id.clone();
             let url = b.base_url.clone();
-            waiters
-                .push(async move { slots.acquire_owned().await.map(|permit| (id, url, permit)) });
+            waiters.push(async move { capacity.acquire().await.map(|guard| (id, url, guard)) });
         }
 
         match tokio::time::timeout(self.acquire_timeout, waiters.next()).await {
-            Ok(Some(Ok((id, url, permit)))) => Ok(Lease::new(id, url, permit)),
-            Ok(None) | Ok(Some(Err(_))) => Err(AcquireError::Closed),
+            Ok(Some(Some((id, url, guard)))) => Ok(Lease::new(id, url, guard)),
+            Ok(None) | Ok(Some(None)) => Err(AcquireError::Closed),
             Err(_elapsed) => Err(AcquireError::Timeout(self.acquire_timeout)),
         }
     }
@@ -236,8 +245,8 @@ mod tests {
         // gpu-a under `text` and under `embed` is the very same Arc.
         assert!(Arc::ptr_eq(text_a, &embed_a));
 
-        let _permit = text_a.slots.clone().try_acquire_owned().unwrap();
-        assert_eq!(embed_a.free(), 3, "one shared semaphore across roles");
+        let _permit = text_a.capacity.try_acquire().unwrap();
+        assert_eq!(embed_a.free(), 3, "one shared capacity across roles");
     }
 
     #[test]
@@ -319,7 +328,7 @@ mod tests {
             1,
         ));
         // Exhaust b_full's only slot so the fast-path skips it.
-        let _busy = b_full.slots.clone().try_acquire_owned().unwrap();
+        let _busy = b_full.capacity.try_acquire().unwrap();
 
         let b_free = Arc::new(Backend::new(
             "free",
@@ -345,7 +354,7 @@ mod tests {
     async fn acquire_all_busy_then_timeout() {
         let b = Arc::new(Backend::new("b1", "http://x:8001", vec![Role::Text], 0, 1));
         // Hold the only slot — never release it.
-        let _hold = b.slots.clone().try_acquire_owned().unwrap();
+        let _hold = b.capacity.try_acquire().unwrap();
         let pool = Pool::new(vec![Arc::clone(&b)], Duration::from_millis(10));
 
         let err = pool.acquire(Role::Text).await.unwrap_err();
@@ -418,7 +427,7 @@ mod tests {
     async fn wait_path_succeeds_when_slot_frees() {
         let b = Arc::new(Backend::new("b1", "http://x:8001", vec![Role::Text], 0, 1));
         // Hold the only slot.
-        let hold = b.slots.clone().try_acquire_owned().unwrap();
+        let hold = b.capacity.try_acquire().unwrap();
         let pool = Pool::new(vec![Arc::clone(&b)], Duration::from_secs(5));
 
         // Spawn a task that releases the slot after a short delay.
@@ -468,6 +477,68 @@ mod tests {
         // pool2 sees the same exhaustion.
         let _l2 = pool2.acquire(Role::Text).await.unwrap();
         assert_eq!(b.free(), 0);
+    }
+
+    // ── P9-T3: cooldown + capacity-is-usable filtering ─────────────────
+
+    /// A backend in cooldown is skipped during acquire.
+    #[tokio::test]
+    async fn cooldown_backend_skipped() {
+        let b_cooldown = Arc::new(Backend::new(
+            "cooldown",
+            "http://x:c",
+            vec![Role::Text],
+            0,
+            4,
+        ));
+        // Set cooldown far in the future.
+        b_cooldown.set_cooldown(std::time::Instant::now() + Duration::from_secs(300));
+
+        let b_alive = Arc::new(Backend::new("alive", "http://x:a", vec![Role::Text], 10, 2));
+        let pool = Pool::new(
+            vec![Arc::clone(&b_cooldown), Arc::clone(&b_alive)],
+            Duration::from_secs(5),
+        );
+
+        let lease = pool.acquire(Role::Text).await.unwrap();
+        assert_eq!(
+            lease.backend_id, "alive",
+            "cooldown backend must be skipped"
+        );
+    }
+
+    /// A Rated backend with exhausted RPM is skipped (is_usable returns false).
+    #[tokio::test]
+    async fn rated_exhausted_rpm_skipped() {
+        use crate::capacity::{Capacity, FakeClock};
+        use std::sync::Arc as StdArc;
+        use std::time::Instant;
+
+        let clock: StdArc<dyn crate::capacity::Clock> = StdArc::new(FakeClock::new(Instant::now()));
+        // 10 concurrency, 1 RPM, large TPM.
+        let rated_cap = Capacity::new_rated(10, 1.0, 1000.0, clock);
+
+        // Build a Rated backend manually.
+        let b_rated = Arc::new(Backend {
+            id: "rated".into(),
+            base_url: "http://x:rated".into(),
+            roles: vec![Role::Text],
+            priority: 0,
+            capacity: rated_cap.clone(),
+            max_slots: 10,
+            healthy: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            in_flight: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            cooldown_until: Arc::new(std::sync::Mutex::new(None)),
+        });
+
+        // Exhaust the single RPM token.
+        let _hold = rated_cap.try_acquire().unwrap();
+        assert!(!rated_cap.is_usable());
+
+        let pool = Pool::new(vec![Arc::clone(&b_rated)], Duration::from_secs(5));
+        let err = pool.acquire(Role::Text).await.unwrap_err();
+        // No usable backends → NoBackend.
+        assert!(matches!(err, AcquireError::NoBackend { .. }));
     }
 
     // ── P1-T3: mock-backend harness smoke test ────────────────────────
