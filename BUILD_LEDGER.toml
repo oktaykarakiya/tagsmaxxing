@@ -1103,9 +1103,9 @@ description = "P9 phase integration test: (a) Mock providers: local (free) + rem
 depends_on = ["P9-T1", "P9-T2", "P9-T3", "P9-T4", "P9-T5", "P9-T6", "P9-T7", "P9-T8", "P9-T9", "P9-T10", "P9-T12", "P9-T13"]
 plan_sections = ["26", "31"]
 acceptance = "Tier spill works; 429 cooldown works; embed never spills; local_only filters remote; costs accrue + budget enforced; hot-reload picks up DB changes; all gates green. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "P9 phase integration test at crates/pipeline/tests/p9_integration.rs: 7 #[ignore] tests (db_driven_routing_acquire_tier0, tier_spill, embed_lock, local_only, cooldown, cost_tracking+budget, hot_reload, cost_asc) via testcontainers+mock servers. just ci green."
 
 # ── Phase P10 — Confidentiality hardening (§28, §24) ──────────────────────────
 #
