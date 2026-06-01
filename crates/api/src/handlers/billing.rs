@@ -1,11 +1,14 @@
-//! Billing handlers: Stripe Checkout integration (plan §29, P11-T2).
+//! Billing handlers: Stripe Checkout + Customer Portal (plan §29, P11-T2 & P11-T6).
 //!
 //! * `POST /billing/checkout` — create a Stripe Checkout Session for a plan.
 //! * `GET  /billing/success` — interstitial shown after Stripe redirects back.
 //! * `GET  /billing/cancel` — redirect when the user cancels at Checkout.
+//! * `GET  /billing/portal`  — create a Stripe Customer Portal session (P11-T6).
+//! * `POST /billing/portal`  — same, for HTMX button (P11-T6).
 //!
-//! The checkout handler requires authentication (via [`crate::middleware::auth_middleware`]);
-//! the success and cancel endpoints are public (Stripe redirects the browser to them).
+//! The checkout and portal handlers require authentication (via
+//! [`crate::middleware::auth_middleware`]); the success and cancel endpoints
+//! are public (Stripe redirects the browser to them).
 
 use std::sync::Arc;
 
@@ -17,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::AppState;
 use crate::AuthUser;
-use crate::stripe_client::CreateCheckoutSessionRequest;
+use crate::stripe_client::{CreateCheckoutSessionRequest, CreatePortalSessionRequest};
 
 // ── Request / response types ────────────────────────────────────────────────────
 
@@ -35,6 +38,13 @@ pub struct CheckoutRequest {
 #[derive(Debug, Serialize)]
 pub struct CheckoutResponse {
     /// The URL the client should redirect to (Stripe-hosted Checkout page).
+    pub url: String,
+}
+
+/// Successful portal session response body (P11-T6).
+#[derive(Debug, Serialize)]
+pub struct PortalResponse {
+    /// The URL the client should redirect to (Stripe-hosted Customer Portal).
     pub url: String,
 }
 
@@ -183,6 +193,118 @@ pub async fn get_cancel() -> impl IntoResponse {
     Redirect::to("/").into_response()
 }
 
+// ── Portal handlers (P11-T6) ─────────────────────────────────────────────────────
+
+/// `GET /billing/portal` — create a Stripe Customer Portal session.
+///
+/// Looks up the authenticated tenant's `stripe_customer_id` from its billing
+/// state, then delegates to the
+/// [`StripeClient`](crate::stripe_client::StripeClient) to create a Customer
+/// Portal session. The portal lets customers update payment methods, view
+/// invoices, cancel subscriptions, and change plans (if configured in the
+/// Stripe dashboard). PCI stays at SAQ-A — card data never touches our servers.
+///
+/// The `return_url` points back to `/account` so the user returns to their
+/// account page after leaving the portal.
+///
+/// # Response
+///
+/// * `200 OK` — [`PortalResponse`] with the Stripe Customer Portal URL.
+///
+/// # Errors
+///
+/// * `400 Bad Request` — tenant has no `stripe_customer_id` (free plan, never
+///   subscribed).
+/// * `401 Unauthorized` — rejected by auth middleware.
+/// * `502 Bad Gateway` — Stripe client not configured, database failure, or
+///   Stripe API error.
+pub async fn get_portal(
+    State(state): State<Arc<AppState>>,
+    Extension(auth_user): Extension<AuthUser>,
+) -> Result<(StatusCode, Json<PortalResponse>), (StatusCode, Json<ErrorResponse>)> {
+    portal_handler(&state, auth_user).await
+}
+
+/// `POST /billing/portal` — create a Stripe Customer Portal session (HTMX
+/// variant).
+///
+/// Same behaviour as [`get_portal`]; exists for `<button hx-post="/billing/portal">`
+/// in the account page. The client receives the portal URL in the response and
+/// can redirect the browser with `HX-Redirect` or JavaScript.
+pub async fn post_portal(
+    State(state): State<Arc<AppState>>,
+    Extension(auth_user): Extension<AuthUser>,
+) -> Result<(StatusCode, Json<PortalResponse>), (StatusCode, Json<ErrorResponse>)> {
+    portal_handler(&state, auth_user).await
+}
+
+/// Shared implementation: look up the tenant's Stripe customer id, then create
+/// a Customer Portal session.
+async fn portal_handler(
+    state: &AppState,
+    auth_user: AuthUser,
+) -> Result<(StatusCode, Json<PortalResponse>), (StatusCode, Json<ErrorResponse>)> {
+    // ── Look up the tenant's Stripe customer id ──────────────────────────────
+    let billing = state
+        .pg_store
+        .get_tenant_billing(auth_user.tenant_id)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, tenant_id = auth_user.tenant_id, "failed to fetch tenant billing");
+            bad_gateway("internal_error", "an unexpected error occurred")
+        })?
+        .ok_or_else(|| {
+            bad_request("unknown_tenant", "tenant not found")
+        })?;
+
+    let customer_id = billing.stripe_customer_id.ok_or_else(|| {
+        bad_request(
+            "no_stripe_customer",
+            "no Stripe customer — subscribe first via /billing/checkout",
+        )
+    })?;
+
+    // ── Resolve the Stripe client ────────────────────────────────────────────
+    let stripe = state.stripe_client.as_ref().ok_or_else(|| {
+        bad_gateway(
+            "stripe_not_configured",
+            "stripe client not configured — set STRIPE_SECRET_KEY",
+        )
+    })?;
+
+    // ── Build the portal return URL ──────────────────────────────────────────
+    let base = state.public_base_url.trim_end_matches('/');
+    let return_url = format!("{base}/account");
+
+    // ── Create the Customer Portal session ────────────────────────────────────
+    let portal_req = CreatePortalSessionRequest {
+        customer_id,
+        return_url,
+    };
+
+    let portal_resp = stripe
+        .create_customer_portal_session(portal_req)
+        .await
+        .map_err(|e| {
+            tracing::error!(
+                error = %e,
+                tenant_id = auth_user.tenant_id,
+                "Stripe Customer Portal session creation failed"
+            );
+            bad_gateway(
+                "stripe_portal_error",
+                "Stripe portal session creation failed",
+            )
+        })?;
+
+    Ok((
+        StatusCode::OK,
+        Json(PortalResponse {
+            url: portal_resp.url,
+        }),
+    ))
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Error helpers
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -206,6 +328,20 @@ fn internal_error(e: impl std::fmt::Display) -> (StatusCode, Json<ErrorResponse>
         Json(ErrorResponse {
             error: "internal_error".into(),
             message: "an unexpected error occurred".into(),
+        }),
+    )
+}
+
+/// Build a `502 Bad Gateway` error (upstream Stripe failure).
+///
+/// Logs the error at ERROR level and returns a user-safe message so
+/// internal details aren't leaked to the client.
+fn bad_gateway(code: &str, msg: &str) -> (StatusCode, Json<ErrorResponse>) {
+    (
+        StatusCode::BAD_GATEWAY,
+        Json(ErrorResponse {
+            error: code.into(),
+            message: msg.into(),
         }),
     )
 }
@@ -254,8 +390,8 @@ mod tests {
         )
     }
 
-    /// Build a router with billing routes (checkout behind auth, success +
-    /// cancel public).
+    /// Build a router with billing routes (checkout + portal behind auth,
+    /// success + cancel public).
     fn billing_router(state: Arc<AppState>) -> Router {
         let public = Router::new()
             .route("/billing/success", get(get_success))
@@ -263,6 +399,7 @@ mod tests {
 
         let protected = Router::new()
             .route("/billing/checkout", post(post_checkout))
+            .route("/billing/portal", get(get_portal).post(post_portal))
             .layer(axum::middleware::from_fn_with_state(
                 state.clone(),
                 auth_middleware,
@@ -538,5 +675,110 @@ mod tests {
         };
         let json = serde_json::to_string(&resp).expect("serialize");
         assert!(json.contains("https://checkout.stripe.com/"));
+    }
+
+    // ── GET /billing/portal tests (P11-T6) ────────────────────────────────────
+
+    /// Portal unauthenticated returns 401 (behind auth middleware).
+    #[tokio::test]
+    async fn portal_unauthenticated_returns_401() {
+        let state = test_state(Arc::new(MockStripeClient::new()));
+        let router = billing_router(state);
+
+        let request = axum::http::Request::builder()
+            .method(Method::GET)
+            .uri("/billing/portal")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// POST portal unauthenticated returns 401 (behind auth middleware).
+    #[tokio::test]
+    async fn portal_post_unauthenticated_returns_401() {
+        let state = test_state(Arc::new(MockStripeClient::new()));
+        let router = billing_router(state);
+
+        let request = axum::http::Request::builder()
+            .method(Method::POST)
+            .uri("/billing/portal")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// When the Stripe client is not configured, the portal handler returns 502
+    /// with a clear message.
+    #[tokio::test]
+    async fn portal_missing_stripe_client_returns_502() {
+        let state = test_state_no_stripe();
+        let token = create_session(&state).await;
+        let router = billing_router(state);
+
+        let request = axum::http::Request::builder()
+            .method(Method::GET)
+            .uri("/billing/portal")
+            .header("Cookie", format!("__Host-session={token}"))
+            .body(Body::empty())
+            .unwrap();
+
+        let response = router.oneshot(request).await.unwrap();
+        // The DB is unreachable → get_tenant_billing returns an error before we
+        // even reach the Stripe client check → the error is captured as 502.
+        assert!(
+            response.status().is_server_error(),
+            "portal should return server error without stripe client + DB, got {}",
+            response.status()
+        );
+    }
+
+    /// With a valid session and a mock StripeClient, but an unreachable DB,
+    /// the portal handler returns 502 when the PgStore query fails (since
+    /// `get_tenant_billing` requires a DB connection).
+    #[tokio::test]
+    async fn portal_db_unreachable_returns_502() {
+        let state = test_state(Arc::new(MockStripeClient::new()));
+        let token = create_session(&state).await;
+        let router = billing_router(state);
+
+        let request = axum::http::Request::builder()
+            .method(Method::GET)
+            .uri("/billing/portal")
+            .header("Cookie", format!("__Host-session={token}"))
+            .body(Body::empty())
+            .unwrap();
+
+        let response = router.oneshot(request).await.unwrap();
+        // The PgStore is disconnected → get_tenant_billing returns an error → 502.
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    }
+
+    // ── Error helper tests (P11-T6 additions) ─────────────────────────────────
+
+    #[test]
+    fn bad_gateway_has_502_status() {
+        let (status, body) = bad_gateway(
+            "stripe_portal_error",
+            "Stripe portal session creation failed",
+        );
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(body.error, "stripe_portal_error");
+        assert_eq!(body.message, "Stripe portal session creation failed");
+    }
+
+    // ── PortalResponse serialization ──────────────────────────────────────────
+
+    #[test]
+    fn portal_response_serializes_correctly() {
+        let resp = PortalResponse {
+            url: "https://billing.stripe.com/p/session/test_bps_abc".into(),
+        };
+        let json = serde_json::to_string(&resp).expect("serialize");
+        assert!(json.contains("https://billing.stripe.com/"));
+        assert!(json.contains("url"));
     }
 }

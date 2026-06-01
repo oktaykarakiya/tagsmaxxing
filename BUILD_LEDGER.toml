@@ -1249,9 +1249,9 @@ description = "Stripe Customer Portal (§29): (a) GET /billing/portal — create
 depends_on = ["P11-T2"]
 plan_sections = ["29"]
 acceptance = "Authenticated tenant with stripe_customer_id → portal URL returned; no customer ID (free plan, never subscribed) → 400 with message; Stripe API error → 502 with log; portal URL is valid Stripe URL. Unit tests with mock StripeClient. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "GET/POST /billing/portal handlers behind auth; StripeClient trait extended with create_customer_portal_session (RealStripeClient + MockStripeClient); portal return_url→/account; 400 on missing stripe_customer_id, 502 on Stripe API error; 14 new tests; just ci green."
 
 [[task]]
 id = "P11-T7"

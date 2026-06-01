@@ -272,6 +272,8 @@ impl AppState {
 /// | POST   | `/billing/checkout`            | yes   | Stripe Checkout Session (P11-T2)     |
 /// | GET    | `/billing/success`             | no    | Post-Checkout interstitial (P11-T2)  |
 /// | GET    | `/billing/cancel`              | no    | Checkout-cancel redirect (P11-T2)    |
+/// | GET    | `/billing/portal`              | yes   | Stripe Customer Portal (P11-T6)      |
+/// | POST   | `/billing/portal`              | yes   | Stripe Customer Portal HTMX (P11-T6) |
 /// | POST   | `/stripe/webhook`              | no    | Stripe webhook handler (P11-T3)      |
 /// | GET    | `/metrics`                     | no    | Prometheus metrics (plan §15)        |
 ///
@@ -313,6 +315,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/jobs/{id}", get(handlers::jobs::job_status))
         .route("/auth/logout", post(handlers::auth::logout))
         .route("/billing/checkout", post(handlers::billing::post_checkout))
+        .route(
+            "/billing/portal",
+            get(handlers::billing::get_portal).post(handlers::billing::post_portal),
+        )
         .layer(from_fn_with_state(state.clone(), auth_middleware));
 
     // Web UI routes (P6-T4).
