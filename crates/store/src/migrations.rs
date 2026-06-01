@@ -16,13 +16,13 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
-    /// All sixteen migrations are present, in version order (1–16).
+    /// All seventeen migrations are present, in version order (1–17).
     #[test]
     fn embeds_the_schema_migrations() {
         let versions: Vec<i64> = MIGRATOR.iter().map(|m| m.version).collect();
         assert_eq!(
             versions,
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
         );
     }
 
@@ -330,5 +330,46 @@ mod tests {
             sql.contains("'delete_tenant'"),
             "jobs kind CHECK must include 'delete_tenant' for crypto-shredding (P10-T4)"
         );
+    }
+
+    /// Migration 0017 (P10-T5): decrypt_audit table with indexes and no UPDATE/DELETE grants.
+    #[test]
+    fn schema_adds_decrypt_audit_table() {
+        let sql: String = MIGRATOR
+            .iter()
+            .map(|m| m.sql.as_ref())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            sql.contains("CREATE TABLE IF NOT EXISTS decrypt_audit"),
+            "missing CREATE TABLE IF NOT EXISTS decrypt_audit (migration 0017)"
+        );
+
+        // The table must have the required columns.
+        assert!(sql.contains("tenant_id"));
+        assert!(sql.contains("operation"));
+        assert!(sql.contains("key_id"));
+        assert!(sql.contains("user_id"));
+        assert!(sql.contains("success"));
+        assert!(sql.contains("created_at"));
+
+        // Indexes for query performance.
+        assert!(
+            sql.contains("idx_decrypt_audit_tenant"),
+            "missing tenant+time index on decrypt_audit"
+        );
+        assert!(
+            sql.contains("idx_decrypt_audit_key"),
+            "missing key_id index on decrypt_audit"
+        );
+        assert!(
+            sql.contains("idx_decrypt_audit_operation"),
+            "missing operation index on decrypt_audit"
+        );
+
+        // The operation column should support the known values.
+        assert!(sql.contains("unwrap_dek"));
+        assert!(sql.contains("unwrap_provider_key"));
     }
 }

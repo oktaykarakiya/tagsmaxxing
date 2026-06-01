@@ -826,6 +826,92 @@ async fn admin_rerender_users(
     Ok(resp)
 }
 
+// ── GET /admin/decrypt-audit ────────────────────────────────────────────────────
+
+/// `GET /admin/decrypt-audit` — read-only decrypt-access audit log viewer
+/// (plan §28, P10-T5).
+///
+/// Shows every DEK unwrap and provider key decrypt operation with success/failure
+/// status. Tenant-admins see only their own tenant's entries; super-admins (Owner)
+/// see all tenants. Filterable by operation type via query parameter `?operation=`.
+///
+/// The audit log is append-only — no rows are ever updated or deleted by any
+/// admin action on this page.
+pub async fn admin_decrypt_audit_page(
+    State(state): State<Arc<AppState>>,
+    Extension(auth_user): Extension<AuthUser>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<Response, StatusCode> {
+    require_admin(&auth_user)?;
+    let pg = &state.pg_store;
+    let tid = auth_user.tenant_id;
+    let is_super = matches!(auth_user.role, UserRole::Owner);
+    let tname = tenant_name(pg, tid).await;
+
+    let filter_op = params.get("operation").cloned().unwrap_or_default();
+
+    let operation_filter = if filter_op.is_empty() || filter_op == "all" {
+        None
+    } else {
+        use std::str::FromStr;
+        kb_core::audit::DecryptAuditAction::from_str(&filter_op).ok()
+    };
+
+    // Super-admins see cross-tenant (tenant_id=0), tenant-admins see own tenant.
+    let query_tid = if is_super { 0 } else { tid };
+
+    let events: Vec<AdminDecryptAuditRow> = match pg
+        .admin_list_decrypt_audit(query_tid, operation_filter, 100)
+        .await
+    {
+        Ok(list) => list
+            .into_iter()
+            .map(|e| {
+                let success_display = if e.success {
+                    "✓ Success".to_string()
+                } else {
+                    "✗ Failed".to_string()
+                };
+                let user_id_display = e
+                    .user_id
+                    .map(|id| id.to_string())
+                    .unwrap_or_else(|| "—".to_string());
+                AdminDecryptAuditRow {
+                    id: e.id,
+                    tenant_id: e.tenant_id,
+                    operation: e.operation.as_str().to_owned(),
+                    key_id: e.key_id,
+                    user_id_display,
+                    success: e.success,
+                    success_display,
+                    created_at: e.created_at.to_rfc3339(),
+                }
+            })
+            .collect(),
+        Err(e) => {
+            tracing::error!(error = %e, "failed to list decrypt audit events");
+            vec![]
+        }
+    };
+
+    let csrf_token = csrf::generate_csrf_token().unwrap_or_default();
+    let page = AdminDecryptAuditPage {
+        csrf_token: csrf_token.clone(),
+        error: String::new(),
+        tenant_name: tname,
+        is_super_admin: is_super,
+        filter_operation: filter_op,
+        events,
+    };
+
+    let mut resp = render_ok(&page);
+    resp.headers_mut().insert(
+        axum::http::header::SET_COOKIE,
+        csrf::csrf_cookie_value(&csrf_token, state.session_ttl, state.secure_cookies),
+    );
+    Ok(resp)
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

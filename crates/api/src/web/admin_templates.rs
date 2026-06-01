@@ -177,3 +177,40 @@ pub(crate) struct AdminTagOption {
     pub tag_id: i64,
     pub tag_name: String,
 }
+
+// ── Decrypt-access audit viewer (P10-T5) ────────────────────────────────────────
+
+/// `GET /admin/decrypt-audit` — read-only audit log viewer for key-unwrap events.
+///
+/// Shows every DEK unwrap and provider key decrypt with success/failure,
+/// filterable by operation type. Append-only (no delete/update actions).
+#[derive(Debug, Template)]
+#[template(path = "admin_decrypt_audit.html")]
+#[allow(dead_code)]
+pub(crate) struct AdminDecryptAuditPage {
+    /// CSRF token.
+    pub csrf_token: String,
+    /// Error message.
+    pub error: String,
+    /// Tenant name.
+    pub tenant_name: String,
+    /// Whether the user is a super-admin (Owner role → cross-tenant view).
+    pub is_super_admin: bool,
+    /// Current filter: operation type (empty string = "all").
+    pub filter_operation: String,
+    /// Decrypt audit events matching the filter.
+    pub events: Vec<AdminDecryptAuditRow>,
+}
+
+/// A single decrypt-audit event row.
+#[derive(Debug, Clone)]
+pub(crate) struct AdminDecryptAuditRow {
+    pub id: i64,
+    pub tenant_id: i64,
+    pub operation: String,
+    pub key_id: String,
+    pub user_id_display: String,
+    pub success: bool,
+    pub success_display: String,
+    pub created_at: String,
+}

@@ -191,6 +191,12 @@ fn describe_all() {
         "Unix timestamp of the last failed run, per maintenance job kind"
     );
 
+    // Decrypt-access audit (plan §28, P10-T5)
+    metrics::describe_counter!(
+        "kb_decrypt_audit_failed_total",
+        "Number of failed key-unwrap operations (DEK or provider key) — spike signals possible attack or key corruption"
+    );
+
     // Budget / cost tracking (plan §26.6, P9-T10)
     metrics::describe_gauge!(
         "kb_tenant_spend_monthly_micros",
@@ -421,6 +427,24 @@ pub fn record_tenant_budget_exceeded(tenant_id: i64, exceeded: bool) {
 pub fn record_tenant_budget_cents(tenant_id: i64, budget_cents: u64) {
     metrics::gauge!("kb_tenant_budget_cents", "tenant_id" => tenant_id.to_string())
         .set(budget_cents as f64);
+}
+
+// ── Decrypt-access audit metrics (plan §28, P10-T5) ─────────────────────────
+
+/// Increment the decrypt-audit-failed counter.
+///
+/// Called from [`PgStore::insert_decrypt_audit_event`] when a key-unwrap
+/// operation fails. A spike in this counter signals a possible attack
+/// (brute-force attempts on wrapped DEKs) or key corruption.
+///
+/// `operation` is the [`DecryptAuditAction`](kb_core::audit::DecryptAuditAction)
+/// as a string (e.g. `"unwrap_dek"`, `"unwrap_provider_key"`).
+pub fn record_decrypt_audit_failed(operation: &str) {
+    metrics::counter!(
+        "kb_decrypt_audit_failed_total",
+        "operation" => operation.to_owned()
+    )
+    .increment(1);
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────────
@@ -863,5 +887,43 @@ mod tests {
         assert!(text.contains("# TYPE kb_tenant_budget_exceeded gauge"));
         assert!(text.contains("# HELP kb_tenant_budget_cents"));
         assert!(text.contains("# TYPE kb_tenant_budget_cents gauge"));
+    }
+
+    // ── Decrypt audit metrics tests (P10-T5) ──────────────────────────────
+
+    #[test]
+    fn decrypt_audit_failed_counter_present() {
+        let _h = ensure_init();
+        record_decrypt_audit_failed("unwrap_dek");
+
+        let text = render();
+        assert!(
+            text.contains("kb_decrypt_audit_failed_total{operation=\"unwrap_dek\"}"),
+            "kb_decrypt_audit_failed_total not found in: {text}"
+        );
+    }
+
+    #[test]
+    fn decrypt_audit_failed_counter_increments() {
+        let _h = ensure_init();
+        // Use a unique label so other tests don't interfere.
+        record_decrypt_audit_failed("unwrap_provider_key");
+        record_decrypt_audit_failed("unwrap_provider_key");
+
+        let text = render();
+        assert!(
+            text.contains("kb_decrypt_audit_failed_total{operation=\"unwrap_provider_key\"}"),
+            "kb_decrypt_audit_failed_total counter missing for unwrap_provider_key in: {text}"
+        );
+    }
+
+    #[test]
+    fn decrypt_audit_help_and_type_present() {
+        let _h = ensure_init();
+        record_decrypt_audit_failed("unwrap_dek");
+
+        let text = render();
+        assert!(text.contains("# HELP kb_decrypt_audit_failed_total"));
+        assert!(text.contains("# TYPE kb_decrypt_audit_failed_total counter"));
     }
 }

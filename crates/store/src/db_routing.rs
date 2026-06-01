@@ -203,19 +203,61 @@ impl PgStore {
     /// use the returned [`ProviderApiKey`] immediately, and let it drop so the
     /// memory is zeroized.
     ///
+    /// `tenant_id` identifies the tenant on whose behalf the decryption is
+    /// performed (used for the decrypt-access audit log). `provider_id` is the
+    /// provider whose key is being decrypted (used as the audit `key_id`).
+    /// `user_id` is the initiating user when called from a session context;
+    /// `None` for background jobs.
+    ///
+    /// On success or failure, a [`DecryptAuditEvent`](kb_core::audit::DecryptAuditEvent)
+    /// is written to the `decrypt_audit` table (plan §28, P10-T5).
+    ///
     /// # Errors
     /// Returns an error if the KEK is not configured, or if decryption fails
     /// (wrong KEK, tampered data, or corruption).
     pub async fn decrypt_provider_api_key(
         &self,
         api_key_enc: &[u8],
+        tenant_id: i64,
+        provider_id: i64,
+        user_id: Option<i64>,
     ) -> anyhow::Result<ProviderApiKey> {
         let kek = self.kek().ok_or_else(|| {
             anyhow::anyhow!(
                 "KEK not configured — cannot decrypt provider API key. Set a KEK via PgStore::set_kek()."
             )
         })?;
-        decrypt_provider_key(kek.as_ref(), api_key_enc).await
+
+        let key_id = format!("provider:{}", provider_id);
+
+        match decrypt_provider_key(kek.as_ref(), api_key_enc).await {
+            Ok(key) => {
+                // Audit: successful provider key decrypt.
+                let _ = self
+                    .insert_decrypt_audit_event(
+                        tenant_id,
+                        kb_core::audit::DecryptAuditAction::UnwrapProviderKey,
+                        &key_id,
+                        user_id,
+                        true,
+                    )
+                    .await;
+                Ok(key)
+            }
+            Err(e) => {
+                // Audit: failed provider key decrypt.
+                let _ = self
+                    .insert_decrypt_audit_event(
+                        tenant_id,
+                        kb_core::audit::DecryptAuditAction::UnwrapProviderKey,
+                        &key_id,
+                        user_id,
+                        false,
+                    )
+                    .await;
+                Err(e)
+            }
+        }
     }
 
     /// List all providers, ordered by id.

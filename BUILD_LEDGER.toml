@@ -1165,9 +1165,9 @@ description = "Decrypt-access audit logging (§28, §24): every key unwrap opera
 depends_on = ["P10-T1", "P6-T8"]
 plan_sections = ["28", "24", "15"]
 acceptance = "Successful decrypt → audit row with success=true; wrong KEK → audit row with success=false; audit rows are append-only (verify with permissions test); admin viewer shows chronological log with filters (tenant, operation, time range); Prometheus gauge exposed. Unit tests for audit event creation + immutability. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "Added DecryptAuditAction enum + DecryptAuditEvent struct to kb-core; migration 0017 (decrypt_audit table with indexes + append-only); decrypt_audit module on PgStore (insert + admin_list); wired audit into get_or_create_tenant_dek and decrypt_provider_api_key with success/failure tracking; admin panel decrypt-audit viewer page with operation filter; Prometheus kb_decrypt_audit_failed_total counter; 12 new unit tests across kb-core/kb-store/kb-metrics. just ci green."
 
 [[task]]
 id = "P10-T6"

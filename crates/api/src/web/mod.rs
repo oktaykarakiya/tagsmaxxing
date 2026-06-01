@@ -139,6 +139,11 @@ pub(crate) fn build_web_router(
         )
         .route("/admin/tags", get(admin_handlers::admin_tags_page))
         .route("/admin/tags/merge", post(admin_handlers::admin_merge_tags))
+        // Decrypt-access audit viewer (P10-T5)
+        .route(
+            "/admin/decrypt-audit",
+            get(admin_handlers::admin_decrypt_audit_page),
+        )
         // Provider / Model / Route CRUD (P9-T8)
         .route(
             "/admin/providers",

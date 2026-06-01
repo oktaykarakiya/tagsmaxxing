@@ -355,10 +355,35 @@ impl PgStore {
         if let Some(json) = existing_json {
             let data_key: kb_core::DataKey = serde_json::from_value(json)
                 .context("failed to deserialize tenant DataKey from DB")?;
-            let raw_dek = kek
-                .unwrap(&data_key.wrapped_dek)
-                .await
-                .context("failed to unwrap tenant DEK with KEK")?;
+            let key_id = format!("dek:{}", data_key.id);
+            let raw_dek = match kek.unwrap(&data_key.wrapped_dek).await {
+                Ok(raw_dek) => {
+                    // Audit: successful DEK unwrap.
+                    let _ = self
+                        .insert_decrypt_audit_event(
+                            tenant_id,
+                            kb_core::audit::DecryptAuditAction::UnwrapDek,
+                            &key_id,
+                            None, // background operation, no user session
+                            true,
+                        )
+                        .await;
+                    raw_dek
+                }
+                Err(e) => {
+                    // Audit: failed DEK unwrap.
+                    let _ = self
+                        .insert_decrypt_audit_event(
+                            tenant_id,
+                            kb_core::audit::DecryptAuditAction::UnwrapDek,
+                            &key_id,
+                            None,
+                            false,
+                        )
+                        .await;
+                    return Err(e).context("failed to unwrap tenant DEK with KEK");
+                }
+            };
             if raw_dek.len() != 32 {
                 anyhow::bail!(
                     "unwrapped tenant DEK has wrong length: {} bytes (expected 32)",
@@ -385,10 +410,35 @@ impl PgStore {
             .context("failed to persist tenant data key")?;
 
         // Re-unwrap the freshly generated DEK to get raw bytes.
-        let raw_dek = kek
-            .unwrap(&data_key.wrapped_dek)
-            .await
-            .context("failed to unwrap freshly generated tenant DEK")?;
+        let key_id = format!("dek:{}", data_key.id);
+        let raw_dek = match kek.unwrap(&data_key.wrapped_dek).await {
+            Ok(raw_dek) => {
+                // Audit: successful fresh-DEK unwrap.
+                let _ = self
+                    .insert_decrypt_audit_event(
+                        tenant_id,
+                        kb_core::audit::DecryptAuditAction::UnwrapDek,
+                        &key_id,
+                        None,
+                        true,
+                    )
+                    .await;
+                raw_dek
+            }
+            Err(e) => {
+                // Audit: failed fresh-DEK unwrap.
+                let _ = self
+                    .insert_decrypt_audit_event(
+                        tenant_id,
+                        kb_core::audit::DecryptAuditAction::UnwrapDek,
+                        &key_id,
+                        None,
+                        false,
+                    )
+                    .await;
+                return Err(e).context("failed to unwrap freshly generated tenant DEK");
+            }
+        };
         if raw_dek.len() != 32 {
             anyhow::bail!(
                 "freshly generated tenant DEK has wrong length: {} bytes (expected 32)",
