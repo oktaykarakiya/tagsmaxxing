@@ -1260,9 +1260,9 @@ description = "P11 phase integration test: end-to-end billing flow with mock Str
 depends_on = ["P11-T1", "P11-T2", "P11-T3", "P11-T4", "P11-T5", "P11-T6"]
 plan_sections = ["29", "31"]
 acceptance = "Full billing lifecycle passes with mock Stripe; webhook idempotency verified; plan quotas enforced; suspended tenant gated; all gates green. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "P11 phase integration test in crates/api/tests/p11_integration.rs: 7 #[ignore] tests covering all P11 scenarios (plans seeded, checkout→webhook→activation, payment-failure→past_due→suspended→403, upgrade, cancel, idempotency, quota enforcement) against real Postgres via testcontainers. All CI gates green."
 
 # ── Phase P12 — Public frontend, onboarding & email (§30) ─────────────────────
 #
