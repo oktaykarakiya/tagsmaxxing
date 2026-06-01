@@ -22,6 +22,7 @@ mod error;
 mod health;
 mod lease;
 mod pool;
+mod routing_reload;
 pub(crate) mod tiered;
 
 pub use backend::{Backend, test_backend};
@@ -30,3 +31,4 @@ pub use error::AcquireError;
 pub use health::HealthLoop;
 pub use lease::Lease;
 pub use pool::Pool;
+pub use routing_reload::{Reloader, config_backends_to_entries};

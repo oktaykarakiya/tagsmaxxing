@@ -2111,13 +2111,16 @@ dependencies = [
 name = "kb-scheduler"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "arc-swap",
+ "async-trait",
  "dashmap",
  "futures",
  "kb-config",
  "kb-core",
  "kb-mock-backend",
  "reqwest 0.13.4",
+ "serde_json",
  "thiserror 2.0.18",
  "tokio",
 ]

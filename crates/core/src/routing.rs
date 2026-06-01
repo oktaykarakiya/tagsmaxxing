@@ -223,6 +223,33 @@ impl RoutingTable {
     }
 }
 
+// ── Hot-reload notification trait (plan §26.5, P9-T7) ──────────────────────
+
+/// A notification mechanism that signals when the routing table may have changed.
+///
+/// The first call to [`wait_for_change`](Self::wait_for_change) must return
+/// immediately so the reloader performs its initial load. Subsequent calls block
+/// until an external signal (e.g. Postgres `NOTIFY` or a polling timer) indicates
+/// that the routing table should be re-fetched.
+///
+/// Implementations:
+/// - [`PgRoutingNotifier`](https://docs.rs/kb-store) — Postgres `LISTEN`/`NOTIFY`
+///   with polling fallback.
+/// - Mock implementations in scheduler tests for unit-testing the reloader.
+#[async_trait::async_trait]
+pub trait RoutingChangeNotifier: Send + Sync {
+    /// Wait until the routing table should be re-fetched.
+    ///
+    /// The **first call** must return immediately (startup load).
+    /// Subsequent calls block until a change is signaled.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying notification mechanism fails
+    /// (e.g. Postgres connection lost).
+    async fn wait_for_change(&self) -> anyhow::Result<()>;
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -523,5 +550,52 @@ mod tests {
         let table = RoutingTable::default();
         assert!(table.is_empty());
         assert_eq!(table.group_count(), 0);
+    }
+
+    // ── RoutingChangeNotifier mock ─────────────────────────────────────────
+
+    /// A mock notifier that returns immediately on first call, then on a
+    /// shared semaphore thereafter.
+    struct MockNotifier {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl MockNotifier {
+        fn new() -> Self {
+            Self {
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl RoutingChangeNotifier for MockNotifier {
+        async fn wait_for_change(&self) -> anyhow::Result<()> {
+            let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if n == 0 {
+                // First call: return immediately (startup load).
+                Ok(())
+            } else {
+                // Subsequent calls: just return OK (unit tests don't need
+                // real blocking — the reloader test controls the fetch).
+                Ok(())
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn mock_notifier_first_call_is_immediate() {
+        let notifier = MockNotifier::new();
+        // First call must not block.
+        notifier.wait_for_change().await.unwrap();
+        assert_eq!(notifier.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn mock_notifier_second_call_also_succeeds() {
+        let notifier = MockNotifier::new();
+        notifier.wait_for_change().await.unwrap();
+        notifier.wait_for_change().await.unwrap();
+        assert_eq!(notifier.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 }

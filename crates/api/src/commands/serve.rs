@@ -30,7 +30,9 @@ use kb_pipeline::retrieval::RetrievalPipeline;
 use kb_pipeline::tag_canonicalizer::{TAG_MERGE_THRESHOLD, TagCanonicalizer};
 use kb_scheduler::HealthLoop;
 use kb_scheduler::Pool;
-use kb_store::{LocalBlob, PgSessionStore, PgStore};
+use kb_scheduler::Reloader;
+use kb_store::ROUTING_CHANNEL;
+use kb_store::{LocalBlob, PgRoutingNotifier, PgSessionStore, PgStore};
 use tracing::info;
 
 use crate::cli::ServeArgs;
@@ -122,6 +124,45 @@ pub async fn run_serve(args: &ServeArgs) -> anyhow::Result<()> {
 
     // ── Build shared infrastructure ─────────────────────────────────────────
     let pool = Pool::from_config(&cfg);
+
+    // ── Routing hot-reload (plan §26.5, P9-T7) ────────────────────────────
+    let reloader = Reloader::new(pool.clone());
+
+    // Startup load: try DB first, fall back to config.toml backends.
+    let db_entries = pg_store
+        .get_routing_table()
+        .await
+        .context("failed to load routing table from database")?;
+    reloader
+        .startup_load(db_entries, Some(&cfg))
+        .await
+        .context("failed to perform routing startup load")?;
+
+    // Spawn the hot-reload background loop.
+    let admin_url_fn = {
+        let s = Arc::clone(&pg_store);
+        move || s.admin_url_snapshot()
+    };
+    let notifier = PgRoutingNotifier::new(
+        admin_url_fn,
+        ROUTING_CHANNEL.into(),
+        Duration::from_secs(30), // poll fallback every 30s
+    );
+    let reloader_clone = reloader.clone();
+    let pg_store_clone = Arc::clone(&pg_store);
+    tokio::spawn(async move {
+        if let Err(e) = reloader_clone
+            .run(notifier, move || {
+                let store = Arc::clone(&pg_store_clone);
+                async move { store.get_routing_table().await }
+            })
+            .await
+        {
+            tracing::error!(error = %e, "routing hot-reload loop exited");
+        }
+    });
+    info!("routing hot-reload background task started");
+
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(120))
         .build()

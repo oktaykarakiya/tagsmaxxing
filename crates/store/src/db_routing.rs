@@ -16,7 +16,8 @@ use anyhow::{Context, bail};
 use kb_core::data_class::DataClass;
 use kb_core::role::Role;
 use kb_core::routing::{
-    ModelRow, ProviderKind, ProviderRow, RouteRow, RoutingEntry, RoutingStrategy,
+    ModelRow, ProviderKind, ProviderRow, RouteRow, RoutingChangeNotifier, RoutingEntry,
+    RoutingStrategy,
 };
 
 use crate::pg_store::PgStore;
@@ -541,6 +542,125 @@ impl PgStore {
         } else {
             bail!("connection test returned {status} for GET {health_url}",)
         }
+    }
+}
+
+// ── PgRoutingNotifier (plan §26.5, P9-T7) ─────────────────────────────────
+
+/// A Postgres `LISTEN`/`NOTIFY`-based routing change notifier.
+///
+/// On the first call to [`wait_for_change`] it returns immediately so the
+/// reloader performs its startup load. Subsequent calls attempt to create a
+/// [`sqlx::postgres::PgListener`] on the configured channel; if the database
+/// is unreachable or the `LISTEN` fails, it falls back to polling at the
+/// configured interval.
+///
+/// The database URL is resolved via a shared function on every call so
+/// credential rotation needs no restart (the hot-swap rule, CLAUDE.md).
+pub struct PgRoutingNotifier {
+    url_fn: std::sync::Arc<dyn Fn() -> String + Send + Sync>,
+    channel: String,
+    poll_interval: Duration,
+    first_call: std::sync::atomic::AtomicBool,
+}
+
+impl PgRoutingNotifier {
+    /// Create a new Postgres-backed routing notifier.
+    ///
+    /// # Arguments
+    ///
+    /// * `url_fn` — a function that returns the current admin connection URL
+    ///   (read on every call so credential rotation takes effect without a
+    ///   restart).
+    /// * `channel` — the Postgres `NOTIFY` channel name (e.g.
+    ///   `"routing_changed"`).
+    /// * `poll_interval` — fallback poll interval when `LISTEN` is
+    ///   unavailable.
+    #[must_use]
+    pub fn new(
+        url_fn: impl Fn() -> String + Send + Sync + 'static,
+        channel: String,
+        poll_interval: Duration,
+    ) -> Self {
+        Self {
+            url_fn: std::sync::Arc::new(url_fn),
+            channel,
+            poll_interval,
+            first_call: std::sync::atomic::AtomicBool::new(true),
+        }
+    }
+
+    /// The NOTIFY channel name this notifier listens on.
+    #[must_use]
+    pub fn channel(&self) -> &str {
+        &self.channel
+    }
+
+    /// The fallback poll interval.
+    #[must_use]
+    pub fn poll_interval(&self) -> Duration {
+        self.poll_interval
+    }
+}
+
+/// The recommended NOTIFY channel name for routing-table changes.
+pub const ROUTING_CHANNEL: &str = "routing_changed";
+
+#[async_trait::async_trait]
+impl RoutingChangeNotifier for PgRoutingNotifier {
+    async fn wait_for_change(&self) -> anyhow::Result<()> {
+        use std::sync::atomic::Ordering;
+
+        // First call returns immediately (startup load).
+        if self.first_call.swap(false, Ordering::SeqCst) {
+            return Ok(());
+        }
+
+        let url = (self.url_fn)();
+        if url.is_empty() {
+            // DB not yet connected — poll.
+            tokio::time::sleep(self.poll_interval).await;
+            return Ok(());
+        }
+
+        // Try Postgres LISTEN/NOTIFY; on any failure, fall back to polling.
+        match sqlx::postgres::PgListener::connect(&url).await {
+            Ok(mut listener) => {
+                if let Err(e) = listener.listen(&self.channel).await {
+                    tracing::warn!(
+                        error = %e,
+                        channel = %self.channel,
+                        "failed to LISTEN on routing channel; falling back to polling"
+                    );
+                    tokio::time::sleep(self.poll_interval).await;
+                } else {
+                    match listener.recv().await {
+                        Ok(_notification) => {
+                            tracing::debug!(
+                                channel = %_notification.channel(),
+                                "received routing change notification"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                "PgListener recv failed; falling back to polling"
+                            );
+                            tokio::time::sleep(self.poll_interval).await;
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "failed to connect PgListener; falling back to polling"
+                );
+                tokio::time::sleep(self.poll_interval).await;
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -1667,5 +1787,114 @@ mod tests {
             Ok(())
         })
         .await;
+    }
+
+    // ── PgRoutingNotifier (P9-T7) ─────────────────────────────────────────
+
+    #[test]
+    fn pg_routing_notifier_first_call_is_immediate() {
+        let notifier = PgRoutingNotifier::new(
+            String::new,
+            "routing_changed".into(),
+            Duration::from_secs(30),
+        );
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            notifier.wait_for_change().await.unwrap();
+        });
+    }
+
+    #[test]
+    fn pg_routing_notifier_second_call_falls_back_to_polling_when_no_db() {
+        let notifier = PgRoutingNotifier::new(
+            String::new,
+            "routing_changed".into(),
+            Duration::from_millis(10),
+        );
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            // First call: immediate.
+            notifier.wait_for_change().await.unwrap();
+            // Second call: DB URL is empty → poll for 10ms.
+            let start = std::time::Instant::now();
+            notifier.wait_for_change().await.unwrap();
+            assert!(
+                start.elapsed() >= Duration::from_millis(10),
+                "must have waited at least poll_interval"
+            );
+        });
+    }
+
+    #[test]
+    fn pg_routing_notifier_creation_has_correct_fields() {
+        let notifier = PgRoutingNotifier::new(
+            || "postgres://localhost/db".into(),
+            "my_channel".into(),
+            Duration::from_secs(15),
+        );
+        assert_eq!(notifier.channel(), "my_channel");
+        assert_eq!(notifier.poll_interval(), Duration::from_secs(15));
+    }
+
+    #[test]
+    fn pg_routing_notifier_falls_back_to_polling_when_bad_url() {
+        let notifier = PgRoutingNotifier::new(
+            || "postgres://nonexistent:5432/nodb".into(),
+            "routing_changed".into(),
+            Duration::from_millis(10),
+        );
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            // First call: immediate.
+            notifier.wait_for_change().await.unwrap();
+            // Second call: bad URL → connection fails → poll fallback.
+            let start = std::time::Instant::now();
+            notifier.wait_for_change().await.unwrap();
+            assert!(
+                start.elapsed() >= Duration::from_millis(10),
+                "must have fallen back to polling after connection failure"
+            );
+        });
+    }
+
+    /// Integration test: NOTIFY fires → wait_for_change returns.
+    ///
+    /// Requires a running Postgres instance (testcontainers), so it is
+    /// `#[ignore]` by default. The test creates a listener, sends a NOTIFY
+    /// from a separate connection, and verifies the listener receives it.
+    #[ignore]
+    #[tokio::test]
+    async fn pg_routing_notifier_receives_notify_from_db() {
+        let db = kb_testsupport::fresh_db().await.unwrap();
+        let admin_url = db.admin_url.clone();
+        let notifier = PgRoutingNotifier::new(
+            move || admin_url.clone(),
+            "routing_changed".into(),
+            Duration::from_secs(30),
+        );
+
+        // First call is immediate (startup load).
+        notifier.wait_for_change().await.unwrap();
+
+        // Send a NOTIFY from a different connection.
+        let notify_url = db.admin_url.clone();
+        let notify_handle = tokio::spawn(async move {
+            // Small delay to ensure the listener is waiting.
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let pool = sqlx::PgPool::connect(&notify_url).await.unwrap();
+            sqlx::query("NOTIFY routing_changed")
+                .execute(&pool)
+                .await
+                .unwrap();
+            pool.close().await;
+        });
+
+        // The notifier should return within 5 seconds (receiving the notification).
+        let result = tokio::time::timeout(Duration::from_secs(5), notifier.wait_for_change())
+            .await
+            .unwrap();
+        assert!(result.is_ok());
+
+        notify_handle.await.unwrap();
     }
 }

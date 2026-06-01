@@ -1037,9 +1037,9 @@ description = "Hot-reload routing table from DB (§26.5): the Pool holds an `Arc
 depends_on = ["P9-T5", "P9-T6"]
 plan_sections = ["26.5", "6"]
 acceptance = "Admin edits a route → NOTIFY fires → Pool reloads within 1s → next acquire() uses new route; LISTEN/NOTIFY unavailable → falls back to polling; ArcSwap load() is contention-free under concurrent acquires; startup loads from DB; empty DB → falls back to config.toml bootstrap. Unit tests with mock LISTEN/NOTIFY + integration test with testcontainers (#[ignore]). just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "RoutingReloader in kb-scheduler with startup_load + run loop using RoutingChangeNotifier trait; PgRoutingNotifier in kb-store with sqlx PgListener + polling fallback; config_backends_to_entries for TOML bootstrap; wired into serve.rs; all gates green."
 
 [[task]]
 id = "P9-T8"

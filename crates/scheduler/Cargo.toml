@@ -16,10 +16,13 @@ kb-config = { workspace = true }
 tokio = { workspace = true, features = ["sync", "time", "macros"] }
 dashmap = { workspace = true }
 thiserror = { workspace = true }
+anyhow = { workspace = true }
+serde_json = { workspace = true }
 # Futures meta-crate for FuturesUnordered in the wait path (plan §6.3).
 futures = "0.3"
 reqwest = { workspace = true }
 arc-swap = { workspace = true }
+async-trait = { workspace = true }
 
 [dev-dependencies]
 kb-mock-backend = { workspace = true }

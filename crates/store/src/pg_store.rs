@@ -124,6 +124,16 @@ impl PgStore {
         self.app_url.store(Arc::new(url.into()));
     }
 
+    /// The current privileged (admin) URL as a plain `String`.
+    ///
+    /// This is read on every call so it reflects hot-swaps without a restart.
+    /// Used by [`PgRoutingNotifier`](crate::PgRoutingNotifier) to resolve the
+    /// database URL at listen time.
+    #[must_use]
+    pub fn admin_url_snapshot(&self) -> String {
+        self.admin_url.load().as_ref().clone()
+    }
+
     /// Read the current privileged URL snapshot.
     fn current_admin_url(&self) -> Arc<String> {
         self.admin_url.load_full()

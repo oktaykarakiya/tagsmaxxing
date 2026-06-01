@@ -31,7 +31,7 @@ rusqlite = { workspace = true }
 # SHA256 hashing for cache validation and file path derivation
 sha2 = { workspace = true }
 hex = { workspace = true }
-# Logging for cache write warnings
+# Logging for cache write warnings and routing hot-reload (P9-T7)
 tracing = { workspace = true }
 # AES-256-GCM for EncryptedBlob envelope encryption (plan §20/§24, P8-T5)
 aes-gcm = { workspace = true }
