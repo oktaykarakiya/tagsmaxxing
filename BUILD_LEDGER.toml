@@ -982,9 +982,9 @@ description = "Anthropic adapter (optional but tested): implement ProviderAdapte
 depends_on = ["P9-T1"]
 plan_sections = ["26.1"]
 acceptance = "Chat request → valid Anthropic Messages API JSON; response parsed into ChatResp with correct usage; supports() returns correct role set; non-2xx → anyhow::Error; embed() returns error (unsupported). Unit tests against mock Anthropic server. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "Anthropic adapter in kb-llm::anthropic behind 'anthropic' feature flag. 19 unit tests with mock Anthropic axum server covering chat success, system extraction, x-api-key header, anthropic-version, max_tokens/temperature, multi-block join, non-2xx errors (401/429/500), embed error, missing endpoint. supports() returns true for Text/Vision/Code only. just ci green (80 tests pass)."
 
 [[task]]
 id = "P9-T3"

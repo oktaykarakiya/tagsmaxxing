@@ -24,12 +24,16 @@
 //! vector space (plan §11). The routing-table enforcement lands in P9.
 
 mod adapter;
+#[cfg(feature = "anthropic")]
+mod anthropic;
 mod client;
 mod error;
 mod reranker;
 mod tagger;
 
 pub use adapter::OpenAiCompat;
+#[cfg(feature = "anthropic")]
+pub use anthropic::Anthropic;
 pub use client::LlamaClient;
 pub use error::LlmError;
 pub use reranker::LlamaReranker;

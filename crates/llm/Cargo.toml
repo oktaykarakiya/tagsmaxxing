@@ -8,6 +8,11 @@ license.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Opt-in Anthropic Messages API adapter (plan §26.1). The default binary excludes
+# it so the build stays lean; `cargo test --all-features` always exercises it.
+anthropic = []
+
 [dependencies]
 kb-core = { workspace = true }
 kb-scheduler = { workspace = true }
