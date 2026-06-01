@@ -135,6 +135,13 @@ status:
 loop *ARGS:
     bash scripts/build-loop.sh {{ARGS}}
 
+# Generate a CycloneDX SBOM (Software Bill of Materials). Requires `cargo-cyclonedx`
+# (`cargo install cargo-cyclonedx`). Produces sbom.cdx.json with every dependency version,
+# licence, and provenance metadata. Intended as a CI artifact for release pipelines.
+sbom:
+    cargo cyclonedx --format json --output-file sbom.cdx.json
+    @echo "SBOM written to sbom.cdx.json"
+
 # Install the gate tools into CARGO_HOME/bin (idempotent; needed after a ramdisk reset).
 bootstrap-tools:
     bash scripts/bootstrap-dev.sh

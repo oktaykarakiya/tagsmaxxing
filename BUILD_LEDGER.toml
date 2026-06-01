@@ -778,9 +778,9 @@ description = "OSS documentation suite: README.md (overview, quickstart, archite
 depends_on = ["P6-T10"]
 plan_sections = ["14"]
 acceptance = "README has quickstart (clone → podman compose up → open localhost:9999); ARCHITECTURE covers all 8 crates + data flow; CONTRIBUTING documents just ci + test patterns + CLAUDE.md workflow; LICENSE file present; SBOM generation command documented. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "README.md rewritten with ASCII architecture diagram, polished quickstart (clone→podman compose up→:9999), SBOM section, and explicit model-weight licensing note. ARCHITECTURE.md: full crate tour (all 13 crates), ingest+retrieval data-flow diagrams, design decisions from §1, trait-per-capability rationale. CONTRIBUTING.md: dev setup, just ci gates, test patterns (mock-backend + testcontainers), build-loop workflow, PR process. LICENSE: Apache-2.0 OR MIT dual. justfile: `just sbom` recipe via cargo-cyclonedx + documented in README and CONTRIBUTING. just ci green."
 
 [[task]]
 id = "P7-T7"

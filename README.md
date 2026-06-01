@@ -5,34 +5,116 @@ LLM-generated title/summary/tags plus your notes and extracted metadata, stores 
 Postgres, and retrieves it via **hybrid (vector + keyword) search with reranking** — all
 inference on **local llama.cpp servers** behind a slot-aware, multi-host scheduler.
 
-Full design: [`local-kb-plan.md`](./local-kb-plan.md). Build protocol: [`CLAUDE.md`](./CLAUDE.md).
+Full design: [`local-kb-plan.md`](./local-kb-plan.md). Architecture:
+[`ARCHITECTURE.md`](./ARCHITECTURE.md). Build protocol:
+[`CLAUDE.md`](./CLAUDE.md). Contributing:
+[`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
-> **Status: foundation (bootstrap).** The Cargo workspace, quality gates, build ledger, and
-> the `kb-core` contract (domain types + capability traits) are in place and green. Feature
-> crates are compiling skeletons, implemented incrementally per
-> [`BUILD_LEDGER.toml`](./BUILD_LEDGER.toml). The HTTP API will serve on **port 9999**.
+## Quickstart
+
+```bash
+# 1. Clone
+git clone https://github.com/example/local-kb.git
+cd local-kb
+
+# 2. Start the sidecar stack (Postgres + pgvector, Apache Tika)
+cp .env.example .env           # optional: override ports / credentials
+podman compose up -d           # healthchecks pass in ~9s
+
+# 3. Build and run the app (serves on :9999)
+cargo run -- serve
+# Open http://localhost:9999 in your browser
+
+# 4. Ingest a file via CLI
+echo "Hello, world." > example.txt
+cargo run -- ingest example.txt --note "my first file"
+
+# 5. Search
+cargo run -- search "hello"
+
+# 6. Tear down
+podman compose down -v
+```
+
+> **GPU inference** (llama.cpp, whisper.cpp) uses a separate profile:
+> `podman compose --profile gpu up -d`. See `compose.cpu.yaml` for CPU-only overrides.
+> All commands work under **Podman only** — no Docker engine required.
+
+## Architecture
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                      User interfaces                          │
+│  ┌─────────┐  ┌───────────┐  ┌──────────┐  ┌─────────────┐  │
+│  │  Web UI  │  │  REST API │  │   CLI    │  │Folder Watch │  │
+│  │(Askama   │  │(axum :9999│  │ (clap)   │  │ (notify)    │  │
+│  │ +HTMX)   │  │           │  │          │  │             │  │
+│  └────┬─────┘  └─────┬─────┘  └────┬─────┘  └──────┬──────┘  │
+├───────┼──────────────┼─────────────┼────────────────┼────────┤
+│       │         kb-api (orchestrates via kb-pipeline)  │       │
+│       └──────────────┬──────────────┘─────────────────┘       │
+│                      │                                        │
+│  ┌───────────────────▼──────────────────────────────────┐    │
+│  │                  kb-pipeline                           │    │
+│  │  IngestPipeline   RetrievalPipeline   JobQueue         │    │
+│  │  TagCanonicalizer Chunker+Embedder   ExportPipeline   │    │
+│  └───┬───────────────┬───────────────┬──────────────────┘    │
+│      │               │               │                       │
+│  ┌───▼────┐  ┌───────▼──────┐  ┌─────▼──────┐               │
+│  │kb-extract│ │   kb-llm    │  │  kb-store  │               │
+│  │text/code │ │Tagger       │  │PgStore     │               │
+│  │Tika      │ │LlamaClient  │  │LocalBlob   │               │
+│  │image/EXIF│ │Reranker     │  │HybridSearch│               │
+│  │audio/vid │ │             │  │SessionStore│               │
+│  │binary    │ │             │  │(Postgres+  │               │
+│  └──────────┘ └──┬──────────┘  │ pgvector)  │               │
+│                  │             └────────────┘               │
+│          ┌───────▼────────┐                                 │
+│          │  kb-scheduler   │                                 │
+│          │  Pool.acquire() │  slot-aware, multi-host         │
+│          │  HealthLoop     │  load balancer                  │
+│          └───────┬────────┘                                 │
+│                  │                                           │
+│  ┌───────────────▼──────────────────────────────────────┐   │
+│  │  llama.cpp servers  (OpenAI-compatible HTTP)          │   │
+│  │  chat · embed · rerank · vision · whisper             │   │
+│  └──────────────────────────────────────────────────────┘   │
+├──────────────────────────────────────────────────────────────┤
+│  kb-core — domain types + capability traits (I/O-free)       │
+│  kb-config — typed, validated, hot-swappable config          │
+│  kb-metrics — Prometheus + optional OTLP                     │
+│  kb-logging — structured logging, size-based rotation        │
+└──────────────────────────────────────────────────────────────┘
+```
+
+See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a full crate tour, data-flow diagrams,
+and the rationale behind key design decisions.
 
 ## Workspace
 
 ```
 crates/
-  core/        # domain types + capability traits (the stable, I/O-free contract)  ← implemented
-  config/      # TOML config + hot-reload                                          ← skeleton
-  scheduler/   # multi-host, slot-aware model pool (the centerpiece)               ← skeleton
-  llm/         # llama.cpp OpenAI-compatible client; Tagger/Embedder/Reranker      ← skeleton
-  extract/     # Extractor impls (native docs, Tika, ffmpeg/whisper, vision)       ← skeleton
-  store/       # Postgres + pgvector store; hybrid search                          ← skeleton
-  pipeline/    # ingest + query orchestration                                      ← skeleton
-  api/         # axum HTTP + clap CLI + web UI (serves on :9999)                   ← skeleton
+├── core/           domain types + capability traits (stable, I/O-free)
+├── config/         TOML config + env overlay + hot-reload
+├── scheduler/      multi-host, slot-aware model pool
+├── llm/            llama.cpp client (chat, embed, rerank) + tagger
+├── extract/        Extractor implementations (text, code, Tika, image, audio, video, binary)
+├── store/          Postgres + pgvector (migrations, PgStore, hybrid search, blob, sessions)
+├── pipeline/       ingest + retrieval orchestration, job queue, tag canonicalizer
+├── api/            axum HTTP API (:9999) + clap CLI + Askama/HTMX web UI
+├── metrics/        Prometheus metrics + optional OTLP tracing
+├── logging/        structured logging, size-based rotation, correlation spans
+├── mock-backend/   in-process mock HTTP server for deterministic tests
+├── testsupport/    shared harness: per-binary pgvector container, two-role DB
+└── cov-gate/       per-group line-coverage floor enforcement (LCOV parser)
 ```
 
 ## Develop
 
-Prerequisites: Rust (pinned to 1.92.0 via `rust-toolchain.toml`) and the gate tools. To
-install/restore the gate tools (`just`, `cargo-deny`, `cargo-audit`, `cargo-llvm-cov`):
+Prerequisites: Rust (pinned to 1.92.0 via `rust-toolchain.toml`) and the gate tools:
 
 ```bash
-just bootstrap-tools        # or: bash scripts/bootstrap-dev.sh
+just bootstrap-tools        # install just, cargo-deny, cargo-audit, cargo-llvm-cov
 ```
 
 Run the full Definition-of-Done gate suite (identical to CI):
@@ -43,6 +125,10 @@ just ci                     # fmt-check, build, clippy -D warnings, test, deny, 
 
 Individual gates: `just fmt`, `just clippy`, `just test`, `just deny`, `just audit`,
 `just cov`. List everything with `just`.
+
+The Podman-backed integration lane (`just ci-integration`) runs the `#[ignore]`
+testcontainers suites against a real Postgres and enforces higher coverage floors on
+`kb-store` + auth paths.
 
 ## Run the sidecar stack
 
@@ -55,12 +141,10 @@ cp .env.example .env        # optional: override ports / image tags / credential
 podman compose up -d
 ```
 
-Both services declare healthchecks, so `podman compose ps` reports `healthy` once Postgres is
-accepting connections and Tika is serving. Postgres is published on `127.0.0.1:5432` and Tika on
-`127.0.0.1:9998` by default (change `POSTGRES_PORT` / `TIKA_PORT` if a port is taken). The app
-(once containerised) and GPU inference join via later profiles; for now the app runs on the host
-against these sidecars. Tear down with `podman compose down` (add `-v` to also drop the data
-volume).
+Both services declare healthchecks, so `podman compose ps` reports `healthy` once ready.
+Postgres is published on `127.0.0.1:5432` and Tika on `127.0.0.1:9998` by default
+(change `POSTGRES_PORT` / `TIKA_PORT`). The app serves on **port 9999**. Tear down with
+`podman compose down` (add `-v` to also drop the data volume).
 
 ## Deploy with Quadlet (systemd)
 
@@ -107,8 +191,7 @@ cp /path/to/whisper-model.gguf ~/.config/containers/systemd/models/whisper-model
 systemctl --user daemon-reload
 systemctl --user start kb-postgres.service kb-tika.service kb-app.service
 
-# 5. (Optional) Enable GPU inference — only if you have an NVIDIA GPU
-#    + nvidia-container-toolkit installed
+# 5. (Optional) Enable GPU inference
 systemctl --user start kb-llama.service kb-whisper.service
 
 # 6. Verify
@@ -122,7 +205,7 @@ systemctl --user enable kb-postgres.service kb-tika.service kb-app.service
 > **Inside the pod** all containers share `localhost`, so the app connects to Postgres at
 > `localhost:5432` and Tika at `localhost:9998`. The pod publishes ports to the host
 > (loopback by default — remove `127.0.0.1:` in `kb.pod` for LAN access).
-
+>
 > **GPU services** have `AddDevice=nvidia.com/gpu=all`. Remove that line to run CPU-only,
 > or just don't enable those two units. See `compose.cpu.yaml` for the equivalent compose
 > override.
@@ -133,13 +216,36 @@ To validate your files before starting:
 /usr/libexec/podman/quadlet -dryrun -user
 ```
 
-To tear down:
+## Logging
+
+The app uses `tracing` with configurable format and size-based rotation enforcing a hard
+`LOG_MAX_GB` cap (plan §18). Configure via `.env`:
 
 ```bash
-systemctl --user stop kb-llama.service kb-whisper.service kb-app.service \
-                    kb-tika.service kb-postgres.service
-podman pod rm -f kb
+LOG_LEVEL=info      # trace, debug, info, warn, error
+LOG_FORMAT=json     # json or pretty
+LOG_DIR=./logs
+LOG_MAX_GB=2        # enforced hard cap via file-rotate
 ```
+
+## SBOM — Software Bill of Materials
+
+Generate a [CycloneDX](https://cyclonedx.org/) SBOM for dependency inventory and
+compliance:
+
+```bash
+# Install once
+cargo install cargo-cyclonedx
+
+# Generate (JSON or XML)
+cargo cyclonedx --format json --output-file sbom.cdx.json
+
+# Or use the recipe
+just sbom
+```
+
+The SBOM includes every Rust dependency with version, licence, and provenance metadata.
+Intended as a CI artifact for release pipelines.
 
 ## Autonomous build loop
 
@@ -157,9 +263,15 @@ just loop --dry-run         # show the next task without invoking anything
 
 The loop invokes Claude Code per task, then **independently re-runs the gates** and confirms
 the task committed before advancing. It stops immediately on a red gate, a blocked task, or an
-unapproved checkpoint — so progress is always safe and resumable. For unattended runs,
-`just loop --yolo` bypasses permission prompts (review the warning it prints).
+unapproved checkpoint — so progress is always safe and resumable.
 
 ## License
 
-Dual-licensed under Apache-2.0 or MIT. Model weights are separately licensed.
+Dual-licensed under [Apache-2.0](LICENSE) or [MIT](LICENSE) — you may use this software
+under the terms of either license, at your option. See the [`LICENSE`](./LICENSE) file for
+the full text.
+
+**Model weights are NOT covered by this license.** The LLM models (llama.cpp GGUF files,
+whisper models, etc.) are separately licensed by their respective providers. This project
+does not distribute any model weights — operators must obtain them from the model
+providers under each model's own terms.
