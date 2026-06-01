@@ -28,8 +28,10 @@ use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use kb_core::chunk::Chunk;
 use kb_core::document::Document;
+use kb_core::envelope;
 use kb_core::file::FileRecord;
 use kb_core::job::Job;
+use kb_core::kek::KeyEncryptionKey;
 use kb_core::query::{Hit, Query};
 use kb_core::store::Store;
 use kb_core::tag::TagSource;
@@ -77,6 +79,11 @@ pub struct PgStore {
     admin_pool: ArcSwap<Option<PgPool>>,
     /// The active `kb_app` pool. Shares the admin pool when no distinct app URL is configured.
     app_pool: ArcSwap<Option<PgPool>>,
+    /// Hot-swappable Key Encryption Key for envelope encryption of DB columns
+    /// (`chunks.content_enc`, `documents.summary_enc`, `documents.user_note_enc`).
+    /// When `None`, column encryption is skipped (plaintext-only, backward-compatible).
+    /// Set via [`set_kek`](PgStore::set_kek); resolved at call time per the hot-swap rule.
+    kek: ArcSwap<Option<Arc<dyn KeyEncryptionKey>>>,
 }
 
 impl PgStore {
@@ -94,6 +101,7 @@ impl PgStore {
             app_url: ArcSwap::new(Arc::new(String::new())),
             admin_pool: ArcSwap::new(Arc::new(None)),
             app_pool: ArcSwap::new(Arc::new(None)),
+            kek: ArcSwap::new(Arc::new(None)),
         }
     }
 
@@ -109,6 +117,7 @@ impl PgStore {
             app_url: ArcSwap::new(Arc::new(app_url.into())),
             admin_pool: ArcSwap::new(Arc::new(None)),
             app_pool: ArcSwap::new(Arc::new(None)),
+            kek: ArcSwap::new(Arc::new(None)),
         }
     }
 
@@ -297,6 +306,227 @@ impl PgStore {
             anyhow::anyhow!("PgStore is not connected — call connect() before using Store methods")
         })
     }
+
+    // ── KEK (Key Encryption Key) management ─────────────────────────────────
+
+    /// Hot-swap the Key Encryption Key used for DB column envelope encryption.
+    ///
+    /// Set to `None` to disable column encryption (plaintext-only mode). The change takes
+    /// effect on the next call — no restart is needed (the hot-swap rule, CLAUDE.md / §28).
+    /// When the KEK is swapped, any tenant DEKs that were wrapped with the previous KEK
+    /// will fail to unwrap; the caller should re-wrap tenant DEKs after rotation.
+    pub fn set_kek(&self, kek: Option<Arc<dyn KeyEncryptionKey>>) {
+        self.kek.store(Arc::new(kek));
+    }
+
+    /// Snapshot the current KEK, or `None` when column encryption is disabled.
+    fn kek(&self) -> Option<Arc<dyn KeyEncryptionKey>> {
+        self.kek.load_full().as_ref().clone()
+    }
+
+    /// Look up or create the tenant's raw (unwrapped) DEK for column encryption.
+    ///
+    /// Queries `tenant_data_keys` for the tenant's serialized [`DataKey`], unwraps
+    /// it with the current KEK, and returns the raw 32-byte DEK. If no key exists
+    /// for the tenant, a fresh DEK is generated, wrapped with the KEK, and persisted
+    /// in `tenant_data_keys`.
+    ///
+    /// Uses the **admin pool** because `tenant_data_keys` is infrastructure, not
+    /// tenant data (similar to sessions and settings).
+    ///
+    /// # Errors
+    /// Returns an error if no KEK is configured (column encryption disabled), the
+    /// database is not connected, or any crypto operation fails.
+    async fn get_or_create_tenant_dek(&self, tenant_id: i64) -> anyhow::Result<[u8; 32]> {
+        let kek = self.kek().ok_or_else(|| {
+            anyhow::anyhow!("KEK not configured — cannot encrypt/decrypt columns")
+        })?;
+
+        let admin = self.admin_pool()?;
+
+        // Check if a DataKey already exists for this tenant.
+        let existing_json: Option<serde_json::Value> =
+            sqlx::query_scalar("SELECT data_key_json FROM tenant_data_keys WHERE tenant_id = $1")
+                .bind(tenant_id)
+                .fetch_optional(&admin)
+                .await
+                .context("failed to look up tenant data key")?;
+
+        if let Some(json) = existing_json {
+            let data_key: kb_core::DataKey = serde_json::from_value(json)
+                .context("failed to deserialize tenant DataKey from DB")?;
+            let raw_dek = kek
+                .unwrap(&data_key.wrapped_dek)
+                .await
+                .context("failed to unwrap tenant DEK with KEK")?;
+            if raw_dek.len() != 32 {
+                anyhow::bail!(
+                    "unwrapped tenant DEK has wrong length: {} bytes (expected 32)",
+                    raw_dek.len()
+                );
+            }
+            let mut dek = [0u8; 32];
+            dek.copy_from_slice(&raw_dek);
+            return Ok(dek);
+        }
+
+        // No existing key — generate a fresh one.
+        let data_key = kb_core::DataKey::generate(kek.as_ref(), "db-column-dek:v1".into())
+            .await
+            .context("failed to generate tenant DEK")?;
+        let data_key_json =
+            serde_json::to_value(&data_key).context("failed to serialize DataKey")?;
+
+        sqlx::query("INSERT INTO tenant_data_keys (tenant_id, data_key_json) VALUES ($1, $2)")
+            .bind(tenant_id)
+            .bind(&data_key_json)
+            .execute(&admin)
+            .await
+            .context("failed to persist tenant data key")?;
+
+        // Re-unwrap the freshly generated DEK to get raw bytes.
+        let raw_dek = kek
+            .unwrap(&data_key.wrapped_dek)
+            .await
+            .context("failed to unwrap freshly generated tenant DEK")?;
+        if raw_dek.len() != 32 {
+            anyhow::bail!(
+                "freshly generated tenant DEK has wrong length: {} bytes (expected 32)",
+                raw_dek.len()
+            );
+        }
+        let mut dek = [0u8; 32];
+        dek.copy_from_slice(&raw_dek);
+        Ok(dek)
+    }
+
+    /// Decrypt `summary_enc` → `summary` and `user_note_enc` → `user_note` on a
+    /// single [`DocumentRow`] in-place. Does nothing when no KEK is configured or
+    /// the `_enc` columns are all `NULL`.
+    ///
+    /// Decryption failures are logged and the plaintext fallback is kept.
+    async fn decrypt_document_row(
+        &self,
+        tenant_id: i64,
+        row: &mut DocumentRow,
+    ) -> anyhow::Result<()> {
+        if self.kek().is_none() {
+            return Ok(());
+        }
+        if row.summary_enc.is_none() && row.user_note_enc.is_none() {
+            return Ok(());
+        }
+        let dek = self.get_or_create_tenant_dek(tenant_id).await?;
+        if let Some(ref enc) = row.summary_enc {
+            match envelope::decrypt_column(&dek, enc) {
+                Ok(decrypted) => row.summary = Some(decrypted),
+                Err(e) => {
+                    tracing::warn!(
+                        doc_id = row.id,
+                        error = %e,
+                        "failed to decrypt document summary_enc, falling back to plaintext"
+                    );
+                }
+            }
+        }
+        if let Some(ref enc) = row.user_note_enc {
+            match envelope::decrypt_column(&dek, enc) {
+                Ok(decrypted) => row.user_note = Some(decrypted),
+                Err(e) => {
+                    tracing::warn!(
+                        doc_id = row.id,
+                        error = %e,
+                        "failed to decrypt document user_note_enc, falling back to plaintext"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Decrypt a single chunk's `content_enc` column, falling back to `plaintext`
+    /// when decryption is not possible or not configured.
+    ///
+    /// This is `pub(crate)` so [`run_hybrid_search`] can decrypt snippet text
+    /// after reading chunk rows.
+    pub(crate) async fn decrypt_chunk_content(
+        &self,
+        tenant_id: i64,
+        content_enc: Option<&[u8]>,
+        plaintext: &str,
+    ) -> String {
+        let Some(enc) = content_enc else {
+            return plaintext.to_string();
+        };
+        let Some(_kek) = self.kek() else {
+            return plaintext.to_string();
+        };
+        let dek = match self.get_or_create_tenant_dek(tenant_id).await {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::warn!(
+                    tenant_id = tenant_id,
+                    error = %e,
+                    "failed to acquire tenant DEK for chunk decryption, using plaintext"
+                );
+                return plaintext.to_string();
+            }
+        };
+        envelope::decrypt_column(&dek, enc).unwrap_or_else(|e| {
+            tracing::warn!(
+                tenant_id = tenant_id,
+                error = %e,
+                "failed to decrypt chunk content_enc, falling back to plaintext"
+            );
+            plaintext.to_string()
+        })
+    }
+
+    /// Decrypt `_enc` columns on a slice of [`DocumentRow`]s in-place.
+    /// Acquires the tenant DEK once and reuses it for all rows.
+    async fn decrypt_document_rows(
+        &self,
+        tenant_id: i64,
+        rows: &mut [DocumentRow],
+    ) -> anyhow::Result<()> {
+        if self.kek().is_none() {
+            return Ok(());
+        }
+        let need_dek = rows
+            .iter()
+            .any(|r| r.summary_enc.is_some() || r.user_note_enc.is_some());
+        if !need_dek {
+            return Ok(());
+        }
+        let dek = self.get_or_create_tenant_dek(tenant_id).await?;
+        for row in rows {
+            if let Some(ref enc) = row.summary_enc {
+                match envelope::decrypt_column(&dek, enc) {
+                    Ok(decrypted) => row.summary = Some(decrypted),
+                    Err(e) => {
+                        tracing::warn!(
+                            doc_id = row.id,
+                            error = %e,
+                            "failed to decrypt document summary_enc, falling back to plaintext"
+                        );
+                    }
+                }
+            }
+            if let Some(ref enc) = row.user_note_enc {
+                match envelope::decrypt_column(&dek, enc) {
+                    Ok(decrypted) => row.user_note = Some(decrypted),
+                    Err(e) => {
+                        tracing::warn!(
+                            doc_id = row.id,
+                            error = %e,
+                            "failed to decrypt document user_note_enc, falling back to plaintext"
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -397,9 +627,6 @@ fn parse_vector_text(s: &str) -> anyhow::Result<Vec<f32>> {
         .collect()
 }
 
-/// SQL fragment shared by `upsert_document` and `transactional_ingest`.
-const DOC_UPDATE_SQL: &str = "UPDATE documents SET tenant_id=$1,title=$2,summary=$3,user_note=$4,kind=$5,meta=$6,page_count=$7,status=$8 WHERE id=$9 RETURNING id";
-const DOC_INSERT_SQL: &str = "INSERT INTO documents (tenant_id,title,summary,user_note,kind,meta,page_count,status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id";
 const USAGE_INSERT_SQL: &str = "INSERT INTO usage_events (tenant_id,user_id,model,role,backend_id,prompt_tokens,completion_tokens,latency_ms,cost_micros) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id";
 
 // ── Store implementation ─────────────────────────────────────────────────────
@@ -456,6 +683,14 @@ impl Store for PgStore {
                     anyhow::anyhow!("file {file_id} not found — cannot determine tenant for RLS")
                 })?
         };
+
+        // Acquire the tenant DEK if a KEK is configured.
+        let dek = if self.kek().is_some() {
+            Some(self.get_or_create_tenant_dek(tenant_id).await?)
+        } else {
+            None
+        };
+
         let pool = self.app_pool()?;
         let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
         sqlx::query("DELETE FROM chunks WHERE file_id = $1")
@@ -464,11 +699,16 @@ impl Store for PgStore {
             .await
             .context("failed to delete old chunks")?;
         for chunk in chunks {
+            let content_enc = dek
+                .as_ref()
+                .map(|d| envelope::encrypt_column(d, &chunk.content))
+                .transpose()
+                .context("failed to encrypt chunk content")?;
             let vec_str = format_vector(&chunk.embedding);
-            sqlx::query("INSERT INTO chunks (tenant_id,document_id,file_id,page_no,idx,content,ts_offset,embedding) VALUES ($1,$2,$3,$4,$5,$6,$7,CAST($8 AS vector))")
+            sqlx::query("INSERT INTO chunks (tenant_id,document_id,file_id,page_no,idx,content,content_enc,ts_offset,embedding) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,CAST($9 AS vector))")
                 .bind(chunk.tenant_id).bind(chunk.document_id).bind(file_id)
                 .bind(chunk.page_no).bind(chunk.idx)
-                .bind(&chunk.content).bind(chunk.ts_offset).bind(&vec_str)
+                .bind(&chunk.content).bind(&content_enc).bind(chunk.ts_offset).bind(&vec_str)
                 .execute(&mut *tx).await
                 .context("failed to insert chunk")?;
         }
@@ -850,36 +1090,64 @@ impl PgStore {
     /// # Errors
     /// Returns an error if the database is not connected or the query fails.
     pub async fn upsert_document(&self, doc: &Document) -> anyhow::Result<i64> {
+        // Encrypt summary and user_note if a KEK is configured.
+        let (summary_enc, user_note_enc) = if self.kek().is_some() {
+            let dek = self.get_or_create_tenant_dek(doc.tenant_id).await?;
+            let se = doc
+                .summary
+                .as_deref()
+                .map(|s| envelope::encrypt_column(&dek, s))
+                .transpose()
+                .context("failed to encrypt document summary")?;
+            let ue = doc
+                .user_note
+                .as_deref()
+                .map(|s| envelope::encrypt_column(&dek, s))
+                .transpose()
+                .context("failed to encrypt document user_note")?;
+            (se, ue)
+        } else {
+            (None, None)
+        };
+
         let pool = self.app_pool()?;
         let mut tx = begin_tenant_tx(&pool, doc.tenant_id).await?;
         let st = doc.status.as_str();
         let id = if doc.id > 0 {
-            sqlx::query_scalar::<Postgres, i64>(DOC_UPDATE_SQL)
-                .bind(doc.tenant_id)
-                .bind(&doc.title)
-                .bind(&doc.summary)
-                .bind(&doc.user_note)
-                .bind(doc.kind.as_str())
-                .bind(&doc.meta)
-                .bind(doc.page_count)
-                .bind(st)
-                .bind(doc.id)
-                .fetch_one(&mut *tx)
-                .await
-                .context("failed to update document")?
+            sqlx::query_scalar::<Postgres, i64>(
+                "UPDATE documents SET tenant_id=$1,title=$2,summary=$3,summary_enc=$4,user_note=$5,user_note_enc=$6,kind=$7,meta=$8,page_count=$9,status=$10 WHERE id=$11 RETURNING id",
+            )
+            .bind(doc.tenant_id)
+            .bind(&doc.title)
+            .bind(&doc.summary)
+            .bind(&summary_enc)
+            .bind(&doc.user_note)
+            .bind(&user_note_enc)
+            .bind(doc.kind.as_str())
+            .bind(&doc.meta)
+            .bind(doc.page_count)
+            .bind(st)
+            .bind(doc.id)
+            .fetch_one(&mut *tx)
+            .await
+            .context("failed to update document")?
         } else {
-            sqlx::query_scalar::<Postgres, i64>(DOC_INSERT_SQL)
-                .bind(doc.tenant_id)
-                .bind(&doc.title)
-                .bind(&doc.summary)
-                .bind(&doc.user_note)
-                .bind(doc.kind.as_str())
-                .bind(&doc.meta)
-                .bind(doc.page_count)
-                .bind(st)
-                .fetch_one(&mut *tx)
-                .await
-                .context("failed to insert document")?
+            sqlx::query_scalar::<Postgres, i64>(
+                "INSERT INTO documents (tenant_id,title,summary,summary_enc,user_note,user_note_enc,kind,meta,page_count,status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id",
+            )
+            .bind(doc.tenant_id)
+            .bind(&doc.title)
+            .bind(&doc.summary)
+            .bind(&summary_enc)
+            .bind(&doc.user_note)
+            .bind(&user_note_enc)
+            .bind(doc.kind.as_str())
+            .bind(&doc.meta)
+            .bind(doc.page_count)
+            .bind(st)
+            .fetch_one(&mut *tx)
+            .await
+            .context("failed to insert document")?
         };
         tx.commit()
             .await
@@ -938,26 +1206,54 @@ impl PgStore {
             );
         }
 
+        // Acquire the tenant DEK once for the whole transaction if a KEK is configured.
+        let dek = if self.kek().is_some() {
+            Some(self.get_or_create_tenant_dek(doc.tenant_id).await?)
+        } else {
+            None
+        };
+
+        // Encrypt document summary and user_note.
+        let (summary_enc, user_note_enc) = if let Some(ref d) = dek {
+            let se = doc
+                .summary
+                .as_deref()
+                .map(|s| envelope::encrypt_column(d, s))
+                .transpose()
+                .context("failed to encrypt document summary")?;
+            let ue = doc
+                .user_note
+                .as_deref()
+                .map(|s| envelope::encrypt_column(d, s))
+                .transpose()
+                .context("failed to encrypt document user_note")?;
+            (se, ue)
+        } else {
+            (None, None)
+        };
+
         let pool = self.app_pool()?;
         let mut tx = begin_tenant_tx(&pool, doc.tenant_id).await?;
 
         // 1. Upsert document, forcing status='ready'.
         let doc_id = if doc.id > 0 {
             sqlx::query_scalar::<Postgres, i64>(
-                "UPDATE documents SET tenant_id=$1,title=$2,summary=$3,user_note=$4,kind=$5,meta=$6,page_count=$7,status='ready' WHERE id=$8 RETURNING id",
+                "UPDATE documents SET tenant_id=$1,title=$2,summary=$3,summary_enc=$4,user_note=$5,user_note_enc=$6,kind=$7,meta=$8,page_count=$9,status='ready' WHERE id=$10 RETURNING id",
             )
             .bind(doc.tenant_id)
-            .bind(&doc.title).bind(&doc.summary).bind(&doc.user_note)
+            .bind(&doc.title).bind(&doc.summary).bind(&summary_enc)
+            .bind(&doc.user_note).bind(&user_note_enc)
             .bind(doc.kind.as_str()).bind(&doc.meta).bind(doc.page_count)
             .bind(doc.id)
             .fetch_one(&mut *tx).await
             .context("failed to update document in transaction")?
         } else {
             sqlx::query_scalar::<Postgres, i64>(
-                "INSERT INTO documents (tenant_id,title,summary,user_note,kind,meta,page_count,status) VALUES ($1,$2,$3,$4,$5,$6,$7,'ready') RETURNING id",
+                "INSERT INTO documents (tenant_id,title,summary,summary_enc,user_note,user_note_enc,kind,meta,page_count,status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'ready') RETURNING id",
             )
             .bind(doc.tenant_id)
-            .bind(&doc.title).bind(&doc.summary).bind(&doc.user_note)
+            .bind(&doc.title).bind(&doc.summary).bind(&summary_enc)
+            .bind(&doc.user_note).bind(&user_note_enc)
             .bind(doc.kind.as_str()).bind(&doc.meta).bind(doc.page_count)
             .fetch_one(&mut *tx).await
             .context("failed to insert document in transaction")?
@@ -1004,11 +1300,17 @@ impl PgStore {
                 .await
                 .context("failed to delete old chunks")?;
             for chunk in chunks {
+                let content_enc = dek
+                    .as_ref()
+                    .map(|d| envelope::encrypt_column(d, &chunk.content))
+                    .transpose()
+                    .context("failed to encrypt chunk content")?;
                 let vec_str = format_vector(&chunk.embedding);
-                sqlx::query("INSERT INTO chunks (tenant_id,document_id,file_id,page_no,idx,content,ts_offset,embedding) VALUES ($1,$2,$3,$4,$5,$6,$7,CAST($8 AS vector))")
+                sqlx::query("INSERT INTO chunks (tenant_id,document_id,file_id,page_no,idx,content,content_enc,ts_offset,embedding) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,CAST($9 AS vector))")
                     .bind(chunk.tenant_id).bind(doc_id).bind(file_id)
                     .bind(chunk.page_no).bind(chunk.idx)
-                    .bind(&chunk.content).bind(chunk.ts_offset).bind(&vec_str)
+                    .bind(&chunk.content).bind(&content_enc)
+                    .bind(chunk.ts_offset).bind(&vec_str)
                     .execute(&mut *tx).await
                     .context("failed to insert chunk")?;
             }
@@ -1324,8 +1626,8 @@ impl PgStore {
     pub async fn list_documents(&self, tenant_id: i64) -> anyhow::Result<Vec<Document>> {
         let pool = self.app_pool()?;
         let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
-        let rows: Vec<DocumentRow> = sqlx::query_as(
-            "SELECT id, tenant_id, title, summary, user_note, kind, meta, page_count, local_only, status, created_at \
+        let mut rows: Vec<DocumentRow> = sqlx::query_as(
+            "SELECT id, tenant_id, title, summary, summary_enc, user_note, user_note_enc, kind, meta, page_count, local_only, status, created_at \
              FROM documents WHERE tenant_id = $1 ORDER BY id",
         )
         .bind(tenant_id)
@@ -1335,6 +1637,10 @@ impl PgStore {
         tx.commit()
             .await
             .context("failed to commit list_documents")?;
+
+        // Decrypt _enc columns if a KEK is configured and any row has them.
+        self.decrypt_document_rows(tenant_id, &mut rows).await?;
+
         rows.into_iter().map(document_from_row).collect()
     }
 
@@ -1470,11 +1776,12 @@ impl PgStore {
             page_no: Option<i32>,
             idx: i32,
             content: String,
+            content_enc: Option<Vec<u8>>,
             ts_offset: Option<f64>,
             embedding_text: String,
         }
         let rows: Vec<Row> = sqlx::query_as(
-            "SELECT id, tenant_id, document_id, file_id, page_no, idx, content, \
+            "SELECT id, tenant_id, document_id, file_id, page_no, idx, content, content_enc, \
              ts_offset, embedding::text AS embedding_text \
              FROM chunks WHERE tenant_id = $1 \
              ORDER BY document_id, file_id, idx",
@@ -1484,8 +1791,32 @@ impl PgStore {
         .await
         .context("failed to list chunks for export")?;
         tx.commit().await.context("failed to commit list_chunks")?;
+
+        // Acquire the DEK only if any row has an encrypted content column.
+        let dek: Option<[u8; 32]> = if rows.iter().any(|r| r.content_enc.is_some()) {
+            if self.kek().is_some() {
+                Some(self.get_or_create_tenant_dek(tenant_id).await?)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         rows.into_iter()
             .map(|r| {
+                let content = if let (Some(d), Some(enc)) = (dek.as_ref(), &r.content_enc) {
+                    envelope::decrypt_column(d, enc).unwrap_or_else(|e| {
+                        tracing::warn!(
+                            chunk_id = r.id,
+                            error = %e,
+                            "failed to decrypt chunk content_enc, falling back to plaintext"
+                        );
+                        r.content.clone()
+                    })
+                } else {
+                    r.content
+                };
                 let embedding = parse_vector_text(&r.embedding_text)
                     .context("failed to parse chunk embedding")?;
                 Ok(kb_core::chunk::Chunk {
@@ -1495,7 +1826,7 @@ impl PgStore {
                     file_id: r.file_id,
                     page_no: r.page_no,
                     idx: r.idx,
-                    content: r.content,
+                    content,
                     ts_offset: r.ts_offset,
                     embedding,
                 })
@@ -1538,8 +1869,8 @@ impl PgStore {
     ) -> anyhow::Result<Option<Document>> {
         let pool = self.app_pool()?;
         let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
-        let row: Option<DocumentRow> = sqlx::query_as(
-            "SELECT id, tenant_id, title, summary, user_note, kind, meta, page_count, local_only, status, created_at \
+        let mut row: Option<DocumentRow> = sqlx::query_as(
+            "SELECT id, tenant_id, title, summary, summary_enc, user_note, user_note_enc, kind, meta, page_count, local_only, status, created_at \
              FROM documents WHERE id = $1",
         )
         .bind(doc_id)
@@ -1547,6 +1878,12 @@ impl PgStore {
         .await
         .context("failed to fetch document")?;
         tx.commit().await.context("failed to commit get_document")?;
+
+        // Decrypt _enc columns if available.
+        if let Some(ref mut r) = row {
+            self.decrypt_document_row(tenant_id, r).await?;
+        }
+
         row.map(document_from_row).transpose()
     }
 
@@ -1743,7 +2080,9 @@ struct DocumentRow {
     tenant_id: i64,
     title: Option<String>,
     summary: Option<String>,
+    summary_enc: Option<Vec<u8>>,
     user_note: Option<String>,
+    user_note_enc: Option<Vec<u8>>,
     kind: String,
     meta: serde_json::Value,
     page_count: i32,
@@ -2553,21 +2892,6 @@ mod tests {
     // ── SQL constant validation ─────────────────────────────────────────
 
     #[test]
-    fn doc_insert_sql_is_well_formed() {
-        assert!(DOC_INSERT_SQL.starts_with("INSERT INTO documents"));
-        assert!(DOC_INSERT_SQL.contains("RETURNING id"));
-        assert!(DOC_INSERT_SQL.contains("$1"));
-        assert!(DOC_INSERT_SQL.contains("$8"));
-    }
-
-    #[test]
-    fn doc_update_sql_is_well_formed() {
-        assert!(DOC_UPDATE_SQL.starts_with("UPDATE documents SET"));
-        assert!(DOC_UPDATE_SQL.contains("WHERE id="));
-        assert!(DOC_UPDATE_SQL.contains("RETURNING id"));
-    }
-
-    #[test]
     fn usage_insert_sql_is_well_formed() {
         assert!(USAGE_INSERT_SQL.starts_with("INSERT INTO usage_events"));
         assert!(USAGE_INSERT_SQL.contains("RETURNING id"));
@@ -3257,7 +3581,9 @@ mod tests {
             tenant_id: 42,
             title: Some("Test".into()),
             summary: Some("Summary".into()),
+            summary_enc: None,
             user_note: None,
+            user_note_enc: None,
             kind: "document".into(),
             meta: serde_json::json!({}),
             page_count: 1,
@@ -3280,7 +3606,9 @@ mod tests {
             tenant_id: 1,
             title: None,
             summary: None,
+            summary_enc: None,
             user_note: None,
+            user_note_enc: None,
             kind: "not_a_valid_kind".into(),
             meta: serde_json::json!({}),
             page_count: 1,

@@ -25,6 +25,7 @@ pub use data_key::{DataKey, rotate_dek};
 pub mod degradation;
 pub mod document;
 pub mod embedder;
+pub mod envelope;
 pub mod error;
 pub mod extractor;
 pub mod file;

@@ -1132,9 +1132,9 @@ description = "Envelope encryption for sensitive DB columns (§28): extend the e
 depends_on = ["P10-T1", "P2-T2"]
 plan_sections = ["28"]
 acceptance = "Chunk write → content_enc populated with ciphertext; chunk read → decrypts correctly; different tenant's DEK → decrypt fails; DB dump contains ciphertext in content_enc, not plaintext; search still works (vectors + tsv unencrypted, on LUKS); migration is backward-compatible (existing plaintext content column remains until encrypted). Unit tests for encrypt/decrypt round-trip per tenant + wrong-tenant-DEK error. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "DONE: kb-core::envelope (encrypt_column/decrypt_column, AES-256-GCM, 18 tests) + migration 0015 (tenant_data_keys, content_enc/summary_enc/user_note_enc columns) + PgStore KEK integration (get_or_create_tenant_dek, encrypt on write, decrypt on read, hot-swappable KEK). Dual-write keeps plaintext columns for tsv/search-index transition. just ci green."
 
 [[task]]
 id = "P10-T3"

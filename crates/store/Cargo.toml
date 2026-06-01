@@ -19,8 +19,8 @@ anyhow = { workspace = true }
 bytes = { workspace = true }
 # S3-compatible object store (Backblaze B2, plan §20)
 object_store = { workspace = true, features = ["aws"] }
-# Used for Signer::signed_url method parameter types
-reqwest = { workspace = true }
+# Used for VaultTransitKek (.json(), plan §28, P10-T1) and Signer::signed_url
+reqwest = { workspace = true, features = ["json"] }
 # Hot-swappable postgres_url (the hot-swap rule, CLAUDE.md).
 arc-swap = { workspace = true }
 serde_json = { workspace = true }

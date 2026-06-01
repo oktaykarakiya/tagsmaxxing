@@ -29,6 +29,7 @@ struct ChunkRow {
     page_no: Option<i32>,
     ts_offset: Option<f64>,
     content: String,
+    content_enc: Option<Vec<u8>>,
     title: Option<String>,
     #[sqlx(default)]
     kind: Option<String>,
@@ -96,22 +97,28 @@ pub(crate) async fn run_hybrid_search(
         .map(|c| (c.chunk_id, c))
         .collect();
 
-    let chunk_hits: Vec<ChunkHit> = fused
-        .iter()
-        .filter_map(|(chunk_id, score)| {
-            chunk_map.get(chunk_id).map(|row| ChunkHit {
-                chunk_id: row.chunk_id,
-                document_id: row.document_id,
-                score: *score,
-                file_id: row.file_id,
-                page_no: row.page_no,
-                ts_offset: row.ts_offset,
-                snippet: row.content.clone(),
-                title: row.title.clone(),
-                kind: row.kind.clone(),
-            })
-        })
-        .collect();
+    let chunk_hits: Vec<ChunkHit> = {
+        let mut hits = Vec::with_capacity(fused.len());
+        for (chunk_id, score) in &fused {
+            if let Some(row) = chunk_map.get(chunk_id) {
+                let snippet = store
+                    .decrypt_chunk_content(tenant_id, row.content_enc.as_deref(), &row.content)
+                    .await;
+                hits.push(ChunkHit {
+                    chunk_id: row.chunk_id,
+                    document_id: row.document_id,
+                    score: *score,
+                    file_id: row.file_id,
+                    page_no: row.page_no,
+                    ts_offset: row.ts_offset,
+                    snippet,
+                    title: row.title.clone(),
+                    kind: row.kind.clone(),
+                });
+            }
+        }
+        hits
+    };
 
     // Roll up to one Hit per document, keeping best chunk's provenance.
     let mut hits = document_rollup(&chunk_hits);
@@ -204,7 +211,7 @@ async fn execute_keyword_query(
 fn build_base_select() -> QueryBuilder<'static, Postgres> {
     QueryBuilder::new(
         "SELECT c.id AS chunk_id, c.document_id, c.file_id, \
-         c.page_no, c.ts_offset, c.content, d.title, d.kind \
+         c.page_no, c.ts_offset, c.content, c.content_enc, d.title, d.kind \
          FROM chunks c \
          JOIN documents d ON c.document_id = d.id \
          WHERE TRUE",
@@ -488,6 +495,7 @@ mod tests {
                 page_no: Some(3),
                 ts_offset: None,
                 content: "snippet A".into(),
+                content_enc: None,
                 title: Some("Doc Ten".into()),
                 kind: Some("document".into()),
             },
@@ -498,6 +506,7 @@ mod tests {
                 page_no: Some(5),
                 ts_offset: None,
                 content: "snippet B better".into(),
+                content_enc: None,
                 title: Some("Doc Ten".into()),
                 kind: Some("document".into()),
             },
@@ -508,6 +517,7 @@ mod tests {
                 page_no: None,
                 ts_offset: Some(30.0),
                 content: "audio snippet".into(),
+                content_enc: None,
                 title: None,
                 kind: Some("audio".into()),
             },
@@ -578,6 +588,7 @@ mod tests {
             page_no: Some(1),
             ts_offset: None,
             content: "present".into(),
+            content_enc: None,
             title: None,
             kind: None,
         }];
@@ -644,6 +655,7 @@ mod tests {
                 page_no: Some(1),
                 ts_offset: None,
                 content: format!("chunk {i}"),
+                content_enc: None,
                 title: Some(format!("Doc {}", i * 10)),
                 kind: Some("document".into()),
             })
