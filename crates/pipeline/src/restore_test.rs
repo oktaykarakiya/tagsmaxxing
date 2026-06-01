@@ -461,9 +461,7 @@ impl RestoreTestRunner for ShellRestoreTestRunner {
         // Resolve the real path first to prevent path-traversal attacks
         // (e.g. "/tmp/../../etc" starts with "/tmp/" but isn't under it).
         let resolved = tokio::fs::canonicalize(pgdata).await.map_err(|e| {
-            anyhow::anyhow!(
-                "cannot resolve scratch directory '{pgdata}' for cleanup: {e}"
-            )
+            anyhow::anyhow!("cannot resolve scratch directory '{pgdata}' for cleanup: {e}")
         })?;
         let tmp = std::path::Path::new("/tmp");
         let var_tmp = std::path::Path::new("/var/tmp");

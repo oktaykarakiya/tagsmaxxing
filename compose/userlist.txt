@@ -1,0 +1,13 @@
+;; PgBouncer user list — client authentication credentials (plan §22, P8-T8).
+;;
+;; Format: "username" "password"
+;; The `kb` and `kb_app` users must match the Postgres credentials set in .env
+;; (POSTGRES_USER, POSTGRES_PASSWORD, KB_APP_PASSWORD). Rotate these for
+;; production deployments.
+;;
+;; Mounted into the PgBouncer container at /etc/pgbouncer/userlist.txt.
+;; Passwords here are plaintext for md5 auth_mode; PgBouncer hashes them
+;; internally when connecting to Postgres.
+
+"kb" "kb"
+"kb_app" "kb_app"

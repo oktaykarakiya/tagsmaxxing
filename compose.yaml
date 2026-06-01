@@ -27,10 +27,18 @@ name: local-kb
 
 services:
   # ── App (kb binary, P7-T1 Containerfile) ─────────────────────────────────────
+  #
+  # The app does NOT publish a host port — the Caddy reverse proxy is the single
+  # entry point (plan §22, P8-T8). This lets `podman compose up --scale app=3`
+  # start multiple replicas without port conflicts; Caddy health-checks and
+  # load-balances across them. For direct access during development, connect
+  # through Caddy on http://localhost:${CADDY_HTTP_PORT:-9999}, or override
+  # the port mapping via a compose.override.yaml.
   app:
     image: ${APP_IMAGE:-kb:latest}
-    ports:
-      - "${APP_BIND:-127.0.0.1}:${APP_PORT:-9999}:9999"
+    # NOTE: no `ports:` — Caddy publishes the external port (default 9999) and
+    # reverse-proxies to app:9999 on the internal network. Adding ports here
+    # would prevent scaling with --scale.
     environment:
       # Storage — the compose-internal hostname `postgres` resolves to the
       # postgres service. These override the compose/config.toml values when set.
@@ -161,6 +169,51 @@ services:
       start_period: 20s
     restart: unless-stopped
 
+  # ── Caddy reverse proxy — TLS, security headers, request logging (plan §22, P8-T8) ─
+  #
+  # Caddy is the single entry point for HTTP traffic. It terminates TLS (if a domain
+  # is configured via CADDY_DOMAIN), adds security headers, logs requests in JSON, and
+  # reverse-proxies to `app:9999`. When `--scale app=N` is used, Caddy health-checks
+  # each upstream and load-balances across healthy instances.
+  caddy:
+    image: ${CADDY_IMAGE:-docker.io/caddy:2-alpine}
+    ports:
+      - "${CADDY_HTTP_BIND:-127.0.0.1}:${CADDY_HTTP_PORT:-9999}:80"
+      - "${CADDY_HTTPS_BIND:-127.0.0.1}:${CADDY_HTTPS_PORT:-9443}:443"
+    volumes:
+      - ${CADDYFILE:-./compose/Caddyfile}:/etc/caddy/Caddyfile:ro,Z
+      - caddy-data:/data
+    environment:
+      CADDY_DOMAIN: ${CADDY_DOMAIN:-localhost}
+    depends_on:
+      - app
+    restart: unless-stopped
+
+  # ── PgBouncer connection pooler (plan §22, P8-T8) ──────────────────────────
+  #
+  # Sits between the app and Postgres, pooling connections in transaction mode.
+  # Essential when scaling app replicas: each replica opens its own pool to Postgres,
+  # and PgBouncer multiplexes them so Postgres isn't overwhelmed. Enabled via the
+  # `pooling` profile — without it the app connects directly to Postgres.
+  pgbouncer:
+    profiles: ["pooling"]
+    image: ${PGBOUNCER_IMAGE:-docker.io/bitnami/pgbouncer:1.25}
+    ports:
+      - "${PGBOUNCER_BIND:-127.0.0.1}:${PGBOUNCER_PORT:-6432}:6432"
+    volumes:
+      - ${PGBOUNCER_INI:-./compose/pgbouncer.ini}:/etc/pgbouncer/pgbouncer.ini:ro,Z
+      - ${PGBOUNCER_USERLIST:-./compose/userlist.txt}:/etc/pgbouncer/userlist.txt:ro,Z
+    environment:
+      PGBOUNCER_DATABASE: ${POSTGRES_DB:-kb}
+      POSTGRESQL_HOST: postgres
+      POSTGRESQL_PORT: "5432"
+      POSTGRESQL_USERNAME: ${POSTGRES_USER:-kb}
+      POSTGRESQL_PASSWORD: ${POSTGRES_PASSWORD:-kb}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
   # ── llama.cpp server (GPU profile) — OpenAI-compatible chat + embed + rerank ──
   # Runs an LLM locally with GPU acceleration. Uses the CDI device interface for
   # Podman GPU passthrough. The same server process handles chat, vision (with a
@@ -213,3 +266,4 @@ services:
 volumes:
   pgdata:
   kb-data:
+  caddy-data:

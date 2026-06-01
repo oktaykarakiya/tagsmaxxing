@@ -896,9 +896,9 @@ description = "Caddy reverse proxy + PgBouncer + app replica scaling (§22): (a)
 depends_on = ["P7-T2", "P2-T3", "P5-T4"]
 plan_sections = ["22"]
 acceptance = "Caddy proxies to app with correct headers; PgBouncer pools connections; scale=3 → 3 app instances, all healthy, jobs distributed; concurrent startups serialize migrations via advisory lock; /health returns 503 when DB unreachable; /health returns 200 when all ready. Integration test with podman compose. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "Caddy reverse proxy (Caddyfile + compose service, security headers, JSON logging, health-checked upstream lb), PgBouncer transaction-pooling config (pooling profile, pgbouncer.ini + userlist.txt), app port removed from compose.yaml so --scale app=N works (no port conflicts), migration advisory lock (pg_advisory_lock in PgStore::connect serialises concurrent replica startups), readiness /health endpoint (DB reachability + migrations applied + healthy backends per role; 200/503)."
 
 [[task]]
 id = "P8-T9"

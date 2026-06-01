@@ -40,6 +40,15 @@ use sqlx::postgres::{PgPool, PgPoolOptions};
 
 use crate::MIGRATOR;
 
+/// Advisory lock key used to serialize concurrent startup migrations (plan §22, P8-T8).
+///
+/// When multiple app replicas start simultaneously, the first acquires this lock
+/// (via `pg_advisory_lock`), applies migrations, and releases; subsequent replicas
+/// block until the lock is freed, then find all migrations already applied and proceed.
+/// The value itself is arbitrary — it just needs to be unique within this application's
+/// lock namespace so it never collides with another subsystem's advisory lock.
+const MIGRATION_ADVISORY_LOCK: i64 = 7_272_769_801;
+
 // ── PgStore ──────────────────────────────────────────────────────────────────
 
 /// A Postgres-backed implementation of the core [`Store`] trait, connecting via sqlx
@@ -135,6 +144,13 @@ impl PgStore {
     /// auto-apply the forward-only schema migrations **as the privileged role**. Migrations
     /// already applied are skipped (the `_sqlx_migrations` ledger makes it idempotent).
     ///
+    /// A **Postgres advisory lock** is acquired before migrations run so concurrent
+    /// replicas serialize their startup: the first replica acquires the lock, applies
+    /// migrations, and releases; stragglers wait, then see all migrations already applied
+    /// and exit the lock immediately (plan §22, P8-T8). The lock is held on a dedicated
+    /// connection that is dropped after migrations finish, so release is automatic even if
+    /// the process crashes.
+    ///
     /// Order matters: the admin pool connects and migrates first (creating the `kb_app` role
     /// and its grants), and only then does the app pool connect — so `kb_app` exists by the
     /// time it is used. When the app URL is unset or identical to the admin URL, the app pool
@@ -151,10 +167,35 @@ impl PgStore {
             .connect(admin_url.as_ref())
             .await
             .context("failed to connect to Postgres (admin role)")?;
-        MIGRATOR
-            .run(&admin)
-            .await
-            .context("failed to apply schema migrations")?;
+
+        // Acquire an advisory lock to serialize migrations across concurrent replicas.
+        // pg_advisory_lock blocks until the lock is available, then holds it on this
+        // connection. The connection is dropped at the end of this scope, releasing the
+        // lock automatically (plan §22, P8-T8).
+        {
+            let mut lock_conn = admin
+                .acquire()
+                .await
+                .context("failed to acquire connection for advisory lock")?;
+            sqlx::query("SELECT pg_advisory_lock($1)")
+                .bind(MIGRATION_ADVISORY_LOCK)
+                .execute(&mut *lock_conn)
+                .await
+                .context("failed to acquire migration advisory lock")?;
+
+            // Run migrations while holding the lock — straggler replicas block above.
+            MIGRATOR
+                .run(&admin)
+                .await
+                .context("failed to apply schema migrations")?;
+
+            // Release the lock explicitly for clarity; the connection drop would also release it.
+            sqlx::query("SELECT pg_advisory_unlock($1)")
+                .bind(MIGRATION_ADVISORY_LOCK)
+                .execute(&mut *lock_conn)
+                .await
+                .context("failed to release migration advisory lock")?;
+        }
 
         // Connect the app pool only after migrations have created the kb_app role + grants.
         let app_url = self.resolved_app_url();
@@ -178,6 +219,37 @@ impl PgStore {
         }
 
         Ok(())
+    }
+
+    /// Probe whether the database is reachable via the admin pool.
+    ///
+    /// Executes a trivial `SELECT 1` on the admin pool. Returns `false` if the pool
+    /// has not been connected yet or the query fails.
+    ///
+    /// This is used by the readiness `/health` endpoint (plan §22, P8-T8).
+    pub async fn is_db_reachable(&self) -> bool {
+        let loaded = self.admin_pool.load();
+        let Some(pool) = loaded.as_ref().as_ref() else {
+            return false;
+        };
+        sqlx::query("SELECT 1").execute(pool).await.is_ok()
+    }
+
+    /// Check whether schema migrations have been applied (i.e. `connect()` ran).
+    ///
+    /// Probes the `_sqlx_migrations` table that sqlx creates. Returns `false` when
+    /// the pool is not connected or the table does not exist.
+    ///
+    /// This is used by the readiness `/health` endpoint (plan §22, P8-T8).
+    pub async fn are_migrations_applied(&self) -> bool {
+        let loaded = self.admin_pool.load();
+        let Some(pool) = loaded.as_ref().as_ref() else {
+            return false;
+        };
+        sqlx::query("SELECT 1 FROM _sqlx_migrations LIMIT 1")
+            .execute(pool)
+            .await
+            .is_ok()
     }
 
     /// Obtain a clone of the **privileged** connection pool (migrations / job queue / admin

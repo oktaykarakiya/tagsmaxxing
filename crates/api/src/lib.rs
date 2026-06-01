@@ -244,16 +244,65 @@ pub fn build_router(state: AppState) -> Router {
 
 // ── Health handler ────────────────────────────────────────────────────────────
 
-/// Liveness probe (plan §14, P7-T1).
+/// Readiness probe (plan §22, P8-T8).
 ///
-/// Returns 200 OK with a minimal JSON body. This endpoint is used by the
-/// Containerfile HEALTHCHECK instruction and by orchestrator probes. It
-/// asserts only that the HTTP server is alive and accepting connections —
-/// it does **not** check upstream dependencies (database, backends, blob store).
+/// Returns 200 OK when the application is ready to serve traffic:
+/// - Database is reachable (a trivial `SELECT 1` succeeds),
+/// - Schema migrations have been applied,
+/// - At least one healthy backend is registered for every configured role.
+///
+/// Returns 503 Service Unavailable with a JSON body describing which checks
+/// failed when upstream dependencies are not ready. This endpoint is used by
+/// load-balancer health checks (Caddy, orchestrators) and by the Containerfile
+/// HEALTHCHECK instruction.
 ///
 /// No authentication is required.
-async fn health_handler() -> impl IntoResponse {
-    (StatusCode::OK, Json(serde_json::json!({"status": "ok"})))
+async fn health_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let db_ok = state.pg_store.is_db_reachable().await;
+    let migrations_ok = state.pg_store.are_migrations_applied().await;
+
+    // Check that every configured role has ≥1 healthy backend.
+    let backends_ok = if let Some(pool) = &state.backend_pool {
+        check_backend_readiness(pool)
+    } else {
+        // No backend pool configured — skip the check (e.g. auth-only configs).
+        true
+    };
+
+    let all_ok = db_ok && migrations_ok && backends_ok;
+
+    let body = serde_json::json!({
+        "status": if all_ok { "ok" } else { "degraded" },
+        "database": db_ok,
+        "migrations": migrations_ok,
+        "backends": backends_ok,
+    });
+
+    let status = if all_ok {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+
+    (status, Json(body))
+}
+
+/// Returns `true` when every role the pool knows about has at least one healthy
+/// backend.
+fn check_backend_readiness(pool: &kb_scheduler::Pool) -> bool {
+    for role in pool.roles() {
+        let healthy_count = pool
+            .backends_for(role)
+            .iter()
+            .filter(|b| b.healthy.load(std::sync::atomic::Ordering::Acquire))
+            .count();
+        if healthy_count == 0 {
+            return false;
+        }
+    }
+    true
 }
 
 // ── Metrics handler ──────────────────────────────────────────────────────────
@@ -291,11 +340,154 @@ pub struct AuthUser {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use kb_core::session::SessionStore;
+    use kb_scheduler::Backend;
+    use kb_store::{InMemorySessionStore, PgStore};
+    use std::sync::atomic::Ordering;
+    use tower::ServiceExt;
 
-    /// The health handler returns 200 OK with a JSON `{"status":"ok"}` body.
+    /// Build a minimal `AppState` for health-endpoint tests, with an
+    /// unconnected `PgStore` so the database and migration checks fail.
+    fn unconnected_state() -> Arc<AppState> {
+        Arc::new(AppState {
+            session_store: Arc::new(InMemorySessionStore::new()) as Arc<dyn SessionStore>,
+            pg_store: Arc::new(PgStore::new("postgres://localhost/nonexistent")),
+            session_ttl: Duration::from_secs(3600),
+            secure_cookies: false,
+            ingest_pipeline: None,
+            retrieval_pipeline: None,
+            blob: None,
+            job_queue: None,
+            backend_pool: None,
+            blob_presigned_ttl: Duration::from_secs(DEFAULT_PRESIGNED_TTL_SECS),
+        })
+    }
+
+    /// The readiness endpoint returns 503 when the database is unreachable and
+    /// no migrations have been applied (unconnected PgStore).
     #[tokio::test]
-    async fn health_handler_returns_ok() {
-        let response = health_handler().await.into_response();
-        assert_eq!(response.status(), StatusCode::OK);
+    async fn health_returns_503_when_db_unreachable() {
+        let state = unconnected_state();
+        let router = Router::new()
+            .route("/health", get(health_handler))
+            .with_state(state);
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    /// `check_backend_readiness` returns `true` when every role has at least one
+    /// healthy backend.
+    #[test]
+    fn check_backend_readiness_all_healthy() {
+        let b1 = Arc::new(Backend::new(
+            "b1",
+            "http://x:1",
+            vec![kb_core::role::Role::Text],
+            0,
+            1,
+        ));
+        let b2 = Arc::new(Backend::new(
+            "b2",
+            "http://x:2",
+            vec![kb_core::role::Role::Embed],
+            0,
+            1,
+        ));
+        let pool = kb_scheduler::Pool::new(
+            vec![Arc::clone(&b1), Arc::clone(&b2)],
+            Duration::from_secs(5),
+        );
+        assert!(check_backend_readiness(&pool));
+    }
+
+    /// `check_backend_readiness` returns `false` when a role has no healthy backends.
+    #[test]
+    fn check_backend_readiness_one_unhealthy() {
+        let b = Arc::new(Backend::new(
+            "b1",
+            "http://x:1",
+            vec![kb_core::role::Role::Text],
+            0,
+            1,
+        ));
+        b.healthy.store(false, Ordering::Release);
+        let pool = kb_scheduler::Pool::new(vec![Arc::clone(&b)], Duration::from_secs(5));
+        assert!(!check_backend_readiness(&pool));
+    }
+
+    /// `check_backend_readiness` returns `true` when a role has at least one
+    /// healthy backend even if another of the same role is unhealthy.
+    #[test]
+    fn check_backend_readiness_partial_healthy() {
+        let healthy = Arc::new(Backend::new(
+            "healthy",
+            "http://x:1",
+            vec![kb_core::role::Role::Text],
+            0,
+            1,
+        ));
+        let unhealthy = Arc::new(Backend::new(
+            "unhealthy",
+            "http://x:2",
+            vec![kb_core::role::Role::Text],
+            1,
+            1,
+        ));
+        unhealthy.healthy.store(false, Ordering::Release);
+        let pool = kb_scheduler::Pool::new(
+            vec![Arc::clone(&healthy), Arc::clone(&unhealthy)],
+            Duration::from_secs(5),
+        );
+        assert!(check_backend_readiness(&pool));
+    }
+
+    /// `check_backend_readiness` with no backends at all returns `true` (no roles
+    /// to fail).
+    #[test]
+    fn check_backend_readiness_empty_pool() {
+        let pool = kb_scheduler::Pool::new(vec![], Duration::from_secs(5));
+        assert!(check_backend_readiness(&pool));
+    }
+
+    /// The health endpoint returns 200 with a properly wired but unconnected DB when
+    /// backends are healthy (the DB check fails, so overall 503 is expected).
+    #[tokio::test]
+    async fn health_includes_check_details_in_body() {
+        let state = unconnected_state();
+        let router = Router::new()
+            .route("/health", get(health_handler))
+            .with_state(state);
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let body_bytes = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+
+        assert_eq!(body["status"], "degraded");
+        assert_eq!(body["database"], false);
+        assert_eq!(body["migrations"], false);
+        assert_eq!(body["backends"], true); // no pool → check skipped → true
     }
 }

@@ -1,0 +1,41 @@
+# Caddy reverse proxy for the Local File Knowledge Base (plan §22, P8-T8).
+#
+# Mounted read-only into the caddy container at /etc/caddy/Caddyfile.
+# Set CADDY_DOMAIN in .env to enable automatic TLS (e.g. CADDY_DOMAIN=kb.example.com).
+# Without a domain (the default), Caddy serves plain HTTP with no TLS and uses
+# `localhost` as the host.
+#
+# Proxy behaviour:
+#   - reverse_proxy app:9999 — the compose-internal hostname `app` resolves to
+#     all app replicas via DNS round-robin when running `podman compose up --scale app=N`.
+#   - Caddy health-checks each upstream via /health every 10 s and excludes
+#     unhealthy instances automatically.
+#   - Security headers are added on every response.
+
+{$CADDY_DOMAIN:localhost} {
+	# ── Security headers (§22, P8-T8) ────────────────────────────────────
+	header {
+		# HSTS: only apply when TLS is active, otherwise it could break dev setups.
+		?Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+		X-Frame-Options "DENY"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		# Strip the Server header so the reverse-proxy identity is not leaked.
+		-Server
+	}
+
+	# ── Structured request logging ───────────────────────────────────────
+	log {
+		output stdout
+		format json
+	}
+
+	# ── Reverse proxy to the app service ────────────────────────────────
+	# When `--scale app=3` is used, Caddy load-balances across all instances.
+	reverse_proxy app:9999 {
+		# Health-check each upstream; unhealthy instances are removed from rotation.
+		health_uri /health
+		health_interval 10s
+		health_timeout 3s
+	}
+}
