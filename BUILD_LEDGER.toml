@@ -800,9 +800,9 @@ description = "P7 phase verification: `podman build` the Containerfile, `podman 
 depends_on = ["P7-T1", "P7-T2", "P7-T3", "P7-T4", "P7-T5", "P7-T7"]
 plan_sections = ["14", "31"]
 acceptance = "Full podman build + compose up → smoke test passes → clean down. All containers reach healthy. Log rotation working. Quadlet files validated. Docs complete + accurate. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "P7-T6 DONE: podman build + compose up + smoke test verified end-to-end. Fixed: .containerignore (excludes target/), Containerfile (builder FROM chef, /data/logs dir+chown), compose.yaml (SELinux :Z, KB_CONFIG, bootstrap vars), main.rs (serve early-return before config load), serve.rs (wired bootstrap_seed). Auth (register/login/logout), health endpoint, web UI all green. Search returns expected error (no LLM backend — GPU profile not active). Log rotation active, containers healthy, clean down -v works."
 
 # ── Phase P8 — Storage + resilience (§20, §21, §22, §23, §25) ────────────────
 #

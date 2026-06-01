@@ -104,6 +104,11 @@ pub async fn run_serve(args: &ServeArgs) -> anyhow::Result<()> {
         .await
         .context("failed to connect to Postgres — is the database running?")?;
 
+    // ── Bootstrap first-run seeding ──────────────────────────────────────────
+    kb_api::bootstrap::bootstrap_seed(&pg_store)
+        .await
+        .context("bootstrap seed failed")?;
+
     let pg_store = Arc::new(pg_store);
 
     // ── Session store ───────────────────────────────────────────────────────

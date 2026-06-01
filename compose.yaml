@@ -43,6 +43,12 @@ services:
       WHISPER_URL: ${WHISPER_URL:-http://whisper-server:8080}
       # Auth — MUST be overridden in production (≥32 bytes, random).
       SESSION_SECRET: ${SESSION_SECRET:-change-me-to-a-long-random-value}
+      # Bootstrap — creates the initial tenant + admin on first run.
+      # Omit to skip auto-seeding (create the first tenant manually).
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-admin@local.kb}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-admin}
+      # Config file path (used by both `serve` and CLI subcommands).
+      KB_CONFIG: /etc/kb/config.toml
       # Logging (plan §18).
       LOG_LEVEL: ${LOG_LEVEL:-info}
       LOG_FORMAT: ${LOG_FORMAT:-json}
@@ -51,7 +57,7 @@ services:
       # Persistent data (blobs, logs).
       - kb-data:/data
       # Deployment config mounted read-only.
-      - ${CONFIG_FILE:-./compose/config.toml}:/etc/kb/config.toml:ro
+      - ${CONFIG_FILE:-./compose/config.toml}:/etc/kb/config.toml:ro,Z
     # ── Security: extractor sandbox (plan §17, §31.5) ──────────────────────
     # The app container runs extractor subprocesses (ffmpeg, file) over
     # untrusted user bytes. Defence-in-depth:

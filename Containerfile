@@ -24,7 +24,7 @@ COPY . .
 RUN cargo chef prepare --recipe-path recipe.json
 
 # ── Stage 3: Builder (compile release binary) ────────────────────────────────
-FROM docker.io/rust:1.92.0-slim-bookworm AS builder
+FROM chef AS builder
 # Only the essentials for a rustls build — no libssl-dev / OpenSSL.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -51,8 +51,8 @@ RUN apt-get update \
 RUN useradd --uid 1000 --create-home --shell /sbin/nologin kb
 # Copy only the compiled binary.
 COPY --from=builder /app/target/release/kb /usr/local/bin/kb
-# Create the data directory for blob storage (owned by the kb user).
-RUN mkdir -p /data/kb-blobs && chown kb:kb /data/kb-blobs
+# Create data directories for blob storage and logs (owned by the kb user).
+RUN mkdir -p /data/kb-blobs /data/logs && chown -R kb:kb /data
 USER kb
 WORKDIR /data
 EXPOSE 9999

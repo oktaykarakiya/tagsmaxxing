@@ -74,7 +74,15 @@ async fn run() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
-    // ── Load configuration ─────────────────────────────────────────────────
+    // ── Dispatch to subcommand ─────────────────────────────────────────────
+    // The `serve` subcommand manages its own config loading, tracing, metrics,
+    // and component wiring independently — it does not share the CLI bootstrap
+    // path (plan §10).
+    if let Command::Serve(args) = &cli.command {
+        return commands::serve::run_serve(args).await;
+    }
+
+    // ── Load configuration (ingest/search CLI path) ────────────────────────
     let config_path = std::env::var("KB_CONFIG").unwrap_or_else(|_| "config.toml".into());
     let app_config = AppConfig::from_path(&config_path).with_context(|| {
         format!(
@@ -133,7 +141,6 @@ async fn run() -> anyhow::Result<()> {
     // Other kinds (Image, Audio, Video, Archive, Binary) fall back to
     // Extracted::default() — no extraction, just deterministic metadata.
 
-    // ── Dispatch to subcommand ─────────────────────────────────────────────
     match cli.command {
         Command::Ingest(args) => {
             // Owned LlamaClient for the tagger (JsonSchemaTagger takes by value).
@@ -191,11 +198,9 @@ async fn run() -> anyhow::Result<()> {
 
             commands::search::run_search(&args, &pipeline, cli.tenant_id).await?;
         }
-        Command::Serve(args) => {
-            // The serve command does its own config loading and wiring inside
-            // `commands::serve::run_serve` — it manages the global tracing subscriber,
-            // metrics, and all pipeline components independently.
-            commands::serve::run_serve(&args).await?;
+        Command::Serve(_) => {
+            // Already handled by the early return above.
+            return anyhow::Ok(());
         }
     }
 

@@ -1,0 +1,41 @@
+# Ignore build artifacts — the Containerfile uses cargo-chef for deps and builds
+# from source, so target/ and other generated files must stay out.
+target/
+
+# Git metadata is not needed inside the container build context.
+.git/
+.gitignore
+.gitattributes
+
+# Container and compose artifacts.
+.containerignore
+.dockerignore
+
+# IDE / editor files.
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files.
+.DS_Store
+Thumbs.db
+
+# Local env (contains secrets — not for the build context).
+.env
+.env.local
+
+# Documentation and analysis files (not needed at build time).
+docs/analysis/
+
+# Node modules (if any frontend tooling is added later).
+node_modules/
+
+# The built image itself, if someone exports one.
+*.tar
+*.tar.gz
+
+# Backup files.
+*.bak
+*.orig
