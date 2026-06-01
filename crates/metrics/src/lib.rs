@@ -116,6 +116,20 @@ fn describe_all() {
 
     // Active users (per-tenant, label = tenant_id)
     metrics::describe_gauge!("kb_active_users", "Number of active users in this tenant");
+
+    // Restore-test (plan §21, P8-T7)
+    metrics::describe_gauge!(
+        "kb_restore_test_success",
+        "1 if the most recent restore test passed, 0 if it failed"
+    );
+    metrics::describe_gauge!(
+        "kb_backup_age_hours",
+        "Age in hours of the latest backup (set by restore-test job)"
+    );
+    metrics::describe_gauge!(
+        "kb_backup_stale",
+        "1 if the latest backup is older than the configured maximum age, 0 otherwise"
+    );
 }
 
 // ── Request-level recording helpers ──────────────────────────────────────────────
@@ -197,6 +211,27 @@ pub fn record_backend(
     metrics::gauge!("kb_backend_free_slots", "backend_id" => bid.clone()).set(free_slots as f64);
     metrics::gauge!("kb_backend_total_slots", "backend_id" => bid.clone()).set(total_slots as f64);
     metrics::gauge!("kb_backend_in_flight", "backend_id" => bid.clone()).set(in_flight as f64);
+}
+
+/// Set the restore-test success gauge.
+///
+/// Called after each restore-test run. `success` = 1.0 on pass, 0.0 on failure.
+pub fn record_restore_test_result(success: bool) {
+    let val: f64 = if success { 1.0 } else { 0.0 };
+    metrics::gauge!("kb_restore_test_success").set(val);
+}
+
+/// Set the backup age gauge (hours since the latest backup completed).
+pub fn record_backup_age_hours(age_hours: f64) {
+    metrics::gauge!("kb_backup_age_hours").set(age_hours);
+}
+
+/// Set the backup-stale alert gauge.
+///
+/// `stale` = 1.0 when the latest backup is older than the configured maximum age.
+pub fn record_backup_stale(stale: bool) {
+    let val: f64 = if stale { 1.0 } else { 0.0 };
+    metrics::gauge!("kb_backup_stale").set(val);
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────────
@@ -346,5 +381,69 @@ mod tests {
         if !baseline_has_errors {
             assert!(!text.contains("kb_request_errors_total{role=\"rerank\""));
         }
+    }
+
+    #[test]
+    fn restore_test_success_gauge() {
+        let _h = ensure_init();
+        record_restore_test_result(true);
+        let text = render();
+        assert!(
+            text.lines()
+                .any(|l| l.starts_with("kb_restore_test_success ")),
+            "kb_restore_test_success not found in: {text}"
+        );
+
+        record_restore_test_result(false);
+        let text2 = render();
+        assert!(
+            text2
+                .lines()
+                .any(|l| l.starts_with("kb_restore_test_success ")),
+            "kb_restore_test_success not found in: {text2}"
+        );
+    }
+
+    #[test]
+    fn backup_age_and_stale_gauges() {
+        let _h = ensure_init();
+        // Record distinct values so the gauge family is populated.
+        record_backup_age_hours(3.5);
+        record_backup_stale(false);
+
+        let text = render();
+        // The gauges exist in the output with numeric values.
+        assert!(
+            text.lines().any(|l| l.starts_with("kb_backup_age_hours ")),
+            "kb_backup_age_hours not found in: {text}"
+        );
+        assert!(
+            text.lines().any(|l| l.starts_with("kb_backup_stale ")),
+            "kb_backup_stale not found in: {text}"
+        );
+
+        // Update values and verify the metric families still render.
+        record_backup_age_hours(26.0);
+        record_backup_stale(true);
+
+        let text2 = render();
+        assert!(text2.lines().any(|l| l.starts_with("kb_backup_age_hours ")));
+        assert!(text2.lines().any(|l| l.starts_with("kb_backup_stale ")));
+    }
+
+    #[test]
+    fn restore_test_gauge_help_and_type() {
+        let _h = ensure_init();
+        record_restore_test_result(true);
+        record_backup_age_hours(1.0);
+        record_backup_stale(false);
+
+        let text = render();
+        assert!(text.contains("# HELP kb_restore_test_success"));
+        assert!(text.contains("# TYPE kb_restore_test_success gauge"));
+        assert!(text.contains("# HELP kb_backup_age_hours"));
+        assert!(text.contains("# TYPE kb_backup_age_hours gauge"));
+        assert!(text.contains("# HELP kb_backup_stale"));
+        assert!(text.contains("# TYPE kb_backup_stale gauge"));
     }
 }

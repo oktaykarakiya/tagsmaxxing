@@ -43,6 +43,9 @@ pub struct Config {
     /// Folder-watcher settings (plan §10, P6-T3).
     #[serde(default, rename = "folder_watch")]
     pub folder_watch: FolderWatch,
+    /// Automated restore-test settings (plan §21, P8-T7).
+    #[serde(default, rename = "restore_test")]
+    pub restore_test: RestoreTest,
 }
 
 /// Durable-storage configuration.
@@ -186,6 +189,76 @@ impl Default for FolderWatch {
     }
 }
 
+/// Automated restore-test settings (plan §21, P8-T7).
+///
+/// Configures the scheduled job that restores the latest pgBackRest backup to a scratch
+/// Postgres instance, runs integrity checks, and alerts on failure or stale backups.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RestoreTest {
+    /// Whether the restore-test job is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Hour of day to run (0–23 UTC). Default: 3 (03:00 UTC).
+    #[serde(default = "default_restore_test_hour")]
+    pub schedule_hour: u8,
+    /// Minute of hour to run (0–59). Default: 0.
+    #[serde(default = "default_restore_test_minute")]
+    pub schedule_minute: u8,
+    /// Port for the scratch Postgres instance. Default: 5433.
+    #[serde(default = "default_restore_test_scratch_port")]
+    pub scratch_port: u16,
+    /// Directory for the scratch Postgres data. Default: `/tmp/kb-restore-test`.
+    #[serde(default = "default_restore_test_scratch_dir")]
+    pub scratch_dir: String,
+    /// Maximum age of the latest backup in hours before it is considered stale.
+    /// Default: 25 (an extra hour of grace past the daily schedule).
+    #[serde(default = "default_backup_max_age_hours")]
+    pub backup_max_age_hours: u32,
+    /// pgBackRest stanza name. Default: `"kb"`.
+    #[serde(default = "default_restore_test_stanza")]
+    pub stanza: String,
+    /// Database name to connect to for integrity checks. Default: `"kb"`.
+    #[serde(default = "default_restore_test_db")]
+    pub db_name: String,
+}
+
+const fn default_restore_test_hour() -> u8 {
+    3
+}
+const fn default_restore_test_minute() -> u8 {
+    0
+}
+const fn default_restore_test_scratch_port() -> u16 {
+    5433
+}
+fn default_restore_test_scratch_dir() -> String {
+    "/tmp/kb-restore-test".into()
+}
+const fn default_backup_max_age_hours() -> u32 {
+    25
+}
+fn default_restore_test_stanza() -> String {
+    "kb".into()
+}
+fn default_restore_test_db() -> String {
+    "kb".into()
+}
+
+impl Default for RestoreTest {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            schedule_hour: default_restore_test_hour(),
+            schedule_minute: default_restore_test_minute(),
+            scratch_port: default_restore_test_scratch_port(),
+            scratch_dir: default_restore_test_scratch_dir(),
+            backup_max_age_hours: default_backup_max_age_hours(),
+            stanza: default_restore_test_stanza(),
+            db_name: default_restore_test_db(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -261,5 +334,58 @@ ignore_patterns = [".git", "*.tmp"]
                 .ignore_patterns
                 .contains(&".git".to_string())
         );
+    }
+
+    #[test]
+    fn restore_test_defaults() {
+        let rt = RestoreTest::default();
+        assert!(!rt.enabled);
+        assert_eq!(rt.schedule_hour, 3);
+        assert_eq!(rt.schedule_minute, 0);
+        assert_eq!(rt.scratch_port, 5433);
+        assert_eq!(rt.scratch_dir, "/tmp/kb-restore-test");
+        assert_eq!(rt.backup_max_age_hours, 25);
+        assert_eq!(rt.stanza, "kb");
+        assert_eq!(rt.db_name, "kb");
+    }
+
+    #[test]
+    fn restore_test_deserialization() {
+        let toml_str = r#"
+[restore_test]
+enabled = true
+schedule_hour = 4
+schedule_minute = 30
+scratch_port = 6000
+scratch_dir = "/var/tmp/rt"
+backup_max_age_hours = 13
+stanza = "prod"
+db_name = "kb_prod"
+"#;
+        let cfg: Config = toml::from_str(toml_str).expect("parse should succeed");
+        let rt = &cfg.restore_test;
+        assert!(rt.enabled);
+        assert_eq!(rt.schedule_hour, 4);
+        assert_eq!(rt.schedule_minute, 30);
+        assert_eq!(rt.scratch_port, 6000);
+        assert_eq!(rt.scratch_dir, "/var/tmp/rt");
+        assert_eq!(rt.backup_max_age_hours, 13);
+        assert_eq!(rt.stanza, "prod");
+        assert_eq!(rt.db_name, "kb_prod");
+    }
+
+    #[test]
+    fn restore_test_in_config_default_inherits_defaults() {
+        let toml_str = r#"
+[restore_test]
+enabled = true
+"#;
+        let cfg: Config = toml::from_str(toml_str).expect("parse should succeed");
+        let rt = &cfg.restore_test;
+        assert!(rt.enabled);
+        // Unspecified fields should use defaults.
+        assert_eq!(rt.schedule_hour, 3);
+        assert_eq!(rt.schedule_minute, 0);
+        assert_eq!(rt.backup_max_age_hours, 25);
     }
 }

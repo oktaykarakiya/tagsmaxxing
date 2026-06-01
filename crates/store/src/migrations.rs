@@ -16,11 +16,11 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
-    /// All eight migrations are present, in version order (1–8).
+    /// All nine migrations are present, in version order (1–9).
     #[test]
     fn embeds_the_schema_migrations() {
         let versions: Vec<i64> = MIGRATOR.iter().map(|m| m.version).collect();
-        assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
     }
 
     /// Forward-only and monotonic: no down/reversible scripts, strictly increasing versions,
@@ -142,6 +142,21 @@ mod tests {
         assert!(
             sql.contains("ADD COLUMN IF NOT EXISTS document_id"),
             "jobs must gain document_id column"
+        );
+    }
+
+    /// Migration 0009 (P8-T7): the jobs.kind CHECK must include `'restore_test'`.
+    #[test]
+    fn schema_adds_restore_test_job_kind() {
+        let sql: String = MIGRATOR
+            .iter()
+            .map(|m| m.sql.as_ref())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            sql.contains("'restore_test'"),
+            "jobs kind CHECK must include 'restore_test' for the automated restore-test job (P8-T7)"
         );
     }
 

@@ -885,9 +885,9 @@ description = "Automated restore-test job (§21): a scheduled maintenance job th
 depends_on = ["P8-T6"]
 plan_sections = ["21", "25"]
 acceptance = "Restore test runs against a real Postgres backup; integrity checks pass; stale backup → alert gauge set; failure → ERROR log + alert gauge; configurable schedule; scratch instance cleaned up after test (pass or fail). Integration test with testcontainers (#[ignore] in just ci). just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "RestoreTest job kind + migration 0009; RestoreTest config (hot-swappable); kb_restore_test_success/kb_backup_age_hours/kb_backup_stale gauges; RestoreTestRunner trait + ShellRestoreTestRunner (tokio::process); pure functions: check_backup_staleness, build_row_count_query, build_check_constraint_query, parse_row_counts, should_run_now; process_restore_test_job handler; MockRunner with 8 async orchestration tests + 20 pure-logic unit tests. just ci green."
 
 [[task]]
 id = "P8-T8"

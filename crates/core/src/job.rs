@@ -18,6 +18,9 @@ str_enum! {
         /// merging results while preserving locked user-assigned tags
         /// (plan §6.5, P6-T11).
         Retag = "retag",
+        /// Restore the latest pgBackRest backup to a scratch Postgres instance and
+        /// run integrity checks to verify the backup is viable (plan §21, P8-T7).
+        RestoreTest = "restore_test",
     }
 }
 
@@ -79,6 +82,8 @@ mod tests {
         assert_eq!(JobKind::Reembed.as_str(), "reembed");
         assert_eq!(JobKind::Export.as_str(), "export");
         assert_eq!(JobKind::Retag.as_str(), "retag");
+        assert_eq!(JobKind::RestoreTest.as_str(), "restore_test");
+        assert_eq!(JobKind::all().len(), 5);
     }
 
     #[test]

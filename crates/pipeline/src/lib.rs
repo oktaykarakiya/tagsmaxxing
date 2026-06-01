@@ -24,6 +24,7 @@ pub mod folder_watcher;
 pub mod ingest;
 pub mod job_queue;
 pub mod metadata_merge;
+pub mod restore_test;
 pub mod retrieval;
 pub mod rrf;
 pub mod tag_canonicalizer;
@@ -43,5 +44,10 @@ pub use ingest::{
     process_ingest_job, process_retag_job,
 };
 pub use job_queue::{JobQueue, run_worker_pool};
+pub use restore_test::{
+    BackupStatus, IntegrityCheck, IntegrityReport, RestoreTestRunner, ShellRestoreTestRunner,
+    build_check_constraint_query, build_row_count_query, check_backup_staleness, parse_row_counts,
+    process_restore_test_job, run_restore_test, should_run_now,
+};
 pub use retrieval::RetrievalPipeline;
 pub use tag_store::TagStore;

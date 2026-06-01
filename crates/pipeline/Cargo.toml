@@ -22,12 +22,14 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 tracing = { workspace = true }
-tokio = { workspace = true, features = ["sync", "time"] }
+tokio = { workspace = true, features = ["sync", "time", "process"] }
 tree_magic_mini = { workspace = true }
 zip = { workspace = true }
 tempfile = { workspace = true }
 arc-swap = { workspace = true }
 notify = { workspace = true }
+kb-metrics = { workspace = true }
+kb-config = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
