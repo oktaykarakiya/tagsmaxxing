@@ -18,6 +18,7 @@
 pub mod chunker;
 pub mod document_builder;
 pub mod embedder;
+pub mod eval;
 pub mod export;
 pub mod folder_watcher;
 pub mod ingest;
@@ -28,6 +29,10 @@ pub mod rrf;
 pub mod tag_canonicalizer;
 pub mod tag_store;
 
+pub use eval::{
+    EvalBaseline, EvalMetrics, LabeledQuery, check_regression, compute_metrics, eval_queries,
+    fixture_corpus, format_vector, recall_at_k, reciprocal_rank, spike_1024,
+};
 pub use export::{ExportPipeline, ExportStore, process_export_job};
 pub use folder_watcher::{
     FolderWatchConfig, FolderWatchHandler, FolderWatcher, matches_allowed_extension,

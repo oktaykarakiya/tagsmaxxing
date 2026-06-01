@@ -309,6 +309,17 @@ mod tests {
     fn render_includes_help_and_type_lines() {
         let _h = ensure_init();
 
+        // The Prometheus exporter only includes metrics that have been
+        // observed at least once — record a data-point for each checked metric.
+        // Use distinct labels so other tests' counters are unaffected.
+        record_backend("help-test", true, 0, 4, 0);
+        record_request(
+            RequestOutcome::Success,
+            0.001,
+            "help-test-role",
+            "help-test-model",
+        );
+
         let text = render();
         // Prometheus exposition format requires HELP and TYPE lines.
         assert!(text.contains("# HELP kb_backend_healthy"));

@@ -706,9 +706,9 @@ description = "Retrieval eval set + regression gate (review/p6-readiness; §19).
 depends_on = ["P4-T5"]
 plan_sections = ["19", "8"]
 acceptance = "Labelled eval set committed; harness computes recall@k + MRR deterministically; baseline metrics recorded; a regression below baseline fails the integration gate; documented how to intentionally update the baseline. #[ignore] in fast `just ci`; runs in `just ci-integration`. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "kb-pipeline::eval module: LabeledQuery/EvalMetrics/EvalBaseline types, recall_at_k/reciprocal_rank/compute_metrics/check_regression pure functions, fixture_corpus (8 docs, 4 topics) + eval_queries (7 labelled queries), spike_1024/format_vector helpers. eval_integration.rs (#[ignore] for just ci-integration) ingests corpus into testcontainers pgvector, runs RetrievalPipeline with pass-through reranker, asserts >=baseline. Baseline committed at tests/fixtures/eval_baseline.json. Fixed pre-existing kb-metrics render_includes_help_and_type_lines test isolation (missing metric observation before render). just ci green."
 
 [[task]]
 id = "P6-T10"
