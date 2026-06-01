@@ -408,7 +408,7 @@ impl LlamaClient {
                 continue;
             }
 
-            let url = format!("{}{endpoint}", lease.base_url);
+            let url = format!("{}{endpoint}", lease.endpoint);
 
             // 3. POST to the backend.
             let result = self.http.post(&url).json(body).send().await;
@@ -508,7 +508,7 @@ mod tests {
     use kb_core::provider::{ChatMessage, ChatReq, EmbedReq};
     use kb_core::role::Role;
     use kb_mock_backend::{MockBackend, ResponseMode};
-    use kb_scheduler::{Backend, Pool};
+    use kb_scheduler::{Pool, test_backend};
     use reqwest::Client;
 
     use super::*;
@@ -517,9 +517,9 @@ mod tests {
     async fn client_with_one_backend(role: Role, slots: usize) -> (LlamaClient, MockBackend) {
         let mock = MockBackend::start().await;
         let base_url = mock.url("/v1");
-        let backend = Arc::new(Backend::new(
+        let backend = Arc::new(test_backend(
             "mock-1",
-            base_url,
+            &base_url,
             vec![role],
             0, /* priority */
             slots,
@@ -540,14 +540,14 @@ mod tests {
     async fn client_with_two_backends(role: Role) -> (LlamaClient, MockBackend, MockBackend) {
         let mock1 = MockBackend::start().await;
         let mock2 = MockBackend::start().await;
-        let b1 = Arc::new(Backend::new(
+        let b1 = Arc::new(test_backend(
             "mock-1",
             mock1.url("/v1"),
             vec![role],
             0, /* priority */
             2, /* slots */
         ));
-        let b2 = Arc::new(Backend::new(
+        let b2 = Arc::new(test_backend(
             "mock-2",
             mock2.url("/v1"),
             vec![role],
@@ -731,14 +731,14 @@ mod tests {
         let mock2 = MockBackend::start().await;
 
         // mock-1 has lower priority → preferred when healthy.
-        let b1 = Arc::new(Backend::new(
+        let b1 = Arc::new(test_backend(
             "mock-1",
             mock1.url("/v1"),
             vec![Role::Text],
             0, /* priority */
             2,
         ));
-        let b2 = Arc::new(Backend::new(
+        let b2 = Arc::new(test_backend(
             "mock-2",
             mock2.url("/v1"),
             vec![Role::Text],
@@ -815,7 +815,7 @@ mod tests {
     async fn circuit_breaker_disabled_with_threshold_zero() {
         let mock = MockBackend::start().await;
         let base_url = mock.url("/v1");
-        let backend = Arc::new(Backend::new("mock-1", base_url, vec![Role::Text], 0, 2));
+        let backend = Arc::new(test_backend("mock-1", base_url, vec![Role::Text], 0, 2));
         let pool = Pool::new(vec![backend], Duration::from_secs(5));
         let client = LlamaClient::new(
             pool,
@@ -943,7 +943,7 @@ mod tests {
     async fn no_healthy_backend_is_not_cooldown() {
         let mock = MockBackend::start().await;
         let base_url = mock.url("/v1");
-        let backend = Arc::new(Backend::new("mock-1", base_url, vec![Role::Text], 0, 2));
+        let backend = Arc::new(test_backend("mock-1", base_url, vec![Role::Text], 0, 2));
         // Mark unhealthy before building the pool.
         backend.healthy.store(false, Ordering::Release);
         let pool = Pool::new(vec![backend], Duration::from_secs(5));
@@ -967,7 +967,7 @@ mod tests {
 
     #[tokio::test]
     async fn circuit_count_starts_at_zero() {
-        let b = Arc::new(Backend::new("b1", "http://x:8001", vec![Role::Text], 0, 2));
+        let b = Arc::new(test_backend("b1", "http://x:8001", vec![Role::Text], 0, 2));
         let pool = Pool::new(vec![b], Duration::from_secs(1));
         let client = LlamaClient::new(pool, Client::new(), 2, 3, Duration::from_millis(200));
         assert_eq!(client.circuit_count(), 0);
@@ -992,7 +992,7 @@ mod tests {
     async fn rerank_success_path() {
         let mock = MockBackend::start().await;
         let base_url = mock.url("/v1");
-        let backend = Arc::new(Backend::new("mock-1", base_url, vec![Role::Rerank], 0, 2));
+        let backend = Arc::new(test_backend("mock-1", base_url, vec![Role::Rerank], 0, 2));
         let pool = Pool::new(vec![backend], Duration::from_secs(5));
         let client = LlamaClient::new(pool, Client::new(), 2, 3, Duration::from_millis(200));
 
@@ -1017,7 +1017,7 @@ mod tests {
         let mock = MockBackend::start().await;
         mock.scenario().lock().await.rerank_content = Some(vec![0.12, 0.34, 0.56]);
         let base_url = mock.url("/v1");
-        let backend = Arc::new(Backend::new("mock-1", base_url, vec![Role::Rerank], 0, 2));
+        let backend = Arc::new(test_backend("mock-1", base_url, vec![Role::Rerank], 0, 2));
         let pool = Pool::new(vec![backend], Duration::from_secs(5));
         let client = LlamaClient::new(pool, Client::new(), 2, 3, Duration::from_millis(200));
 
@@ -1033,7 +1033,7 @@ mod tests {
     async fn rerank_empty_documents() {
         let mock = MockBackend::start().await;
         let base_url = mock.url("/v1");
-        let backend = Arc::new(Backend::new("mock-1", base_url, vec![Role::Rerank], 0, 2));
+        let backend = Arc::new(test_backend("mock-1", base_url, vec![Role::Rerank], 0, 2));
         let pool = Pool::new(vec![backend], Duration::from_secs(5));
         let client = LlamaClient::new(pool, Client::new(), 2, 3, Duration::from_millis(200));
 
@@ -1051,7 +1051,7 @@ mod tests {
         // Return only 1 score for 3 documents → mismatch.
         mock.scenario().lock().await.rerank_content = Some(vec![0.5]);
         let base_url = mock.url("/v1");
-        let backend = Arc::new(Backend::new("mock-1", base_url, vec![Role::Rerank], 0, 2));
+        let backend = Arc::new(test_backend("mock-1", base_url, vec![Role::Rerank], 0, 2));
         let pool = Pool::new(vec![backend], Duration::from_secs(5));
         let client = LlamaClient::new(pool, Client::new(), 2, 3, Duration::from_millis(200));
 
@@ -1080,14 +1080,14 @@ mod tests {
     async fn rerank_failover_on_5xx() {
         let mock1 = MockBackend::start().await;
         let mock2 = MockBackend::start().await;
-        let b1 = Arc::new(Backend::new(
+        let b1 = Arc::new(test_backend(
             "mock-1",
             mock1.url("/v1"),
             vec![Role::Rerank],
             0,
             2,
         ));
-        let b2 = Arc::new(Backend::new(
+        let b2 = Arc::new(test_backend(
             "mock-2",
             mock2.url("/v1"),
             vec![Role::Rerank],

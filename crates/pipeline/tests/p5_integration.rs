@@ -46,7 +46,7 @@ use kb_pipeline::metadata_merge::MetadataMerger;
 use kb_pipeline::retrieval::RetrievalPipeline;
 use kb_pipeline::tag_canonicalizer::TagCanonicalizer;
 use kb_pipeline::tag_store::TagStore;
-use kb_scheduler::{Backend, Pool};
+use kb_scheduler::{Pool, test_backend};
 use kb_store::PgStore;
 use kb_store::session_store::InMemorySessionStore;
 use reqwest::Client;
@@ -182,7 +182,7 @@ async fn setup_two_tenants() -> anyhow::Result<(TwoTenantInfra, MockBackend)> {
     // Default: embed returns a 1024-dim spike vector at position 0.
     mock.scenario().lock().await.embed_content = Some(vec![spike_vector(0)]);
 
-    let backend = Arc::new(Backend::new(
+    let backend = Arc::new(test_backend(
         "mock-p5",
         base_url,
         vec![Role::Text, Role::Embed],

@@ -35,7 +35,7 @@ mod tests {
     use kb_mock_backend::MockBackend;
     use kb_pipeline::embedder::ChunkEmbedder;
     use kb_pipeline::retrieval::RetrievalPipeline;
-    use kb_scheduler::{Backend, Pool};
+    use kb_scheduler::{Pool, test_backend};
     use kb_store::PgStore;
     use reqwest::Client;
 
@@ -224,7 +224,7 @@ mod tests {
         // 1024-dim vector for all query embeddings.
         mock.scenario().lock().await.embed_content = Some(vec![spike_vector(0)]);
 
-        let backend = Arc::new(Backend::new(
+        let backend = Arc::new(test_backend(
             "mock-p4-retrieval",
             base_url,
             vec![Role::Embed],

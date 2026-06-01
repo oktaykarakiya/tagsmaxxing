@@ -51,7 +51,7 @@ use kb_pipeline::ingest::{IngestFile, IngestPipeline, IngestStore};
 use kb_pipeline::retrieval::RetrievalPipeline;
 use kb_pipeline::tag_canonicalizer::{TAG_MERGE_THRESHOLD, TagCanonicalizer};
 use kb_pipeline::tag_store::TagStore;
-use kb_scheduler::{Backend, Pool};
+use kb_scheduler::{Pool, test_backend};
 use kb_store::PgStore;
 use kb_store::blob::LocalBlob;
 use kb_store::session_store::InMemorySessionStore;
@@ -172,7 +172,7 @@ async fn setup_p6_infra() -> anyhow::Result<(P6Infra, MockBackend)> {
     let base_url = mock.url("/v1");
     mock.scenario().lock().await.embed_content = Some(vec![spike_vector(0)]);
 
-    let backend = Arc::new(Backend::new(
+    let backend = Arc::new(test_backend(
         "mock-p6",
         base_url,
         vec![Role::Text, Role::Embed],

@@ -75,7 +75,7 @@ mod tests {
 
     use kb_core::role::Role;
     use kb_mock_backend::{MockBackend, ResponseMode};
-    use kb_scheduler::{Backend, Pool};
+    use kb_scheduler::{Pool, test_backend};
     use reqwest::Client;
 
     use super::*;
@@ -84,7 +84,7 @@ mod tests {
     async fn reranker_with_one_backend(slots: usize) -> (LlamaReranker, MockBackend) {
         let mock = MockBackend::start().await;
         let base_url = mock.url("/v1");
-        let backend = Arc::new(Backend::new(
+        let backend = Arc::new(test_backend(
             "mock-1",
             base_url,
             vec![Role::Rerank],
@@ -173,7 +173,7 @@ mod tests {
     async fn model_parameter_is_passed() {
         let mock = MockBackend::start().await;
         let base_url = mock.url("/v1");
-        let backend = Arc::new(Backend::new("mock-1", base_url, vec![Role::Rerank], 0, 2));
+        let backend = Arc::new(test_backend("mock-1", base_url, vec![Role::Rerank], 0, 2));
         let pool = Pool::new(vec![backend], Duration::from_secs(5));
         let client = Arc::new(LlamaClient::new(
             pool,

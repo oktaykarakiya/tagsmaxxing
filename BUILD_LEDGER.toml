@@ -1004,9 +1004,9 @@ description = "Generalized Backend struct (§26.3): extend/replace P1-T1's Backe
 depends_on = ["P9-T1", "P9-T3"]
 plan_sections = ["26.3"]
 acceptance = "Backend::new() from valid model+provider rows; caps gating: Backend::supports(role) checks CapSet; data_class exposed; pricing optional; cooldown managed per-backend; existing P1 scheduler tests still pass with updated Backend struct. Unit tests for Backend construction + CapSet logic. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "Added CapSet/DataClass/Pricing/SecretRef types to kb-core; generalized Backend with adapter/endpoint/key/model_id/caps/pricing/data_class; Pool uses CapSet::supports for registration; Lease endpoint renamed from base_url; test_backend() helper for cross-crate test usage; NoopAdapter for bootstrap placeholder; ProviderAdapter requires Debug; all existing tests updated. just ci green (all gates)."
 
 [[task]]
 id = "P9-T5"

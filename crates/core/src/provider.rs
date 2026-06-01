@@ -1,5 +1,7 @@
 //! The `ProviderAdapter` capability and its wire DTOs (plan §26.1).
 
+use std::fmt::Debug;
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
@@ -108,7 +110,7 @@ pub struct EmbedResp {
 /// Normalizes calls across provider families (OpenAI-compatible, Anthropic, Gemini, …). The
 /// scheduler's acquire/lease/failover machinery is reused unchanged around it (plan §26.1).
 #[async_trait]
-pub trait ProviderAdapter: Send + Sync {
+pub trait ProviderAdapter: Debug + Send + Sync {
     /// Perform a chat completion against `conn`.
     ///
     /// # Errors
@@ -123,6 +125,34 @@ pub trait ProviderAdapter: Send + Sync {
 
     /// Whether this adapter's provider can serve `role` (capability gating; plan §26.6).
     fn supports(&self, role: Role) -> bool;
+}
+
+/// A no-op [`ProviderAdapter`] returning errors for every call.
+///
+/// Used as a **bootstrap placeholder** while the scheduler is being constructed
+/// from configuration (before the real adapters are wired — P9-T6). All methods
+/// return an error explaining that the backend is not yet fully wired.
+///
+/// For tests that only need a backend to exist (pool acquire, health, etc. —
+/// no actual API call), this adapter is sufficient. For tests that exercise
+/// real API calls, use a real adapter like [`OpenAiCompat`](kb_llm::OpenAiCompat).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoopAdapter;
+
+#[async_trait]
+impl ProviderAdapter for NoopAdapter {
+    async fn chat(&self, _conn: &ProviderConn, _req: ChatReq) -> anyhow::Result<ChatResp> {
+        anyhow::bail!("NoopAdapter::chat called — this backend was not fully wired (P9-T6)")
+    }
+
+    async fn embed(&self, _conn: &ProviderConn, _req: EmbedReq) -> anyhow::Result<EmbedResp> {
+        anyhow::bail!("NoopAdapter::embed called — this backend was not fully wired (P9-T6)")
+    }
+
+    fn supports(&self, _role: Role) -> bool {
+        // Permissive: actual gating is done by the Backend's CapSet field.
+        true
+    }
 }
 
 #[cfg(test)]

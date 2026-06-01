@@ -17,17 +17,16 @@ use crate::lease::Lease;
 
 /// The scheduler's registry of backends, indexed by the role they serve.
 ///
-/// A backend that serves several roles is registered under each — by a shared
-/// `Arc`, so all roles see one capacity pool. The pool owns live capacity guards
-/// and is a long-lived component: build it once at startup with
-/// [`Pool::from_config`].
+/// A backend that serves several roles (via its [`CapSet`](kb_core::capability::CapSet))
+/// is registered under each — by a shared `Arc`, so all roles see one capacity
+/// pool. The pool owns live capacity guards and is a long-lived component: build
+/// it once at startup with [`Pool::from_config`].
 ///
 /// Hot-reload note (CLAUDE.md): because the capacity guards hold in-flight
 /// [`crate::Lease`]s, a config change should *reconcile* the registry and timeout
 /// in place rather than rebuild the pool wholesale. The acquire path therefore
 /// reads the timeout per call via [`Pool::acquire_timeout`] (the live seam); the
-/// reconcile step lands with the acquisition algorithm in a later P1 task
-/// (plan §6.3, §6.6).
+/// reconcile step lands with the tiered routing in P9-T6.
 #[derive(Clone)]
 pub struct Pool {
     by_role: Arc<DashMap<Role, Vec<Arc<Backend>>>>,
@@ -37,12 +36,16 @@ pub struct Pool {
 impl Pool {
     /// Build a pool from explicit backends and an acquire timeout.
     ///
-    /// Each backend is registered (by shared `Arc`) under every role it serves.
+    /// Each backend is registered (by shared `Arc`) under every role it serves,
+    /// as determined by [`Backend::supports`].
     pub fn new(backends: Vec<Arc<Backend>>, acquire_timeout: Duration) -> Self {
         let by_role: DashMap<Role, Vec<Arc<Backend>>> = DashMap::new();
         for backend in backends {
-            for role in &backend.roles {
-                by_role.entry(*role).or_default().push(Arc::clone(&backend));
+            // Register the backend under every role its CapSet supports.
+            for role in Role::all() {
+                if backend.supports(*role) {
+                    by_role.entry(*role).or_default().push(Arc::clone(&backend));
+                }
             }
         }
         Self {
@@ -75,7 +78,7 @@ impl Pool {
     /// Acquire capacity on any healthy backend serving `role` (plan §6.3, §26.2).
     ///
     /// **Candidate filtering:** healthy, not in cooldown, capacity is usable
-    /// (`Rated` backends with exhausted RPM buckets are skipped).
+    /// (`Rated` backends with exhausted RPM buckets are skipped), has an endpoint.
     ///
     /// **Fast path:** probe candidates sorted by `(priority, free-slots↓)`
     /// with [`Capacity::try_acquire`];
@@ -84,7 +87,8 @@ impl Pool {
     /// [`acquire_timeout`](Self::acquire_timeout).
     ///
     /// Unhealthy and cooldown backends are filtered before both steps
-    /// (dead-host skip).
+    /// (dead-host skip). Backends without an endpoint are also skipped
+    /// (they use native SDKs with their own connection pools).
     ///
     /// # Errors
     ///
@@ -93,7 +97,7 @@ impl Pool {
     ///   acquire-timeout.
     /// - [`AcquireError::Closed`] — all candidate capacity guards are closed.
     pub async fn acquire(&self, role: Role) -> Result<Lease, AcquireError> {
-        // 1. Gather healthy candidates (dead-host skip + cooldown skip
+        // 1. Gather healthy candidates with endpoints (dead-host + cooldown skip
         //    + skip Rated backends with exhausted token buckets).
         let mut cands: Vec<Arc<Backend>> = self
             .backends_for(role)
@@ -101,6 +105,7 @@ impl Pool {
             .filter(|b| b.healthy.load(Ordering::Acquire))
             .filter(|b| !b.cooldown_active())
             .filter(|b| b.capacity.is_usable())
+            .filter(|b| b.endpoint.is_some())
             .collect();
 
         if cands.is_empty() {
@@ -113,7 +118,9 @@ impl Pool {
         // 3. FAST PATH — try capacity on the best candidate (plan §6.3, §26.2).
         for b in &cands {
             if let Some(guard) = b.capacity.try_acquire() {
-                return Ok(Lease::new(b.id.clone(), b.base_url.clone(), guard));
+                // Safety: we filtered on `endpoint.is_some()` above.
+                let endpoint = b.endpoint.clone().unwrap_or_default();
+                return Ok(Lease::new(b.id.clone(), endpoint, guard));
             }
         }
 
@@ -124,12 +131,13 @@ impl Pool {
         for b in &cands {
             let capacity = b.capacity.clone();
             let id = b.id.clone();
-            let url = b.base_url.clone();
-            waiters.push(async move { capacity.acquire().await.map(|guard| (id, url, guard)) });
+            let endpoint = b.endpoint.clone().unwrap_or_default();
+            waiters
+                .push(async move { capacity.acquire().await.map(|guard| (id, endpoint, guard)) });
         }
 
         match tokio::time::timeout(self.acquire_timeout, waiters.next()).await {
-            Ok(Some(Some((id, url, guard)))) => Ok(Lease::new(id, url, guard)),
+            Ok(Some(Some((id, endpoint, guard)))) => Ok(Lease::new(id, endpoint, guard)),
             Ok(None) | Ok(Some(None)) => Err(AcquireError::Closed),
             Err(_elapsed) => Err(AcquireError::Timeout(self.acquire_timeout)),
         }
@@ -175,6 +183,7 @@ impl Pool {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+    use crate::Capacity;
     use kb_config::{Backend as BackendCfg, Config, Scheduler};
 
     fn backend_cfg(
@@ -212,6 +221,13 @@ mod tests {
             ],
             ..Default::default()
         }
+    }
+
+    /// Shortcut for building a test backend via the test helper.
+    fn tb(id: &str, endpoint: &str, roles: Vec<Role>, priority: u8, slots: usize) -> Arc<Backend> {
+        Arc::new(crate::backend::test_backend(
+            id, endpoint, roles, priority, slots,
+        ))
     }
 
     #[test]
@@ -277,17 +293,31 @@ mod tests {
         assert_eq!(pool.acquire_timeout(), Duration::from_secs(1));
     }
 
+    #[test]
+    fn new_registers_only_for_supported_roles() {
+        let b = tb("b1", "http://x", vec![Role::Text, Role::Embed], 0, 2);
+        let pool = Pool::new(vec![Arc::clone(&b)], Duration::from_secs(5));
+
+        // Registered under Text and Embed.
+        assert_eq!(pool.backends_for(Role::Text).len(), 1);
+        assert_eq!(pool.backends_for(Role::Embed).len(), 1);
+        // NOT registered under other roles.
+        assert!(pool.backends_for(Role::Vision).is_empty());
+        assert!(pool.backends_for(Role::Code).is_empty());
+        assert!(pool.backends_for(Role::Rerank).is_empty());
+    }
+
     // ── P1-T2: acquire algorithm tests (§6.3) ──────────────────────────
 
     /// Fast path: a backend with a free slot returns a lease immediately.
     #[tokio::test]
     async fn acquire_free_slot_returns_lease() {
-        let b = Arc::new(Backend::new("b1", "http://x:8001", vec![Role::Text], 0, 2));
+        let b = tb("b1", "http://x:8001", vec![Role::Text], 0, 2);
         let pool = Pool::new(vec![Arc::clone(&b)], Duration::from_secs(5));
 
         let lease = pool.acquire(Role::Text).await.unwrap();
         assert_eq!(lease.backend_id, "b1");
-        assert_eq!(lease.base_url, "http://x:8001");
+        assert_eq!(lease.endpoint, "http://x:8001");
         assert_eq!(b.free(), 1, "one slot consumed");
 
         drop(lease);
@@ -297,14 +327,8 @@ mod tests {
     /// Lower-priority (preferred) backend is picked first when both have free slots.
     #[tokio::test]
     async fn acquire_prefers_lower_priority() {
-        let b_pri0 = Arc::new(Backend::new("pri0", "http://x:0", vec![Role::Text], 0, 2));
-        let b_pri10 = Arc::new(Backend::new(
-            "pri10",
-            "http://x:10",
-            vec![Role::Text],
-            10,
-            2,
-        ));
+        let b_pri0 = tb("pri0", "http://x:0", vec![Role::Text], 0, 2);
+        let b_pri10 = tb("pri10", "http://x:10", vec![Role::Text], 10, 2);
         let pool = Pool::new(
             vec![Arc::clone(&b_pri10), Arc::clone(&b_pri0)],
             Duration::from_secs(5),
@@ -320,23 +344,11 @@ mod tests {
     /// When two backends have the same priority, the one with more free slots wins.
     #[tokio::test]
     async fn acquire_same_priority_picks_most_free_slots() {
-        let b_full = Arc::new(Backend::new(
-            "full",
-            "http://x:full",
-            vec![Role::Text],
-            5,
-            1,
-        ));
+        let b_full = tb("full", "http://x:full", vec![Role::Text], 5, 1);
         // Exhaust b_full's only slot so the fast-path skips it.
         let _busy = b_full.capacity.try_acquire().unwrap();
 
-        let b_free = Arc::new(Backend::new(
-            "free",
-            "http://x:free",
-            vec![Role::Text],
-            5,
-            3,
-        ));
+        let b_free = tb("free", "http://x:free", vec![Role::Text], 5, 3);
         let pool = Pool::new(
             vec![Arc::clone(&b_full), Arc::clone(&b_free)],
             Duration::from_secs(5),
@@ -352,7 +364,7 @@ mod tests {
     /// When all backends are busy (no free slots), acquire times out.
     #[tokio::test]
     async fn acquire_all_busy_then_timeout() {
-        let b = Arc::new(Backend::new("b1", "http://x:8001", vec![Role::Text], 0, 1));
+        let b = tb("b1", "http://x:8001", vec![Role::Text], 0, 1);
         // Hold the only slot — never release it.
         let _hold = b.capacity.try_acquire().unwrap();
         let pool = Pool::new(vec![Arc::clone(&b)], Duration::from_millis(10));
@@ -369,22 +381,10 @@ mod tests {
     /// An unhealthy backend is skipped even if it has free slots.
     #[tokio::test]
     async fn dead_host_skipped() {
-        let b_dead = Arc::new(Backend::new(
-            "dead",
-            "http://x:dead",
-            vec![Role::Text],
-            0,
-            4,
-        ));
+        let b_dead = tb("dead", "http://x:dead", vec![Role::Text], 0, 4);
         b_dead.healthy.store(false, Ordering::Release); // mark dead
 
-        let b_alive = Arc::new(Backend::new(
-            "alive",
-            "http://x:alive",
-            vec![Role::Text],
-            10,
-            2,
-        ));
+        let b_alive = tb("alive", "http://x:alive", vec![Role::Text], 10, 2);
         let pool = Pool::new(
             vec![Arc::clone(&b_dead), Arc::clone(&b_alive)],
             Duration::from_secs(5),
@@ -411,7 +411,7 @@ mod tests {
     /// NoBackend when every backend serving the role is unhealthy.
     #[tokio::test]
     async fn no_backend_all_unhealthy() {
-        let b = Arc::new(Backend::new("b1", "http://x:8001", vec![Role::Text], 0, 2));
+        let b = tb("b1", "http://x:8001", vec![Role::Text], 0, 2);
         b.healthy.store(false, Ordering::Release);
         let pool = Pool::new(vec![Arc::clone(&b)], Duration::from_secs(5));
 
@@ -425,7 +425,7 @@ mod tests {
     /// Wait path: acquire blocks until a held slot is released, then succeeds.
     #[tokio::test]
     async fn wait_path_succeeds_when_slot_frees() {
-        let b = Arc::new(Backend::new("b1", "http://x:8001", vec![Role::Text], 0, 1));
+        let b = tb("b1", "http://x:8001", vec![Role::Text], 0, 1);
         // Hold the only slot.
         let hold = b.capacity.try_acquire().unwrap();
         let pool = Pool::new(vec![Arc::clone(&b)], Duration::from_secs(5));
@@ -448,7 +448,7 @@ mod tests {
     /// RAII: dropping the Lease returns the slot to the backend.
     #[tokio::test]
     async fn lease_drop_frees_slot_for_next_acquire() {
-        let b = Arc::new(Backend::new("b1", "http://x:8001", vec![Role::Text], 0, 1));
+        let b = tb("b1", "http://x:8001", vec![Role::Text], 0, 1);
         let pool = Pool::new(vec![Arc::clone(&b)], Duration::from_secs(5));
 
         // Acquire and immediately drop.
@@ -466,7 +466,7 @@ mod tests {
     /// Pool is `Clone`-able and clones share the same registries/timeout.
     #[tokio::test]
     async fn cloned_pool_shares_backend_state() {
-        let b = Arc::new(Backend::new("b1", "http://x:8001", vec![Role::Text], 0, 2));
+        let b = tb("b1", "http://x:8001", vec![Role::Text], 0, 2);
         let pool1 = Pool::new(vec![Arc::clone(&b)], Duration::from_secs(5));
         let pool2 = pool1.clone();
 
@@ -484,17 +484,11 @@ mod tests {
     /// A backend in cooldown is skipped during acquire.
     #[tokio::test]
     async fn cooldown_backend_skipped() {
-        let b_cooldown = Arc::new(Backend::new(
-            "cooldown",
-            "http://x:c",
-            vec![Role::Text],
-            0,
-            4,
-        ));
+        let b_cooldown = tb("cooldown", "http://x:c", vec![Role::Text], 0, 4);
         // Set cooldown far in the future.
         b_cooldown.set_cooldown(std::time::Instant::now() + Duration::from_secs(300));
 
-        let b_alive = Arc::new(Backend::new("alive", "http://x:a", vec![Role::Text], 10, 2));
+        let b_alive = tb("alive", "http://x:a", vec![Role::Text], 10, 2);
         let pool = Pool::new(
             vec![Arc::clone(&b_cooldown), Arc::clone(&b_alive)],
             Duration::from_secs(5),
@@ -521,13 +515,17 @@ mod tests {
         // Build a Rated backend manually.
         let b_rated = Arc::new(Backend {
             id: "rated".into(),
-            base_url: "http://x:rated".into(),
-            roles: vec![Role::Text],
-            priority: 0,
+            adapter: Arc::new(kb_core::provider::NoopAdapter),
+            endpoint: Some("http://x:rated".into()),
+            key: None,
+            model_id: "rated-model".into(),
+            caps: kb_core::capability::CapSet::from(Role::Text),
             capacity: rated_cap.clone(),
-            max_slots: 10,
+            max_concurrency: 10,
+            pricing: None,
+            data_class: kb_core::data_class::DataClass::Local,
+            priority: 0,
             healthy: Arc::new(std::sync::atomic::AtomicBool::new(true)),
-            in_flight: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             cooldown_until: Arc::new(std::sync::Mutex::new(None)),
         });
 
@@ -541,6 +539,36 @@ mod tests {
         assert!(matches!(err, AcquireError::NoBackend { .. }));
     }
 
+    // ── P9-T4: NoBackend when backend has no endpoint ──────────────────
+
+    /// A backend without an endpoint is skipped during acquire (native SDK backends
+    /// manage their own connection pools).
+    #[tokio::test]
+    async fn no_endpoint_skipped_in_acquire() {
+        let b = Arc::new(Backend {
+            id: "no-ep".into(),
+            adapter: Arc::new(kb_core::provider::NoopAdapter),
+            endpoint: None, /* no endpoint */
+            key: None,
+            model_id: "model".into(),
+            caps: kb_core::capability::CapSet::from(Role::Text),
+            capacity: Capacity::new_slots(5),
+            max_concurrency: 5,
+            pricing: None,
+            data_class: kb_core::data_class::DataClass::Remote,
+            priority: 0,
+            healthy: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            cooldown_until: Arc::new(std::sync::Mutex::new(None)),
+        });
+
+        let pool = Pool::new(vec![Arc::clone(&b)], Duration::from_secs(5));
+        let err = pool.acquire(Role::Text).await.unwrap_err();
+        assert!(
+            matches!(err, AcquireError::NoBackend { .. }),
+            "backend without endpoint must be skipped"
+        );
+    }
+
     // ── P1-T3: mock-backend harness smoke test ────────────────────────
 
     /// Prove the mock-backend harness works end-to-end with the scheduler:
@@ -550,20 +578,20 @@ mod tests {
         let mock = kb_mock_backend::MockBackend::start().await;
         let base_url = format!("http://{}/v1", mock.addr());
 
-        let b = Arc::new(Backend::new(
+        let b = tb(
             "mock-1",
-            base_url,
+            &base_url,
             vec![Role::Text],
             0, /* priority */
             2, /* slots */
-        ));
+        );
         let pool = Pool::new(vec![Arc::clone(&b)], Duration::from_secs(5));
 
         // Fast-path: mock is healthy (default), slots are free.
         let lease = pool.acquire(Role::Text).await.unwrap();
         assert_eq!(lease.backend_id, "mock-1");
-        assert!(lease.base_url.starts_with("http://127.0.0.1:"));
-        assert!(lease.base_url.ends_with("/v1"));
+        assert!(lease.endpoint.starts_with("http://127.0.0.1:"));
+        assert!(lease.endpoint.ends_with("/v1"));
         assert_eq!(b.free(), 1);
 
         drop(lease);

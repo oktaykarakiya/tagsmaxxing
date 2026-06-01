@@ -394,7 +394,7 @@ mod tests {
     use axum::body::Body;
     use axum::http::Request;
     use kb_core::session::SessionStore;
-    use kb_scheduler::Backend;
+    use kb_scheduler::test_backend;
     use kb_store::{InMemorySessionStore, PgStore};
     use std::sync::atomic::Ordering;
     use tower::ServiceExt;
@@ -444,14 +444,14 @@ mod tests {
     /// healthy backend.
     #[test]
     fn check_backend_readiness_all_healthy() {
-        let b1 = Arc::new(Backend::new(
+        let b1 = Arc::new(test_backend(
             "b1",
             "http://x:1",
             vec![kb_core::role::Role::Text],
             0,
             1,
         ));
-        let b2 = Arc::new(Backend::new(
+        let b2 = Arc::new(test_backend(
             "b2",
             "http://x:2",
             vec![kb_core::role::Role::Embed],
@@ -468,7 +468,7 @@ mod tests {
     /// `check_backend_readiness` returns `false` when a role has no healthy backends.
     #[test]
     fn check_backend_readiness_one_unhealthy() {
-        let b = Arc::new(Backend::new(
+        let b = Arc::new(test_backend(
             "b1",
             "http://x:1",
             vec![kb_core::role::Role::Text],
@@ -484,14 +484,14 @@ mod tests {
     /// healthy backend even if another of the same role is unhealthy.
     #[test]
     fn check_backend_readiness_partial_healthy() {
-        let healthy = Arc::new(Backend::new(
+        let healthy = Arc::new(test_backend(
             "healthy",
             "http://x:1",
             vec![kb_core::role::Role::Text],
             0,
             1,
         ));
-        let unhealthy = Arc::new(Backend::new(
+        let unhealthy = Arc::new(test_backend(
             "unhealthy",
             "http://x:2",
             vec![kb_core::role::Role::Text],

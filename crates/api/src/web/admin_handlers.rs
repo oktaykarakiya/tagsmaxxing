@@ -178,19 +178,21 @@ pub async fn admin_dashboard(
         pool.all_backends()
             .into_iter()
             .map(|b| {
-                let roles = b
-                    .roles
+                use kb_core::role::Role;
+                let roles = Role::all()
                     .iter()
+                    .filter(|r| b.supports(**r))
                     .map(|r| r.as_str().to_owned())
                     .collect::<Vec<_>>()
                     .join(", ");
                 use std::sync::atomic::Ordering;
+                let endpoint = b.endpoint.clone().unwrap_or_default();
                 AdminBackendRow {
                     id: b.id.clone(),
-                    base_url: b.base_url.clone(),
+                    base_url: endpoint,
                     healthy: b.healthy.load(Ordering::Relaxed),
                     free_slots: b.free(),
-                    total_slots: b.max_slots,
+                    total_slots: b.max_concurrency,
                     roles,
                 }
             })

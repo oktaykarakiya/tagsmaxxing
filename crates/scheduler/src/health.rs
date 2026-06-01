@@ -93,12 +93,18 @@ impl HealthLoop {
         }
     }
 
-    /// Single-backend health probe: `GET {base_url}/health`.
+    /// Single-backend health probe: `GET {endpoint}/health`.
     ///
     /// Returns `true` on a 2xx response, `false` on any error or non-2xx
-    /// status.
+    /// status, or if the backend has no endpoint (native-SDK backends are
+    /// considered healthy unless their adapter reports otherwise).
     async fn probe_one(&self, backend: &Backend) -> bool {
-        let url = format!("{}/health", backend.base_url);
+        let Some(endpoint) = backend.endpoint.as_deref() else {
+            // Native-SDK backends (no HTTP endpoint) are assumed healthy;
+            // their adapter handles health internally.
+            return true;
+        };
+        let url = format!("{endpoint}/health");
         match self.client.get(&url).send().await {
             Ok(resp) => resp.status().is_success(),
             Err(_) => false,
@@ -117,7 +123,7 @@ mod tests {
 
     /// Helper: build a backend that points at a running mock.
     fn backend_for_mock(mock: &MockBackend, id: &str, priority: u8, slots: usize) -> Arc<Backend> {
-        Arc::new(Backend::new(
+        Arc::new(crate::backend::test_backend(
             id,
             mock.url("/v1"),
             vec![kb_core::role::Role::Text],
@@ -238,7 +244,7 @@ mod tests {
     async fn unhealthy_backend_skipped_in_acquire() {
         let mock = MockBackend::start().await;
         let base_url = mock.url("/v1");
-        let b = Arc::new(Backend::new(
+        let b = Arc::new(crate::backend::test_backend(
             "mock-1",
             &base_url,
             vec![kb_core::role::Role::Text],
@@ -281,7 +287,7 @@ mod tests {
     async fn recovered_backend_used_in_acquire() {
         let mock = MockBackend::start().await;
         let base_url = mock.url("/v1");
-        let b = Arc::new(Backend::new(
+        let b = Arc::new(crate::backend::test_backend(
             "mock-1",
             &base_url,
             vec![kb_core::role::Role::Text],

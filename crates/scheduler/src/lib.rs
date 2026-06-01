@@ -16,14 +16,14 @@
 //! wrapper (§6.4) arrive in later P1 tasks. See `local-kb-plan.md` §6 for the
 //! authoritative design.
 
-mod backend;
+pub mod backend;
 mod capacity;
 mod error;
 mod health;
 mod lease;
 mod pool;
 
-pub use backend::Backend;
+pub use backend::{Backend, test_backend};
 pub use capacity::{Capacity, CapacityPermit, Clock, TokenBucket, WallClock};
 pub use error::AcquireError;
 pub use health::HealthLoop;

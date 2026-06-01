@@ -33,7 +33,7 @@ mod tests {
     use kb_pipeline::metadata_merge::MetadataMerger;
     use kb_pipeline::tag_canonicalizer::TagCanonicalizer;
     use kb_pipeline::tag_store::TagStore;
-    use kb_scheduler::{Backend, Pool};
+    use kb_scheduler::{Pool, test_backend};
     use kb_store::PgStore;
     use reqwest::Client;
 
@@ -102,7 +102,7 @@ mod tests {
         // canonicalizer keeps them as 3 separate tags rather than merging them.
         mock.scenario().lock().await.embed_dim = Some(1024);
 
-        let backend = Arc::new(Backend::new(
+        let backend = Arc::new(test_backend(
             "mock-e2e",
             base_url,
             vec![Role::Text, Role::Embed],

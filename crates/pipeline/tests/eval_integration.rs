@@ -31,7 +31,7 @@ mod tests {
         fixture_corpus, format_vector, spike_1024,
     };
     use kb_pipeline::retrieval::RetrievalPipeline;
-    use kb_scheduler::{Backend, Pool};
+    use kb_scheduler::{Pool, test_backend};
     use kb_store::PgStore;
     use reqwest::Client;
 
@@ -154,7 +154,7 @@ mod tests {
         // 1024-dim spike at 0 for all query embeddings.
         mock.scenario().lock().await.embed_content = Some(vec![spike_1024(0)]);
 
-        let backend = Arc::new(Backend::new("mock-eval", base_url, vec![Role::Embed], 0, 8));
+        let backend = Arc::new(test_backend("mock-eval", base_url, vec![Role::Embed], 0, 8));
         let pool = Pool::new(vec![backend], Duration::from_secs(10));
         let llm = Arc::new(LlamaClient::new(
             pool,

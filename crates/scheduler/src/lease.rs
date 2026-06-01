@@ -10,12 +10,19 @@ use crate::capacity::CapacityPermit;
 /// (and refunding token-bucket credits for `Rated` capacity). Carry it for the
 /// lifetime of an in-flight request and drop it — explicitly or by leaving
 /// scope — when the call completes or fails over to another backend.
+///
+/// # `endpoint`
+///
+/// The `endpoint` field is the backend's base URL, resolved at acquire time.
+/// It is always `Some` when a lease is granted (backends without an endpoint
+/// are not eligible for capacity-based acquisition — they use native SDKs
+/// with their own connection pools).
 #[derive(Debug)]
 pub struct Lease {
     /// Id of the backend this capacity was taken from.
     pub backend_id: String,
     /// Base URL the request should be sent to (resolved at acquire time).
-    pub base_url: String,
+    pub endpoint: String,
     // The held capacity guard; its `Drop` frees the slot and refunds
     // token-bucket credits. Never read directly — the leading underscore
     // documents that and exempts it from the dead-code lint.
@@ -26,12 +33,12 @@ impl Lease {
     /// Wrap an acquired capacity permit together with the backend it was taken from.
     pub fn new(
         backend_id: impl Into<String>,
-        base_url: impl Into<String>,
+        endpoint: impl Into<String>,
         guard: CapacityPermit,
     ) -> Self {
         Self {
             backend_id: backend_id.into(),
-            base_url: base_url.into(),
+            endpoint: endpoint.into(),
             _guard: guard,
         }
     }
@@ -53,7 +60,7 @@ mod tests {
         let lease = Lease::new("b1", "http://x", guard);
 
         assert_eq!(lease.backend_id, "b1");
-        assert_eq!(lease.base_url, "http://x");
+        assert_eq!(lease.endpoint, "http://x");
         assert_eq!(cap.free(), 1, "slot is held while leased");
 
         drop(lease);

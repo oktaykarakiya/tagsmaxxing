@@ -29,7 +29,7 @@ use kb_core::provider::{ChatMessage, ChatReq, ChatRole, EmbedReq};
 use kb_core::role::Role;
 use kb_llm::{LlamaClient, LlmError};
 use kb_mock_backend::{MockBackend, ResponseMode};
-use kb_scheduler::{AcquireError, Backend, HealthLoop, Pool};
+use kb_scheduler::{AcquireError, HealthLoop, Pool, test_backend};
 use reqwest::Client;
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -41,8 +41,8 @@ fn backend_for(
     roles: Vec<Role>,
     priority: u8,
     slots: usize,
-) -> Arc<Backend> {
-    Arc::new(Backend::new(id, mock.url("/v1"), roles, priority, slots))
+) -> Arc<kb_scheduler::Backend> {
+    Arc::new(test_backend(id, mock.url("/v1"), roles, priority, slots))
 }
 
 /// Construct a minimal [`ChatReq`] with one user message.

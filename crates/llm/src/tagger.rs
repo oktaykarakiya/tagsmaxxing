@@ -221,7 +221,7 @@ mod tests {
     use kb_core::kind::DocKind;
     use kb_core::tagger::TagInput;
     use kb_mock_backend::{MockBackend, ResponseMode};
-    use kb_scheduler::{Backend, Pool};
+    use kb_scheduler::{Pool, test_backend};
     use reqwest::Client;
 
     use super::*;
@@ -230,7 +230,7 @@ mod tests {
     async fn tagger_with_mock() -> (JsonSchemaTagger, MockBackend) {
         let mock = MockBackend::start().await;
         let base_url = mock.url("/v1");
-        let backend = Arc::new(Backend::new(
+        let backend = Arc::new(test_backend(
             "mock-tagger",
             base_url,
             vec![Role::Text],

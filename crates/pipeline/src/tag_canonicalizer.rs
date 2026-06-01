@@ -224,7 +224,7 @@ mod tests {
 
     use kb_core::role::Role;
     use kb_mock_backend::MockBackend;
-    use kb_scheduler::{Backend, Pool};
+    use kb_scheduler::{Pool, test_backend};
     use reqwest::Client;
 
     use super::*;
@@ -236,7 +236,7 @@ mod tests {
     async fn canonicalizer_with_mock(store: Arc<MockTagStore>) -> (TagCanonicalizer, MockBackend) {
         let mock = MockBackend::start().await;
         let base_url = mock.url("/v1");
-        let backend = Arc::new(Backend::new(
+        let backend = Arc::new(test_backend(
             "mock-embed",
             base_url,
             vec![Role::Embed],

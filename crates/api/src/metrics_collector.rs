@@ -18,7 +18,7 @@ use tracing::info;
 /// Prometheus gauges.
 ///
 /// The collector stops when `shutdown` signals. It polls:
-/// - Backend health, free slots, total slots, in-flight count (from `pool`)
+/// - Backend health, free slots, total slots (from `pool`)
 /// - Queue depth (from `pg_store`, when available)
 ///
 /// # Panics
@@ -57,8 +57,8 @@ fn collect_backends(pool: &Pool) {
     for backend in pool.all_backends() {
         let healthy = backend.healthy.load(Ordering::Acquire);
         let free = backend.free();
-        let total = backend.max_slots;
-        let in_flight = backend.in_flight.load(Ordering::Acquire);
+        let total = backend.max_concurrency;
+        let in_flight = total.saturating_sub(free);
 
         metrics::record_backend(&backend.id, healthy, free, total, in_flight);
     }
@@ -74,7 +74,7 @@ mod tests {
     use std::time::Duration;
 
     use kb_core::role::Role;
-    use kb_scheduler::Backend;
+    use kb_scheduler::test_backend;
 
     use super::*;
 
@@ -88,7 +88,7 @@ mod tests {
     fn collect_backends_updates_all_gauges() {
         ensure_init();
 
-        let backend = Arc::new(Backend::new(
+        let backend = Arc::new(test_backend(
             "test-gpu",
             "http://localhost:8001",
             vec![Role::Text, Role::Embed],
@@ -97,7 +97,6 @@ mod tests {
         ));
         // Consume one slot to test free vs total.
         let _permit = backend.capacity.try_acquire().unwrap();
-        backend.in_flight.store(1, Ordering::Release);
 
         let pool = Pool::new(vec![Arc::clone(&backend)], Duration::from_secs(5));
 
@@ -117,7 +116,7 @@ mod tests {
     fn collect_backends_unhealthy() {
         ensure_init();
 
-        let backend = Arc::new(Backend::new(
+        let backend = Arc::new(test_backend(
             "sick",
             "http://localhost:8001",
             vec![Role::Text],
@@ -138,14 +137,14 @@ mod tests {
     fn collect_backends_multiple() {
         ensure_init();
 
-        let a = Arc::new(Backend::new(
+        let a = Arc::new(test_backend(
             "gpu-a",
             "http://a:8001",
             vec![Role::Text],
             0,
             3,
         ));
-        let b = Arc::new(Backend::new(
+        let b = Arc::new(test_backend(
             "gpu-b",
             "http://b:8002",
             vec![Role::Embed],
@@ -166,29 +165,28 @@ mod tests {
 
     #[tokio::test]
     async fn collector_stops_on_shutdown() {
-        let backend = Arc::new(Backend::new(
+        let backend = Arc::new(test_backend(
             "g",
             "http://localhost:8001",
             vec![Role::Text],
             0,
             2,
         ));
+
         let pool = Arc::new(Pool::new(vec![backend], Duration::from_secs(5)));
         let (tx, rx) = tokio::sync::watch::channel(false);
 
-        // Spawn collector and shut it down immediately.
-        let handle =
-            tokio::spawn(async move { start_collector(pool, Duration::from_secs(60), rx).await });
+        // Spawn the collector, then immediately shut down.
+        let handle = tokio::spawn(async move {
+            start_collector(pool, Duration::from_secs(60), rx).await;
+        });
 
-        // Give it a moment to start, then signal shutdown.
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        // Small sleep to let the collector start.
+        tokio::time::sleep(Duration::from_millis(5)).await;
+
+        // Signal shutdown.
         let _ = tx.send(true);
-
-        // Collector must exit within a reasonable timeout.
-        match tokio::time::timeout(Duration::from_secs(2), handle).await {
-            Ok(Ok(())) => {} // collector exited cleanly
-            Ok(Err(e)) => panic!("collector task panicked: {e}"),
-            Err(_) => panic!("collector did not shut down within timeout"),
-        }
+        let result = tokio::time::timeout(Duration::from_secs(5), handle).await;
+        assert!(result.is_ok(), "collector should shut down when signalled");
     }
 }

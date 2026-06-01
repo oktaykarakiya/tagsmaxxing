@@ -824,7 +824,7 @@ mod tests {
     ) -> (IngestPipeline, Arc<MockIngestStore>) {
         use kb_core::role::Role;
         use kb_mock_backend::MockBackend;
-        use kb_scheduler::{Backend, Pool};
+        use kb_scheduler::{Pool, test_backend};
         use kb_store::LocalBlob;
         use reqwest::Client;
 
@@ -849,7 +849,7 @@ mod tests {
         let base_url = mock.url("/v1");
         // Don't drop the mock — return it to the caller or leak it intentionally.
         // We use Box::leak to simplify the test helper (tests are short-lived).
-        let backend = Arc::new(Backend::new(
+        let backend = Arc::new(test_backend(
             "mock-embed",
             base_url,
             vec![Role::Embed],
@@ -1056,12 +1056,12 @@ mod tests {
         // Use a mock LLM backend so embedder/canonicalizer can be created.
         use kb_core::role::Role;
         use kb_mock_backend::MockBackend;
-        use kb_scheduler::{Backend, Pool};
+        use kb_scheduler::{Pool, test_backend};
         use reqwest::Client;
 
         let mock = MockBackend::start().await;
         let base_url = mock.url("/v1");
-        let backend = Arc::new(Backend::new(
+        let backend = Arc::new(test_backend(
             "mock-bytes",
             base_url,
             vec![Role::Embed],
@@ -1136,12 +1136,12 @@ mod tests {
 
         use kb_core::role::Role;
         use kb_mock_backend::MockBackend;
-        use kb_scheduler::{Backend, Pool};
+        use kb_scheduler::{Pool, test_backend};
         use reqwest::Client;
 
         let mock = MockBackend::start().await;
         let base_url = mock.url("/v1");
-        let backend = Arc::new(Backend::new(
+        let backend = Arc::new(test_backend(
             "mock-noext",
             base_url,
             vec![Role::Embed],
@@ -1217,12 +1217,12 @@ mod tests {
 
         use kb_core::role::Role;
         use kb_mock_backend::MockBackend;
-        use kb_scheduler::{Backend, Pool};
+        use kb_scheduler::{Pool, test_backend};
         use reqwest::Client;
 
         let mock = MockBackend::start().await;
         let base_url = mock.url("/v1");
-        let backend = Arc::new(Backend::new("mock-blob", base_url, vec![Role::Embed], 0, 4));
+        let backend = Arc::new(test_backend("mock-blob", base_url, vec![Role::Embed], 0, 4));
         let pool = Pool::new(vec![backend], Duration::from_secs(5));
         let llm = Arc::new(kb_llm::LlamaClient::new(
             pool,
@@ -1361,12 +1361,12 @@ mod tests {
 
         use kb_core::role::Role;
         use kb_mock_backend::MockBackend;
-        use kb_scheduler::{Backend, Pool};
+        use kb_scheduler::{Pool, test_backend};
         use reqwest::Client;
 
         let mock = MockBackend::start().await;
         let base_url = mock.url("/v1");
-        let backend = Arc::new(Backend::new("mock-note", base_url, vec![Role::Embed], 0, 4));
+        let backend = Arc::new(test_backend("mock-note", base_url, vec![Role::Embed], 0, 4));
         let pool = Pool::new(vec![backend], Duration::from_secs(5));
         let llm = Arc::new(kb_llm::LlamaClient::new(
             pool,
@@ -1578,12 +1578,12 @@ mod tests {
 
         use kb_core::role::Role;
         use kb_mock_backend::MockBackend;
-        use kb_scheduler::{Backend, Pool};
+        use kb_scheduler::{Pool, test_backend};
         use reqwest::Client;
 
         let mock = MockBackend::start().await;
         let base_url = mock.url("/v1");
-        let backend = Arc::new(Backend::new(
+        let backend = Arc::new(test_backend(
             "mock-empty",
             base_url,
             vec![Role::Embed],
@@ -1719,11 +1719,11 @@ mod tests {
         store: Arc<MockTagStore>,
     ) -> (TagCanonicalizer, kb_mock_backend::MockBackend) {
         use kb_mock_backend::MockBackend;
-        use kb_scheduler::{Backend, Pool};
+        use kb_scheduler::{Pool, test_backend};
 
         let mock = MockBackend::start().await;
         let base_url = mock.url("/v1");
-        let backend = Arc::new(Backend::new(
+        let backend = Arc::new(test_backend(
             "mock-embed",
             base_url,
             vec![kb_core::role::Role::Embed],

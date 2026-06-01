@@ -97,6 +97,7 @@ struct OpenAiUsage {
 /// POSTs to `{endpoint}/v1/chat/completions` and `/v1/embeddings` with optional
 /// `Authorization: Bearer`. `supported_roles` gates [`supports`](ProviderAdapter::supports);
 /// `endpoint` must be a host base URL — `None` returns an error.
+#[derive(Debug)]
 pub struct OpenAiCompat {
     http: Client,
     supported_roles: Vec<Role>,

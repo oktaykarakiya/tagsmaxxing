@@ -334,13 +334,13 @@ mod tests {
         use kb_core::role::Role;
         use kb_llm::LlamaClient;
         use kb_mock_backend::MockBackend;
-        use kb_scheduler::{Backend, Pool};
+        use kb_scheduler::{Pool, test_backend};
         use reqwest::Client;
         use std::time::Duration;
 
         let mock = MockBackend::start().await;
         let base_url = mock.url("/v1");
-        let backend = Arc::new(Backend::new(
+        let backend = Arc::new(test_backend(
             "mock-retrieval",
             base_url,
             vec![Role::Embed],
@@ -511,13 +511,13 @@ mod tests {
         use kb_core::role::Role;
         use kb_llm::LlamaClient;
         use kb_mock_backend::MockBackend;
-        use kb_scheduler::{Backend, Pool};
+        use kb_scheduler::{Pool, test_backend};
         use reqwest::Client;
         use std::time::Duration;
 
         let mock = MockBackend::start().await;
         let base_url = mock.url("/v1");
-        let backend = Arc::new(Backend::new("mock-rec", base_url, vec![Role::Embed], 0, 4));
+        let backend = Arc::new(test_backend("mock-rec", base_url, vec![Role::Embed], 0, 4));
         let pool = Pool::new(vec![backend], Duration::from_secs(5));
         let llm = Arc::new(LlamaClient::new(
             pool,
@@ -582,13 +582,13 @@ mod tests {
         use kb_core::role::Role;
         use kb_llm::LlamaClient;
         use kb_mock_backend::MockBackend;
-        use kb_scheduler::{Backend, Pool};
+        use kb_scheduler::{Pool, test_backend};
         use reqwest::Client;
         use std::time::Duration;
 
         let mock = MockBackend::start().await;
         let base_url = mock.url("/v1");
-        let backend = Arc::new(Backend::new("mock-fail", base_url, vec![Role::Embed], 0, 4));
+        let backend = Arc::new(test_backend("mock-fail", base_url, vec![Role::Embed], 0, 4));
         let pool = Pool::new(vec![backend], Duration::from_secs(5));
         let llm = Arc::new(LlamaClient::new(
             pool,
@@ -612,13 +612,13 @@ mod tests {
         use kb_core::role::Role;
         use kb_llm::LlamaClient;
         use kb_mock_backend::MockBackend;
-        use kb_scheduler::{Backend, Pool};
+        use kb_scheduler::{Pool, test_backend};
         use reqwest::Client;
         use std::time::Duration;
 
         let mock = MockBackend::start().await;
         let base_url = mock.url("/v1");
-        let backend = Arc::new(Backend::new("mock-pass", base_url, vec![Role::Embed], 0, 4));
+        let backend = Arc::new(test_backend("mock-pass", base_url, vec![Role::Embed], 0, 4));
         let pool = Pool::new(vec![backend], Duration::from_secs(5));
         let llm = Arc::new(LlamaClient::new(
             pool,
@@ -716,13 +716,13 @@ mod tests {
         use kb_core::role::Role;
         use kb_llm::LlamaClient;
         use kb_mock_backend::MockBackend;
-        use kb_scheduler::{Backend, Pool};
+        use kb_scheduler::{Pool, test_backend};
         use reqwest::Client;
         use std::time::Duration;
 
         let mock = MockBackend::start().await;
         let base_url = mock.url("/v1");
-        let backend = Arc::new(Backend::new(
+        let backend = Arc::new(test_backend(
             "mock-mismatch",
             base_url,
             vec![Role::Embed],
@@ -786,13 +786,13 @@ mod tests {
         use kb_core::role::Role;
         use kb_llm::LlamaClient;
         use kb_mock_backend::MockBackend;
-        use kb_scheduler::{Backend, Pool};
+        use kb_scheduler::{Pool, test_backend};
         use reqwest::Client;
         use std::time::Duration;
 
         let mock = MockBackend::start().await;
         let base_url = mock.url("/v1");
-        let backend = Arc::new(Backend::new("mock-eq", base_url, vec![Role::Embed], 0, 4));
+        let backend = Arc::new(test_backend("mock-eq", base_url, vec![Role::Embed], 0, 4));
         let pool = Pool::new(vec![backend], Duration::from_secs(5));
         let llm = Arc::new(LlamaClient::new(
             pool,
@@ -816,13 +816,13 @@ mod tests {
         use kb_core::role::Role;
         use kb_llm::LlamaClient;
         use kb_mock_backend::MockBackend;
-        use kb_scheduler::{Backend, Pool};
+        use kb_scheduler::{Pool, test_backend};
         use reqwest::Client;
         use std::time::Duration;
 
         let mock = MockBackend::start().await;
         let base_url = mock.url("/v1");
-        let backend = Arc::new(Backend::new(
+        let backend = Arc::new(test_backend(
             "mock-eq-dim",
             base_url,
             vec![Role::Embed],

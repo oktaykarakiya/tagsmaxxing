@@ -320,12 +320,12 @@ mod tests {
         use kb_core::role::Role;
         use kb_llm::LlamaClient;
         use kb_mock_backend::MockBackend;
-        use kb_scheduler::{Backend, Pool};
+        use kb_scheduler::{Pool, test_backend};
         use reqwest::Client;
 
         let mock = MockBackend::start().await;
         let base_url = mock.url("/v1");
-        let backend = Arc::new(Backend::new(
+        let backend = Arc::new(test_backend(
             "mock-search-api",
             base_url,
             vec![Role::Embed],

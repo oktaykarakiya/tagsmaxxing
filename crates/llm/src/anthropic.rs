@@ -93,6 +93,7 @@ struct AnthropicErrorDetail {
 /// POSTs to `{endpoint}/v1/messages` with `x-api-key` and `anthropic-version:
 /// 2023-06-01` headers. Supports chat roles (`Text`, `Vision`, `Code`); does
 /// **not** support `Embed` (Anthropic has no embeddings endpoint, plan §26.6).
+#[derive(Debug)]
 pub struct Anthropic {
     http: Client,
 }
