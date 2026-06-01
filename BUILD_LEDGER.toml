@@ -1048,9 +1048,9 @@ description = "Admin CRUD for providers/models/routes + test-connection: web UI 
 depends_on = ["P9-T5", "P6-T8"]
 plan_sections = ["26.5", "15"]
 acceptance = "CRUD operations persist to DB; test-connection validates endpoint; masked API key (never returned to UI, only set); NOTIFY fires on every mutation; audit log records who changed what; validation: empty endpoint for non-local provider → error; embed role assigned to multiple models → warning. Unit tests for CRUD handlers + test-connection flow + integration test with mock endpoint. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "Admin CRUD web UI: list/create/edit/toggle/test pages for providers/models/routes with Askama templates, CSRF, audit events, and NOTIFY routing_changed on every mutation. 47 new tests (22 pure-logic/helper + 11 template smoke + 8 handler integration + 6 audit action). Added update_model + notify_routing_change to PgStore and 8 new AuditAction variants."
 
 [[task]]
 id = "P9-T9"

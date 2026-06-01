@@ -23,6 +23,8 @@
 //! compares the cookie and field values. Mismatches receive `403 Forbidden`.
 
 pub(crate) mod admin_handlers;
+pub(crate) mod admin_routing_handlers;
+pub(crate) mod admin_routing_templates;
 pub(crate) mod admin_templates;
 pub(crate) mod csrf;
 pub(crate) mod handlers;
@@ -137,6 +139,83 @@ pub(crate) fn build_web_router(
         )
         .route("/admin/tags", get(admin_handlers::admin_tags_page))
         .route("/admin/tags/merge", post(admin_handlers::admin_merge_tags))
+        // Provider / Model / Route CRUD (P9-T8)
+        .route(
+            "/admin/providers",
+            get(admin_routing_handlers::admin_providers_page),
+        )
+        .route(
+            "/admin/providers/new",
+            get(admin_routing_handlers::admin_provider_new_form),
+        )
+        .route(
+            "/admin/providers",
+            post(admin_routing_handlers::admin_provider_create),
+        )
+        .route(
+            "/admin/providers/{id}/edit",
+            get(admin_routing_handlers::admin_provider_edit_form),
+        )
+        .route(
+            "/admin/providers/{id}",
+            post(admin_routing_handlers::admin_provider_update),
+        )
+        .route(
+            "/admin/providers/{id}/toggle",
+            post(admin_routing_handlers::admin_provider_toggle),
+        )
+        .route(
+            "/admin/providers/{id}/test",
+            post(admin_routing_handlers::admin_provider_test),
+        )
+        .route(
+            "/admin/models",
+            get(admin_routing_handlers::admin_models_page),
+        )
+        .route(
+            "/admin/models/new",
+            get(admin_routing_handlers::admin_model_new_form),
+        )
+        .route(
+            "/admin/models",
+            post(admin_routing_handlers::admin_model_create),
+        )
+        .route(
+            "/admin/models/{id}/edit",
+            get(admin_routing_handlers::admin_model_edit_form),
+        )
+        .route(
+            "/admin/models/{id}",
+            post(admin_routing_handlers::admin_model_update),
+        )
+        .route(
+            "/admin/models/{id}/toggle",
+            post(admin_routing_handlers::admin_model_toggle),
+        )
+        .route(
+            "/admin/routes",
+            get(admin_routing_handlers::admin_routes_page),
+        )
+        .route(
+            "/admin/routes/new",
+            get(admin_routing_handlers::admin_route_new_form),
+        )
+        .route(
+            "/admin/routes",
+            post(admin_routing_handlers::admin_route_create),
+        )
+        .route(
+            "/admin/routes/{id}/edit",
+            get(admin_routing_handlers::admin_route_edit_form),
+        )
+        .route(
+            "/admin/routes/{id}",
+            post(admin_routing_handlers::admin_route_update),
+        )
+        .route(
+            "/admin/routes/{id}/delete",
+            post(admin_routing_handlers::admin_route_delete),
+        )
         .layer(from_fn_with_state(
             std::sync::Arc::clone(&state),
             crate::middleware::auth_middleware,

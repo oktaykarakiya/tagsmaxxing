@@ -543,6 +543,110 @@ impl PgStore {
             bail!("connection test returned {status} for GET {health_url}",)
         }
     }
+
+    // ── Update model ──────────────────────────────────────────────────────────
+
+    /// Update mutable fields on an existing model row.
+    ///
+    /// Fields that are `None` are left unchanged in the DB. `enabled` is managed
+    /// via [`disable_model`](Self::disable_model)/[`enable_model`](Self::enable_model).
+    ///
+    /// # Errors
+    /// Returns an error if the database is not connected, the model does not
+    /// exist, or the query fails.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn update_model(
+        &self,
+        id: i64,
+        provider_id: Option<i64>,
+        model_id: Option<&str>,
+        caps: Option<&[String]>,
+        ctx_tokens: Option<Option<i32>>,
+        max_conc: Option<Option<i32>>,
+        rpm: Option<Option<i32>>,
+        tpm: Option<Option<i32>>,
+        price_in: Option<Option<f64>>,
+        price_out: Option<Option<f64>>,
+        data_class: Option<DataClass>,
+    ) -> anyhow::Result<()> {
+        let pool = self.admin_pool()?;
+        let current = self
+            .get_model(id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("model {id} not found"))?;
+        let new_provider_id = provider_id.unwrap_or(current.provider_id);
+        let new_model_id = model_id.unwrap_or(&current.model_id);
+        let new_caps = caps.unwrap_or(&current.caps);
+        let new_ctx_tokens = match ctx_tokens {
+            Some(v) => v,
+            None => current.ctx_tokens,
+        };
+        let new_max_conc = match max_conc {
+            Some(v) => v,
+            None => current.max_conc,
+        };
+        let new_rpm = match rpm {
+            Some(v) => v,
+            None => current.rpm,
+        };
+        let new_tpm = match tpm {
+            Some(v) => v,
+            None => current.tpm,
+        };
+        let new_price_in = match price_in {
+            Some(v) => v,
+            None => current.price_in,
+        };
+        let new_price_out = match price_out {
+            Some(v) => v,
+            None => current.price_out,
+        };
+        let new_data_class = data_class.unwrap_or(current.data_class);
+
+        sqlx::query(
+            "UPDATE models SET provider_id=$1, model_id=$2, caps=$3, ctx_tokens=$4, \
+             max_conc=$5, rpm=$6, tpm=$7, price_in=$8, price_out=$9, data_class=$10 \
+             WHERE id=$11",
+        )
+        .bind(new_provider_id)
+        .bind(new_model_id)
+        .bind(new_caps)
+        .bind(new_ctx_tokens)
+        .bind(new_max_conc)
+        .bind(new_rpm)
+        .bind(new_tpm)
+        .bind(new_price_in)
+        .bind(new_price_out)
+        .bind(new_data_class.as_str())
+        .bind(id)
+        .execute(&pool)
+        .await
+        .context("failed to update model")?;
+        Ok(())
+    }
+
+    // ── Routing change notification ───────────────────────────────────────────
+
+    /// Send a `NOTIFY` on the routing-changed channel so the
+    /// [`RoutingChangeNotifier`] wakes up and reloads the routing table.
+    ///
+    /// Callers should invoke this after every CRUD mutation on `providers`,
+    /// `models`, or `routes` so the scheduler picks up the change without
+    /// waiting for the next poll cycle.
+    ///
+    /// Uses the admin pool (no tenant scope).
+    ///
+    /// # Errors
+    /// Returns an error if the database is not connected or the query fails.
+    pub async fn notify_routing_change(&self) -> anyhow::Result<()> {
+        let pool = self.admin_pool()?;
+        sqlx::query("SELECT pg_notify($1, '')")
+            .bind(ROUTING_CHANNEL)
+            .execute(&pool)
+            .await
+            .context("failed to send routing change NOTIFY")?;
+        Ok(())
+    }
 }
 
 // ── PgRoutingNotifier (plan §26.5, P9-T7) ─────────────────────────────────

@@ -34,6 +34,26 @@ str_enum! {
         JobDeleted = "job_deleted",
         /// A document was re-tagged via admin action.
         DocumentRetagged = "document_retagged",
+        /// A provider was created via the admin panel.
+        ProviderCreated = "provider_created",
+        /// A provider's configuration was updated.
+        ProviderUpdated = "provider_updated",
+        /// A provider was enabled or disabled.
+        ProviderToggled = "provider_toggled",
+        /// A model was created via the admin panel.
+        ModelCreated = "model_created",
+        /// A model's configuration was updated.
+        ModelUpdated = "model_updated",
+        /// A model was enabled or disabled.
+        ModelToggled = "model_toggled",
+        /// A route was created via the admin panel.
+        RouteCreated = "route_created",
+        /// A route's configuration was updated.
+        RouteUpdated = "route_updated",
+        /// A route was deleted.
+        RouteDeleted = "route_deleted",
+        /// A provider connection test was executed.
+        ProviderTested = "provider_tested",
     }
 }
 
@@ -84,7 +104,7 @@ mod tests {
         assert_eq!(AuditAction::JobRetried.as_str(), "job_retried");
         assert_eq!(AuditAction::JobDeleted.as_str(), "job_deleted");
         assert_eq!(AuditAction::DocumentRetagged.as_str(), "document_retagged");
-        assert_eq!(AuditAction::all().len(), 10);
+        assert_eq!(AuditAction::all().len(), 20);
     }
 
     #[test]
