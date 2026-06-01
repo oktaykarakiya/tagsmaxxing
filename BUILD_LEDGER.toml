@@ -874,9 +874,9 @@ description = "pgBackRest WAL/PITR configuration (§21): (a) pgBackRest configur
 depends_on = ["P8-T1", "P0-T7"]
 plan_sections = ["21"]
 acceptance = "pgbackrest.conf valid (pgbackrest --config=… info runs); backup + restore scripts are executable and idempotent; WAL archiving documented; DR runbook has step-by-step commands with expected output; separate backup bucket with Object Lock noted. just ci green (scripts are shell, tests validate config syntax)."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "ops/pgbackrest.conf with B2 S3-compatible repo, AES-256-CBC encryption, 30d retention, WAL async archiving. 3 shell scripts: stanza-create (idempotent), backup (--type full|incr), restore (PITR with --target). docs/DR_RUNBOOK.md with RTO/RPO, prerequisites, step-by-step restore procedure, WAL archiving config, systemd timers, failure scenarios. .env.example updated with B2_BACKUP_KEY_ID/KEY/BUCKET, PGBACKREST_REPO1_CIPHER_PASS. 32 validation tests in pgbackrest_validation.rs. just ci green."
 
 [[task]]
 id = "P8-T7"
