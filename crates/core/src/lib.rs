@@ -16,6 +16,8 @@ pub mod audit;
 pub mod auth;
 pub mod blob;
 pub mod chunk;
+pub mod circuit_breaker;
+pub mod degradation;
 pub mod document;
 pub mod embedder;
 pub mod error;

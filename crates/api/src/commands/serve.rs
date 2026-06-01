@@ -17,6 +17,7 @@ use std::time::Duration;
 use anyhow::Context;
 use kb_config::AppConfig;
 use kb_core::blob::Blob;
+use kb_core::degradation::DegradationState;
 use kb_core::kind::DocKind;
 use kb_core::session::SessionStore;
 use kb_extract::code::CodeExtractor;
@@ -34,6 +35,7 @@ use tracing::info;
 
 use crate::cli::ServeArgs;
 use kb_api::AppState;
+use kb_api::backpressure::InflightLimiter;
 use kb_api::metrics_collector;
 
 /// Default embedding dimension (matches the schema embedder lock-in, plan §5).
@@ -212,6 +214,18 @@ pub async fn run_serve(args: &ServeArgs) -> anyhow::Result<()> {
     };
     info!(ttl_secs = presigned_ttl.as_secs(), "presigned URL TTL");
 
+    // ── Degradation state (P8-T9) ────────────────────────────────────────────
+    let degradation = Arc::new(DegradationState::default());
+    let inflight_limiter = Arc::new(InflightLimiter::new(
+        cfg.degradation.max_inflight_ingest as usize,
+    ));
+    info!(
+        max_inflight_ingest = cfg.degradation.max_inflight_ingest,
+        blob_circuit_threshold = cfg.degradation.blob_circuit_breaker_threshold,
+        blob_circuit_cooldown_secs = cfg.degradation.blob_circuit_breaker_cooldown_secs,
+        "degradation state initialised"
+    );
+
     // ── Assemble app state ──────────────────────────────────────────────────
     let backend_pool = Arc::new(pool);
     let state = AppState {
@@ -225,6 +239,8 @@ pub async fn run_serve(args: &ServeArgs) -> anyhow::Result<()> {
         job_queue: Some(job_queue),
         backend_pool: Some(backend_pool.clone()),
         blob_presigned_ttl: presigned_ttl,
+        degradation: Some(degradation.clone()),
+        inflight_limiter: Some(inflight_limiter),
     };
 
     // ── Build router ────────────────────────────────────────────────────────

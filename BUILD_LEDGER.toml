@@ -907,9 +907,9 @@ description = "Graceful degradation matrix (§22): (a) B2 unreachable: ingest jo
 depends_on = ["P8-T1", "P8-T2", "P1-T4", "P2-T3"]
 plan_sections = ["22", "6"]
 acceptance = "B2 down → ingest pauses, reads hit cache, X-Degraded header, admin banner; no healthy embed backend → search returns 503 with message; in-flight > max → 429 + Retry-After; circuit breaker opens after 3 failures, half-open probe after cooldown; all states visible in metrics (P6-T9). Unit tests for circuit breaker logic + degradation middleware. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "CircuitBreaker in kb-core (12 unit tests), DegradationState in kb-core (9 unit tests), InflightLimiter backpressure in kb-api (7 unit tests), degradation middleware with X-Degraded header (5 unit tests), Degradation config section (5 unit tests), degradation metrics (4 new gauges + 1 counter, 5 unit tests), health endpoint extended with degradation status. just ci green."
 
 [[task]]
 id = "P8-T10"

@@ -11,6 +11,10 @@
 //! - [`record_storage_bytes`] — sets the per-tenant storage gauge.
 //! - [`record_active_users`] — sets the per-tenant active-users gauge.
 //! - [`record_queue_depth`] — sets the queue depth and oldest-job-age gauges.
+//! - [`record_degradation`] — sets the per-subsystem degradation gauge (P8-T9).
+//! - [`record_circuit_breaker`] — sets the per-dependency circuit-breaker gauge (P8-T9).
+//! - [`record_inflight_ingest`] — sets the in-flight ingest gauge (P8-T9).
+//! - [`record_ingest_throttled`] — increments the throttled-ingest counter (P8-T9).
 //!
 //! # Optional features
 //!
@@ -130,6 +134,24 @@ fn describe_all() {
         "kb_backup_stale",
         "1 if the latest backup is older than the configured maximum age, 0 otherwise"
     );
+
+    // Degradation (plan §22, P8-T9)
+    metrics::describe_gauge!(
+        "kb_subsystem_degraded",
+        "1 when the subsystem is degraded (label: subsystem)"
+    );
+    metrics::describe_gauge!(
+        "kb_circuit_breaker_open",
+        "1 when the circuit breaker is open for a dependency (label: dependency)"
+    );
+    metrics::describe_gauge!(
+        "kb_inflight_ingest",
+        "Number of currently in-flight ingest requests"
+    );
+    metrics::describe_counter!(
+        "kb_ingest_throttled_total",
+        "Number of ingest requests rejected due to backpressure (429)"
+    );
 }
 
 // ── Request-level recording helpers ──────────────────────────────────────────────
@@ -232,6 +254,38 @@ pub fn record_backup_age_hours(age_hours: f64) {
 pub fn record_backup_stale(stale: bool) {
     let val: f64 = if stale { 1.0 } else { 0.0 };
     metrics::gauge!("kb_backup_stale").set(val);
+}
+
+// ── Degradation metrics (plan §22, P8-T9) ────────────────────────────────────────
+
+/// Set the per-subsystem degradation gauge.
+///
+/// `subsystem` is the human-readable name (e.g. `"blob-store"`, `"embed"`).
+/// `degraded` = 1.0 when the subsystem is in a degraded state.
+pub fn record_degradation(subsystem: &str, degraded: bool) {
+    let val: f64 = if degraded { 1.0 } else { 0.0 };
+    metrics::gauge!("kb_subsystem_degraded", "subsystem" => subsystem.to_owned()).set(val);
+}
+
+/// Set the per-dependency circuit-breaker gauge.
+///
+/// `dependency` identifies the external dependency (e.g. `"b2"`).
+/// `open` = 1.0 when the circuit breaker is tripped (open).
+pub fn record_circuit_breaker(dependency: &str, open: bool) {
+    let val: f64 = if open { 1.0 } else { 0.0 };
+    metrics::gauge!("kb_circuit_breaker_open", "dependency" => dependency.to_owned()).set(val);
+}
+
+/// Set the in-flight ingest gauge.
+pub fn record_inflight_ingest(count: usize) {
+    metrics::gauge!("kb_inflight_ingest").set(count as f64);
+}
+
+/// Increment the throttled-ingest counter.
+///
+/// Call when an ingest request is rejected with 429 due to backpressure.
+pub fn record_ingest_throttled() {
+    metrics::counter!("kb_ingest_throttled_total").increment(1);
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────────
@@ -445,5 +499,92 @@ mod tests {
         assert!(text.contains("# TYPE kb_backup_age_hours gauge"));
         assert!(text.contains("# HELP kb_backup_stale"));
         assert!(text.contains("# TYPE kb_backup_stale gauge"));
+    }
+
+    // ── Degradation metrics tests (P8-T9) ────────────────────────────────────
+
+    #[test]
+    fn subsystem_degraded_gauge_present() {
+        let _h = ensure_init();
+        record_degradation("blob-store", true);
+        record_degradation("embed", false);
+
+        let text = render();
+        // Both label variants are present in the output (exact values may
+        // be overwritten by concurrent tests, so we only assert the metric
+        // families and labels exist).
+        assert!(
+            text.contains("kb_subsystem_degraded{subsystem=\"blob-store\"}"),
+            "blob-store subsystem not found in: {text}"
+        );
+        assert!(
+            text.contains("kb_subsystem_degraded{subsystem=\"embed\"}"),
+            "embed subsystem not found in: {text}"
+        );
+    }
+
+    #[test]
+    fn circuit_breaker_open_gauge_present() {
+        let _h = ensure_init();
+        record_circuit_breaker("b2", true);
+        record_circuit_breaker("embed-backend", false);
+
+        let text = render();
+        // Assert the metric families exist (values may be racy under
+        // parallel test execution since gauges are global).
+        assert!(
+            text.contains("kb_circuit_breaker_open{dependency=\"b2\"}"),
+            "b2 circuit breaker not found in: {text}"
+        );
+        assert!(
+            text.contains("kb_circuit_breaker_open{dependency=\"embed-backend\"}"),
+            "embed-backend circuit breaker not found in: {text}"
+        );
+    }
+
+    #[test]
+    fn inflight_ingest_gauge_present() {
+        let _h = ensure_init();
+        record_inflight_ingest(7);
+
+        let text = render();
+        // Assert the metric name is present (value may be racy under
+        // parallel execution since the gauge is global and unlabelled).
+        assert!(
+            text.contains("kb_inflight_ingest"),
+            "kb_inflight_ingest not found in: {text}"
+        );
+    }
+
+    #[test]
+    fn ingest_throttled_counter_present() {
+        let _h = ensure_init();
+        record_ingest_throttled();
+
+        let text = render();
+        // Counter values accumulate; assert the counter exists.
+        assert!(
+            text.contains("kb_ingest_throttled_total"),
+            "kb_ingest_throttled_total not found in: {text}"
+        );
+    }
+
+    #[test]
+    fn degradation_metrics_have_help_and_type() {
+        let _h = ensure_init();
+        record_degradation("blob-store", false);
+        record_circuit_breaker("b2", false);
+        record_inflight_ingest(0);
+        record_ingest_throttled();
+
+        let text = render();
+        assert!(text.contains("# HELP kb_subsystem_degraded"));
+        assert!(text.contains("# TYPE kb_subsystem_degraded gauge"));
+        assert!(text.contains("# HELP kb_circuit_breaker_open"));
+        assert!(text.contains("# TYPE kb_circuit_breaker_open gauge"));
+        assert!(text.contains("# HELP kb_inflight_ingest"));
+        assert!(text.contains("# TYPE kb_inflight_ingest gauge"));
+        assert!(text.contains("# HELP kb_ingest_throttled_total"));
+        assert!(text.contains("# TYPE kb_ingest_throttled_total counter"));
     }
 }

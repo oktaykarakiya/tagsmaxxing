@@ -9,8 +9,10 @@
 //! The router constructed by [`build_router`] is intended to be served on
 //! **port 9999** (the configured default, per plan §12).
 
+pub mod backpressure;
 pub mod bootstrap;
 pub mod cli;
+pub mod degradation_middleware;
 pub mod handlers;
 pub mod metrics_collector;
 pub mod middleware;
@@ -26,6 +28,7 @@ use axum::middleware::from_fn_with_state;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use kb_core::blob::Blob;
+use kb_core::degradation::DegradationState;
 use kb_core::session::SessionStore;
 use kb_pipeline::RetrievalPipeline;
 use kb_pipeline::ingest::IngestPipeline;
@@ -33,6 +36,7 @@ use kb_pipeline::job_queue::JobQueue;
 use kb_scheduler::Pool;
 use kb_store::PgStore;
 
+use crate::backpressure::InflightLimiter;
 use crate::middleware::auth_middleware;
 
 /// Default presigned-URL TTL in seconds (1 hour, plan §20).
@@ -74,6 +78,10 @@ pub struct AppState {
     pub backend_pool: Option<Arc<Pool>>,
     /// TTL for presigned download URLs (P8-T3). Default: 3600 seconds (1 hour).
     pub blob_presigned_ttl: Duration,
+    /// Degradation state for graceful-degradation header + health endpoint (P8-T9).
+    pub degradation: Option<Arc<DegradationState>>,
+    /// In-flight ingest limiter for backpressure (P8-T9). `None` when disabled.
+    pub inflight_limiter: Option<Arc<InflightLimiter>>,
 }
 
 impl AppState {
@@ -104,6 +112,8 @@ impl AppState {
             job_queue: None,
             backend_pool: None,
             blob_presigned_ttl: Duration::from_secs(DEFAULT_PRESIGNED_TTL_SECS),
+            degradation: None,
+            inflight_limiter: None,
         }
     }
 
@@ -133,6 +143,8 @@ impl AppState {
             job_queue: Some(job_queue),
             backend_pool: None,
             blob_presigned_ttl: Duration::from_secs(DEFAULT_PRESIGNED_TTL_SECS),
+            degradation: None,
+            inflight_limiter: None,
         }
     }
 
@@ -176,6 +188,20 @@ impl AppState {
     #[must_use]
     pub fn with_blob_presigned_ttl(mut self, ttl: Duration) -> Self {
         self.blob_presigned_ttl = ttl;
+        self
+    }
+
+    /// Builder: attach the degradation state (P8-T9).
+    #[must_use]
+    pub fn with_degradation(mut self, ds: Arc<DegradationState>) -> Self {
+        self.degradation = Some(ds);
+        self
+    }
+
+    /// Builder: attach the in-flight ingest limiter (P8-T9).
+    #[must_use]
+    pub fn with_inflight_limiter(mut self, limiter: Arc<InflightLimiter>) -> Self {
+        self.inflight_limiter = Some(limiter);
         self
     }
 }
@@ -239,17 +265,27 @@ pub fn build_router(state: AppState) -> Router {
     let web = web::build_web_router(state.clone());
 
     // Merge public + protected API + Web UI, attach shared state.
-    public.merge(api).merge(web).with_state(state)
+    // The degradation middleware wraps the entire router so every
+    // response carries X-Degraded when applicable.
+    public
+        .merge(api)
+        .merge(web)
+        .layer(from_fn_with_state(
+            state.clone(),
+            degradation_middleware::degradation_middleware,
+        ))
+        .with_state(state)
 }
 
 // ── Health handler ────────────────────────────────────────────────────────────
 
-/// Readiness probe (plan §22, P8-T8).
+/// Readiness probe (plan §22, P8-T8 / P8-T9).
 ///
 /// Returns 200 OK when the application is ready to serve traffic:
 /// - Database is reachable (a trivial `SELECT 1` succeeds),
 /// - Schema migrations have been applied,
-/// - At least one healthy backend is registered for every configured role.
+/// - At least one healthy backend is registered for every configured role,
+/// - No subsystem is in a degraded state (blob store, backend roles).
 ///
 /// Returns 503 Service Unavailable with a JSON body describing which checks
 /// failed when upstream dependencies are not ready. This endpoint is used by
@@ -271,13 +307,28 @@ async fn health_handler(
         true
     };
 
-    let all_ok = db_ok && migrations_ok && backends_ok;
+    // Check degradation state (P8-T9).
+    let degradation_ok = state
+        .degradation
+        .as_ref()
+        .is_none_or(|ds| !ds.is_degraded());
+    let degraded_subsystems = state
+        .degradation
+        .as_ref()
+        .map(|ds| ds.degraded_subsystems())
+        .unwrap_or_default();
+
+    let all_ok = db_ok && migrations_ok && backends_ok && degradation_ok;
 
     let body = serde_json::json!({
         "status": if all_ok { "ok" } else { "degraded" },
         "database": db_ok,
         "migrations": migrations_ok,
         "backends": backends_ok,
+        "degradation": {
+            "ok": degradation_ok,
+            "subsystems": degraded_subsystems,
+        },
     });
 
     let status = if all_ok {
@@ -362,6 +413,8 @@ mod tests {
             job_queue: None,
             backend_pool: None,
             blob_presigned_ttl: Duration::from_secs(DEFAULT_PRESIGNED_TTL_SECS),
+            degradation: None,
+            inflight_limiter: None,
         })
     }
 

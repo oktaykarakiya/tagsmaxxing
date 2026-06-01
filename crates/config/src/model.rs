@@ -46,6 +46,9 @@ pub struct Config {
     /// Automated restore-test settings (plan §21, P8-T7).
     #[serde(default, rename = "restore_test")]
     pub restore_test: RestoreTest,
+    /// Graceful-degradation settings (plan §22, P8-T9).
+    #[serde(default, rename = "degradation")]
+    pub degradation: Degradation,
 }
 
 /// Durable-storage configuration.
@@ -259,6 +262,54 @@ impl Default for RestoreTest {
     }
 }
 
+/// Graceful-degradation settings (plan §22, P8-T9).
+///
+/// Controls circuit-breaker thresholds, backpressure limits, and health-check
+/// intervals for external dependencies.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Degradation {
+    /// Maximum number of concurrent ingest requests before returning 429.
+    /// Set to `0` to disable the limit. Default: 100.
+    #[serde(default = "default_max_inflight_ingest")]
+    pub max_inflight_ingest: u32,
+    /// Consecutive failures before the blob-store circuit breaker trips.
+    /// Set to `0` to disable. Default: 3.
+    #[serde(default = "default_circuit_breaker_threshold")]
+    pub blob_circuit_breaker_threshold: u32,
+    /// Seconds the blob-store circuit breaker stays open before a half-open probe.
+    /// Default: 30.
+    #[serde(default = "default_circuit_breaker_cooldown_secs")]
+    pub blob_circuit_breaker_cooldown_secs: u64,
+    /// Interval in seconds between blob-store health probes (HEAD – bucket
+    /// accessibility). Default: 15.
+    #[serde(default = "default_blob_health_interval_secs")]
+    pub blob_health_interval_secs: u64,
+}
+
+const fn default_max_inflight_ingest() -> u32 {
+    100
+}
+const fn default_circuit_breaker_threshold() -> u32 {
+    3
+}
+const fn default_circuit_breaker_cooldown_secs() -> u64 {
+    30
+}
+const fn default_blob_health_interval_secs() -> u64 {
+    15
+}
+
+impl Default for Degradation {
+    fn default() -> Self {
+        Self {
+            max_inflight_ingest: default_max_inflight_ingest(),
+            blob_circuit_breaker_threshold: default_circuit_breaker_threshold(),
+            blob_circuit_breaker_cooldown_secs: default_circuit_breaker_cooldown_secs(),
+            blob_health_interval_secs: default_blob_health_interval_secs(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -387,5 +438,39 @@ enabled = true
         assert_eq!(rt.schedule_hour, 3);
         assert_eq!(rt.schedule_minute, 0);
         assert_eq!(rt.backup_max_age_hours, 25);
+    }
+
+    #[test]
+    fn degradation_defaults() {
+        let d = Degradation::default();
+        assert_eq!(d.max_inflight_ingest, 100);
+        assert_eq!(d.blob_circuit_breaker_threshold, 3);
+        assert_eq!(d.blob_circuit_breaker_cooldown_secs, 30);
+        assert_eq!(d.blob_health_interval_secs, 15);
+    }
+
+    #[test]
+    fn degradation_deserialization() {
+        let toml_str = r#"
+[degradation]
+max_inflight_ingest = 50
+blob_circuit_breaker_threshold = 5
+blob_circuit_breaker_cooldown_secs = 60
+blob_health_interval_secs = 10
+"#;
+        let cfg: Config = toml::from_str(toml_str).expect("parse should succeed");
+        let d = &cfg.degradation;
+        assert_eq!(d.max_inflight_ingest, 50);
+        assert_eq!(d.blob_circuit_breaker_threshold, 5);
+        assert_eq!(d.blob_circuit_breaker_cooldown_secs, 60);
+        assert_eq!(d.blob_health_interval_secs, 10);
+    }
+
+    #[test]
+    fn degradation_config_default_inherits() {
+        let config = Config::default();
+        let d = &config.degradation;
+        assert_eq!(d.max_inflight_ingest, 100);
+        assert_eq!(d.blob_circuit_breaker_threshold, 3);
     }
 }
