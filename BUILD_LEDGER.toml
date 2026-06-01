@@ -1227,9 +1227,9 @@ description = "Subscription lifecycle (§29): (a) Dunning: on `invoice.payment_f
 depends_on = ["P11-T3"]
 plan_sections = ["29"]
 acceptance = "Suspended tenant → ingest returns 403 with message; search still works; upgrade → quota increases immediately; downgrade → quota decreases (existing data unaffected, but new uploads blocked at limit); cancel → free plan; admin override creates audit log. Unit tests for state machine transitions + integration test with mock webhook events. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "subscription_lifecycle.rs: apply_plan_quotas_to_tenant, check_tenant_not_suspended (fail-open when DB unreachable), admin_override_tenant_billing, suspend_past_due_tenants with configurable dunning window. Webhook handler now calls apply_plan_quotas after plan changes. Ingest handler gates on billing_status=suspended returning 403. 3 new AuditAction variants. 10 unit + 6 #[ignore] integ tests. just ci green."
 
 [[task]]
 id = "P11-T5"

@@ -65,6 +65,12 @@ str_enum! {
         RouteDeleted = "route_deleted",
         /// A provider connection test was executed.
         ProviderTested = "provider_tested",
+        /// A tenant's billing plan was assigned or changed (via webhook or admin).
+        PlanChanged = "plan_changed",
+        /// An admin manually overrode a tenant's billing status or plan.
+        BillingOverride = "billing_override",
+        /// A tenant's billing status was changed (lifecycle transition).
+        BillingStatusChanged = "billing_status_changed",
     }
 }
 
@@ -164,7 +170,13 @@ mod tests {
         assert_eq!(AuditAction::JobRetried.as_str(), "job_retried");
         assert_eq!(AuditAction::JobDeleted.as_str(), "job_deleted");
         assert_eq!(AuditAction::DocumentRetagged.as_str(), "document_retagged");
-        assert_eq!(AuditAction::all().len(), 20);
+        assert_eq!(AuditAction::PlanChanged.as_str(), "plan_changed");
+        assert_eq!(AuditAction::BillingOverride.as_str(), "billing_override");
+        assert_eq!(
+            AuditAction::BillingStatusChanged.as_str(),
+            "billing_status_changed"
+        );
+        assert_eq!(AuditAction::all().len(), 23);
     }
 
     #[test]

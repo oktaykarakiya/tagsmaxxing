@@ -81,6 +81,33 @@ pub async fn ingest(
     Extension(auth_user): Extension<AuthUser>,
     multipart: Multipart,
 ) -> Result<(StatusCode, Json<IngestResponse>), (StatusCode, Json<ErrorResponse>)> {
+    // ── Suspend check: suspended tenants are read-only (§29, P11-T4) ─────────
+    if let Err(e) = state
+        .pg_store
+        .check_tenant_not_suspended(auth_user.tenant_id)
+        .await
+    {
+        let msg = e.to_string();
+        // If the error contains "suspended", it's a client-visible 403.
+        if msg.contains("suspended") {
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: "account_suspended".into(),
+                    message: msg,
+                }),
+            ));
+        }
+        // Otherwise it's a database error (the method already logs internally).
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "internal_error".into(),
+                message: "an unexpected error occurred".into(),
+            }),
+        ));
+    }
+
     // ── Parse multipart ──────────────────────────────────────────────────────
     let parsed = parse_multipart(multipart, MAX_PAYLOAD_BYTES)
         .await

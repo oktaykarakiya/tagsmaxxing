@@ -306,6 +306,11 @@ async fn handle_stripe_event(
                 )
                 .await?;
 
+            // Apply the plan's quotas to the tenant immediately.
+            pg_store
+                .apply_plan_quotas_to_tenant(cs.tenant_id, plan.id, 0)
+                .await?;
+
             tracing::info!(
                 tenant_id = cs.tenant_id,
                 plan_code = %cs.plan_code,
@@ -346,6 +351,11 @@ async fn handle_stripe_event(
 
                 pg_store
                     .update_tenant_plan(tenant_id, Some(plan.id), None, None, None, period_end)
+                    .await?;
+
+                // Apply the plan's quotas to the tenant immediately (upgrade/downgrade).
+                pg_store
+                    .apply_plan_quotas_to_tenant(tenant_id, plan.id, 0)
                     .await?;
 
                 tracing::info!(
@@ -398,6 +408,11 @@ async fn handle_stripe_event(
                     Some("canceled"),
                     None,
                 )
+                .await?;
+
+            // Apply the free plan's quotas immediately.
+            pg_store
+                .apply_plan_quotas_to_tenant(tenant_id, free_plan.id, 0)
                 .await?;
 
             tracing::info!(

@@ -28,6 +28,7 @@ pub mod pg_store;
 pub mod plans;
 pub mod session_store;
 pub mod stripe_events;
+pub mod subscription_lifecycle;
 pub mod vault_kek;
 
 pub use admin_queries::UserView;
