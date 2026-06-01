@@ -745,9 +745,9 @@ description = "compose.yaml with GPU profile + compose.gpu.yaml: (a) Base compos
 depends_on = ["P7-T1", "P0-T7"]
 plan_sections = ["14"]
 acceptance = "`podman compose up` (CPU-only) → app + Postgres + Tika healthy; `podman compose --profile gpu up` → adds llama-server + whisper-server with GPU devices; `podman compose config` validates; .env.example documents all vars including GPU_DEVICE, LLAMA_MODEL_PATH, WHISPER_MODEL_PATH. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "Added app service + GPU profile (llama-server, whisper-server with CDI nvidia.com/gpu=all) to compose.yaml; created compose.cpu.yaml override (CPU-only, no GPU devices, LLAMA_ARG_N_GPU_LAYERS=0); created compose/config.toml minimal deploy config; updated .env.example with GPU/CPU vars. Both `podman compose config` and `podman compose --profile gpu config` validate; overlay merge validates. just ci green."
 
 [[task]]
 id = "P7-T3"

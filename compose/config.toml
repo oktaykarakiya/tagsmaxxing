@@ -1,0 +1,53 @@
+# Minimal configuration for a compose deployment (plan §14, P7-T2).
+#
+# Mounted read-only into the `app` container at /etc/kb/config.toml.
+# Every value can be overridden via environment variables; the file just
+# provides sensible compose-network defaults so the container starts without
+# manual config editing.
+#
+# For production, copy this file, edit the secrets, and update CONFIG_FILE
+# in .env to point at your copy.
+
+[storage]
+# Privileged (owner/superuser) URL: migrations, the cross-tenant job queue,
+# admin/usage roll-ups. The `postgres` hostname resolves inside the compose network.
+postgres_url = "postgres://kb:kb@postgres:5432/kb"
+# Application URL: the non-privileged `kb_app` role (NOSUPERUSER NOBYPASSRLS,
+# auto-created by migration 0006) used for all tenant-scoped data so Postgres RLS
+# is enforced (§13, P6-T14). Rotate kb_app's password (ALTER ROLE kb_app PASSWORD
+# '…') for real deployments and update this URL. Leave empty to run single-role.
+app_postgres_url = "postgres://kb_app:kb_app@postgres:5432/kb"
+
+[api]
+port = 9999
+
+[scheduler]
+acquire_timeout_secs = 120
+health_interval_secs = 10
+max_retries = 3
+
+# ── Inference backends — add entries for your llama-server instances ────────────
+# The `--profile gpu` compose services start llama-server on the compose-internal
+# hostname `llama-server:8080`. Add more [[backend]] entries for dedicated
+# embedding or reranking instances if you run them separately.
+
+[[backend]]
+id = "llama"
+base_url = "http://llama-server:8080/v1"
+roles = ["text", "vision", "code"]
+slots = 4
+priority = 0
+
+[[backend]]
+id = "llama-embed"
+base_url = "http://llama-server:8080/v1"
+roles = ["embed"]
+slots = 8
+priority = 0
+
+[[backend]]
+id = "llama-rerank"
+base_url = "http://llama-server:8080/v1"
+roles = ["rerank"]
+slots = 8
+priority = 0

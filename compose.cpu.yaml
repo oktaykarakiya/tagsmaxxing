@@ -1,0 +1,32 @@
+# compose.cpu.yaml — CPU-only inference override (plan §14, P7-T2).
+#
+# This file overrides the GPU inference services in compose.yaml for environments
+# without NVIDIA GPUs. It replaces the GPU `devices` mount and sets
+# `LLAMA_ARG_N_GPU_LAYERS=0` so llama.cpp runs entirely on CPU.
+#
+# Usage:
+#   podman compose -f compose.yaml -f compose.cpu.yaml --profile cpu up
+#
+# The `--profile cpu` flag is required because the services use `profiles: ["cpu"]`
+# in this override (the GPU profile from compose.yaml is replaced). Services that
+# start unconditionally (app, postgres, tika) are not affected.
+
+services:
+  # ── llama.cpp server (CPU profile) — no GPU acceleration ──────────────────────
+  llama-server:
+    # Replace the "gpu" profile with "cpu" so the service starts with --profile cpu.
+    profiles: ["cpu"]
+    # No GPU device in CPU mode.
+    devices: []
+    environment:
+      LLAMA_ARG_N_GPU_LAYERS: "0"
+      # Keep the remaining env vars from compose.yaml (host, port, model, ctx_size)
+      # — they are inherited from the base file. Only LLAMA_ARG_N_GPU_LAYERS and the
+      # empty devices/profiles list are explicitly overridden here.
+
+  # ── whisper.cpp server (CPU profile) — no GPU acceleration ────────────────────
+  whisper-server:
+    profiles: ["cpu"]
+    devices: []
+    environment:
+      WHISPER_MODEL: /models/${WHISPER_MODEL_FILE:-whisper-model.gguf}
