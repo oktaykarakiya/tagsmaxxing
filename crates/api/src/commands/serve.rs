@@ -39,6 +39,7 @@ use crate::cli::ServeArgs;
 use kb_api::AppState;
 use kb_api::backpressure::InflightLimiter;
 use kb_api::metrics_collector;
+use kb_api::stripe_client;
 
 /// Default embedding dimension (matches the schema embedder lock-in, plan §5).
 const EMBED_DIM: usize = 1024;
@@ -269,6 +270,18 @@ pub async fn run_serve(args: &ServeArgs) -> anyhow::Result<()> {
 
     // ── Assemble app state ──────────────────────────────────────────────────
     let backend_pool = Arc::new(pool);
+
+    // Stripe client (P11-T2): optional, gated on STRIPE_SECRET_KEY env var.
+    let stripe_client: Option<Arc<dyn stripe_client::StripeClient>> =
+        std::env::var("STRIPE_SECRET_KEY").ok().map(|key| {
+            let client = stripe_client::RealStripeClient::new(key, http.clone());
+            Arc::new(client) as Arc<dyn stripe_client::StripeClient>
+        });
+
+    // Public base URL for Stripe callback construction (P11-T2).
+    let public_base_url =
+        std::env::var("PUBLIC_BASE_URL").unwrap_or_else(|_| format!("http://0.0.0.0:{bind_port}"));
+
     let state = AppState {
         session_store,
         pg_store,
@@ -282,6 +295,8 @@ pub async fn run_serve(args: &ServeArgs) -> anyhow::Result<()> {
         blob_presigned_ttl: presigned_ttl,
         degradation: Some(degradation.clone()),
         inflight_limiter: Some(inflight_limiter),
+        stripe_client,
+        public_base_url,
     };
 
     // ── Build router ────────────────────────────────────────────────────────

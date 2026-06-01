@@ -88,6 +88,8 @@ mod tests {
             blob_presigned_ttl: Duration::from_secs(3600),
             degradation,
             inflight_limiter: None,
+            stripe_client: None,
+            public_base_url: "http://localhost:9999".into(),
         })
     }
 

@@ -21,7 +21,7 @@ kb-metrics = { workspace = true }
 axum = { version = "0.8", features = ["multipart"] }
 clap = { workspace = true }
 tokio = { workspace = true, features = ["sync", "rt", "rt-multi-thread", "net", "signal"] }
-reqwest = { workspace = true }
+reqwest = { workspace = true, features = ["json", "form"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
@@ -36,6 +36,8 @@ sqlx = { workspace = true }
 askama = { workspace = true }
 tower-http = { workspace = true, features = ["fs"] }
 rand = { workspace = true }
+arc-swap = { workspace = true }
+async-trait = { workspace = true }
 
 [dev-dependencies]
 kb-mock-backend = { workspace = true }
@@ -43,7 +45,6 @@ kb-testsupport = { workspace = true }
 tokio = { workspace = true, features = ["sync", "rt", "macros", "rt-multi-thread"] }
 tower = "0.5"
 tempfile = { workspace = true }
-async-trait = { workspace = true }
 serde_urlencoded = "0.7"
 
 [[bin]]

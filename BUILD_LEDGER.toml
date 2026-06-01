@@ -1205,9 +1205,9 @@ description = "Stripe Checkout integration (§29): (a) POST /billing/checkout �
 depends_on = ["P11-T1", "P5-T5"]
 plan_sections = ["29"]
 acceptance = "POST /billing/checkout with plan_code='pro' → 200 + {url: 'https://checkout.stripe.com/…'}; unauthenticated → 401; invalid plan_code → 400; success page shows interstitial; cancel page redirects to pricing; Stripe key missing → 500 with clear log message. Unit tests with mock StripeClient. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "StripeClient trait + RealStripeClient (ArcSwap hot-swap key) + MockStripeClient; POST /billing/checkout (auth, plan lookup, checkout session), GET /billing/success (HTML interstitial), GET /billing/cancel (redirect to /). Added stripe_client + public_base_url to AppState. 18 tests pass (6 stripe_client + 12 billing handler). Coverage: billing 91%, stripe_client 88%. just ci green."
 
 [[task]]
 id = "P11-T3"

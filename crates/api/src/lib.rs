@@ -16,6 +16,7 @@ pub mod degradation_middleware;
 pub mod handlers;
 pub mod metrics_collector;
 pub mod middleware;
+pub mod stripe_client;
 pub mod web;
 
 use std::sync::Arc;
@@ -38,6 +39,7 @@ use kb_store::PgStore;
 
 use crate::backpressure::InflightLimiter;
 use crate::middleware::auth_middleware;
+use crate::stripe_client::StripeClient;
 
 /// Default presigned-URL TTL in seconds (1 hour, plan §20).
 pub const DEFAULT_PRESIGNED_TTL_SECS: u64 = 3600;
@@ -82,6 +84,13 @@ pub struct AppState {
     pub degradation: Option<Arc<DegradationState>>,
     /// In-flight ingest limiter for backpressure (P8-T9). `None` when disabled.
     pub inflight_limiter: Option<Arc<InflightLimiter>>,
+    /// Stripe client for billing operations (P11-T2+). Handlers return 500 when
+    /// `None` and billing is requested.
+    pub stripe_client: Option<Arc<dyn StripeClient>>,
+    /// Publicly-reachable base URL of this server, used to construct Stripe
+    /// Checkout success / cancel callback URLs (P11-T2+).
+    /// Default: `http://localhost:9999`.
+    pub public_base_url: String,
 }
 
 impl AppState {
@@ -92,6 +101,7 @@ impl AppState {
     /// the `with_*` builder methods or [`AppState::full`] to set them.
     ///
     /// `blob_presigned_ttl` defaults to [`DEFAULT_PRESIGNED_TTL_SECS`] (3600 s = 1 hour).
+    /// `public_base_url` defaults to `"http://localhost:9999"`.
     #[must_use]
     pub fn new(
         session_store: Arc<dyn SessionStore>,
@@ -114,6 +124,8 @@ impl AppState {
             blob_presigned_ttl: Duration::from_secs(DEFAULT_PRESIGNED_TTL_SECS),
             degradation: None,
             inflight_limiter: None,
+            stripe_client: None,
+            public_base_url: "http://localhost:9999".into(),
         }
     }
 
@@ -145,6 +157,8 @@ impl AppState {
             blob_presigned_ttl: Duration::from_secs(DEFAULT_PRESIGNED_TTL_SECS),
             degradation: None,
             inflight_limiter: None,
+            stripe_client: None,
+            public_base_url: "http://localhost:9999".into(),
         }
     }
 
@@ -204,6 +218,21 @@ impl AppState {
         self.inflight_limiter = Some(limiter);
         self
     }
+
+    /// Builder: attach the Stripe client for billing operations (P11-T2).
+    #[must_use]
+    pub fn with_stripe_client(mut self, client: Arc<dyn StripeClient>) -> Self {
+        self.stripe_client = Some(client);
+        self
+    }
+
+    /// Builder: set the publicly-reachable base URL for Stripe callback
+    /// construction (P11-T2). Default is `http://localhost:9999`.
+    #[must_use]
+    pub fn with_public_base_url(mut self, url: impl Into<String>) -> Self {
+        self.public_base_url = url.into();
+        self
+    }
 }
 
 // ── Router ─────────────────────────────────────────────────────────────────────
@@ -223,6 +252,9 @@ impl AppState {
 /// | GET    | `/api/documents/:id`           | yes   | Document detail + files + tags       |
 /// | GET    | `/api/documents/:id/file/:file_id` | yes | Redirect to presigned download URL  |
 /// | GET    | `/api/jobs/:id`                | yes   | Job status                           |
+/// | POST   | `/billing/checkout`            | yes   | Stripe Checkout Session (P11-T2)     |
+/// | GET    | `/billing/success`             | no    | Post-Checkout interstitial (P11-T2)  |
+/// | GET    | `/billing/cancel`              | no    | Checkout-cancel redirect (P11-T2)    |
 /// | GET    | `/metrics`                     | no    | Prometheus metrics (plan §15)        |
 ///
 /// Route table — Web UI (P6-T4):
@@ -242,6 +274,8 @@ pub fn build_router(state: AppState) -> Router {
     let public = Router::new()
         .route("/auth/login", post(handlers::auth::login))
         .route("/auth/register", post(handlers::auth::register))
+        .route("/billing/success", get(handlers::billing::get_success))
+        .route("/billing/cancel", get(handlers::billing::get_cancel))
         .route("/metrics", get(metrics_handler))
         .route("/health", get(health_handler));
 
@@ -259,6 +293,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/api/jobs/{id}", get(handlers::jobs::job_status))
         .route("/auth/logout", post(handlers::auth::logout))
+        .route("/billing/checkout", post(handlers::billing::post_checkout))
         .layer(from_fn_with_state(state.clone(), auth_middleware));
 
     // Web UI routes (P6-T4).
@@ -415,6 +450,8 @@ mod tests {
             blob_presigned_ttl: Duration::from_secs(DEFAULT_PRESIGNED_TTL_SECS),
             degradation: None,
             inflight_limiter: None,
+            stripe_client: None,
+            public_base_url: "http://localhost:9999".into(),
         })
     }
 
