@@ -1,0 +1,21 @@
+[package]
+name = "kb-logging"
+description = "Size-based log rotation with LOG_MAX_GB cap, JSON/pretty format, and correlation spans"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+file-rotate = "0.8"
+anyhow = { workspace = true }
+tokio = { workspace = true, features = ["fs", "time", "rt", "sync", "macros"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["sync", "rt", "macros", "rt-multi-thread"] }
+filetime = "0.2"

@@ -767,9 +767,9 @@ description = "Log rotation with LOG_MAX_GB cap (§18): integrate the `file-rota
 depends_on = ["P0-T1"]
 plan_sections = ["18"]
 acceptance = "Logs rotate when per-file size limit reached; total log dir stays under LOG_MAX_GB; janitor prunes oldest files first; JSON format includes span fields; LOG_FORMAT=pretty produces human-readable output; LOG_LEVEL controls filtering. Unit tests for rotation + janitor logic. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "New kb-logging crate: LogConfig (LOG_LEVEL/FORMAT/DIR/MAX_GB/FILE_MAX_SIZE_MB from env), RotatingWriter (file-rotate AppendCount with ContentLimit::Bytes + RotatingWriterHandle for io::Write), LogJanitor (belt-and-suspenders periodic prune by mtime-oldest-first), init_tracing (json/pretty + env-filter), correlation spans (request_span/tenant_span/file_span). 34 unit tests (config/writer/janitor/lib). Wired into serve.rs with graceful shutdown. just ci green."
 
 [[task]]
 id = "P7-T5"

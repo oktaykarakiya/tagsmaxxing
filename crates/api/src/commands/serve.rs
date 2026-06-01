@@ -59,13 +59,18 @@ const COOLDOWN_SECS: u64 = 30;
 /// or the server fails to bind.
 pub async fn run_serve(args: &ServeArgs) -> anyhow::Result<()> {
     // ── Initialise tracing ──────────────────────────────────────────────────
-    let subscriber = tracing_subscriber::fmt()
-        .json()
-        .with_target(true)
-        .with_span_list(true)
-        .finish();
-    tracing::subscriber::set_global_default(subscriber)
-        .context("failed to set tracing subscriber")?;
+    let log_config = kb_logging::LogConfig::from_env();
+    kb_logging::init_tracing(&log_config).context("failed to initialise tracing subscriber")?;
+
+    // ── Start log janitor (belt-and-suspenders total-disk-cap enforcement) ─
+    let janitor = kb_logging::LogJanitor::new(&log_config, Duration::from_secs(300));
+    let (janitor_shutdown, janitor_rx) = tokio::sync::watch::channel(false);
+    let janitor_handle = janitor.spawn(janitor_rx);
+    info!(
+        log_dir = %log_config.log_dir.display(),
+        max_gb = log_config.log_max_gb,
+        "log janitor started"
+    );
 
     // ── Initialise metrics ──────────────────────────────────────────────────
     let _ = kb_metrics::init_metrics();
@@ -226,18 +231,21 @@ pub async fn run_serve(args: &ServeArgs) -> anyhow::Result<()> {
     info!("kb API server listening on http://{addr}");
 
     // Graceful shutdown: on ctrl_c, signal the collector, stop the health
-    // loop, close the listener, and wait for in-flight requests to drain.
+    // loop, stop the log janitor, close the listener, and wait for in-flight
+    // requests to drain.
     axum::serve(listener, router)
         .with_graceful_shutdown(async move {
             let _ = tokio::signal::ctrl_c().await;
             info!("shutdown signal received, draining...");
             let _ = shutdown_tx.send(true);
             let _ = health_shutdown.send(());
+            let _ = janitor_shutdown.send(true);
         })
         .await
         .context("server error")?;
 
     // Wait for background tasks to drain.
+    let _ = tokio::time::timeout(Duration::from_secs(10), janitor_handle).await;
     let _ = tokio::time::timeout(Duration::from_secs(10), health_handle).await;
 
     info!("server shut down cleanly");
