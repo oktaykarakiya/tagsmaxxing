@@ -852,9 +852,9 @@ description = "Streaming multipart upload: for files larger than a configurable 
 depends_on = ["P8-T1"]
 plan_sections = ["20"]
 acceptance = "50 MB file → uploaded in ≥10 parts (5 MB each), no OOM; part failure → retried 3×; total failure → abort cleans up parts; file < threshold → single PUT; progress callback fires per part; streaming — peak memory < 2× part size. Unit tests with mock multipart server. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "StreamingMultipartUpload in kb-store::multipart_stream (~800 lines): Push-based feed/finish/abort API, configurable threshold/part_size/retries, progress via mpsc, retry with linear backoff, abort-on-drop best-effort cleanup. Private MultipartOps trait for testability; ObjectStoreMultipart wrapper for object_store. B2Blob gains start_multipart_stream(); LocalBlob gains streaming_put() via mpsc. 22 unit tests (buffering, multi-part, progress, retry, abort, edge cases). multipart_stream.rs 95.71% lines. just ci green."
 
 [[task]]
 id = "P8-T5"

@@ -12,7 +12,7 @@ use anyhow::Context;
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use bytes::Bytes;
-use tokio::io::{AsyncReadExt, AsyncSeekExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 /// Local-disk blob store. Stores each object as a regular file under
 /// `{root}/{prefix}/{key}`. The root is hot-swappable via [`ArcSwap`].
@@ -74,8 +74,81 @@ impl LocalBlob {
         // onto a canonicalized prefix guarantees containment.
         Ok(canonical_prefix.join(key))
     }
-}
 
+    /// Streaming write: receive chunks from `rx` and write them to a file
+    /// without buffering the entire blob in memory.
+    ///
+    /// Writes to a temporary file first, then atomically renames it to the
+    /// final content-addressed path on success. If the target file already
+    /// exists (idempotent put) the chunks are still received and discarded
+    /// to avoid blocking the sender.
+    ///
+    /// # Errors
+    /// Returns an error if the file cannot be created, written, or renamed.
+    pub async fn streaming_put(
+        &self,
+        key: &str,
+        mut rx: tokio::sync::mpsc::Receiver<Bytes>,
+    ) -> anyhow::Result<()> {
+        let final_path = self.blob_path(key)?;
+
+        // Idempotent: if the file already exists, drain the receiver and
+        // return — no need to re-write.
+        if final_path.exists() {
+            while rx.recv().await.is_some() {}
+            return Ok(());
+        }
+
+        // Ensure parent directories exist.
+        if let Some(parent) = final_path.parent() {
+            tokio::fs::create_dir_all(parent).await.with_context(|| {
+                format!("failed to create parent directories for blob at key `{key}`")
+            })?;
+        }
+
+        // Write to a temporary file alongside the final path, then rename
+        // atomically once all chunks are received.
+        let temp_path = final_path.with_extension(".partial");
+        let mut file: tokio::fs::File = tokio::fs::File::create(&temp_path)
+            .await
+            .with_context(|| format!("failed to create temp file for blob at key `{key}`"))?;
+
+        let mut write_result: anyhow::Result<()> = Ok(());
+        while let Some(chunk) = rx.recv().await {
+            if write_result.is_err() {
+                // Drain remaining chunks on write failure.
+                continue;
+            }
+            if let Err(e) = file.write_all(&chunk).await {
+                write_result = Err(e)
+                    .with_context(|| format!("failed to write chunk for blob at key `{key}`"));
+            }
+        }
+
+        // Flush before renaming.
+        if write_result.is_ok()
+            && let Err(e) = file.flush().await
+        {
+            write_result = Err(e).with_context(|| format!("failed to flush blob at key `{key}`"));
+        }
+
+        // On success, rename atomically. On failure, remove the temp file.
+        match write_result {
+            Ok(()) => {
+                tokio::fs::rename(&temp_path, &final_path)
+                    .await
+                    .with_context(|| {
+                        format!("failed to rename temp file to final path for key `{key}`")
+                    })?;
+                Ok(())
+            }
+            Err(e) => {
+                let _ = tokio::fs::remove_file(&temp_path).await;
+                Err(e)
+            }
+        }
+    }
+}
 #[async_trait]
 impl kb_core::blob::Blob for LocalBlob {
     /// Store `data` under `key`. Idempotent: if the file already exists at the

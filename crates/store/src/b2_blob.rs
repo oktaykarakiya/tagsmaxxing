@@ -28,6 +28,9 @@ use object_store::aws::AmazonS3Builder;
 use object_store::path::Path as OSPath;
 use object_store::signer::Signer;
 use reqwest::Method;
+use tokio::sync::mpsc;
+
+use crate::multipart_stream::{MultipartUploadConfig, PartProgress, StreamingMultipartUpload};
 
 /// Files larger than this threshold (5 MB) are uploaded via multipart.
 const MULTIPART_THRESHOLD: usize = 5 * 1024 * 1024; // 5 MB
@@ -200,6 +203,48 @@ impl B2Blob {
         // empty keys anyway.
         debug_assert!(!key.is_empty(), "blob key must be non-empty");
         OSPath::from(key)
+    }
+
+    /// Start a streaming multipart upload to the given key.
+    ///
+    /// The caller is responsible for checking `total_bytes` against
+    /// [`MultipartUploadConfig::threshold_bytes`] — if the file is smaller
+    /// than the threshold, use the regular [`Blob::put`](kb_core::blob::Blob::put)
+    /// instead for efficiency.
+    ///
+    /// Once created, feed data in chunks via [`StreamingMultipartUpload::feed`]
+    /// and call [`StreamingMultipartUpload::finish`] to complete the upload.
+    /// On error the upload is automatically aborted; the caller can also
+    /// call [`StreamingMultipartUpload::abort`] to cancel explicitly.
+    ///
+    /// `total_bytes` is a size hint used for progress reporting (0 if unknown).
+    /// `progress_tx` receives a [`PartProgress`] event after each part uploads
+    /// successfully.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the multipart upload cannot be initiated (e.g.
+    /// network failure or invalid path).
+    pub async fn start_multipart_stream(
+        &self,
+        key: &str,
+        total_bytes: u64,
+        config: &MultipartUploadConfig,
+        progress_tx: Option<mpsc::UnboundedSender<PartProgress>>,
+    ) -> anyhow::Result<StreamingMultipartUpload> {
+        let store = self.current_store();
+        let path = self.os_path(key);
+        let s3_upload = store
+            .put_multipart(&path)
+            .await
+            .with_context(|| format!("B2 multipart initiation failed for key `{key}`"))?;
+
+        Ok(StreamingMultipartUpload::from_object_store(
+            s3_upload,
+            config.clone(),
+            total_bytes,
+            progress_tx,
+        ))
     }
 }
 

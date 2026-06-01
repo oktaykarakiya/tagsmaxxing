@@ -18,6 +18,7 @@ pub mod blob;
 pub mod blob_cache;
 pub(crate) mod hybrid_search;
 mod migrations;
+pub mod multipart_stream;
 pub mod pg_store;
 pub mod session_store;
 
@@ -26,5 +27,6 @@ pub use b2_blob::{B2Blob, B2Config};
 pub use blob::LocalBlob;
 pub use blob_cache::BlobCache;
 pub use migrations::MIGRATOR;
+pub use multipart_stream::{MultipartUploadConfig, PartProgress, StreamingMultipartUpload};
 pub use pg_store::PgStore;
 pub use session_store::{InMemorySessionStore, PgSessionStore};
