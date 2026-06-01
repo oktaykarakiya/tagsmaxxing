@@ -35,6 +35,7 @@ pub mod query;
 pub mod quota;
 pub mod reranker;
 pub mod role;
+pub mod routing;
 pub mod secret;
 pub mod session;
 pub mod status;

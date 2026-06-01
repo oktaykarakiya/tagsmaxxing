@@ -47,3 +47,5 @@ tempfile = { workspace = true }
 chrono = { workspace = true }
 # Shared #[ignore] integration harness: one pgvector container per binary + the two RLS roles.
 kb-testsupport = { workspace = true }
+# Mock HTTP server for test_connection tests.
+kb-mock-backend = { workspace = true }

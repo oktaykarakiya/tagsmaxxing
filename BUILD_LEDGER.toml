@@ -1015,9 +1015,9 @@ description = "DB-driven providers/models/routes schema (§26.5): sqlx migration
 depends_on = ["P0-T6", "P9-T4"]
 plan_sections = ["26.5"]
 acceptance = "Migration creates providers/models/routes tables with correct constraints; CRUD methods create, read, update, soft-delete (enabled=false); test_connection validates a real endpoint (mock server in tests); get_routing_table builds correct tiered structure; tenant-specific routes override global; duplicate detection (same role+tier+tenant+model UNIQUE). Unit tests for CRUD + routing table build + #[ignore] integration tests against testcontainers. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "Migration 0011 (providers/models/routes), kb-core::routing (ProviderKind/RoutingStrategy/Row types/RoutingTable), PgStore CRUD (create/get/update/disable/enable/list for all 3 tables) + get_routing_table (JOIN + tenant-override filter) + test_connection (HTTP health probe). 40 tests: 10 error-before-connect + 7 override/routing-table pure-logic + 1 test_connection smoke + 22 #[ignore] integration. just ci green (all gates, cov 78.00% >= 76% floor)."
 
 [[task]]
 id = "P9-T6"

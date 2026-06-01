@@ -16,11 +16,11 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
-    /// All ten migrations are present, in version order (1–10).
+    /// All eleven migrations are present, in version order (1–11).
     #[test]
     fn embeds_the_schema_migrations() {
         let versions: Vec<i64> = MIGRATOR.iter().map(|m| m.version).collect();
-        assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+        assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
     }
 
     /// Forward-only and monotonic: no down/reversible scripts, strictly increasing versions,
@@ -178,6 +178,53 @@ mod tests {
             sql.contains("'integrity_scan'"),
             "jobs kind CHECK must include 'integrity_scan' for the integrity scan job (P8-T10)"
         );
+    }
+
+    /// Migration 0011 (P9-T5): the `providers`, `models`, and `routes` tables for DB-driven
+    /// routing (§26.5).
+    #[test]
+    fn schema_adds_providers_models_and_routes_tables() {
+        let sql: String = MIGRATOR
+            .iter()
+            .map(|m| m.sql.as_ref())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        for table in ["providers", "models", "routes"] {
+            assert!(
+                sql.contains(&format!("CREATE TABLE {table} ")),
+                "missing CREATE TABLE for {table} (migration 0011)"
+            );
+        }
+
+        // providers.kind CHECK covers all four ProviderKind variants.
+        assert!(sql.contains("'openai_compat'"));
+        assert!(sql.contains("'anthropic'"));
+        assert!(sql.contains("'gemini_native'"));
+        assert!(sql.contains("'local'"));
+
+        // routes UNIQUE constraint for tenant-override detection.
+        assert!(sql.contains("UNIQUE (tenant_id, role, tier, model_id)"));
+
+        // routes.role CHECK covers all five Role variants.
+        for r in ["'text'", "'vision'", "'code'", "'embed'", "'rerank'"] {
+            assert!(sql.contains(r), "routes.role CHECK missing {r}");
+        }
+
+        // routes.strategy CHECK covers all four RoutingStrategy variants.
+        for s in [
+            "'least_loaded'",
+            "'round_robin'",
+            "'cost_asc'",
+            "'priority'",
+        ] {
+            assert!(sql.contains(s), "routes.strategy CHECK missing {s}");
+        }
+
+        // models FK to providers.
+        assert!(sql.contains("REFERENCES providers(id)"));
+        // routes FK to models.
+        assert!(sql.contains("REFERENCES models(id)"));
     }
 
     /// The two-role RLS model (P6-T14, §13): migration 0006 must create the non-privileged
