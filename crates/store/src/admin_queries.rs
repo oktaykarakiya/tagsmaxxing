@@ -331,6 +331,77 @@ impl PgStore {
         Ok(affected.rows_affected())
     }
 
+    /// Update a job's priority and record the change in the audit log (P9-T12).
+    ///
+    /// The priority uses the **higher-is-more-urgent** convention (default 0).
+    /// The `actor_user_id` is the admin performing the change — it is written to
+    /// the audit log. The old and new priority values are recorded in the
+    /// `details` JSONB of the audit event.
+    ///
+    /// Uses the admin pool. Returns the number of rows affected (0 means the
+    /// job was not found in the specified tenant).
+    ///
+    /// # Errors
+    /// Returns an error if the database is not connected, the audit write
+    /// fails, or the query fails.
+    pub async fn admin_update_job_priority(
+        &self,
+        tenant_id: i64,
+        job_id: i64,
+        new_priority: i32,
+        actor_user_id: i64,
+    ) -> anyhow::Result<u64> {
+        let pool = self.pool()?;
+
+        // Read old priority for the audit record.
+        let old_priority: Option<i32> =
+            sqlx::query_scalar("SELECT priority FROM jobs WHERE id = $1 AND tenant_id = $2")
+                .bind(job_id)
+                .bind(tenant_id)
+                .fetch_optional(&pool)
+                .await
+                .context("failed to read old priority for audit")?;
+
+        let old_priority = match old_priority {
+            Some(p) => p,
+            None => {
+                // Job not found — nothing to update.
+                return Ok(0);
+            }
+        };
+
+        // Update the priority.
+        let affected =
+            sqlx::query("UPDATE jobs SET priority = $1 WHERE id = $2 AND tenant_id = $3")
+                .bind(new_priority)
+                .bind(job_id)
+                .bind(tenant_id)
+                .execute(&pool)
+                .await
+                .context("failed to update job priority")?
+                .rows_affected();
+
+        if affected > 0 {
+            // Write audit event (P9-T12 requirement (e)).
+            let details = serde_json::json!({
+                "old_priority": old_priority,
+                "new_priority": new_priority,
+            });
+            self.admin_insert_audit_event(
+                actor_user_id,
+                tenant_id,
+                "job_priority_change",
+                "job",
+                Some(job_id),
+                &details,
+            )
+            .await
+            .context("failed to write priority-change audit event")?;
+        }
+
+        Ok(affected)
+    }
+
     // ── Tag merge (plan §6.5, §15) ────────────────────────────────────────
 
     /// Merge two canonical tags in a tenant: repoint all aliases from `from_tag_id`

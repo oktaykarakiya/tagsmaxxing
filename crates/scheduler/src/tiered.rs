@@ -18,6 +18,7 @@ use kb_core::routing::{RoutingEntry, RoutingStrategy, RoutingTable};
 use crate::backend::Backend;
 use crate::error::AcquireError;
 use crate::lease::Lease;
+use crate::priority_wait::PriorityWaiterQueue;
 
 /// The per-(role, tier) round-robin counter key.
 type RrKey = (u8, i32);
@@ -38,14 +39,20 @@ type RrKey = (u8, i32);
 ///    across different embedding models).
 /// 4. All tiers exhausted without success: wait on the union of all candidates
 ///    up to the global `timeout`, then return [`AcquireError::CapacityExhausted`].
+///
+/// `priority` (P9-T12) is the caller's priority (higher = more urgent) for the
+/// priority-ordered waiter queue.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn acquire_tiered(
     role: Role,
+    priority: i32,
     tenant_id: Option<i64>,
     table: &RoutingTable,
     backends: &DashMap<String, Arc<Backend>>,
     global_timeout: Duration,
     rr_counters: &DashMap<RrKey, AtomicUsize>,
     local_only: bool,
+    wait_queue: &Arc<PriorityWaiterQueue>,
 ) -> Result<Lease, AcquireError> {
     let tiers = table.tiers_for(tenant_id, role);
 
@@ -93,13 +100,14 @@ pub(crate) async fn acquire_tiered(
         );
 
         // Fast path: try_acquire on each candidate in order.
+        // P9-T12: wrap with wait-queue notification so waiters are woken on drop.
         if let Some(lease) = fast_path_try_acquire(&candidates) {
-            return Ok(lease);
+            return Ok(lease.with_notify(role, Arc::clone(wait_queue)));
         }
 
         // Wait path: await any free capacity in this tier, bounded by spill_after.
         if let Some(lease) = wait_on_tier(&candidates, spill_after).await {
-            return Ok(lease);
+            return Ok(lease.with_notify(role, Arc::clone(wait_queue)));
         }
 
         // Spill to next tier — collect candidates for the union wait.
@@ -110,12 +118,15 @@ pub(crate) async fn acquire_tiered(
         return Err(AcquireError::NoBackend { role });
     }
 
-    // Step 4 (§26.4): all tiers exhausted → wait on the union up to global timeout.
+    // Step 4 (§26.4): all tiers exhausted → wait on the union up to global timeout,
+    // using the priority-ordered waiter queue (P9-T12).
     wait_on_union(
         &union_candidates,
         global_timeout,
         role,
         effective_tiers.len(),
+        priority,
+        wait_queue,
     )
     .await
 }
@@ -247,28 +258,40 @@ async fn wait_on_tier(candidates: &[Arc<Backend>], spill_after: Duration) -> Opt
 }
 
 /// Final union wait (plan §26.4 step 4): all tiers exhausted, wait on ALL
-/// candidates up to the global timeout.
+/// candidates up to the global timeout, with priority-ordered waiter wake
+/// (P9-T12).
 async fn wait_on_union(
     candidates: &[Arc<Backend>],
     global_timeout: Duration,
     role: Role,
     tiers_attempted: usize,
+    priority: i32,
+    wait_queue: &Arc<PriorityWaiterQueue>,
 ) -> Result<Lease, AcquireError> {
-    let mut waiters = FuturesUnordered::new();
-    for b in candidates {
-        let capacity = b.capacity.clone();
-        let id = b.id.clone();
-        let endpoint = b.endpoint.clone().unwrap_or_default();
-        waiters.push(async move { capacity.acquire().await.map(|guard| (id, endpoint, guard)) });
-    }
+    // Register in the priority wait queue.
+    let mut ticket = wait_queue.register(role, priority).await;
 
-    match tokio::time::timeout(global_timeout, waiters.next()).await {
-        Ok(Some(Some((id, endpoint, guard)))) => Ok(Lease::new(id, endpoint, guard)),
-        Ok(None) | Ok(Some(None)) => Err(AcquireError::Closed),
-        Err(_elapsed) => Err(AcquireError::CapacityExhausted {
-            role,
-            tiers_attempted,
-        }),
+    loop {
+        tokio::select! {
+            _ = ticket.wait() => {
+                // Woken — a slot might be free. Try fast-path on any candidate.
+                if let Some(lease) =
+                    super::pool::Pool::try_fast_path(candidates, role)
+                {
+                    // Attach wait-queue notification so the next waiter is woken
+                    // when this lease is dropped.
+                    return Ok(lease.with_notify(role, Arc::clone(wait_queue)));
+                }
+                // Slot was taken — re-register.
+                ticket = wait_queue.register(role, priority).await;
+            }
+            _ = tokio::time::sleep(global_timeout) => {
+                return Err(AcquireError::CapacityExhausted {
+                    role,
+                    tiers_attempted,
+                });
+            }
+        }
     }
 }
 
@@ -458,6 +481,13 @@ mod tests {
         (table, map)
     }
 
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    /// Create a fresh test wait queue (P9-T12).
+    fn test_wq() -> Arc<PriorityWaiterQueue> {
+        Arc::new(PriorityWaiterQueue::default())
+    }
+
     // ── Tests ─────────────────────────────────────────────────────────────────
 
     /// Tier 0 candidate available → acquired immediately.
@@ -477,12 +507,14 @@ mod tests {
 
         let lease = acquire_tiered(
             Role::Text,
+            0,
             None,
             &table,
             &backends,
             Duration::from_secs(5),
             &rr,
             false,
+            &test_wq(),
         )
         .await
         .unwrap();
@@ -508,12 +540,14 @@ mod tests {
         // tier 0's spill_after is 100ms → after that, spills to tier 1.
         let lease = acquire_tiered(
             Role::Text,
+            0,
             None,
             &table,
             &backends,
             Duration::from_secs(5),
             &rr,
             false,
+            &test_wq(),
         )
         .await
         .unwrap();
@@ -630,12 +664,14 @@ mod tests {
 
         let err = acquire_tiered(
             Role::Embed,
+            0,
             None,
             &table,
             &backends,
             Duration::from_millis(200), // short global timeout
             &rr,
             false,
+            &test_wq(),
         )
         .await
         .unwrap_err();
@@ -713,12 +749,14 @@ mod tests {
 
         let lease = acquire_tiered(
             Role::Text,
+            0,
             None,
             &table,
             &backends,
             Duration::from_secs(5),
             &rr,
             false,
+            &test_wq(),
         )
         .await
         .unwrap();
@@ -751,12 +789,14 @@ mod tests {
 
         let lease = acquire_tiered(
             Role::Text,
+            0,
             None,
             &table,
             &backends,
             Duration::from_secs(5),
             &rr,
             false,
+            &test_wq(),
         )
         .await
         .unwrap();
@@ -786,12 +826,14 @@ mod tests {
 
         let lease = acquire_tiered(
             Role::Text,
+            0,
             None,
             &table,
             &backends,
             Duration::from_secs(5),
             &rr,
             false,
+            &test_wq(),
         )
         .await
         .unwrap();
@@ -854,12 +896,14 @@ mod tests {
 
         let lease = acquire_tiered(
             Role::Text,
+            0,
             None,
             &table,
             &backends,
             Duration::from_secs(5),
             &rr,
             false,
+            &test_wq(),
         )
         .await
         .unwrap();
@@ -928,12 +972,14 @@ mod tests {
 
         let lease = acquire_tiered(
             Role::Text,
+            0,
             None,
             &table,
             &backends,
             Duration::from_secs(5),
             &rr,
             false,
+            &test_wq(),
         )
         .await
         .unwrap();
@@ -960,12 +1006,14 @@ mod tests {
         // Short spill_after (100ms each tier) + short global timeout.
         let err = acquire_tiered(
             Role::Text,
+            0,
             None,
             &table,
             &backends,
             Duration::from_millis(200),
             &rr,
             false,
+            &test_wq(),
         )
         .await
         .unwrap_err();
@@ -991,12 +1039,14 @@ mod tests {
 
         let err = acquire_tiered(
             Role::Rerank,
+            0,
             None,
             &table,
             &backends,
             Duration::from_secs(5),
             &rr,
             false,
+            &test_wq(),
         )
         .await
         .unwrap_err();
@@ -1066,12 +1116,14 @@ mod tests {
         for _ in 0..4 {
             let lease = acquire_tiered(
                 Role::Text,
+                0,
                 None,
                 &table,
                 &backends,
                 Duration::from_secs(5),
                 &rr,
                 false,
+                &test_wq(),
             )
             .await
             .unwrap();
@@ -1125,12 +1177,14 @@ mod tests {
 
         let lease = acquire_tiered(
             Role::Text,
+            0,
             None,
             &table,
             &backends,
             Duration::from_secs(5),
             &rr,
             false,
+            &test_wq(),
         )
         .await
         .unwrap();
@@ -1223,12 +1277,14 @@ mod tests {
         // Tenant 7 should use its specific route (backend 23).
         let lease = acquire_tiered(
             Role::Text,
+            0,
             Some(7),
             &table,
             &backends,
             Duration::from_secs(5),
             &rr,
             false,
+            &test_wq(),
         )
         .await
         .unwrap();
@@ -1241,7 +1297,7 @@ mod tests {
         let b = tb("24", 2, 0);
         let pool = Pool::new(vec![Arc::clone(&b)], Duration::from_secs(5));
 
-        let lease = pool.acquire(Role::Text, false).await.unwrap();
+        let lease = pool.acquire(Role::Text, false, 0).await.unwrap();
         assert_eq!(lease.backend_id, "24");
         assert_eq!(b.free(), 1);
         drop(lease);
@@ -1265,13 +1321,13 @@ mod tests {
         );
         pool.set_routing(table);
 
-        let lease = pool.acquire(Role::Text, false).await.unwrap();
+        let lease = pool.acquire(Role::Text, false, 0).await.unwrap();
         assert_eq!(lease.backend_id, "25");
         drop(lease);
 
         // Clear routing and verify fallback.
         pool.clear_routing();
-        let lease2 = pool.acquire(Role::Text, false).await.unwrap();
+        let lease2 = pool.acquire(Role::Text, false, 0).await.unwrap();
         assert_eq!(lease2.backend_id, "25"); // still works via legacy path
     }
 

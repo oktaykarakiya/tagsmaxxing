@@ -62,7 +62,10 @@ pub struct Job {
     pub document_id: Option<i64>,
     /// What the job does.
     pub kind: JobKind,
-    /// Lower runs first; interactive queries bypass the queue entirely (plan §16).
+    /// Higher runs first (P9-T12); default 0. Interactive queries bypass the queue
+    /// entirely (plan §16). The claim query adds an age-based boost via
+    /// `effective_priority = priority + floor(age_seconds / 3600)` to prevent
+    /// starvation of old low-priority jobs.
     pub priority: i32,
     /// Current status.
     pub status: JobStatus,

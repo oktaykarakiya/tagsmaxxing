@@ -22,6 +22,7 @@ mod error;
 mod health;
 mod lease;
 mod pool;
+mod priority_wait;
 mod routing_reload;
 pub(crate) mod tiered;
 
@@ -31,4 +32,5 @@ pub use error::AcquireError;
 pub use health::HealthLoop;
 pub use lease::Lease;
 pub use pool::Pool;
+pub use priority_wait::{PriorityWaiterQueue, Ticket};
 pub use routing_reload::{Reloader, config_backends_to_entries};

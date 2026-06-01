@@ -225,6 +225,7 @@ impl LlamaClient {
         model: &str,
         req: &ChatReq,
         local_only: bool,
+        priority: i32,
     ) -> Result<ChatResp, LlmError> {
         let response_format = req.json_schema.as_ref().map(|schema| ResponseFormat {
             type_: "json_schema",
@@ -255,7 +256,7 @@ impl LlamaClient {
         };
 
         let raw: OpenAiChatResp = self
-            .call_with_failover(role, "/chat/completions", &body, local_only)
+            .call_with_failover(role, "/chat/completions", &body, local_only, priority)
             .await?;
 
         Ok(ChatResp {
@@ -287,6 +288,7 @@ impl LlamaClient {
         model: &str,
         req: &EmbedReq,
         local_only: bool,
+        priority: i32,
     ) -> Result<EmbedResp, LlmError> {
         let body = OpenAiEmbedBody {
             model,
@@ -294,7 +296,7 @@ impl LlamaClient {
         };
 
         let raw: OpenAiEmbedResp = self
-            .call_with_failover(Role::Embed, "/embeddings", &body, local_only)
+            .call_with_failover(Role::Embed, "/embeddings", &body, local_only, priority)
             .await?;
 
         Ok(EmbedResp {
@@ -329,6 +331,7 @@ impl LlamaClient {
         query: &str,
         documents: &[String],
         local_only: bool,
+        priority: i32,
     ) -> Result<Vec<f32>, LlmError> {
         let body = OpenAiRerankBody {
             model,
@@ -337,7 +340,7 @@ impl LlamaClient {
         };
 
         let raw: OpenAiRerankResp = self
-            .call_with_failover(Role::Rerank, "/rerank", &body, local_only)
+            .call_with_failover(Role::Rerank, "/rerank", &body, local_only, priority)
             .await?;
 
         let n_docs = documents.len();
@@ -375,13 +378,14 @@ impl LlamaClient {
         endpoint: &str,
         body: &Req,
         local_only: bool,
+        priority: i32,
     ) -> Result<Resp, LlmError> {
         let mut last_error: Option<String> = None;
         let total_attempts = self.max_retries.saturating_add(1);
 
         for attempt in 0..total_attempts {
             // 1. Acquire a slot (fast path or wait path; plan §6.3).
-            let lease = match self.pool.acquire(role, local_only).await {
+            let lease = match self.pool.acquire(role, local_only, priority).await {
                 Ok(l) => l,
                 Err(AcquireError::NoBackend { .. }) => {
                     // Every known backend is either unhealthy or in cooldown.
@@ -596,7 +600,7 @@ mod tests {
         let (client, mock) = client_with_one_backend(Role::Text, 2).await;
 
         let resp = client
-            .chat(Role::Text, "test-model", &chat_req("hi"), false)
+            .chat(Role::Text, "test-model", &chat_req("hi"), false, 0)
             .await
             .unwrap();
         assert_eq!(resp.text, "mock response");
@@ -614,7 +618,10 @@ mod tests {
             texts: vec!["hello".into(), "world".into()],
         };
 
-        let resp = client.embed("test-embed-model", &req, false).await.unwrap();
+        let resp = client
+            .embed("test-embed-model", &req, false, 0)
+            .await
+            .unwrap();
         assert_eq!(resp.vectors.len(), 1); // mock returns 1 vector regardless of input
         assert!(!resp.vectors[0].is_empty());
         assert_eq!(resp.usage.prompt_tokens, 3);
@@ -635,7 +642,7 @@ mod tests {
 
         // mock-2 stays healthy → failover should land there.
         let resp = client
-            .chat(Role::Text, "model", &chat_req("hi"), false)
+            .chat(Role::Text, "model", &chat_req("hi"), false, 0)
             .await
             .unwrap();
         assert_eq!(resp.text, "mock response");
@@ -668,7 +675,7 @@ mod tests {
 
         // Transport error should trigger failover to mock-2.
         let resp = client
-            .chat(Role::Text, "model", &chat_req("hi"), false)
+            .chat(Role::Text, "model", &chat_req("hi"), false, 0)
             .await
             .unwrap();
         assert_eq!(resp.text, "mock response");
@@ -689,7 +696,7 @@ mod tests {
         mock2.scenario().lock().await.chat = ResponseMode::ServerError;
 
         let err = client
-            .chat(Role::Text, "model", &chat_req("hi"), false)
+            .chat(Role::Text, "model", &chat_req("hi"), false, 0)
             .await
             .unwrap_err();
         match err {
@@ -717,7 +724,7 @@ mod tests {
         let client = LlamaClient::new(pool, Client::new(), 2, 3, Duration::from_millis(200));
 
         let err = client
-            .chat(Role::Rerank, "model", &chat_req("hi"), false)
+            .chat(Role::Rerank, "model", &chat_req("hi"), false, 0)
             .await
             .unwrap_err();
         match err {
@@ -771,7 +778,7 @@ mod tests {
         mock1.scenario().lock().await.chat = ResponseMode::ServerError;
         // mock-2 stays healthy.
         let resp = client
-            .chat(Role::Text, "model", &chat_req("a"), false)
+            .chat(Role::Text, "model", &chat_req("a"), false, 0)
             .await
             .unwrap();
         assert_eq!(resp.text, "mock response");
@@ -783,7 +790,7 @@ mod tests {
 
         // --- call 2: mock-1 fails again → circuit trips ----------------
         let resp = client
-            .chat(Role::Text, "model", &chat_req("b"), false)
+            .chat(Role::Text, "model", &chat_req("b"), false, 0)
             .await
             .unwrap();
         assert_eq!(resp.text, "mock response");
@@ -797,7 +804,7 @@ mod tests {
         // the circuit breaker cooldown must refuse it. The cooldown path
         // also marks mock-1 unhealthy so the pool gives us mock-2 on retry.
         let resp = client
-            .chat(Role::Text, "model", &chat_req("c"), false)
+            .chat(Role::Text, "model", &chat_req("c"), false, 0)
             .await
             .unwrap();
         assert_eq!(resp.text, "mock response");
@@ -812,7 +819,7 @@ mod tests {
         mock1.scenario().lock().await.chat = ResponseMode::Healthy;
 
         let resp = client
-            .chat(Role::Text, "model", &chat_req("d"), false)
+            .chat(Role::Text, "model", &chat_req("d"), false, 0)
             .await
             .unwrap();
         assert_eq!(resp.text, "mock response");
@@ -841,10 +848,10 @@ mod tests {
         // Fail multiple times.
         mock.scenario().lock().await.chat = ResponseMode::ServerError;
         let _ = client
-            .chat(Role::Text, "model", &chat_req("a"), false)
+            .chat(Role::Text, "model", &chat_req("a"), false, 0)
             .await;
         let _ = client
-            .chat(Role::Text, "model", &chat_req("b"), false)
+            .chat(Role::Text, "model", &chat_req("b"), false, 0)
             .await;
 
         // No circuits tracked.
@@ -858,7 +865,7 @@ mod tests {
         }
 
         let resp = client
-            .chat(Role::Text, "model", &chat_req("c"), false)
+            .chat(Role::Text, "model", &chat_req("c"), false, 0)
             .await
             .unwrap();
         assert_eq!(resp.text, "mock response");
@@ -875,7 +882,7 @@ mod tests {
 
         // First call consumes the only slot.
         let resp = client
-            .chat(Role::Text, "model", &chat_req("a"), false)
+            .chat(Role::Text, "model", &chat_req("a"), false, 0)
             .await
             .unwrap();
         assert_eq!(resp.text, "mock response");
@@ -894,7 +901,7 @@ mod tests {
 
         mock.scenario().lock().await.chat = ResponseMode::ServerError;
         let _ = client
-            .chat(Role::Text, "model", &chat_req("a"), false)
+            .chat(Role::Text, "model", &chat_req("a"), false, 0)
             .await;
 
         // Slot must be free even after failure.
@@ -916,7 +923,7 @@ mod tests {
         let req = EmbedReq {
             texts: vec!["hi".into()],
         };
-        let resp = client.embed("embed-model", &req, false).await.unwrap();
+        let resp = client.embed("embed-model", &req, false, 0).await.unwrap();
         assert_eq!(resp.vectors.len(), 1);
 
         // mock-1 should be unhealthy now.
@@ -940,7 +947,7 @@ mod tests {
         };
 
         let resp = client
-            .chat(Role::Text, "model", &chat_req("hi"), false)
+            .chat(Role::Text, "model", &chat_req("hi"), false, 0)
             .await
             .unwrap();
         assert_eq!(resp.text, "mock response");
@@ -969,7 +976,7 @@ mod tests {
         let client = LlamaClient::new(pool, Client::new(), 2, 3, Duration::from_millis(200));
 
         let err = client
-            .chat(Role::Text, "model", &chat_req("hi"), false)
+            .chat(Role::Text, "model", &chat_req("hi"), false, 0)
             .await
             .unwrap_err();
         match err {
@@ -996,7 +1003,7 @@ mod tests {
     async fn circuit_count_after_single_success() {
         let (client, mock) = client_with_one_backend(Role::Text, 2).await;
         let _ = client
-            .chat(Role::Text, "model", &chat_req("hello"), false)
+            .chat(Role::Text, "model", &chat_req("hello"), false, 0)
             .await
             .unwrap();
         // After success, no circuit-breaker entry (backend not failed).
@@ -1021,7 +1028,7 @@ mod tests {
             "doc c".to_string(),
         ];
         let scores = client
-            .rerank("model", "query", &documents, false)
+            .rerank("model", "query", &documents, false, 0)
             .await
             .unwrap();
         assert_eq!(scores.len(), 3);
@@ -1045,7 +1052,7 @@ mod tests {
 
         let documents = vec!["a".to_string(), "b".to_string(), "c".to_string()];
         let scores = client
-            .rerank("model", "query", &documents, false)
+            .rerank("model", "query", &documents, false, 0)
             .await
             .unwrap();
         assert_eq!(scores, vec![0.12_f32, 0.34_f32, 0.56_f32]);
@@ -1064,7 +1071,7 @@ mod tests {
 
         let documents: Vec<String> = vec![];
         let scores = client
-            .rerank("model", "query", &documents, false)
+            .rerank("model", "query", &documents, false, 0)
             .await
             .unwrap();
         assert!(scores.is_empty());
@@ -1085,7 +1092,7 @@ mod tests {
 
         let documents = vec!["a".to_string(), "b".to_string(), "c".to_string()];
         let err = client
-            .rerank("model", "query", &documents, false)
+            .rerank("model", "query", &documents, false, 0)
             .await
             .unwrap_err();
         match err {
@@ -1129,7 +1136,7 @@ mod tests {
 
         let documents = vec!["doc a".to_string()];
         let scores = client
-            .rerank("model", "query", &documents, false)
+            .rerank("model", "query", &documents, false, 0)
             .await
             .unwrap();
         assert_eq!(scores.len(), 1);

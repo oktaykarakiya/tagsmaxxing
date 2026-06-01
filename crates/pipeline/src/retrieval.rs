@@ -103,7 +103,7 @@ impl RetrievalPipeline {
         let doc_texts: Vec<String> = hits.iter().map(|h| h.snippet.clone()).collect();
         let rerank_scores = self
             .reranker
-            .rerank(&query.text, &doc_texts, local_only)
+            .rerank(&query.text, &doc_texts, local_only, 0)
             .await?;
 
         anyhow::ensure!(
@@ -269,6 +269,7 @@ mod tests {
             _query: &str,
             _docs: &[String],
             _local_only: bool,
+            _priority: i32,
         ) -> anyhow::Result<Vec<f32>> {
             Ok(self.scores.to_vec())
         }
@@ -300,6 +301,7 @@ mod tests {
             _query: &str,
             docs: &[String],
             _local_only: bool,
+            _priority: i32,
         ) -> anyhow::Result<Vec<f32>> {
             *self.last_docs.lock().unwrap() = docs.to_vec();
             Ok(self.scores.to_vec())
@@ -316,6 +318,7 @@ mod tests {
             _query: &str,
             _docs: &[String],
             _local_only: bool,
+            _priority: i32,
         ) -> anyhow::Result<Vec<f32>> {
             anyhow::bail!("simulated reranker failure")
         }

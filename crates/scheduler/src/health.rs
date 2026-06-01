@@ -260,7 +260,7 @@ mod tests {
 
         // First, healthy → acquire works.
         let l1 = pool
-            .acquire(kb_core::role::Role::Text, false)
+            .acquire(kb_core::role::Role::Text, false, 0)
             .await
             .unwrap();
         assert_eq!(l1.backend_id, "mock-1");
@@ -272,7 +272,7 @@ mod tests {
 
         // Acquire must return NoBackend (the only backend is now unhealthy).
         let err = pool
-            .acquire(kb_core::role::Role::Text, false)
+            .acquire(kb_core::role::Role::Text, false, 0)
             .await
             .unwrap_err();
         match err {
@@ -313,7 +313,7 @@ mod tests {
 
         // Acquire must fail while the backend is unhealthy.
         let err = pool
-            .acquire(kb_core::role::Role::Text, false)
+            .acquire(kb_core::role::Role::Text, false, 0)
             .await
             .unwrap_err();
         assert!(matches!(err, crate::AcquireError::NoBackend { .. }));
@@ -324,7 +324,7 @@ mod tests {
 
         // Now acquire must succeed.
         let lease = pool
-            .acquire(kb_core::role::Role::Text, false)
+            .acquire(kb_core::role::Role::Text, false, 0)
             .await
             .unwrap();
         assert_eq!(lease.backend_id, "mock-1");

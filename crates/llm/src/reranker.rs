@@ -27,7 +27,7 @@ use crate::client::LlamaClient;
 /// # use kb_core::reranker::Reranker;
 /// # async fn example(client: Arc<LlamaClient>) -> anyhow::Result<()> {
 /// let reranker = LlamaReranker::new(client, "bge-reranker-v2-m3".into());
-/// let scores = reranker.rerank("query", &["doc1".into(), "doc2".into()], false).await?;
+/// let scores = reranker.rerank("query", &["doc1".into(), "doc2".into()], false, 0).await?;
 /// # Ok(())
 /// # }
 /// ```
@@ -65,10 +65,11 @@ impl Reranker for LlamaReranker {
         query: &str,
         docs: &[String],
         local_only: bool,
+        priority: i32,
     ) -> anyhow::Result<Vec<f32>> {
         Ok(self
             .client
-            .rerank(&self.model, query, docs, local_only)
+            .rerank(&self.model, query, docs, local_only, priority)
             .await?)
     }
 }
@@ -120,7 +121,7 @@ mod tests {
         mock.scenario().lock().await.rerank_content = Some(vec![0.95, 0.42, 0.73]);
 
         let docs: Vec<String> = ["a", "b", "c"].map(String::from).to_vec();
-        let scores = reranker.rerank("query", &docs, false).await.unwrap();
+        let scores = reranker.rerank("query", &docs, false, 0).await.unwrap();
 
         assert_eq!(scores.len(), 3);
         assert!((scores[0] - 0.95_f32).abs() < 0.0001);
@@ -136,7 +137,7 @@ mod tests {
         let (reranker, mock) = reranker_with_one_backend(2).await;
 
         let docs: Vec<String> = vec![];
-        let scores = reranker.rerank("query", &docs, false).await.unwrap();
+        let scores = reranker.rerank("query", &docs, false, 0).await.unwrap();
         assert!(scores.is_empty());
 
         mock.shutdown().await;
@@ -150,7 +151,7 @@ mod tests {
         mock.scenario().lock().await.rerank_content = Some(vec![0.5]);
 
         let docs: Vec<String> = ["a", "b", "c"].map(String::from).to_vec();
-        let err = reranker.rerank("query", &docs, false).await.unwrap_err();
+        let err = reranker.rerank("query", &docs, false, 0).await.unwrap_err();
         let msg = format!("{err}");
         assert!(
             msg.contains("length mismatch"),
@@ -167,7 +168,7 @@ mod tests {
         mock.scenario().lock().await.rerank = ResponseMode::ServerError;
 
         let docs: Vec<String> = ["a"].map(String::from).to_vec();
-        let err = reranker.rerank("query", &docs, false).await.unwrap_err();
+        let err = reranker.rerank("query", &docs, false, 0).await.unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("500") || msg.contains("failed"), "{msg}");
 
@@ -196,7 +197,10 @@ mod tests {
 
         mock.scenario().lock().await.rerank_content = Some(vec![0.99]);
         let docs: Vec<String> = ["test"].map(String::from).to_vec();
-        let scores = reranker.rerank("query text", &docs, false).await.unwrap();
+        let scores = reranker
+            .rerank("query text", &docs, false, 0)
+            .await
+            .unwrap();
         assert_eq!(scores, vec![0.99_f32]);
 
         mock.shutdown().await;
@@ -212,7 +216,7 @@ mod tests {
         mock.scenario().lock().await.rerank_content = Some(vec![0.10, 0.90, 0.50]);
 
         let docs: Vec<String> = ["first", "second", "third"].map(String::from).to_vec();
-        let scores = reranker.rerank("q", &docs, false).await.unwrap();
+        let scores = reranker.rerank("q", &docs, false, 0).await.unwrap();
 
         assert_eq!(scores.len(), 3);
         // Position 0 → score for "first", position 1 → "second", etc.

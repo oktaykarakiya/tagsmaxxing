@@ -24,6 +24,7 @@ pub mod export;
 pub mod folder_watcher;
 pub mod ingest;
 pub mod integrity_scan;
+pub mod job_aging;
 pub mod job_queue;
 pub mod maintenance;
 pub mod metadata_merge;

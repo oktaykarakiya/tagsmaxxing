@@ -82,6 +82,7 @@ mod tests {
             _query: &str,
             docs: &[String],
             _local_only: bool,
+            _priority: i32,
         ) -> anyhow::Result<Vec<f32>> {
             Ok(docs.iter().map(|_| 1.0).collect())
         }

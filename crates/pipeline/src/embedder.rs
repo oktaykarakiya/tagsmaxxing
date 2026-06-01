@@ -164,7 +164,7 @@ impl ChunkEmbedder {
 
             let resp = self
                 .llm
-                .embed(&self.embed_model, &req, local_only)
+                .embed(&self.embed_model, &req, local_only, 0)
                 .await
                 .context("failed to embed batch")?;
 

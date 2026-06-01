@@ -160,7 +160,7 @@ impl Tagger for JsonSchemaTagger {
         // First attempt.
         let resp = self
             .client
-            .chat(Role::Text, &self.model, &req, local_only)
+            .chat(Role::Text, &self.model, &req, local_only, 0)
             .await
             .map_err(|e| anyhow::anyhow!("tagger model call failed: {e}"))?;
 
@@ -191,7 +191,7 @@ impl Tagger for JsonSchemaTagger {
 
                 let retry_resp = self
                     .client
-                    .chat(Role::Text, &self.model, &retry_req, local_only)
+                    .chat(Role::Text, &self.model, &retry_req, local_only, 0)
                     .await
                     .map_err(|e| {
                         anyhow::anyhow!(

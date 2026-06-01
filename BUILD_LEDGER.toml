@@ -1081,9 +1081,9 @@ description = "Per-user job priority + fairness (review/p6-readiness; doc 04 ite
 depends_on = ["P2-T3", "P9-T6", "P5-T6", "P6-T8"]
 plan_sections = ["16", "6", "15"]
 acceptance = "Higher-priority job claimed before lower-priority; aging lifts a starved low-priority job after the threshold; interactive acquire() prefers higher-priority waiters; per-plan rate caps still bound free accounts; a priority change writes an audit row; concurrent claims never double-serve. Unit tests for ordering + aging math (injected clock) + #[ignore] integration test. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "Migration 0014 flips priority default 100->0 + index for DESC. kb_pipeline::job_aging module with effective_priority formula. JobQueue claim orders by priority DESC with EXTRACT(EPOCH) aging in SQL. Scheduler Pool/Tiered acquire now takes priority and uses PriorityWaiterQueue for priority-ordered wake. Lease drop notifies wait queue. Admin: admin_update_job_priority with audit event. All Reranker traits + mock impls updated. 28 new tests (aging, priority_wait, wait-path, schema). just ci green."
 
 [[task]]
 id = "P9-T13"

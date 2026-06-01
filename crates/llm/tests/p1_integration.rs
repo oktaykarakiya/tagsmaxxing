@@ -82,7 +82,7 @@ async fn free_slot_pick_favours_lower_priority() {
     let b_high = backend_for(&mock_high, "high-pri", vec![Role::Text], 10, 2);
     let pool = Pool::new(vec![Arc::clone(&b_low), b_high], Duration::from_secs(5));
 
-    let lease = pool.acquire(Role::Text, false).await.unwrap();
+    let lease = pool.acquire(Role::Text, false, 0).await.unwrap();
     assert_eq!(
         lease.backend_id, "low-pri",
         "lower priority (0) must be preferred over higher priority (10)"
@@ -118,7 +118,7 @@ async fn same_priority_picks_most_free_slots() {
         Duration::from_secs(5),
     );
 
-    let lease = pool.acquire(Role::Embed, false).await.unwrap();
+    let lease = pool.acquire(Role::Embed, false, 0).await.unwrap();
     assert_eq!(
         lease.backend_id, "free",
         "backend with more free slots must be picked at equal priority"
@@ -153,7 +153,7 @@ async fn priority_ordering_through_full_client_stack() {
     let client = client_with(pool);
 
     let resp = client
-        .chat(Role::Text, "model", &chat_req("prio"), false)
+        .chat(Role::Text, "model", &chat_req("prio"), false, 0)
         .await
         .unwrap();
     assert_eq!(resp.text, "mock response");
@@ -177,22 +177,24 @@ async fn wait_then_acquire_when_slot_frees() {
     let mock = MockBackend::start().await;
     let b = backend_for(&mock, "b1", vec![Role::Text], 0, 1);
 
-    // Hold the only slot.
-    let hold = b.capacity.try_acquire().unwrap();
     let pool = Pool::new(
         vec![Arc::clone(&b)],
         Duration::from_secs(10), /* long enough that wait-path is exercised */
     );
-    let client = client_with(pool);
+    let client = client_with(pool.clone());
+
+    // Hold the only slot via a Lease (P9-T12: Lease drop triggers wait-queue
+    // notification so the waiting caller below is woken).
+    let hold_lease = pool.acquire(Role::Text, false, 0).await.unwrap();
 
     // Spawn a task that frees the slot after a short delay.
     let release = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(50)).await;
-        drop(hold);
+        drop(hold_lease);
     });
 
     let resp = client
-        .chat(Role::Text, "model", &chat_req("waiting"), false)
+        .chat(Role::Text, "model", &chat_req("waiting"), false, 0)
         .await
         .unwrap();
     assert_eq!(resp.text, "mock response");
@@ -217,8 +219,14 @@ async fn concurrent_callers_wait_and_all_succeed() {
     for i in 0..4 {
         let c = Arc::clone(&client);
         handles.push(tokio::spawn(async move {
-            c.chat(Role::Text, "model", &chat_req(&format!("req-{i}")), false)
-                .await
+            c.chat(
+                Role::Text,
+                "model",
+                &chat_req(&format!("req-{i}")),
+                false,
+                0,
+            )
+            .await
         }));
     }
 
@@ -246,7 +254,7 @@ async fn acquire_timeout_when_all_busy() {
     let client = client_with(pool);
 
     let err = client
-        .chat(Role::Text, "model", &chat_req("timeout"), false)
+        .chat(Role::Text, "model", &chat_req("timeout"), false, 0)
         .await
         .unwrap_err();
 
@@ -276,7 +284,7 @@ async fn unhealthy_backend_skipped_for_healthy_one() {
 
     let pool = Pool::new(vec![b_dead, Arc::clone(&b_alive)], Duration::from_secs(5));
 
-    let lease = pool.acquire(Role::Text, false).await.unwrap();
+    let lease = pool.acquire(Role::Text, false, 0).await.unwrap();
     assert_eq!(
         lease.backend_id, "alive",
         "unhealthy backend must be skipped even with better priority"
@@ -300,7 +308,7 @@ async fn no_backend_when_all_unhealthy() {
     let client = client_with(pool);
 
     let err = client
-        .chat(Role::Text, "model", &chat_req("hi"), false)
+        .chat(Role::Text, "model", &chat_req("hi"), false, 0)
         .await
         .unwrap_err();
 
@@ -335,7 +343,7 @@ async fn health_loop_unhealthy_then_recovery_full_pipeline() {
 
     // Phase 1: backend is healthy → chat succeeds.
     let resp = client
-        .chat(Role::Text, "model", &chat_req("phase1"), false)
+        .chat(Role::Text, "model", &chat_req("phase1"), false, 0)
         .await
         .unwrap();
     assert_eq!(resp.text, "mock response");
@@ -346,7 +354,7 @@ async fn health_loop_unhealthy_then_recovery_full_pipeline() {
     tokio::time::sleep(Duration::from_millis(40)).await;
 
     let err = client
-        .chat(Role::Text, "model", &chat_req("phase2"), false)
+        .chat(Role::Text, "model", &chat_req("phase2"), false, 0)
         .await
         .unwrap_err();
     assert!(
@@ -359,7 +367,7 @@ async fn health_loop_unhealthy_then_recovery_full_pipeline() {
     tokio::time::sleep(Duration::from_millis(40)).await;
 
     let resp = client
-        .chat(Role::Text, "model", &chat_req("phase3"), false)
+        .chat(Role::Text, "model", &chat_req("phase3"), false, 0)
         .await
         .unwrap();
     assert_eq!(resp.text, "mock response");
@@ -388,7 +396,7 @@ async fn failover_on_5xx_to_secondary_backend() {
     mock1.scenario().lock().await.chat = ResponseMode::ServerError;
 
     let resp = client
-        .chat(Role::Text, "model", &chat_req("failover"), false)
+        .chat(Role::Text, "model", &chat_req("failover"), false, 0)
         .await
         .unwrap();
     assert_eq!(resp.text, "mock response");
@@ -419,7 +427,7 @@ async fn failover_on_transport_error() {
     mock1.shutdown().await;
 
     let resp = client
-        .chat(Role::Text, "model", &chat_req("transport"), false)
+        .chat(Role::Text, "model", &chat_req("transport"), false, 0)
         .await
         .unwrap();
     assert_eq!(resp.text, "mock response");
@@ -450,7 +458,7 @@ async fn all_backends_fail_returns_all_failed() {
     mock2.scenario().lock().await.chat = ResponseMode::ServerError;
 
     let err = client
-        .chat(Role::Text, "model", &chat_req("all-fail"), false)
+        .chat(Role::Text, "model", &chat_req("all-fail"), false, 0)
         .await
         .unwrap_err();
     match err {
@@ -483,7 +491,7 @@ async fn rate_limit_429_triggers_failover() {
     };
 
     let resp = client
-        .chat(Role::Text, "model", &chat_req("rate-limit"), false)
+        .chat(Role::Text, "model", &chat_req("rate-limit"), false, 0)
         .await
         .unwrap();
     assert_eq!(resp.text, "mock response");
@@ -511,7 +519,7 @@ async fn slot_freed_after_success() {
 
     assert_eq!(b.free(), 2);
     let _resp = client
-        .chat(Role::Text, "model", &chat_req("hi"), false)
+        .chat(Role::Text, "model", &chat_req("hi"), false, 0)
         .await
         .unwrap();
     assert_eq!(
@@ -542,7 +550,7 @@ async fn slot_freed_after_failure() {
 
     assert_eq!(b.free(), 2);
     let _err = client
-        .chat(Role::Text, "model", &chat_req("fail"), false)
+        .chat(Role::Text, "model", &chat_req("fail"), false, 0)
         .await;
     assert_eq!(b.free(), 2, "slot must be freed even after a failed call");
 
@@ -568,19 +576,19 @@ async fn multi_role_routing_uses_correct_backend() {
     );
 
     // Acquire for Text role → must pick the text backend.
-    let lease_text = pool.acquire(Role::Text, false).await.unwrap();
+    let lease_text = pool.acquire(Role::Text, false, 0).await.unwrap();
     assert_eq!(lease_text.backend_id, "text-srv");
     assert_eq!(b_text.free(), 1, "text backend consumed a slot");
     drop(lease_text);
 
     // Acquire for Embed role → must pick the embed backend.
-    let lease_embed = pool.acquire(Role::Embed, false).await.unwrap();
+    let lease_embed = pool.acquire(Role::Embed, false, 0).await.unwrap();
     assert_eq!(lease_embed.backend_id, "embed-srv");
     assert_eq!(b_embed.free(), 1, "embed backend consumed a slot");
     drop(lease_embed);
 
     // A role no backend serves → NoBackend.
-    let err = pool.acquire(Role::Rerank, false).await.unwrap_err();
+    let err = pool.acquire(Role::Rerank, false, 0).await.unwrap_err();
     assert!(
         matches!(err, AcquireError::NoBackend { .. }),
         "unserved role must produce NoBackend"
@@ -609,7 +617,7 @@ async fn embed_failover_on_5xx() {
     let req = EmbedReq {
         texts: vec!["failover".into()],
     };
-    let resp = client.embed("model", &req, false).await.unwrap();
+    let resp = client.embed("model", &req, false, 0).await.unwrap();
     assert_eq!(resp.vectors.len(), 1);
 
     mock1.shutdown().await;

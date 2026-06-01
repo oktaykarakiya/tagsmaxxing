@@ -204,7 +204,7 @@ impl TagCanonicalizer {
 
         let resp = self
             .llm
-            .embed(&self.embed_model, &req, local_only)
+            .embed(&self.embed_model, &req, local_only, 0)
             .await
             .map_err(|e| anyhow::anyhow!("failed to embed tag name '{name}': {e}"))?;
 

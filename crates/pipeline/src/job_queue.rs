@@ -4,6 +4,13 @@
 //! complete, and fail with exponential backoff. [`run_worker_pool`] spawns a concurrent
 //! pool of workers that claim and process jobs until a graceful shutdown is signaled via
 //! a [`tokio::sync::watch`] channel.
+//!
+//! ## Priority semantics (P9-T12)
+//!
+//! Priority is **higher-is-more-urgent** (0 = default, no special treatment).
+//! The claim query orders by effective priority (base priority + aging boost),
+//! so older low-priority jobs are eventually lifted above newer high-priority ones —
+//! preventing indefinite starvation.
 
 use std::str::FromStr;
 use std::sync::Arc;
@@ -14,6 +21,8 @@ use chrono::Utc;
 use kb_core::job::{Job, JobKind, JobStatus};
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgRow};
+
+use crate::job_aging::AGING_STEP_SECS;
 
 // ── Backoff calculation ────────────────────────────────────
 
@@ -37,6 +46,13 @@ fn calculate_backoff(attempts: i32, min_backoff_ms: i64) -> chrono::Duration {
 /// exponential backoff, and jobs that exhaust their retry budget are moved to a
 /// dead-letter state (inspectable via the admin panel, plan §16).
 ///
+/// ## Priority (P9-T12)
+///
+/// Priority is **higher-is-more-urgent** (default 0). The claim query orders by
+/// effective priority (base priority + age-based boost, see [`crate::job_aging`]),
+/// so older low-priority jobs eventually overtake fresher high-priority work —
+/// preventing indefinite starvation.
+///
 /// The connection is provided as a sqlx [`PgPool`] — typically obtained from
 /// [`PgStore::pool`](https://docs.rs/kb-store/latest/kb_store/struct.PgStore.html#method.pool).
 /// The pool itself can be hot-swapped externally without restarting.
@@ -49,7 +65,7 @@ fn calculate_backoff(attempts: i32, min_backoff_ms: i64) -> chrono::Duration {
 ///
 /// # async fn example(pool: sqlx::PgPool) -> anyhow::Result<()> {
 /// let queue = Arc::new(JobQueue::new(pool, 10_000, 3));
-/// let job_id = queue.enqueue(1, None, None, kb_core::job::JobKind::Ingest, 100).await?;
+/// let job_id = queue.enqueue(1, None, None, kb_core::job::JobKind::Ingest, 0).await?;
 /// # Ok(())
 /// # }
 /// ```
@@ -94,7 +110,9 @@ impl JobQueue {
     /// Insert a new queued job row and return its generated id.
     ///
     /// The new row is created with `status = 'queued'`, `attempts = 0`, and
-    /// `run_after = now()`.
+    /// `run_after = now()`. The `priority` parameter uses the
+    /// **higher-is-more-urgent** convention (0 = default, no special treatment);
+    /// see the [module-level docs](self) for the full P9-T12 semantics.
     ///
     /// # Errors
     ///
@@ -127,8 +145,12 @@ impl JobQueue {
 
     /// Atomically claim the next eligible job.
     ///
-    /// Picks the candidate with the lowest `priority` (smaller runs first) and earliest
-    /// `run_after`. Uses `FOR UPDATE SKIP LOCKED` in the selecting sub-query so concurrent
+    /// Picks the candidate with the highest **effective** priority (base priority +
+    /// aging boost; see [`crate::job_aging`]), with ties broken by earliest `run_after`
+    /// and then `id`. Aging prevents starvation: a low-priority job that waits long
+    /// enough eventually overtakes fresher high-priority work.
+    ///
+    /// Uses `FOR UPDATE SKIP LOCKED` in the selecting sub-query so concurrent
     /// claimants **never** receive the same row, and flips its status to `running` in the
     /// **same statement** via `UPDATE … RETURNING`. Returning the post-update row (rather
     /// than the pre-update one) means the returned [`Job::status`] is the authoritative
@@ -141,23 +163,30 @@ impl JobQueue {
     ///
     /// Returns an error if the database operation fails.
     pub async fn claim(&self) -> anyhow::Result<Option<Job>> {
-        // Single-statement claim: the sub-query locks the chosen row with
-        // `FOR UPDATE SKIP LOCKED`, the outer `UPDATE` flips it to 'running', and
-        // `RETURNING` yields the *post-update* row — so the returned Job.status is the
-        // authoritative 'running', never a stale 'queued' read of the pre-update row.
-        let row = sqlx::query(
+        // Single-statement claim with aging (P9-T12):
+        // effective_priority = priority + floor(age_seconds / AGING_STEP_SECS).
+        // The sub-query locks the chosen row with `FOR UPDATE SKIP LOCKED`,
+        // the outer `UPDATE` flips it to 'running', and `RETURNING` yields
+        // the post-update row.
+        //
+        // We embed the aging step as a literal because it's a compile-time
+        // constant and this avoids an extra bound parameter.
+        let row = sqlx::query(&format!(
             "UPDATE jobs SET status = 'running' \
              WHERE id = ( \
                  SELECT id FROM jobs \
                  WHERE status IN ('queued', 'failed') \
                    AND run_after <= now() \
-                 ORDER BY priority ASC, run_after ASC, id ASC \
+                 ORDER BY (priority \
+                   + FLOOR(EXTRACT(EPOCH FROM (now() - created_at)) / {aging_step})) DESC, \
+                          run_after ASC, id ASC \
                  LIMIT 1 \
                  FOR UPDATE SKIP LOCKED \
              ) \
              RETURNING id, tenant_id, file_id, document_id, kind, priority, status, attempts, \
                        last_error, run_after, created_at",
-        )
+            aging_step = AGING_STEP_SECS
+        ))
         .fetch_optional(&self.pool)
         .await
         .context("failed to claim next job")?;

@@ -16,11 +16,14 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
-    /// All thirteen migrations are present, in version order (1–13).
+    /// All fourteen migrations are present, in version order (1–14).
     #[test]
     fn embeds_the_schema_migrations() {
         let versions: Vec<i64> = MIGRATOR.iter().map(|m| m.version).collect();
-        assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
+        assert_eq!(
+            versions,
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+        );
     }
 
     /// Forward-only and monotonic: no down/reversible scripts, strictly increasing versions,
@@ -261,6 +264,29 @@ mod tests {
                 "kb_app must not be granted DML on {forbidden}"
             );
         }
+    }
+
+    /// Migration 0014 (P9-T12): job priority semantics flipped — default changed from
+    /// 100 to 0, index rebuilt for `priority DESC`.
+    #[test]
+    fn schema_flips_job_priority_semantics() {
+        let sql: String = MIGRATOR
+            .iter()
+            .map(|m| m.sql.as_ref())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // Default changed from 100 to 0.
+        assert!(
+            sql.contains("ALTER TABLE jobs ALTER COLUMN priority SET DEFAULT 0"),
+            "migration 0014 must set priority default to 0 (higher=preferred)"
+        );
+
+        // New index for priority DESC ordering.
+        assert!(
+            sql.contains("priority DESC"),
+            "migration 0014 must rebuild the index for priority DESC"
+        );
     }
 
     /// Migration 0013 (P9-T10): cost-tracking columns — `usage_events.cost_micros` and

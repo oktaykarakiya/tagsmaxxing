@@ -820,6 +820,7 @@ mod tests {
                 _query: &str,
                 _docs: &[String],
                 _local_only: bool,
+                _priority: i32,
             ) -> anyhow::Result<Vec<f32>> {
                 Ok(self.scores.clone())
             }
