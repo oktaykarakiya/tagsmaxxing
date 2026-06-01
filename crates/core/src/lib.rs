@@ -35,6 +35,7 @@ pub mod kek;
 pub mod kind;
 pub mod pricing;
 pub mod provider;
+pub mod provider_key;
 pub mod query;
 pub mod quota;
 pub mod reranker;

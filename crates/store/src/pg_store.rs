@@ -320,7 +320,7 @@ impl PgStore {
     }
 
     /// Snapshot the current KEK, or `None` when column encryption is disabled.
-    fn kek(&self) -> Option<Arc<dyn KeyEncryptionKey>> {
+    pub(crate) fn kek(&self) -> Option<Arc<dyn KeyEncryptionKey>> {
         self.kek.load_full().as_ref().clone()
     }
 

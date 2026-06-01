@@ -374,6 +374,7 @@ mod tests {
                         endpoint: Some(format!("http://x:{model_id_num}")),
                         headers: Default::default(),
                         enabled: true,
+                        api_key_enc: None,
                     },
                     model: ModelRow {
                         id: model_id_num,
@@ -425,6 +426,7 @@ mod tests {
                     endpoint: Some(format!("http://x:{mid}")),
                     headers: Default::default(),
                     enabled: true,
+                    api_key_enc: None,
                 },
                 model: ModelRow {
                     id: mid,
@@ -457,6 +459,7 @@ mod tests {
                     endpoint: Some(format!("http://x:{mid}")),
                     headers: Default::default(),
                     enabled: true,
+                    api_key_enc: None,
                 },
                 model: ModelRow {
                     id: mid,
@@ -610,6 +613,7 @@ mod tests {
                         endpoint: Some("http://x:3".into()),
                         headers: Default::default(),
                         enabled: true,
+                        api_key_enc: None,
                     },
                     model: ModelRow {
                         id: 3,
@@ -639,6 +643,7 @@ mod tests {
                         endpoint: Some("http://x:4".into()),
                         headers: Default::default(),
                         enabled: true,
+                        api_key_enc: None,
                     },
                     model: ModelRow {
                         id: 4,
@@ -722,6 +727,7 @@ mod tests {
                             endpoint: Some(format!("http://x:{mid}")),
                             headers: Default::default(),
                             enabled: true,
+                            api_key_enc: None,
                         },
                         model: ModelRow {
                             id: mid,
@@ -869,6 +875,7 @@ mod tests {
                             endpoint: Some(format!("http://x:{mid}")),
                             headers: Default::default(),
                             enabled: true,
+                            api_key_enc: None,
                         },
                         model: ModelRow {
                             id: mid,
@@ -945,6 +952,7 @@ mod tests {
                             endpoint: Some(format!("http://x:{mid}")),
                             headers: Default::default(),
                             enabled: true,
+                            api_key_enc: None,
                         },
                         model: ModelRow {
                             id: mid,
@@ -1085,6 +1093,7 @@ mod tests {
                             endpoint: Some(format!("http://x:{mid}")),
                             headers: Default::default(),
                             enabled: true,
+                            api_key_enc: None,
                         },
                         model: ModelRow {
                             id: mid,
@@ -1224,6 +1233,7 @@ mod tests {
                         endpoint: Some("http://x:22".into()),
                         headers: Default::default(),
                         enabled: true,
+                        api_key_enc: None,
                     },
                     model: ModelRow {
                         id: 22,
@@ -1253,6 +1263,7 @@ mod tests {
                         endpoint: Some("http://x:23".into()),
                         headers: Default::default(),
                         enabled: true,
+                        api_key_enc: None,
                     },
                     model: ModelRow {
                         id: 23,

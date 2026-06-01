@@ -65,6 +65,10 @@ pub struct ProviderRow {
     pub headers: serde_json::Value,
     /// Whether this provider is eligible for routing.
     pub enabled: bool,
+    /// KEK-wrapped API key ciphertext (`None` for local providers that don't
+    /// need an API key). Decrypted at call time via
+    /// [`PgStore::decrypt_provider_api_key`](https://docs.rs/kb-store).
+    pub api_key_enc: Option<Vec<u8>>,
 }
 
 /// A row from the `models` table.
@@ -327,6 +331,7 @@ mod tests {
                 endpoint: Some("http://localhost:8001/v1".into()),
                 headers: Default::default(),
                 enabled: true,
+                api_key_enc: None,
             },
             model: ModelRow {
                 id: 1,

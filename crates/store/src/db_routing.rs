@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use anyhow::{Context, bail};
 use kb_core::data_class::DataClass;
+use kb_core::provider_key::{ProviderApiKey, decrypt_provider_key, encrypt_provider_key};
 use kb_core::role::Role;
 use kb_core::routing::{
     ModelRow, ProviderKind, ProviderRow, RouteRow, RoutingChangeNotifier, RoutingEntry,
@@ -63,7 +64,7 @@ impl PgStore {
     pub async fn get_provider(&self, id: i64) -> anyhow::Result<Option<ProviderRow>> {
         let pool = self.admin_pool()?;
         let row: Option<ProviderRowSql> = sqlx::query_as(
-            "SELECT id, name, kind, endpoint, headers, enabled \
+            "SELECT id, name, kind, endpoint, headers, enabled, api_key_enc \
              FROM providers WHERE id = $1",
         )
         .bind(id)
@@ -149,6 +150,74 @@ impl PgStore {
         Ok(rows)
     }
 
+    /// Encrypt `api_key` with the current KEK and store it in
+    /// `providers.api_key_enc` for the given provider.
+    ///
+    /// Pass `None` to clear (remove) the API key. The KEK is resolved at call
+    /// time so rotation takes effect without a restart (hot-swap rule,
+    /// CLAUDE.md).
+    ///
+    /// # Errors
+    /// Returns an error if the KEK is not configured (when attempting to set a
+    /// key), the database is not connected, or the encryption/query fails.
+    pub async fn set_provider_api_key(
+        &self,
+        provider_id: i64,
+        api_key: Option<&[u8]>,
+    ) -> anyhow::Result<()> {
+        let pool = self.admin_pool()?;
+
+        let encrypted = match api_key {
+            Some(key_bytes) if !key_bytes.is_empty() => {
+                let kek = self
+                    .kek()
+                    .ok_or_else(|| anyhow::anyhow!("KEK not configured — cannot encrypt provider API key. Set a KEK via PgStore::set_kek()."))?;
+                let ct = encrypt_provider_key(kek.as_ref(), key_bytes)
+                    .await
+                    .context("failed to encrypt provider API key")?;
+                Some(ct)
+            }
+            _ => None,
+        };
+
+        let rows = sqlx::query("UPDATE providers SET api_key_enc = $1 WHERE id = $2")
+            .bind(&encrypted)
+            .bind(provider_id)
+            .execute(&pool)
+            .await
+            .context("failed to set provider API key")?
+            .rows_affected();
+
+        if rows == 0 {
+            anyhow::bail!("provider {provider_id} not found");
+        }
+
+        Ok(())
+    }
+
+    /// Decrypt the `api_key_enc` blob for a provider, resolving the KEK at
+    /// call time.
+    ///
+    /// This is the "decrypted at call time" entry point — callers that need to
+    /// use the plaintext key (e.g. to sign an HTTP request) call this method,
+    /// use the returned [`ProviderApiKey`] immediately, and let it drop so the
+    /// memory is zeroized.
+    ///
+    /// # Errors
+    /// Returns an error if the KEK is not configured, or if decryption fails
+    /// (wrong KEK, tampered data, or corruption).
+    pub async fn decrypt_provider_api_key(
+        &self,
+        api_key_enc: &[u8],
+    ) -> anyhow::Result<ProviderApiKey> {
+        let kek = self.kek().ok_or_else(|| {
+            anyhow::anyhow!(
+                "KEK not configured — cannot decrypt provider API key. Set a KEK via PgStore::set_kek()."
+            )
+        })?;
+        decrypt_provider_key(kek.as_ref(), api_key_enc).await
+    }
+
     /// List all providers, ordered by id.
     ///
     /// # Errors
@@ -156,7 +225,7 @@ impl PgStore {
     pub async fn list_providers(&self) -> anyhow::Result<Vec<ProviderRow>> {
         let pool = self.admin_pool()?;
         let rows: Vec<ProviderRowSql> = sqlx::query_as(
-            "SELECT id, name, kind, endpoint, headers, enabled \
+            "SELECT id, name, kind, endpoint, headers, enabled, api_key_enc \
              FROM providers ORDER BY id",
         )
         .fetch_all(&pool)
@@ -452,6 +521,7 @@ impl PgStore {
                 p.kind       AS provider_kind,
                 p.endpoint,
                 p.headers,
+                p.api_key_enc,
                 p.enabled    AS provider_enabled
             FROM routes r
             JOIN models m ON r.model_id = m.id AND m.enabled
@@ -778,6 +848,7 @@ struct ProviderRowSql {
     endpoint: Option<String>,
     headers: serde_json::Value,
     enabled: bool,
+    api_key_enc: Option<Vec<u8>>,
 }
 
 /// A string representation of a Postgres NUMERIC value.
@@ -808,6 +879,7 @@ fn provider_from_sql(r: ProviderRowSql) -> anyhow::Result<ProviderRow> {
         endpoint: r.endpoint,
         headers: r.headers,
         enabled: r.enabled,
+        api_key_enc: r.api_key_enc,
     })
 }
 
@@ -904,6 +976,7 @@ struct RoutingTableRow {
     provider_kind: String,
     endpoint: Option<String>,
     headers: serde_json::Value,
+    api_key_enc: Option<Vec<u8>>,
     #[allow(dead_code)]
     provider_enabled: bool,
 }
@@ -936,6 +1009,7 @@ fn routing_table_row_to_entry(r: RoutingTableRow) -> anyhow::Result<RoutingEntry
             endpoint: r.endpoint,
             headers: r.headers,
             enabled: r.provider_enabled,
+            api_key_enc: r.api_key_enc,
         },
         model: ModelRow {
             id: r.model_id,
@@ -1085,6 +1159,7 @@ mod tests {
                 endpoint: Some("http://localhost:8001/v1".into()),
                 headers: Default::default(),
                 enabled: true,
+                api_key_enc: None,
             },
             model: ModelRow {
                 id: 1,

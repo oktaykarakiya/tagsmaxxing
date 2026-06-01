@@ -141,6 +141,7 @@ pub fn config_backends_to_entries(config: &Config) -> Vec<RoutingEntry> {
             endpoint: Some(backend.base_url.clone()),
             headers: serde_json::Value::Object(Default::default()),
             enabled: true,
+            api_key_enc: None,
         };
 
         let caps: Vec<String> = backend
@@ -313,6 +314,7 @@ mod tests {
                 endpoint: Some("http://x:b1".into()),
                 headers: Default::default(),
                 enabled: true,
+                api_key_enc: None,
             },
             model: ModelRow {
                 id: 1,
@@ -403,6 +405,7 @@ mod tests {
                 endpoint: Some("http://x:from-db".into()),
                 headers: Default::default(),
                 enabled: true,
+                api_key_enc: None,
             },
             model: ModelRow {
                 id: 2,
@@ -499,6 +502,7 @@ mod tests {
                                 endpoint: Some(format!("http://x:r{n}")),
                                 headers: Default::default(),
                                 enabled: true,
+                                api_key_enc: None,
                             },
                             model: ModelRow {
                                 id: n as i64,
@@ -556,6 +560,7 @@ mod tests {
                 endpoint: Some("http://x:swap-me".into()),
                 headers: Default::default(),
                 enabled: true,
+                api_key_enc: None,
             },
             model: ModelRow {
                 id: 1,
@@ -602,6 +607,7 @@ mod tests {
                     endpoint: Some("http://x:swap-me".into()),
                     headers: Default::default(),
                     enabled: true,
+                    api_key_enc: None,
                 },
                 model: ModelRow {
                     id: i as i64,
@@ -658,6 +664,7 @@ mod tests {
                 endpoint: Some("http://x".into()),
                 headers: Default::default(),
                 enabled: true,
+                api_key_enc: None,
             },
             model: ModelRow {
                 id: 1,

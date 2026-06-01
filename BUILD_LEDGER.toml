@@ -1143,9 +1143,9 @@ description = "Encrypted provider API keys at rest (§24, §26.5): the `provider
 depends_on = ["P10-T1", "P9-T5"]
 plan_sections = ["24", "26.5"]
 acceptance = "Provider key stored as ciphertext in DB; decrypted at call time; zeroized after use; not present in logs (verify by grepping test log output); wrong KEK → decrypt fails with clear error; rotation → new key used on next call (hot-swap, no restart). Unit tests for encrypt/decrypt + zeroize + log filtering. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "Added ProviderApiKey (Zeroizing container, redacted Debug/Display); encrypt/decrypt_provider_key delegating to KEK; api_key_enc on ProviderRow; set_provider_api_key (encrypt-on-write) + decrypt_provider_api_key (call-time decrypt) on PgStore; zeroize + log-redaction tests; updated all ProviderRow constructions. just ci green."
 
 [[task]]
 id = "P10-T4"

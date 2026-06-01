@@ -70,6 +70,8 @@ uuid = { version = "1", features = ["v4", "serde"] }
 aes-gcm = "0.10"
 # Base64 encoding for the KEK env var (plan §24, P8-T5)
 base64 = "0.22"
+# Secure memory zeroization for decrypted provider API keys (plan §24, P10-T3)
+zeroize = { version = "1.8.2", features = ["derive", "alloc"] }
 # Image processing library for thumbnail generation (plan §20, P8-T13)
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
 
