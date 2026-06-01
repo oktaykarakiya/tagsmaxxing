@@ -13,6 +13,7 @@ pub mod bootstrap;
 pub mod cli;
 pub mod commands;
 pub mod handlers;
+pub mod metrics_collector;
 pub mod middleware;
 pub mod web;
 
@@ -20,7 +21,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
+use axum::http::StatusCode;
 use axum::middleware::from_fn_with_state;
+use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use kb_core::blob::Blob;
 use kb_core::session::SessionStore;
@@ -177,6 +180,7 @@ impl AppState {
 /// | GET    | `/api/documents/:id`           | yes   | Document detail + files + tags       |
 /// | GET    | `/api/documents/:id/file/:file_id` | yes | Download a file's blob             |
 /// | GET    | `/api/jobs/:id`                | yes   | Job status                           |
+/// | GET    | `/metrics`                     | no    | Prometheus metrics (plan §15)        |
 ///
 /// Route table — Web UI (P6-T4):
 ///
@@ -194,7 +198,8 @@ pub fn build_router(state: AppState) -> Router {
     // Public JSON API routes (no auth required).
     let public = Router::new()
         .route("/auth/login", post(handlers::auth::login))
-        .route("/auth/register", post(handlers::auth::register));
+        .route("/auth/register", post(handlers::auth::register))
+        .route("/metrics", get(metrics_handler));
 
     // Protected API routes (auth required, P6-T2+).
     let api = Router::new()
@@ -217,6 +222,17 @@ pub fn build_router(state: AppState) -> Router {
 
     // Merge public + protected API + Web UI, attach shared state.
     public.merge(api).merge(web).with_state(state)
+}
+
+// ── Metrics handler ──────────────────────────────────────────────────────────
+
+/// Prometheus metrics endpoint (plan §15).
+///
+/// Returns the metrics in Prometheus text exposition format. No authentication
+/// is required — secure this endpoint via network-level access control (firewall)
+/// or a reverse-proxy in production.
+async fn metrics_handler() -> impl IntoResponse {
+    (StatusCode::OK, kb_metrics::render())
 }
 
 // ── AuthUser extractor ─────────────────────────────────────────────────────────

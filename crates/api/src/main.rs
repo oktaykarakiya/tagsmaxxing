@@ -67,6 +67,11 @@ async fn main() {
 /// Parse CLI args, load config, wire up pipeline components, and dispatch
 /// to the correct subcommand handler (ingest or search).
 async fn run() -> anyhow::Result<()> {
+    // ── Initialise metrics ────────────────────────────────────────────────────
+    // Metrics are available for any long-running process (server, watcher, etc.).
+    // The background collector is started separately when the HTTP server runs.
+    let _ = kb_metrics::init_metrics();
+
     let cli = Cli::parse();
 
     // ── Load configuration ─────────────────────────────────────────────────

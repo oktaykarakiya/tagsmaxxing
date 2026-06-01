@@ -21,6 +21,7 @@ kb-store = { path = "crates/store", version = "0.1.0" }
 kb-llm = { path = "crates/llm", version = "0.1.0" }
 kb-pipeline = { path = "crates/pipeline", version = "0.1.0" }
 kb-extract = { path = "crates/extract", version = "0.1.0" }
+kb-metrics = { path = "crates/metrics", version = "0.1.0" }
 kb-testsupport = { path = "crates/testsupport", version = "0.1.0" }
 # External
 serde = { version = "1.0.228", features = ["derive"] }

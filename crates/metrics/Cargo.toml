@@ -1,0 +1,44 @@
+[package]
+name = "kb-metrics"
+description = "Prometheus metrics + optional OpenTelemetry tracing for the Local File Knowledge Base"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# Error handling.
+anyhow = { workspace = true }
+
+# Core metrics façade + Prometheus exporter (plan §15).
+metrics = "0.24"
+metrics-exporter-prometheus = "0.16"
+
+# Tracing integration (plan §18).
+tracing = { workspace = true }
+
+# ── Optional OpenTelemetry export (feature-gated, plan §18) ──
+opentelemetry = { version = "0.27", optional = true }
+opentelemetry-otlp = { version = "0.27", optional = true, default-features = false, features = [
+    "http-proto",
+] }
+opentelemetry_sdk = { version = "0.27", optional = true, features = ["rt-tokio"] }
+tracing-opentelemetry = { version = "0.28", optional = true }
+tracing-subscriber = { version = "0.3", optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["sync", "rt", "macros"] }
+kb-scheduler = { workspace = true }
+kb-core = { workspace = true }
+
+[features]
+default = []
+otlp = [
+    "opentelemetry",
+    "opentelemetry-otlp",
+    "opentelemetry_sdk",
+    "tracing-opentelemetry",
+    "tracing-subscriber",
+]

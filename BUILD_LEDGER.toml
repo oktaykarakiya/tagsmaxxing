@@ -695,9 +695,9 @@ description = "Prometheus metrics + Grafana dashboard (§15): (a) Export metrics
 depends_on = ["P1-T4", "P2-T3", "P5-T6"]
 plan_sections = ["15"]
 acceptance = "GET /metrics returns Prometheus-formatted metrics; all listed metrics present with correct labels; histogram quantiles computed correctly; grafana-dashboard.json is valid JSON and imports without errors; metrics update in real time (no caching/staleness). Unit tests asserting metric increments + gauge values. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "New kb-metrics crate: Prometheus recorder via metrics 0.24 + metrics-exporter-prometheus 0.16, 10 metric families (backend health/slots/requests/storage/queue/users), /metrics endpoint at GET /metrics, metrics_collector in kb-api polls Pool, grafana-dashboard.json, OTLP stub behind otlp feature. 16 unit tests + 4 collector tests. just ci green."
 
 [[task]]
 id = "P6-T12"
