@@ -22,3 +22,29 @@ pub struct Tenant {
     /// Row creation time.
     pub created_at: DateTime<Utc>,
 }
+
+/// A post-deletion audit record for a crypto-shredded tenant (plan §28, P10-T4).
+///
+/// When a tenant is deleted via crypto-shredding, the tenant row and all tenant-scoped
+/// data are removed from the database. The tombstone preserves the `tenant_id`, `slug`,
+/// and `name` alongside who deleted it and when — providing proof that crypto-shredding
+/// occurred. The tenant's DEK was destroyed with the `tenant_data_keys` row, so all
+/// encrypted data (B2 blobs, DB encrypted columns) is irrecoverable.
+///
+/// Tombstones are purely an audit trail; they carry no encrypted data and never contain
+/// plaintext from the deleted tenant.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TenantTombstone {
+    /// Surrogate primary key (`tenant_tombstones.id`).
+    pub id: i64,
+    /// The tenant id that was deleted (no FK — the tenant row is gone).
+    pub tenant_id: i64,
+    /// Snapshot of the tenant slug at deletion time.
+    pub tenant_slug: String,
+    /// Snapshot of the tenant name at deletion time.
+    pub tenant_name: String,
+    /// The super-admin user who initiated the deletion (`None` if system-initiated).
+    pub deleted_by: Option<i64>,
+    /// When the deletion occurred.
+    pub deleted_at: DateTime<Utc>,
+}

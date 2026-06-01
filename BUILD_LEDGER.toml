@@ -1154,9 +1154,9 @@ description = "Crypto-shredding (§28): on tenant delete (super-admin action) or
 depends_on = ["P10-T1", "P5-T1"]
 plan_sections = ["28"]
 acceptance = "Tenant delete job: sessions revoked, DB rows removed, B2 blobs deleted, DEK destroyed, tombstone created; after DEK destruction, B2 ciphertext is unrecoverable (verify by attempting decrypt with new KEK → fails); tombstone audit log records who + when; job is idempotent (re-running on already-deleted tenant is a no-op). Unit tests with mock KEK + mock B2. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "Migration 0016 (tenant_tombstones + delete_tenant job kind), TenantTombstone type, CryptoShredPipeline (CryptoShredStore/CryptoShredSessionStore/CryptoShredBlobStore traits + process_delete_tenant_job handler), PgStore shred methods (destroy_tenant_dek, delete_tenant_data, create_tombstone, tenant_exists), session revoke_all_for_tenant on both stores. 10 unit tests with mock stores. just ci green."
 
 [[task]]
 id = "P10-T5"

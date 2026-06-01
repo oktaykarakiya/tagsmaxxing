@@ -28,6 +28,9 @@ str_enum! {
         /// Periodically re-hash a random sample of B2 blobs and compare to the
         /// stored SHA-256 to detect bit-rot or tampering (plan §23, P8-T10).
         IntegrityScan = "integrity_scan",
+        /// Crypto-shred a tenant: revoke sessions, delete DB rows, delete B2 blobs,
+        /// destroy the DEK, and create a tombstone record (plan §28, P10-T4).
+        DeleteTenant = "delete_tenant",
     }
 }
 
@@ -95,7 +98,8 @@ mod tests {
         assert_eq!(JobKind::RestoreTest.as_str(), "restore_test");
         assert_eq!(JobKind::OrphanGc.as_str(), "orphan_gc");
         assert_eq!(JobKind::IntegrityScan.as_str(), "integrity_scan");
-        assert_eq!(JobKind::all().len(), 7);
+        assert_eq!(JobKind::DeleteTenant.as_str(), "delete_tenant");
+        assert_eq!(JobKind::all().len(), 8);
     }
 
     #[test]

@@ -117,6 +117,12 @@ impl SessionStore for InMemorySessionStore {
         self.sessions.write().await.remove(token);
         Ok(())
     }
+
+    async fn revoke_all_for_tenant(&self, tenant_id: i64) -> anyhow::Result<()> {
+        let mut guard = self.sessions.write().await;
+        guard.retain(|_, s| s.tenant_id != tenant_id);
+        Ok(())
+    }
 }
 
 // ── PgSessionStore ─────────────────────────────────────────────────────────────
@@ -233,6 +239,15 @@ impl SessionStore for PgSessionStore {
             .execute(&self.pool)
             .await
             .context("failed to revoke session")?;
+        Ok(())
+    }
+
+    async fn revoke_all_for_tenant(&self, tenant_id: i64) -> anyhow::Result<()> {
+        sqlx::query("DELETE FROM sessions WHERE tenant_id = $1")
+            .bind(tenant_id)
+            .execute(&self.pool)
+            .await
+            .context("failed to revoke all sessions for tenant")?;
         Ok(())
     }
 }

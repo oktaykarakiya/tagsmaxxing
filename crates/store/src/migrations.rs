@@ -16,13 +16,13 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
-    /// All fourteen migrations are present, in version order (1–14).
+    /// All sixteen migrations are present, in version order (1–16).
     #[test]
     fn embeds_the_schema_migrations() {
         let versions: Vec<i64> = MIGRATOR.iter().map(|m| m.version).collect();
         assert_eq!(
             versions,
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
         );
     }
 
@@ -309,6 +309,26 @@ mod tests {
         assert!(
             sql.contains("tenants\n    ADD COLUMN IF NOT EXISTS budget_monthly_cents"),
             "missing budget_monthly_cents column on tenants (migration 0013)"
+        );
+    }
+
+    /// Migration 0016 (P10-T4): tenant tombstone table and 'delete_tenant' job kind.
+    #[test]
+    fn schema_adds_tenant_tombstones_and_delete_tenant_kind() {
+        let sql: String = MIGRATOR
+            .iter()
+            .map(|m| m.sql.as_ref())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            sql.contains("CREATE TABLE tenant_tombstones"),
+            "missing CREATE TABLE tenant_tombstones (migration 0016)"
+        );
+
+        assert!(
+            sql.contains("'delete_tenant'"),
+            "jobs kind CHECK must include 'delete_tenant' for crypto-shredding (P10-T4)"
         );
     }
 }

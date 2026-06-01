@@ -17,6 +17,7 @@
 
 pub mod cdn;
 pub mod chunker;
+pub mod crypto_shred;
 pub mod document_builder;
 pub mod embedder;
 pub mod eval;
@@ -37,6 +38,10 @@ pub mod tag_store;
 pub mod thumbnail;
 
 pub use cdn::rewrite_blob_url;
+pub use crypto_shred::{
+    CryptoShredPipeline, CryptoShredSessionStore, CryptoShredStore, SessionStoreAdapter,
+    process_delete_tenant_job,
+};
 pub use eval::{
     EvalBaseline, EvalMetrics, LabeledQuery, check_regression, compute_metrics, eval_queries,
     fixture_corpus, format_vector, recall_at_k, reciprocal_rank, spike_1024,

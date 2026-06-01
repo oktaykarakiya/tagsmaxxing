@@ -146,6 +146,19 @@ pub trait SessionStore: Send + Sync {
     ///
     /// Returns an error only when the underlying store is unavailable.
     async fn revoke(&self, token: &str) -> anyhow::Result<()>;
+
+    /// Revoke **all** sessions belonging to a tenant.
+    ///
+    /// Used by the crypto-shredding delete-tenant flow (plan §28, P10-T4) to ensure
+    /// no stale session token can authenticate against a deleted tenant. After this
+    /// call, all sessions for `tenant_id` return `None` from [`validate`](Self::validate).
+    ///
+    /// This is a no-op if the tenant has no active sessions (no error).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only when the underlying store is unavailable.
+    async fn revoke_all_for_tenant(&self, tenant_id: i64) -> anyhow::Result<()>;
 }
 
 // ── Token generation (pure) ────────────────────────────────────────────────────
