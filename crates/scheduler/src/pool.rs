@@ -208,6 +208,8 @@ impl Pool {
             .filter(|b| !b.cooldown_active())
             .filter(|b| b.capacity.is_usable())
             .filter(|b| b.endpoint.is_some())
+            .filter(|b| b.is_in_time_window()) // P9-T13: time-of-day gate
+            .filter(|b| b.bandwidth_available()) // P9-T13: bandwidth throttle
             .filter(|b| !local_only || b.data_class == kb_core::data_class::DataClass::Local)
             .collect();
 
@@ -667,6 +669,8 @@ mod tests {
             priority: 0,
             healthy: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             cooldown_until: Arc::new(std::sync::Mutex::new(None)),
+            time_window: Arc::new(arc_swap::ArcSwap::new(std::sync::Arc::new(None))),
+            bandwidth_limiter: Arc::new(arc_swap::ArcSwap::new(std::sync::Arc::new(None))),
         });
 
         // Exhaust the single RPM token.
@@ -699,6 +703,8 @@ mod tests {
             priority: 0,
             healthy: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             cooldown_until: Arc::new(std::sync::Mutex::new(None)),
+            time_window: Arc::new(arc_swap::ArcSwap::new(std::sync::Arc::new(None))),
+            bandwidth_limiter: Arc::new(arc_swap::ArcSwap::new(std::sync::Arc::new(None))),
         });
 
         let pool = Pool::new(vec![Arc::clone(&b)], Duration::from_secs(5));

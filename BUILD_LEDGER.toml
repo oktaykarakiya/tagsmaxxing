@@ -1092,9 +1092,9 @@ description = "Granular endpoint controls: bandwidth + longer windows + time-of-
 depends_on = ["P9-T3", "P9-T6"]
 plan_sections = ["26.2", "26.5", "6"]
 acceptance = "Hour/day windows throttle correctly (deterministic, injected clock); the bandwidth throttle bounds per-backend throughput to the configured MB/s; a time-of-day gate excludes a backend outside its window; all settings hot-reload without restart. Unit tests for window math + bandwidth limiter + time-of-day predicate. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "BandwidthLimiter (TokenBucket-based MB/s throttle) + TimeWindow (hour-ranges + day-of-week gating) on Backend behind ArcSwap for hot-reload; integrated into tiered resolve_and_filter + legacy acquire filtering. 18 bandwidth tests + 18 time-window tests. just ci green."
 
 [[task]]
 id = "P9-T11"

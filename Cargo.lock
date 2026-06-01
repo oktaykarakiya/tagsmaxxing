@@ -2114,6 +2114,7 @@ dependencies = [
  "anyhow",
  "arc-swap",
  "async-trait",
+ "chrono",
  "dashmap",
  "futures",
  "kb-config",

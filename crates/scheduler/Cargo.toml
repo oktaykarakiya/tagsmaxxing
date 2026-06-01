@@ -23,6 +23,7 @@ futures = "0.3"
 reqwest = { workspace = true }
 arc-swap = { workspace = true }
 async-trait = { workspace = true }
+chrono = { workspace = true }
 
 [dev-dependencies]
 kb-mock-backend = { workspace = true }

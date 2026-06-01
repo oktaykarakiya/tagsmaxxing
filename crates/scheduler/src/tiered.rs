@@ -149,6 +149,8 @@ fn resolve_and_filter(
                 && !b.cooldown_active()
                 && b.capacity.is_usable()
                 && b.endpoint.is_some()
+                && b.is_in_time_window()       // P9-T13: time-of-day gate
+                && b.bandwidth_available()      // P9-T13: bandwidth throttle
                 && !(local_only && b.data_class == kb_core::data_class::DataClass::Remote)
             {
                 candidates.push(b);
@@ -1162,6 +1164,8 @@ mod tests {
             priority: 0,
             healthy: Arc::new(AtomicBool::new(true)),
             cooldown_until: Arc::new(std::sync::Mutex::new(None)),
+            time_window: Arc::new(arc_swap::ArcSwap::new(Arc::new(None))),
+            bandwidth_limiter: Arc::new(arc_swap::ArcSwap::new(Arc::new(None))),
         });
         let b_ok = tb("21", 2, 0);
 

@@ -17,6 +17,7 @@
 //! authoritative design.
 
 pub mod backend;
+pub mod bandwidth;
 mod capacity;
 mod error;
 mod health;
@@ -25,8 +26,10 @@ mod pool;
 mod priority_wait;
 mod routing_reload;
 pub(crate) mod tiered;
+pub mod time_window;
 
 pub use backend::{Backend, test_backend};
+pub use bandwidth::BandwidthLimiter;
 pub use capacity::{Capacity, CapacityPermit, Clock, TokenBucket, WallClock};
 pub use error::AcquireError;
 pub use health::HealthLoop;
@@ -34,3 +37,4 @@ pub use lease::Lease;
 pub use pool::Pool;
 pub use priority_wait::{PriorityWaiterQueue, Ticket};
 pub use routing_reload::{Reloader, config_backends_to_entries};
+pub use time_window::TimeWindow;

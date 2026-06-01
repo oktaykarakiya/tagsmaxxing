@@ -6,6 +6,7 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
+use arc_swap::ArcSwap;
 use kb_config::Backend as BackendConfig;
 use kb_core::capability::CapSet;
 use kb_core::data_class::DataClass;
@@ -14,7 +15,9 @@ use kb_core::provider::{NoopAdapter, ProviderAdapter};
 use kb_core::role::Role;
 use kb_core::secret::SecretRef;
 
+use crate::bandwidth::BandwidthLimiter;
 use crate::capacity::Capacity;
+use crate::time_window::TimeWindow;
 
 /// One inference provider the scheduler can route work to (plan §26.3).
 ///
@@ -22,9 +25,10 @@ use crate::capacity::Capacity;
 /// family), a capability set (which [`Role`]s it serves), a capacity guard
 /// (concurrency + rate limits), and optional pricing metadata.
 ///
-/// Cloning a `Backend` shares live state (capacity, health flag, cooldown)
-/// through the inner `Arc`s, so the same backend registered under several
-/// roles via [`CapSet`] always observes one shared capacity pool.
+/// Cloning a `Backend` shares live state (capacity, health flag, cooldown,
+/// time window, bandwidth limiter) through the inner `Arc`s, so the same
+/// backend registered under several roles via [`CapSet`] always observes one
+/// shared capacity pool.
 #[derive(Debug, Clone)]
 pub struct Backend {
     /// Stable identifier (matches config or DB row id).
@@ -58,6 +62,14 @@ pub struct Backend {
     /// When set, this backend is in a 429-induced cooldown period (plan §26.3).
     /// Any `now < cooldown_until` means the backend is skipped in acquire.
     pub cooldown_until: Arc<Mutex<Option<Instant>>>,
+    /// Optional time-based access window (plan §26.2, P9-T13).
+    /// `None` means the backend is always eligible by time.
+    /// Wrapped in [`ArcSwap`] for hot-swappable hot-reload without restart.
+    pub time_window: Arc<ArcSwap<Option<TimeWindow>>>,
+    /// Optional per-backend bandwidth limiter (plan §26.2, P9-T13).
+    /// `None` means no bandwidth restriction.
+    /// Wrapped in [`ArcSwap`] for hot-swappable rate changes without restart.
+    pub bandwidth_limiter: Arc<ArcSwap<Option<BandwidthLimiter>>>,
 }
 
 impl Backend {
@@ -93,6 +105,8 @@ impl Backend {
             priority,
             healthy: Arc::new(AtomicBool::new(true)),
             cooldown_until: Arc::new(Mutex::new(None)),
+            time_window: Arc::new(ArcSwap::new(Arc::new(None))),
+            bandwidth_limiter: Arc::new(ArcSwap::new(Arc::new(None))),
         }
     }
 
@@ -163,6 +177,59 @@ impl Backend {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         *guard = None;
+    }
+
+    // ── Time window (P9-T13) ───────────────────────────────────────────
+
+    /// Whether the current wall-clock time falls within the backend's
+    /// configured time window (plan §26.2, P9-T13).
+    ///
+    /// Returns `true` when no window is set (always eligible).
+    pub fn is_in_time_window(&self) -> bool {
+        let tw = self.time_window.load();
+        match tw.as_ref() {
+            None => true,
+            Some(window) => window.is_active(&chrono::Local::now()),
+        }
+    }
+
+    /// Replace the time window (hot-swappable — no restart required).
+    ///
+    /// Pass `None` to remove the restriction.
+    pub fn set_time_window(&self, tw: Option<TimeWindow>) {
+        self.time_window.store(Arc::new(tw));
+    }
+
+    // ── Bandwidth limiter (P9-T13) ─────────────────────────────────────
+
+    /// Whether there are sufficient bandwidth tokens available.
+    ///
+    /// Returns `true` when no bandwidth limiter is set (unlimited bandwidth).
+    /// Delegates to [`BandwidthLimiter::bandwidth_available`].
+    pub fn bandwidth_available(&self) -> bool {
+        let bl = self.bandwidth_limiter.load();
+        match bl.as_ref() {
+            None => true,
+            Some(limiter) => limiter.bandwidth_available(),
+        }
+    }
+
+    /// Attempt to consume `bytes` from the bandwidth limiter's token bucket.
+    ///
+    /// Returns `true` if the bytes were consumed (or no limiter is set).
+    pub fn try_consume_bandwidth(&self, bytes: f64) -> bool {
+        let bl = self.bandwidth_limiter.load();
+        match bl.as_ref() {
+            None => true,
+            Some(limiter) => limiter.try_consume_bytes(bytes),
+        }
+    }
+
+    /// Replace the bandwidth limiter (hot-swappable — no restart required).
+    ///
+    /// Pass `None` to remove the bandwidth restriction.
+    pub fn set_bandwidth_limiter(&self, limiter: Option<BandwidthLimiter>) {
+        self.bandwidth_limiter.store(Arc::new(limiter));
     }
 }
 
