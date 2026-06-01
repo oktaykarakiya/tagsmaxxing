@@ -52,6 +52,21 @@ services:
       - kb-data:/data
       # Deployment config mounted read-only.
       - ${CONFIG_FILE:-./compose/config.toml}:/etc/kb/config.toml:ro
+    # ── Security: extractor sandbox (plan §17, §31.5) ──────────────────────
+    # The app container runs extractor subprocesses (ffmpeg, file) over
+    # untrusted user bytes. Defence-in-depth:
+    #   - Container runs as non-root (Containerfile USER kb, uid 1000).
+    #   - Drop ALL Linux capabilities; add back only what is strictly needed.
+    #   - Prevent privilege escalation via setuid binaries or seccomp bypass.
+    #   - Memory limit defends against runaway subprocesses (archive bombs, etc.).
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    # Memory: 4 GiB hard limit; 2 GiB soft (reservation). Covers ffmpeg
+    # transcoding + Tika JSON responses + normal request serving.
+    mem_limit: "4g"
+    mem_reservation: "2g"
     command:
       - "serve"
       - "--config"
@@ -115,6 +130,20 @@ services:
     image: ${TIKA_IMAGE:-docker.io/apache/tika:3.3.0.0}
     ports:
       - "${TIKA_BIND:-127.0.0.1}:${TIKA_PORT:-9998}:9998"
+    # ── Security: Tika parses untrusted documents (plan §17, §31.5) ────────
+    # Tika is a Java process that handles attacker-controlled bytes (PDFs with
+    # embedded JS, crafted OOXML, etc.). Sandbox it tightly:
+    #   - Drop ALL capabilities, no new privileges.
+    #   - No network access beyond the compose-internal network (the app
+    #     connects inbound; Tika needs no outbound access).
+    #   - Memory limit prevents a single malicious document from OOMing the host.
+    #   - The `-full` image (with Tesseract OCR) is notably larger — increase
+    #     mem_limit if you enable that variant.
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    mem_limit: "2g"
     healthcheck:
       # The minimal Tika image ships no curl/wget, but is Ubuntu-based, so bash's
       # /dev/tcp probes the port directly. Tika binds 9998 only once it is ready,

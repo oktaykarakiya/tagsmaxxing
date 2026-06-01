@@ -7,6 +7,14 @@
 //! The shared [`process_upload_files`] function is used by both the JSON API
 //! handler and the Web UI upload handler (`POST /upload`), avoiding duplicate
 //! blob-storage + job-enqueue logic.
+//!
+//! # Upload security (plan §17, §31.5)
+//!
+//! Every uploaded file passes through [`kb_extract::security::validate_upload`]
+//! before blob storage or job enqueue. This enforces:
+//! - Per-file size cap (500 MiB)
+//! - Path-traversal detection on filenames
+//! - MIME-type allow-list via magic-byte inspection
 
 use std::sync::Arc;
 
@@ -16,6 +24,7 @@ use axum::http::StatusCode;
 use axum::response::Json;
 use kb_core::blob::Blob;
 use kb_core::job::JobKind;
+use kb_extract::security;
 use kb_pipeline::ingest::IngestFile;
 use kb_pipeline::job_queue::JobQueue;
 use serde::Serialize;
@@ -132,6 +141,23 @@ pub(crate) async fn process_upload_files(
     tenant_id: i64,
     parsed: &ParsedUpload,
 ) -> anyhow::Result<(i64, usize)> {
+    // ── Upload-edge validation (plan §17, §31.5) ────────────────────────────
+    for f in &parsed.files {
+        security::validate_upload(
+            &f.bytes,
+            f.path.as_deref(),
+            security::MAX_INDIVIDUAL_FILE_BYTES,
+        )
+        .map_err(|e| {
+            tracing::warn!(
+                file = f.path.as_deref().unwrap_or("<unknown>"),
+                error = %e,
+                "ingest: upload validation failed"
+            );
+            e.context("upload validation failed")
+        })?;
+    }
+
     // ── Store each file's bytes in the blob store ───────────────────────────
     for f in &parsed.files {
         let sha256 = compute_blob_key(&f.bytes);

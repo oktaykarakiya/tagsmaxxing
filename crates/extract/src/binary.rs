@@ -17,6 +17,8 @@ use async_trait::async_trait;
 use kb_core::extractor::{Extracted, Extractor, RawFile};
 use sha2::Digest;
 
+use crate::security;
+
 // ── printable string extraction ────────────────────────────────────────────────
 
 /// Extract printable ASCII runs of at least `min_len` characters from raw bytes.
@@ -355,7 +357,8 @@ impl BinaryExtractor {
             serde_json::Value::String(file.kind.as_str().to_string()),
         );
 
-        // 6. Archive manifest for known archive types.
+        // 6. Archive manifest for known archive types, with bomb + zip-slip
+        //    protection (plan §17, §31.5).
         let archive_format = archive_format_for_mime(mime);
         if let Some(fmt) = archive_format {
             match self
@@ -364,9 +367,14 @@ impl BinaryExtractor {
                 .await
             {
                 Ok(listing) => {
+                    let sanitised = sanitise_archive_listing(
+                        &listing,
+                        security::MAX_ARCHIVE_ENTRIES,
+                        security::MAX_ARCHIVE_LISTING_BYTES,
+                    );
                     meta.insert(
                         "archive_manifest".into(),
-                        serde_json::Value::String(listing),
+                        serde_json::Value::String(sanitised),
                     );
                 }
                 Err(e) => {
@@ -432,6 +440,76 @@ fn archive_format_for_mime(mime: &str) -> Option<ArchiveFormat> {
         "application/zip" | "application/x-7z-compressed" => Some(ArchiveFormat::Zip),
         _ => None,
     }
+}
+
+/// Sanitise an archive listing by enforcing entry-count and byte-size caps,
+/// and by redacting entries that contain path-traversal sequences.
+///
+/// This is defence-in-depth for the archive-manifest path: the listing is
+/// stored as JSON metadata, not used for filesystem access, but a crafted
+/// archive bomb with millions of entries or `../../etc/passwd`-style names
+/// could bloat the DB row or mislead a human reading the manifest.
+///
+/// # Behaviour
+///
+/// - At most `max_entries` lines are kept; further lines are replaced by a
+///   `… and N more entries (truncated)` sentinel.
+/// - The result is truncated to `max_bytes` (UTF-8 boundary-safe).
+/// - Individual entry names containing path-traversal are replaced with
+///   `[redacted: unsafe path]`.
+fn sanitise_archive_listing(listing: &str, max_entries: usize, max_bytes: usize) -> String {
+    let mut result = String::with_capacity(listing.len().min(max_bytes));
+    let mut entry_count = 0usize;
+
+    for line in listing.lines() {
+        if entry_count >= max_entries {
+            // Count remaining lines for the truncation sentinel.
+            let remaining = listing.lines().count().saturating_sub(entry_count);
+            if remaining > 0 {
+                result.push_str("… and ");
+                // Use the `itertools` free `write!` equivalent; just push the
+                // number inlined — we avoid an extra dep for one format call.
+                result.push_str(&remaining.to_string());
+                result.push_str(" more entries (truncated)\n");
+            }
+            break;
+        }
+
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            entry_count = entry_count.saturating_add(1);
+            result.push('\n');
+            continue;
+        }
+
+        // Path-traversal check on each entry name.
+        if crate::security::is_safe_path(trimmed) {
+            result.push_str(line);
+        } else {
+            result.push_str("[redacted: unsafe path]");
+        }
+        result.push('\n');
+        entry_count = entry_count.saturating_add(1);
+
+        // Early exit if we've already exceeded the byte cap (check every
+        // entry to avoid a single enormous line blowing past it).
+        if result.len() >= max_bytes {
+            result.push_str("… listing truncated (size limit)\n");
+            break;
+        }
+    }
+
+    // Final byte-cap enforcement: truncate at a UTF-8 boundary.
+    if result.len() > max_bytes {
+        let mut end = max_bytes;
+        while end > 0 && !result.is_char_boundary(end) {
+            end -= 1;
+        }
+        result.truncate(end);
+        result.push('…');
+    }
+
+    result
 }
 
 // ── unit tests ────────────────────────────────────────────────────────────────
@@ -1142,6 +1220,96 @@ mod tests {
         assert!(
             mime.contains("xz") || mime == "application/octet-stream",
             "xz should be detected, got: {mime}"
+        );
+    }
+
+    // ── sanitise_archive_listing ────────────────────────────────────────────
+
+    #[test]
+    fn sanitise_passes_through_normal_listing() {
+        let listing = "file1.txt\ndir/\ndir/file2.png\n";
+        let result = sanitise_archive_listing(listing, 1000, 1_000_000);
+        assert_eq!(result, listing);
+    }
+
+    #[test]
+    fn sanitise_redacts_path_traversal_entries() {
+        let listing = "good.txt\n../../../etc/passwd\nanother.txt\n";
+        let result = sanitise_archive_listing(listing, 1000, 1_000_000);
+        assert!(result.contains("good.txt"));
+        assert!(!result.contains("../../../etc/passwd"));
+        assert!(result.contains("[redacted: unsafe path]"));
+        assert!(result.contains("another.txt"));
+    }
+
+    #[test]
+    fn sanitise_redacts_absolute_paths() {
+        let listing = "normal.txt\n/etc/shadow\nsub/file.txt\n";
+        let result = sanitise_archive_listing(listing, 1000, 1_000_000);
+        assert!(result.contains("normal.txt"));
+        assert!(!result.contains("/etc/shadow"));
+        assert!(result.contains("[redacted: unsafe path]"));
+    }
+
+    #[test]
+    fn sanitise_truncates_after_max_entries() {
+        let mut listing = String::new();
+        for i in 0..15 {
+            listing.push_str(&format!("file_{i}.txt\n"));
+        }
+        let result = sanitise_archive_listing(&listing, 10, 1_000_000);
+        let lines: Vec<&str> = result.lines().collect();
+        // 10 entries + truncation sentinel.
+        assert!(lines.len() >= 11, "got {} lines: {:?}", lines.len(), lines);
+        let last = lines.last().unwrap();
+        assert!(
+            last.contains("truncated"),
+            "last line should be truncation sentinel, got: {last}"
+        );
+        assert!(
+            last.contains("5"),
+            "should mention 5 remaining, got: {last}"
+        );
+    }
+
+    #[test]
+    fn sanitise_truncates_at_byte_limit() {
+        let listing = "this_is_a_very_long_entry_name_that_exceeds_the_byte_limit.txt\n";
+        let result = sanitise_archive_listing(listing, 1000, 30);
+        // '…' is 3 bytes in UTF-8, so after truncation at 30 bytes + push('…')
+        // the result is at most 33 bytes.
+        assert!(
+            result.len() <= 33,
+            "expected len <= 33, got {} ('{result}')",
+            result.len()
+        );
+    }
+
+    #[test]
+    fn sanitise_empty_listing() {
+        let result = sanitise_archive_listing("", 100, 1000);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn sanitise_handles_null_byte_in_entry() {
+        // Null bytes make the path unsafe per is_safe_path.
+        let listing = "file.txt\0.exe\n";
+        let result = sanitise_archive_listing(listing, 1000, 1_000_000);
+        assert!(result.contains("[redacted: unsafe path]"));
+    }
+
+    #[test]
+    fn sanitise_skips_empty_lines_but_counts_them() {
+        let listing = "a.txt\n\nb.txt\n";
+        let result = sanitise_archive_listing(listing, 2, 1_000_000);
+        // Only 2 non-empty entries should be kept (the empty line is skipped
+        // but counted, so we hit the cap at the third entry).
+        let result_lines: Vec<&str> = result.lines().collect();
+        assert!(
+            result_lines.len() >= 3,
+            "expected at least 3 result lines (2 entries + sentinel), got {:?}",
+            result_lines
         );
     }
 }

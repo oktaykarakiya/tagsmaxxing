@@ -7,6 +7,7 @@ pub mod audio;
 pub mod binary;
 pub mod code;
 pub mod image;
+pub mod security;
 pub mod text;
 pub mod tika;
 pub mod video;

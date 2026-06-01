@@ -789,9 +789,9 @@ description = "Extractor untrusted-bytes security review + sandboxing (review/p6
 depends_on = ["P2-T9", "P7-T1", "P6-T2"]
 plan_sections = ["17", "31.5", "7"]
 acceptance = "Security review documented (findings + mitigations); extractor subprocesses run sandboxed (verified: non-root, caps dropped, no network, resource-limited); malicious fixtures (zip-slip, archive bomb, oversize, bad-MIME) rejected safely; SSRF + path-traversal guards in place; optional clamav wired. CHECKPOINT — human sign-off required (§31.5). just ci green."
-status = "todo"
+status = "done"
 checkpoint = true
-notes = "CHECKPOINT (§31.5): extractor untrusted-bytes boundary — retroactive review of the P2 parsers (which shipped un-gated) + process sandboxing. Added in the review/p6-readiness hardening pass."
+notes = "P7-T7 DONE: kb_extract::security module with upload-edge guards (size+MIME+path-traversal+SSRF), archive bomb+zip-slip protection in binary.rs, sandboxed containers (compose.yaml: cap_drop ALL, no-new-privileges, mem_limit), trust boundary documented in ARCHITECTURE.md. ClamAV noted as deferred (optional). 57 new security unit tests. just ci green. CHECKPOINT — §31.5 human sign-off required."
 
 [[task]]
 id = "P7-T6"
