@@ -22,3 +22,4 @@
 
 # NOTE: Cargo.lock IS committed — this workspace produces an application binary,
 # so deterministic builds (and meaningful `cargo audit`/`deny`) require it.
+models/
