@@ -13,6 +13,7 @@
 //!   [`PgSessionStore`](session_store::PgSessionStore) for production (plan §13, P5-T4).
 
 pub mod admin_queries;
+pub mod b2_blob;
 pub mod blob;
 pub(crate) mod hybrid_search;
 mod migrations;
@@ -20,6 +21,7 @@ pub mod pg_store;
 pub mod session_store;
 
 pub use admin_queries::UserView;
+pub use b2_blob::{B2Blob, B2Config};
 pub use blob::LocalBlob;
 pub use migrations::MIGRATOR;
 pub use pg_store::PgStore;

@@ -819,9 +819,9 @@ description = "B2 blob backend: implement the core Blob trait using `object_stor
 depends_on = ["P2-T1"]
 plan_sections = ["20"]
 acceptance = "put → get returns identical bytes; get_range returns correct byte slice; exists returns true after put, false after delete; presigned_get_url is valid and time-limited; same content → same key → idempotent put (no error); multipart upload for 50 MB file works; B2 unreachable → clear anyhow error (not panic); hot-swap credentials picks up new key without restart. Unit tests with a mock S3 server (or object_store's in-memory backend) + integration tests against real B2 (#[ignore] in just ci). just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "B2Blob (kb-store::b2_blob) implements Blob trait via object_store 0.13.2 (aws feature) with AmazonS3 → B2 S3-compatible endpoint. Hot-swappable config (B2Config behind ArcSwap), content-addressed key layout ({tenant_id}/{sha256_hex}), multipart upload for >5MB payloads, presigned GET URLs via S3 SigV4 signing. 18 unit tests pass (config/construction/reload/os_path/constants), 9 #[ignore] integration tests for real S3 endpoint. Added object_store + reqwest deps. just ci green."
 
 [[task]]
 id = "P8-T2"

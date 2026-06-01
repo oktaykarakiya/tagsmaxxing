@@ -17,6 +17,10 @@ kb-core = { workspace = true }
 async-trait = { workspace = true }
 anyhow = { workspace = true }
 bytes = { workspace = true }
+# S3-compatible object store (Backblaze B2, plan §20)
+object_store = { workspace = true, features = ["aws"] }
+# Used for Signer::signed_url method parameter types
+reqwest = { workspace = true }
 # Hot-swappable postgres_url (the hot-swap rule, CLAUDE.md).
 arc-swap = { workspace = true }
 serde_json = { workspace = true }
