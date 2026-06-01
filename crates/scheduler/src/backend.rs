@@ -29,6 +29,9 @@ pub struct Backend {
     pub priority: u8,
     /// Concurrency permits; one is held per in-flight request via a [`crate::Lease`].
     pub slots: Arc<Semaphore>,
+    /// Total permit count (the `--parallel N` value, plan §6.2). Stored explicitly
+    /// because [`Semaphore`] does not expose its max permits.
+    pub max_slots: usize,
     /// Liveness flag set by the health loop (plan §6.5); `true` == eligible.
     pub healthy: Arc<AtomicBool>,
     /// Best-effort in-flight counter for metrics / least-loaded tie-breaks.
@@ -50,6 +53,7 @@ impl Backend {
             roles,
             priority,
             slots: Arc::new(Semaphore::new(slots)),
+            max_slots: slots,
             healthy: Arc::new(AtomicBool::new(true)),
             in_flight: Arc::new(AtomicUsize::new(0)),
         }
@@ -87,6 +91,7 @@ mod tests {
         assert_eq!(b.base_url, "http://x:8001");
         assert_eq!(b.roles, vec![Role::Text, Role::Embed]);
         assert_eq!(b.priority, 7);
+        assert_eq!(b.max_slots, 3);
         assert_eq!(b.free(), 3);
         assert!(b.healthy.load(Ordering::Acquire));
         assert_eq!(b.in_flight.load(Ordering::Acquire), 0);
@@ -106,6 +111,7 @@ mod tests {
         assert_eq!(b.base_url, "http://h:9");
         assert_eq!(b.roles, vec![Role::Embed]);
         assert_eq!(b.priority, 10);
+        assert_eq!(b.max_slots, 2);
         assert_eq!(b.free(), 2);
     }
 
@@ -123,6 +129,7 @@ mod tests {
     fn clone_shares_one_slot_pool() {
         let b = Backend::new("b", "u", vec![Role::Text], 0, 1);
         let twin = b.clone();
+        assert_eq!(twin.max_slots, 1);
         let _permit = b.slots.clone().try_acquire_owned().unwrap();
         // The clone observes the same now-exhausted semaphore.
         assert_eq!(twin.free(), 0);

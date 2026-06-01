@@ -22,6 +22,8 @@
 //! cookie, and renders it in a hidden form field. On submission, the handler
 //! compares the cookie and field values. Mismatches receive `403 Forbidden`.
 
+pub(crate) mod admin_handlers;
+pub(crate) mod admin_templates;
 pub(crate) mod csrf;
 pub(crate) mod handlers;
 pub(crate) mod handlers_documents;
@@ -111,8 +113,38 @@ pub(crate) fn build_web_router(
             crate::middleware::auth_middleware,
         ));
 
+    // Admin panel routes (auth required + role-based access enforced in handlers).
+    let admin = axum::Router::new()
+        .route("/admin", get(admin_handlers::admin_dashboard))
+        .route("/admin/tenants", get(admin_handlers::admin_tenants_page))
+        .route("/admin/users", get(admin_handlers::admin_users_page))
+        .route(
+            "/admin/users/invite",
+            post(admin_handlers::admin_invite_user),
+        )
+        .route(
+            "/admin/users/role",
+            post(admin_handlers::admin_change_user_role),
+        )
+        .route("/admin/jobs", get(admin_handlers::admin_jobs_page))
+        .route(
+            "/admin/jobs/{id}/retry",
+            post(admin_handlers::admin_retry_job),
+        )
+        .route(
+            "/admin/jobs/{id}/delete",
+            post(admin_handlers::admin_delete_job),
+        )
+        .route("/admin/tags", get(admin_handlers::admin_tags_page))
+        .route("/admin/tags/merge", post(admin_handlers::admin_merge_tags))
+        .layer(from_fn_with_state(
+            std::sync::Arc::clone(&state),
+            crate::middleware::auth_middleware,
+        ));
+
     public
         .merge(protected)
+        .merge(admin)
         .layer(axum::middleware::from_fn(
             security::security_headers_middleware,
         ))

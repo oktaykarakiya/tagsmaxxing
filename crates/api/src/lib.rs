@@ -27,6 +27,7 @@ use kb_core::session::SessionStore;
 use kb_pipeline::RetrievalPipeline;
 use kb_pipeline::ingest::IngestPipeline;
 use kb_pipeline::job_queue::JobQueue;
+use kb_scheduler::Pool;
 use kb_store::PgStore;
 
 use crate::middleware::auth_middleware;
@@ -63,6 +64,8 @@ pub struct AppState {
     pub blob: Option<Arc<dyn Blob>>,
     /// Durable job queue for async ingest jobs (P6-T2+).
     pub job_queue: Option<Arc<JobQueue>>,
+    /// Scheduler backend pool for admin backend status (P6-T8+).
+    pub backend_pool: Option<Arc<Pool>>,
 }
 
 impl AppState {
@@ -89,6 +92,7 @@ impl AppState {
             retrieval_pipeline: None,
             blob: None,
             job_queue: None,
+            backend_pool: None,
         }
     }
 
@@ -116,6 +120,7 @@ impl AppState {
             retrieval_pipeline: Some(retrieval_pipeline),
             blob: Some(blob),
             job_queue: Some(job_queue),
+            backend_pool: None,
         }
     }
 
@@ -144,6 +149,13 @@ impl AppState {
     #[must_use]
     pub fn with_job_queue(mut self, q: Arc<JobQueue>) -> Self {
         self.job_queue = Some(q);
+        self
+    }
+
+    /// Builder: attach the scheduler backend pool for admin backend status (P6-T8+).
+    #[must_use]
+    pub fn with_backend_pool(mut self, p: Arc<Pool>) -> Self {
+        self.backend_pool = Some(p);
         self
     }
 }

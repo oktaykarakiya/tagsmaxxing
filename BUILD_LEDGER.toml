@@ -684,9 +684,9 @@ description = "Admin panel (§15): protected routes under /admin. (a) Dashboard:
 depends_on = ["P5-T5", "P2-T3", "P1-T4"]
 plan_sections = ["15", "13"]
 acceptance = "Super-admin sees cross-tenant dashboard + tenant CRUD; tenant-admin sees only their tenant's data + user management; tag merge correctly re-points all aliases + document_tags in a transaction; dead-letter retry re-enqueues job; backend status shows live healthy/slots/cooldown; all mutating actions create audit log rows; CSRF on all forms; 403 for unauthorized role access. Unit tests for authorization boundaries + integration tests with testcontainers (#[ignore]). just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "Admin panel: dashboard (counts, backends, jobs, audit), tenant CRUD (Owner-only), user management (invite, role-change with tenant-scoped IDOR fix), tag merge (transactional repoint+delete), dead-letter queue (retry/delete), all audit-logged. Migration 0008 audit_events table. Backend::max_slots for status display. Pool optional in AppState. 14 template render tests + 11 handler integration tests. just ci green (cov 76.19%>=76)."
 
 [[task]]
 id = "P6-T9"

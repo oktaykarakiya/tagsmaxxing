@@ -101,7 +101,7 @@ pub struct SearchForm {
 /// If template rendering fails, returns a 500 error. This should be extremely
 /// rare — Askama templates are compiled at build time, so the only runtime
 /// failures are I/O or edge cases in format strings.
-fn render_template<T: Template>(template: &T, status: StatusCode) -> Response {
+pub(crate) fn render_template<T: Template>(template: &T, status: StatusCode) -> Response {
     match template.render() {
         Ok(html) => (status, Html(html)).into_response(),
         Err(e) => {
@@ -116,7 +116,7 @@ fn render_template<T: Template>(template: &T, status: StatusCode) -> Response {
 }
 
 /// Render a template with `StatusCode::OK`.
-fn render_ok<T: Template>(template: &T) -> Response {
+pub(crate) fn render_ok<T: Template>(template: &T) -> Response {
     render_template(template, StatusCode::OK)
 }
 
@@ -124,7 +124,7 @@ fn render_ok<T: Template>(template: &T) -> Response {
 ///
 /// Falls back to an empty string on error (which will fail CSRF validation on
 /// the next submission, prompting a page reload — safe).
-fn generate_fresh_csrf() -> String {
+pub(crate) fn generate_fresh_csrf() -> String {
     csrf::generate_csrf_token().unwrap_or_default()
 }
 
