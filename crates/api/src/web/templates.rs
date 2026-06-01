@@ -132,3 +132,74 @@ pub(crate) struct SearchResultsPartial {
     /// The query that produced these results (for display).
     pub query: String,
 }
+
+// ── Document detail page types (P6-T7) ────────────────────────────────────────────
+
+/// `GET /documents/:id` — the document detail page showing metadata, tags,
+/// page thumbnail strip, and action buttons (add/remove tag, reorder pages,
+/// add page, re-tag).
+///
+/// The CSRF token is included for all mutating form submissions on the page.
+/// All tag names from the tenant are provided for the add-tag autocomplete
+/// `<datalist>`.
+#[derive(Debug, Template)]
+#[template(path = "document_detail.html")]
+pub(crate) struct DocumentDetailPage {
+    /// CSRF token for mutating forms.
+    pub csrf_token: String,
+    /// Error message to display (empty when none).
+    pub error: String,
+    /// Document id.
+    pub doc_id: i64,
+    /// LLM-generated title.
+    pub title: String,
+    /// LLM-generated summary.
+    pub summary: String,
+    /// User-provided note at upload time.
+    pub user_note: String,
+    /// Document kind wire string.
+    pub kind: String,
+    /// Combined metadata as JSON (rendered in a `<details>` block).
+    pub meta_json: String,
+    /// Number of member pages.
+    pub page_count: i32,
+    /// Processing status wire string.
+    pub status: String,
+    /// Human-readable creation time.
+    pub created_at: String,
+    /// Canonical tags attached to this document.
+    pub tags: Vec<DocumentTagChip>,
+    /// All tenant tag names for autocomplete `<datalist>`.
+    pub tenant_tag_names: Vec<String>,
+    /// Files belonging to this document, ordered by page_no.
+    pub files: Vec<DocumentFileEntry>,
+}
+
+/// A tag chip rendered on the document detail page (P6-T7).
+///
+/// Each chip displays the canonical tag name and an "X" button that submits
+/// a POST to remove the tag.
+#[derive(Debug, Clone)]
+pub(crate) struct DocumentTagChip {
+    /// Canonical tag id.
+    pub tag_id: i64,
+    /// Canonical tag name.
+    pub tag_name: String,
+}
+
+/// A file entry rendered in the page thumbnail strip (P6-T7).
+///
+/// Displays page number, label, and a link to download the original file.
+#[derive(Debug, Clone)]
+pub(crate) struct DocumentFileEntry {
+    /// File id.
+    pub file_id: i64,
+    /// Page number (1-based).
+    pub page_no: i32,
+    /// Page label (e.g. "front", original filename).
+    pub label: String,
+    /// Emoji icon representing the file type.
+    pub icon: String,
+    /// File size in a human-readable format (e.g. "2.4 MB").
+    pub size_display: String,
+}

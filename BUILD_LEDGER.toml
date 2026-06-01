@@ -673,9 +673,9 @@ description = "Web UI — document detail page (§12): title, summary, user_note
 depends_on = ["P6-T4", "P6-T2", "P6-T11"]
 plan_sections = ["12", "7"]
 acceptance = "Document detail loads with all fields; tag chips render with remove buttons → DELETE removes; add-tag autocomplete from tenant's existing tags; page strip shows thumbnails in order; drag-to-reorder persists new order; add-page uploads + tags update; per-page download streams correct blob; re-tag button updates tags; CSRF on all mutating actions. Unit tests for template rendering + integration test with mock store. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "Document detail page (GET /documents/:id) with tag chips + remove, add-tag with autocomplete, page thumbnail strip with icons, reorder pages via JS-collected form, add-page upload, re-tag via job queue. Template document_detail.html with Askama + Tailwind. 3 new PgStore methods (remove_document_tag, update_file_page_order, find_tag_by_name). ~30 unit tests + ~15 pure-logic tests. just ci green."
 
 [[task]]
 id = "P6-T8"

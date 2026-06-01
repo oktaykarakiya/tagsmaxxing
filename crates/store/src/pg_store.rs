@@ -685,6 +685,76 @@ impl PgStore {
 
         Ok(rows)
     }
+
+    /// Remove a single document-tag link. Used by the document detail page's
+    /// "X to remove" tag chip action (P6-T7).
+    ///
+    /// The row is deleted regardless of its `source` or `locked` flags — a
+    /// human removing a tag is intentional. Returns the number of rows deleted
+    /// (0 if the link did not exist).
+    ///
+    /// # Errors
+    /// Returns an error if the database is not connected or the query fails.
+    pub async fn remove_document_tag(
+        &self,
+        tenant_id: i64,
+        document_id: i64,
+        tag_id: i64,
+    ) -> anyhow::Result<u64> {
+        let pool = self.app_pool()?;
+        let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
+
+        let rows = sqlx::query(
+            "DELETE FROM document_tags \
+             WHERE document_id = $1 AND tag_id = $2",
+        )
+        .bind(document_id)
+        .bind(tag_id)
+        .execute(&mut *tx)
+        .await
+        .context("failed to remove document tag")?
+        .rows_affected();
+
+        tx.commit()
+            .await
+            .context("failed to commit remove_document_tag")?;
+
+        Ok(rows)
+    }
+
+    /// Update the `page_no` for a single file within a document.
+    ///
+    /// Used by the document detail page's drag-and-drop reorder feature
+    /// (P6-T7). The caller is responsible for ensuring all pages in the
+    /// document retain a consistent ordering after the update.
+    ///
+    /// Returns the number of rows updated (0 if the file was not found).
+    ///
+    /// # Errors
+    /// Returns an error if the database is not connected or the query fails.
+    pub async fn update_file_page_order(
+        &self,
+        tenant_id: i64,
+        file_id: i64,
+        page_no: i32,
+    ) -> anyhow::Result<u64> {
+        let pool = self.app_pool()?;
+        let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
+
+        let rows = sqlx::query("UPDATE files SET page_no = $1 WHERE id = $2")
+            .bind(page_no)
+            .bind(file_id)
+            .execute(&mut *tx)
+            .await
+            .context("failed to update file page order")?
+            .rows_affected();
+
+        tx.commit()
+            .await
+            .context("failed to commit update_file_page_order")?;
+
+        Ok(rows)
+    }
 }
 
 // ── Document upsert + usage logging + transactional ingest (plan §5/§7/§15, P3-T5) ──
@@ -1475,6 +1545,33 @@ impl PgStore {
                 })
             })
             .collect()
+    }
+
+    /// Look up a tag by canonical name within a tenant.
+    ///
+    /// Returns `None` when no tag with that name exists for the tenant.
+    /// Used by the document detail page's add-tag flow (P6-T7).
+    ///
+    /// # Errors
+    /// Returns an error if the database is not connected or the query fails.
+    pub async fn find_tag_by_name(
+        &self,
+        tenant_id: i64,
+        name: &str,
+    ) -> anyhow::Result<Option<i64>> {
+        let pool = self.app_pool()?;
+        let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
+        let id: Option<i64> =
+            sqlx::query_scalar("SELECT id FROM tags WHERE tenant_id = $1 AND name = $2")
+                .bind(tenant_id)
+                .bind(name)
+                .fetch_optional(&mut *tx)
+                .await
+                .context("failed to look up tag by name")?;
+        tx.commit()
+            .await
+            .context("failed to commit find_tag_by_name")?;
+        Ok(id)
     }
 
     /// Fetch a single file by id, scoped to `tenant_id`.
@@ -3036,6 +3133,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn remove_document_tag_errors_before_connect() {
+        let store = PgStore::new("postgres://localhost/db");
+        let err = store.remove_document_tag(1, 1, 42).await.unwrap_err();
+        assert!(err.to_string().contains("not connected"));
+    }
+
+    #[tokio::test]
+    async fn update_file_page_order_errors_before_connect() {
+        let store = PgStore::new("postgres://localhost/db");
+        let err = store.update_file_page_order(1, 1, 1).await.unwrap_err();
+        assert!(err.to_string().contains("not connected"));
+    }
+
+    #[tokio::test]
     async fn list_chunks_errors_before_connect() {
         let store = PgStore::new("postgres://localhost/db");
         let err = store.list_chunks(1).await.unwrap_err();
@@ -3176,6 +3287,13 @@ mod tests {
     async fn get_tags_for_document_errors_before_connect() {
         let store = PgStore::new("postgres://localhost/db");
         let err = store.get_tags_for_document(1, 1).await.unwrap_err();
+        assert!(err.to_string().contains("not connected"));
+    }
+
+    #[tokio::test]
+    async fn find_tag_by_name_errors_before_connect() {
+        let store = PgStore::new("postgres://localhost/db");
+        let err = store.find_tag_by_name(1, "irrelevant").await.unwrap_err();
         assert!(err.to_string().contains("not connected"));
     }
 

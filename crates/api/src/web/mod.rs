@@ -24,6 +24,7 @@
 
 pub(crate) mod csrf;
 pub(crate) mod handlers;
+pub(crate) mod handlers_documents;
 pub(crate) mod security;
 pub(crate) mod templates;
 
@@ -46,6 +47,12 @@ pub(crate) mod templates;
 /// | POST   | `/search`   | yes   | HTMX search fragment (P6-T5)    |
 /// | GET    | `/upload`   | yes   | Upload page (P6-T6)             |
 /// | POST   | `/upload`   | yes   | Multipart upload submit (P6-T6) |
+/// | GET    | `/documents/:id` | yes | Document detail page (P6-T7)  |
+/// | POST   | `/documents/:id/tags/:tag_id/remove` | yes | Remove tag (P6-T7) |
+/// | POST   | `/documents/:id/add-tag` | yes | Add tag by name (P6-T7) |
+/// | POST   | `/documents/:id/retag` | yes | Enqueue retag job (P6-T7) |
+/// | POST   | `/documents/:id/reorder` | yes | Reorder pages (P6-T7) |
+/// | POST   | `/documents/:id/add-page` | yes | Upload additional page (P6-T7) |
 pub(crate) fn build_web_router(
     state: std::sync::Arc<crate::AppState>,
 ) -> axum::Router<std::sync::Arc<crate::AppState>> {
@@ -73,6 +80,30 @@ pub(crate) fn build_web_router(
         .route(
             "/upload",
             get(handlers::upload_page).post(handlers::upload_submit),
+        )
+        .route(
+            "/documents/{id}",
+            get(handlers_documents::document_detail_page),
+        )
+        .route(
+            "/documents/{id}/tags/{tag_id}/remove",
+            post(handlers_documents::remove_document_tag),
+        )
+        .route(
+            "/documents/{id}/add-tag",
+            post(handlers_documents::add_document_tag),
+        )
+        .route(
+            "/documents/{id}/retag",
+            post(handlers_documents::retag_document),
+        )
+        .route(
+            "/documents/{id}/reorder",
+            post(handlers_documents::reorder_pages),
+        )
+        .route(
+            "/documents/{id}/add-page",
+            post(handlers_documents::add_page),
         )
         .route("/logout", post(handlers::logout_web))
         .layer(from_fn_with_state(
