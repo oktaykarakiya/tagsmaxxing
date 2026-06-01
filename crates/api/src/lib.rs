@@ -35,6 +35,9 @@ use kb_store::PgStore;
 
 use crate::middleware::auth_middleware;
 
+/// Default presigned-URL TTL in seconds (1 hour, plan §20).
+pub const DEFAULT_PRESIGNED_TTL_SECS: u64 = 3600;
+
 // ── AppState ───────────────────────────────────────────────────────────────────
 
 /// Shared application state passed to every axum handler via [`axum::extract::State`].
@@ -69,6 +72,8 @@ pub struct AppState {
     pub job_queue: Option<Arc<JobQueue>>,
     /// Scheduler backend pool for admin backend status (P6-T8+).
     pub backend_pool: Option<Arc<Pool>>,
+    /// TTL for presigned download URLs (P8-T3). Default: 3600 seconds (1 hour).
+    pub blob_presigned_ttl: Duration,
 }
 
 impl AppState {
@@ -77,6 +82,8 @@ impl AppState {
     /// `session_ttl` defaults to [`DEFAULT_SESSION_TTL_SECS`](kb_core::session::DEFAULT_SESSION_TTL_SECS)
     /// when `None` is passed. Pipeline fields are initialised to `None` — use
     /// the `with_*` builder methods or [`AppState::full`] to set them.
+    ///
+    /// `blob_presigned_ttl` defaults to [`DEFAULT_PRESIGNED_TTL_SECS`] (3600 s = 1 hour).
     #[must_use]
     pub fn new(
         session_store: Arc<dyn SessionStore>,
@@ -96,6 +103,7 @@ impl AppState {
             blob: None,
             job_queue: None,
             backend_pool: None,
+            blob_presigned_ttl: Duration::from_secs(DEFAULT_PRESIGNED_TTL_SECS),
         }
     }
 
@@ -124,6 +132,7 @@ impl AppState {
             blob: Some(blob),
             job_queue: Some(job_queue),
             backend_pool: None,
+            blob_presigned_ttl: Duration::from_secs(DEFAULT_PRESIGNED_TTL_SECS),
         }
     }
 
@@ -161,6 +170,14 @@ impl AppState {
         self.backend_pool = Some(p);
         self
     }
+
+    /// Builder: set the presigned-URL TTL (P8-T3). Default is
+    /// [`DEFAULT_PRESIGNED_TTL_SECS`] (3600 s).
+    #[must_use]
+    pub fn with_blob_presigned_ttl(mut self, ttl: Duration) -> Self {
+        self.blob_presigned_ttl = ttl;
+        self
+    }
 }
 
 // ── Router ─────────────────────────────────────────────────────────────────────
@@ -178,7 +195,7 @@ impl AppState {
 /// | POST   | `/api/ingest`                  | yes   | Multipart upload → enqueue job       |
 /// | GET    | `/api/search`                  | yes   | Hybrid search → ranked hits          |
 /// | GET    | `/api/documents/:id`           | yes   | Document detail + files + tags       |
-/// | GET    | `/api/documents/:id/file/:file_id` | yes | Download a file's blob             |
+/// | GET    | `/api/documents/:id/file/:file_id` | yes | Redirect to presigned download URL  |
 /// | GET    | `/api/jobs/:id`                | yes   | Job status                           |
 /// | GET    | `/metrics`                     | no    | Prometheus metrics (plan §15)        |
 ///

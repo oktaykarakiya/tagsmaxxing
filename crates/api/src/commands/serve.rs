@@ -202,6 +202,16 @@ pub async fn run_serve(args: &ServeArgs) -> anyhow::Result<()> {
         "health loop started"
     );
 
+    // ── Presigned URL TTL (P8-T3) ────────────────────────────────────────────
+    let presigned_ttl = {
+        let ttl: u64 = std::env::var("BLOB_PRESIGNED_TTL_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(kb_api::DEFAULT_PRESIGNED_TTL_SECS);
+        Duration::from_secs(ttl)
+    };
+    info!(ttl_secs = presigned_ttl.as_secs(), "presigned URL TTL");
+
     // ── Assemble app state ──────────────────────────────────────────────────
     let backend_pool = Arc::new(pool);
     let state = AppState {
@@ -214,6 +224,7 @@ pub async fn run_serve(args: &ServeArgs) -> anyhow::Result<()> {
         blob: Some(blob),
         job_queue: Some(job_queue),
         backend_pool: Some(backend_pool.clone()),
+        blob_presigned_ttl: presigned_ttl,
     };
 
     // ── Build router ────────────────────────────────────────────────────────

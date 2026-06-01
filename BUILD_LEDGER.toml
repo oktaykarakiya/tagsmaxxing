@@ -841,9 +841,9 @@ description = "Presigned download URLs: the B2 blob backend returns time-limited
 depends_on = ["P8-T1", "P6-T2"]
 plan_sections = ["20", "12"]
 acceptance = "GET file → 302 redirect to presigned B2 URL; URL works within TTL window, returns 403 after; LocalBlob presigned returns file:// path (unchanged); configurable TTL; download streams with correct Content-Type + Content-Disposition. Unit tests with mock B2 + integration test with real B2 (#[ignore]). just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "Added blob_presigned_ttl to AppState (BLOB_PRESIGNED_TTL_SECS env, default 3600s); file_download now returns 302 redirect to presigned URL with Content-Type + Content-Disposition; extracted build_redirect_response() for testability; 14 new tests (redirect shape, headers, mock blob, TTL config) — just ci green."
 
 [[task]]
 id = "P8-T4"

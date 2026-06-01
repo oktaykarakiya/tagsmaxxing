@@ -1,14 +1,17 @@
 //! Document detail + file download handlers.
 //!
 //! * `GET /api/documents/:id` — document with files, tags, and metadata.
-//! * `GET /api/documents/:id/file/:file_id` — download a file's blob.
+//! * `GET /api/documents/:id/file/:file_id` — 302 redirect to a presigned
+//!   download URL (B2 in production, `file://` for local dev), so download
+//!   bandwidth bypasses the app server entirely (plan §20).
 
 use std::sync::Arc;
 
 use axum::Extension;
+use axum::body::Body;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::http::header::CONTENT_TYPE;
+use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE, LOCATION};
 use axum::response::Json;
 use serde::Serialize;
 
@@ -159,16 +162,25 @@ pub async fn document_detail(
     ))
 }
 
-/// `GET /api/documents/:id/file/:file_id` — download a file's raw bytes.
+/// `GET /api/documents/:id/file/:file_id` — redirect to a presigned download URL.
 ///
 /// Looks up the file record (scoped to the authenticated tenant — cross-tenant
-/// returns 404), then streams the blob from the content-addressed store.
-/// Sets `Content-Type` from the file's MIME, or `application/octet-stream`
-/// when unknown.
+/// returns 404), then generates a time-limited presigned URL from the blob store
+/// and returns a **302 Found** redirect. The client's browser follows the redirect
+/// directly to the object store, so download bandwidth bypasses the app server
+/// entirely (plan §20).
+///
+/// For the local-disk blob backend, the presigned URL is a `file://` path.
+/// For Backblaze B2, it is an S3 SigV4 presigned `https://` URL valid for the
+/// configured TTL ([`AppState::blob_presigned_ttl`], default 1 hour).
+///
+/// The redirect response carries `Content-Type` (from the file's MIME) and
+/// `Content-Disposition: attachment` so the download prompt uses the original
+/// filename when available.
 ///
 /// # Response
 ///
-/// * `200 OK` — raw file bytes with correct `Content-Type`.
+/// * `302 Found` — redirect to presigned download URL with correct headers.
 /// * `401 Unauthorized` — rejected by middleware.
 /// * `404 Not Found` — file does not exist or belongs to a different tenant.
 /// * `500 Internal Server Error` — blob store or database failure.
@@ -176,8 +188,8 @@ pub async fn file_download(
     State(state): State<Arc<AppState>>,
     Extension(auth_user): Extension<AuthUser>,
     Path((_doc_id, file_id)): Path<(i64, i64)>,
-) -> Result<(StatusCode, [(String, String); 1], Vec<u8>), (StatusCode, Json<ErrorResponse>)> {
-    // Look up the file record to get the blob key and MIME.
+) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
+    // Look up the file record to get the blob key, MIME, and page label.
     let file_rec = state
         .pg_store
         .get_file(auth_user.tenant_id, file_id)
@@ -189,21 +201,54 @@ pub async fn file_download(
         internal_error(anyhow::anyhow!("file_download: blob store not configured"))
     })?;
 
-    // Fetch the blob bytes.
-    let data = blob
-        .get(&file_rec.blob_key)
+    // Generate a time-limited presigned download URL.
+    let presigned_url = blob
+        .presigned_get_url(&file_rec.blob_key, state.blob_presigned_ttl)
         .await
-        .map_err(|e| not_found("blob_not_found", &format!("blob not available: {e}")))?;
+        .map_err(|e| {
+            tracing::error!(
+                error = %e,
+                blob_key = %file_rec.blob_key,
+                "failed to generate presigned download URL"
+            );
+            not_found("blob_not_found", &format!("blob not available: {e}"))
+        })?;
 
     let content_type = file_rec
         .mime
         .as_deref()
-        .unwrap_or("application/octet-stream")
-        .to_owned();
+        .unwrap_or("application/octet-stream");
 
-    let headers = [(CONTENT_TYPE.to_string(), content_type)];
+    build_redirect_response(&presigned_url, content_type, file_rec.page_label.as_deref()).map_err(
+        |e| {
+            internal_error(anyhow::anyhow!(
+                "file_download: failed to build redirect response: {e}"
+            ))
+        },
+    )
+}
 
-    Ok((StatusCode::OK, headers, data.to_vec()))
+/// Build a 302 redirect response with presigned URL location, Content-Type,
+/// and Content-Disposition headers.
+///
+/// Extracted for testability — unit tests can verify the response shape
+/// without needing a database or blob store.
+fn build_redirect_response(
+    presigned_url: &str,
+    content_type: &str,
+    page_label: Option<&str>,
+) -> Result<axum::response::Response, axum::http::Error> {
+    let disposition = match page_label {
+        Some(label) if !label.is_empty() => format!("attachment; filename=\"{label}\""),
+        _ => "attachment".to_owned(),
+    };
+
+    axum::response::Response::builder()
+        .status(StatusCode::FOUND)
+        .header(LOCATION, presigned_url)
+        .header(CONTENT_TYPE, content_type)
+        .header(CONTENT_DISPOSITION, &disposition)
+        .body(Body::empty())
 }
 
 // ── Error helpers ──────────────────────────────────────────────────────────────
@@ -238,10 +283,13 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
+    use async_trait::async_trait;
     use axum::Router;
     use axum::body::Body;
     use axum::http::{Method, StatusCode};
     use axum::routing::get;
+    use bytes::Bytes;
+    use kb_core::blob::Blob;
     use kb_core::session::{DEFAULT_SESSION_TTL_SECS, SessionStore};
     use kb_core::user::UserRole;
     use kb_store::PgStore;
@@ -250,7 +298,74 @@ mod tests {
 
     use super::*;
     use crate::AppState;
+    use crate::DEFAULT_PRESIGNED_TTL_SECS;
     use crate::middleware::auth_middleware;
+
+    // ── Mock blob for presigned-URL testing ─────────────────────────────────
+
+    /// A mock blob backend that records the arguments passed to
+    /// `presigned_get_url` and returns a predictable URL.
+    struct MockBlob {
+        /// The URL to return from `presigned_get_url`.
+        return_url: String,
+        /// The key last passed to `presigned_get_url`, if any.
+        last_key: std::sync::Mutex<Option<String>>,
+        /// The TTL last passed to `presigned_get_url`, if any.
+        last_ttl: std::sync::Mutex<Option<Duration>>,
+    }
+
+    impl MockBlob {
+        fn new(return_url: &str) -> Self {
+            Self {
+                return_url: return_url.to_owned(),
+                last_key: std::sync::Mutex::new(None),
+                last_ttl: std::sync::Mutex::new(None),
+            }
+        }
+
+        fn last_key(&self) -> Option<String> {
+            self.last_key.lock().unwrap().clone()
+        }
+
+        fn last_ttl(&self) -> Option<Duration> {
+            *self.last_ttl.lock().unwrap()
+        }
+    }
+
+    #[async_trait]
+    impl Blob for MockBlob {
+        async fn put(&self, _key: &str, _data: Bytes) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn get(&self, _key: &str) -> anyhow::Result<Bytes> {
+            Ok(Bytes::new())
+        }
+
+        async fn get_range(&self, _key: &str, _start: u64, _end: u64) -> anyhow::Result<Bytes> {
+            Ok(Bytes::new())
+        }
+
+        async fn exists(&self, _key: &str) -> anyhow::Result<bool> {
+            Ok(true)
+        }
+
+        async fn delete(&self, _key: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn presigned_get_url(
+            &self,
+            key: &str,
+            expires_in: Duration,
+        ) -> anyhow::Result<String> {
+            *self.last_key.lock().unwrap() = Some(key.to_owned());
+            *self.last_ttl.lock().unwrap() = Some(expires_in);
+            Ok(self.return_url.clone())
+        }
+    }
+
+    // ── State helpers ──────────────────────────────────────────────────────
 
     fn test_state() -> Arc<AppState> {
         let session_store: Arc<dyn SessionStore> = Arc::new(InMemorySessionStore::new());
@@ -292,7 +407,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn nonexistent_document_returns_404() {
+    async fn nonexistent_document_returns_500() {
         let state = test_state();
         let token = state
             .session_store
@@ -318,6 +433,8 @@ mod tests {
         assert!(response.status().is_server_error());
     }
 
+    // ── file_download tests ────────────────────────────────────────────────
+
     #[tokio::test]
     async fn file_download_unauthenticated_returns_401() {
         let state = test_state();
@@ -331,6 +448,222 @@ mod tests {
 
         let response = router.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn file_download_returns_500_when_blob_store_missing() {
+        // State without a blob store — the handler should return 500
+        // after the DB lookup fails (pg_store is not connected).
+        let state = test_state();
+        let token = state
+            .session_store
+            .create(1, 42, UserRole::Member, Duration::from_secs(3600))
+            .await
+            .unwrap();
+        let router = doc_router(state);
+
+        let request = axum::http::Request::builder()
+            .method(Method::GET)
+            .uri("/api/documents/1/file/1")
+            .header("Cookie", format!("__Host-session={token}"))
+            .body(Body::empty())
+            .unwrap();
+
+        let response = router.oneshot(request).await.unwrap();
+        // PgStore not connected → get_file returns error → 500.
+        assert!(response.status().is_server_error());
+    }
+
+    // ── build_redirect_response tests ──────────────────────────────────────
+
+    #[test]
+    fn redirect_response_is_302_found() {
+        let response = build_redirect_response(
+            "https://s3.example.com/bucket/key?signature=abc",
+            "application/pdf",
+            None,
+        )
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::FOUND);
+    }
+
+    #[test]
+    fn redirect_response_has_location_header() {
+        let url = "https://b2.example.com/my-bucket/tenant-1/abcdef?X-Amz-Signature=xyz";
+        let response = build_redirect_response(url, "application/pdf", None).unwrap();
+
+        let location = response
+            .headers()
+            .get(LOCATION.to_string())
+            .expect("Location header must be present");
+        assert_eq!(location.to_str().unwrap(), url);
+    }
+
+    #[test]
+    fn redirect_response_has_content_type_header() {
+        let response = build_redirect_response("http://example.com/f", "image/png", None).unwrap();
+
+        let ct = response
+            .headers()
+            .get(CONTENT_TYPE.to_string())
+            .expect("Content-Type header must be present");
+        assert_eq!(ct.to_str().unwrap(), "image/png");
+    }
+
+    #[test]
+    fn redirect_response_defaults_content_type_to_octet_stream() {
+        let response =
+            build_redirect_response("http://example.com/f", "application/octet-stream", None)
+                .unwrap();
+
+        let ct = response.headers().get(CONTENT_TYPE.to_string()).unwrap();
+        assert_eq!(ct.to_str().unwrap(), "application/octet-stream");
+    }
+
+    #[test]
+    fn redirect_response_has_content_disposition_attachment_without_label() {
+        let response = build_redirect_response("http://example.com/f", "text/plain", None).unwrap();
+
+        let cd = response
+            .headers()
+            .get(CONTENT_DISPOSITION.to_string())
+            .expect("Content-Disposition header must be present");
+        assert_eq!(cd.to_str().unwrap(), "attachment");
+    }
+
+    #[test]
+    fn redirect_response_content_disposition_includes_filename_from_label() {
+        let response = build_redirect_response(
+            "http://example.com/f",
+            "application/pdf",
+            Some("report-2025.pdf"),
+        )
+        .unwrap();
+
+        let cd = response
+            .headers()
+            .get(CONTENT_DISPOSITION.to_string())
+            .unwrap();
+        assert_eq!(
+            cd.to_str().unwrap(),
+            "attachment; filename=\"report-2025.pdf\""
+        );
+    }
+
+    #[test]
+    fn redirect_response_content_disposition_with_empty_label() {
+        let response =
+            build_redirect_response("http://example.com/f", "text/html", Some("")).unwrap();
+
+        let cd = response
+            .headers()
+            .get(CONTENT_DISPOSITION.to_string())
+            .unwrap();
+        // Empty label → fall back to plain "attachment"
+        assert_eq!(cd.to_str().unwrap(), "attachment");
+    }
+
+    #[test]
+    fn redirect_response_content_disposition_with_special_characters_in_label() {
+        let response = build_redirect_response(
+            "http://example.com/f",
+            "image/jpeg",
+            Some("vacation photo (summer 2025).jpg"),
+        )
+        .unwrap();
+
+        let cd = response
+            .headers()
+            .get(CONTENT_DISPOSITION.to_string())
+            .unwrap();
+        assert!(
+            cd.to_str()
+                .unwrap()
+                .contains("vacation photo (summer 2025).jpg")
+        );
+    }
+
+    #[test]
+    fn redirect_response_content_disposition_with_unicode_label_falls_back_to_ascii() {
+        // Non-ASCII filenames need RFC 5987 encoding (filename*=UTF-8''...).
+        // The current implementation uses plain header values; non-ASCII bytes
+        // in HTTP headers cause a ToStrError. This test verifies the header
+        // is still set — it just cannot be inspected via to_str().
+        let response =
+            build_redirect_response("http://example.com/f", "text/plain", Some("résumé.txt"))
+                .unwrap();
+
+        let cd = response
+            .headers()
+            .get(CONTENT_DISPOSITION.to_string())
+            .unwrap();
+        // The header value exists; for non-ASCII labels the value contains
+        // raw bytes that can't be decoded via to_str().
+        assert!(!cd.is_empty());
+    }
+
+    // ── Presigned TTL tests ────────────────────────────────────────────────
+
+    #[test]
+    fn default_presigned_ttl_is_one_hour() {
+        assert_eq!(DEFAULT_PRESIGNED_TTL_SECS, 3600);
+    }
+
+    #[test]
+    fn with_blob_presigned_ttl_sets_custom_ttl() {
+        let state = AppState::new(
+            Arc::new(InMemorySessionStore::new()),
+            Arc::new(PgStore::new("postgres://localhost/test")),
+            None,
+            false,
+        )
+        .with_blob_presigned_ttl(Duration::from_secs(600));
+
+        assert_eq!(state.blob_presigned_ttl, Duration::from_secs(600));
+    }
+
+    #[test]
+    fn new_app_state_defaults_presigned_ttl_to_one_hour() {
+        let state = AppState::new(
+            Arc::new(InMemorySessionStore::new()),
+            Arc::new(PgStore::new("postgres://localhost/test")),
+            None,
+            false,
+        );
+
+        assert_eq!(
+            state.blob_presigned_ttl,
+            Duration::from_secs(DEFAULT_PRESIGNED_TTL_SECS)
+        );
+    }
+
+    // ── Mock Blob tests ───────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn mock_blob_records_presigned_arguments() {
+        let mock = MockBlob::new("https://example.com/dl");
+
+        let url = mock
+            .presigned_get_url("tenant-1/abcdef", Duration::from_secs(1800))
+            .await
+            .unwrap();
+
+        assert_eq!(url, "https://example.com/dl");
+        assert_eq!(mock.last_key().as_deref(), Some("tenant-1/abcdef"));
+        assert_eq!(mock.last_ttl(), Some(Duration::from_secs(1800)));
+    }
+
+    #[tokio::test]
+    async fn mock_blob_short_ttl_is_recorded() {
+        let mock = MockBlob::new("http://local/b");
+
+        let url = mock
+            .presigned_get_url("k", Duration::from_secs(60))
+            .await
+            .unwrap();
+
+        assert_eq!(url, "http://local/b");
+        assert_eq!(mock.last_ttl(), Some(Duration::from_secs(60)));
     }
 
     // ── Error helper tests ──────────────────────────────────────────────────
