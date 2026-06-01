@@ -929,9 +929,9 @@ description = "Maintenance scheduler (§25): a built-in cron-like scheduler for 
 depends_on = ["P2-T3", "P8-T2", "P7-T4"]
 plan_sections = ["25"]
 acceptance = "Each maintenance job runs on its configured schedule; VACUUM completes without error; re-embed detection triggers when embedder_id changes; log prune respects LOG_MAX_GB; scheduler survives transient job failures (next run proceeds); graceful shutdown completes the current job. Unit tests with mock clock + integration test for re-embed trigger. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "MaintenanceScheduler in kb-pipeline::maintenance: Clock trait (RealClock/FakeClock), Schedule (Interval/Daily), is_due pure function, MaintenanceHandler trait, 5 concrete handlers (VacuumHandler with SQL-injection-safe allowlist, LogPruneHandler wrapping prune_directory, BlobCacheEvictHandler using BlobCache::trim, B2LifecycleHandler placeholder, ReembedCheckHandler checking settings.embedder_id), Prometheus gauges (kb_maintenance_last_success/failure). 35 unit tests covering scheduling, mock clock, handler construction, log-prune integration, blob cache trim, and scheduler lifecycle (independent jobs, failure resilience, daily gating). BlobCache::trim() added. Maintenance metrics added to kb-metrics. just ci green, maintenance.rs 91.52% lines."
 
 [[task]]
 id = "P8-T13"

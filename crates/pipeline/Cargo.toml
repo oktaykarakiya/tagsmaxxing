@@ -30,6 +30,7 @@ arc-swap = { workspace = true }
 notify = { workspace = true }
 kb-metrics = { workspace = true }
 kb-config = { workspace = true }
+kb-logging = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
@@ -40,3 +41,4 @@ kb-scheduler = { workspace = true }
 reqwest = { workspace = true }
 # Shared #[ignore] integration harness: one pgvector container per binary + the two RLS roles.
 kb-testsupport = { workspace = true }
+filetime = "0.2"

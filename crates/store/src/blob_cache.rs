@@ -186,6 +186,42 @@ impl BlobCache {
     pub fn current_size_bytes(&self) -> anyhow::Result<u64> {
         self.db_total_size()
     }
+
+    /// Trim the cache so its total size is at most the configured maximum.
+    ///
+    /// Evicts the least-recently-used entries (both the on-disk file and the
+    /// metadata row) until the total falls under [`Self::max_bytes`]. Returns
+    /// the number of bytes freed.
+    ///
+    /// This is a no-op if the cache is already under the limit or empty.
+    /// Useful as a periodic maintenance job to enforce the cap even when no
+    /// new data is being written.
+    ///
+    /// # Errors
+    /// Returns an error if the SQLite metadata cannot be read or updated.
+    pub fn trim(&self) -> anyhow::Result<u64> {
+        let current = self.db_total_size()?;
+        let max = self.max_bytes;
+        if current <= max {
+            return Ok(0);
+        }
+        let needed = current - max;
+        let evicted = self.db_evict_lru(needed)?;
+
+        let mut freed: u64 = 0;
+        for (_key, file_path) in &evicted {
+            let path = std::path::Path::new(file_path);
+            if path.exists() {
+                // Track the size before deletion for the return value.
+                if let Ok(meta) = std::fs::metadata(path) {
+                    freed += meta.len();
+                }
+                let _ = std::fs::remove_file(path);
+            }
+        }
+
+        Ok(freed)
+    }
 }
 
 // ── Private helpers (synchronous — called inside spawn_blocking) ────────────────

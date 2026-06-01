@@ -24,6 +24,7 @@ pub mod folder_watcher;
 pub mod ingest;
 pub mod integrity_scan;
 pub mod job_queue;
+pub mod maintenance;
 pub mod metadata_merge;
 pub mod orphan_gc;
 pub mod restore_test;
@@ -50,6 +51,11 @@ pub use integrity_scan::{
     select_sample, should_run_now as integrity_scan_should_run_now, verify_hash,
 };
 pub use job_queue::{JobQueue, run_worker_pool};
+pub use maintenance::{
+    B2LifecycleHandler, BlobCacheEvictHandler, FakeClock, LogPruneHandler, MaintenanceHandler,
+    MaintenanceJobKind, MaintenanceScheduler, RealClock, ReembedCheckHandler, Schedule,
+    VacuumHandler, is_due,
+};
 pub use orphan_gc::{
     DbBlobRecord, OrphanGcRunner, filter_by_grace_period, find_missing_db_blobs, find_orphan_blobs,
     process_orphan_gc_job, run_orphan_gc, should_run_now as orphan_gc_should_run_now,

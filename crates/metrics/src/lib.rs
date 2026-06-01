@@ -17,6 +17,8 @@
 //! - [`record_ingest_throttled`] — increments the throttled-ingest counter (P8-T9).
 //! - [`record_orphan_gc_result`] — sets the orphan GC result gauges (P8-T10).
 //! - [`record_integrity_scan_result`] — sets the integrity scan result gauges (P8-T10).
+//! - [`record_maintenance_success`] — sets the maintenance success gauge (P8-T11).
+//! - [`record_maintenance_failure`] — sets the maintenance failure gauge (P8-T11).
 //!
 //! # Optional features
 //!
@@ -178,6 +180,16 @@ fn describe_all() {
         "kb_integrity_scan_failed",
         "Number of integrity check failures in the most recent scan"
     );
+
+    // Maintenance scheduler (plan §25, P8-T11)
+    metrics::describe_gauge!(
+        "kb_maintenance_last_success",
+        "Unix timestamp of the last successful run, per maintenance job kind"
+    );
+    metrics::describe_gauge!(
+        "kb_maintenance_last_failure",
+        "Unix timestamp of the last failed run, per maintenance job kind"
+    );
 }
 
 // ── Request-level recording helpers ──────────────────────────────────────────────
@@ -338,6 +350,34 @@ pub fn record_orphan_gc_result(blobs_found: u64, blobs_deleted: u64, missing_row
 pub fn record_integrity_scan_result(verified: u64, failed: u64) {
     metrics::gauge!("kb_integrity_scan_verified").set(verified as f64);
     metrics::gauge!("kb_integrity_scan_failed").set(failed as f64);
+}
+
+// ── Maintenance scheduler metrics (plan §25, P8-T11) ──────────────────────────────
+
+/// Record a successful maintenance job run.
+///
+/// Sets the `kb_maintenance_last_success` gauge to the current Unix timestamp
+/// (seconds) and clears the `kb_maintenance_last_failure` gauge for the given
+/// `kind` label.
+pub fn record_maintenance_success(kind: &str) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64();
+    metrics::gauge!("kb_maintenance_last_success", "kind" => kind.to_owned()).set(now);
+    metrics::gauge!("kb_maintenance_last_failure", "kind" => kind.to_owned()).set(0.0);
+}
+
+/// Record a failed maintenance job run.
+///
+/// Sets the `kb_maintenance_last_failure` gauge to the current Unix timestamp
+/// (seconds) for the given `kind` label.
+pub fn record_maintenance_failure(kind: &str) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64();
+    metrics::gauge!("kb_maintenance_last_failure", "kind" => kind.to_owned()).set(now);
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────────
