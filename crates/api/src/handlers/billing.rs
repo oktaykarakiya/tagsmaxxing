@@ -104,10 +104,11 @@ pub async fn post_checkout(
 
     // ── Create the Checkout Session ──────────────────────────────────────────
     let stripe_req = CreateCheckoutSessionRequest {
-        price_id: plan.stripe_price,
+        price_id: plan.stripe_price.clone(),
         success_url,
         cancel_url,
         tenant_id: auth_user.tenant_id,
+        plan_code: plan_code.to_string(),
     };
 
     let stripe_resp = stripe

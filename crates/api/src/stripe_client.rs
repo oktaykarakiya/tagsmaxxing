@@ -29,6 +29,10 @@ pub struct CreateCheckoutSessionRequest {
     /// The tenant id stored as `client_reference_id` and `metadata[tenant_id]`
     /// for webhook correlation (P11-T3).
     pub tenant_id: i64,
+    /// The plan code stored as `metadata[plan_code]` so the webhook handler
+    /// (P11-T3) can determine which plan was purchased without expanding the
+    /// subscription object.
+    pub plan_code: String,
 }
 
 /// Response from a successful Stripe Checkout Session creation.
@@ -121,6 +125,7 @@ impl StripeClient for RealStripeClient {
                 ("line_items[0][quantity]", "1"),
                 ("client_reference_id", tenant_id_str.as_str()),
                 ("metadata[tenant_id]", tenant_id_str.as_str()),
+                ("metadata[plan_code]", req.plan_code.as_str()),
             ])
             .send()
             .await
@@ -230,6 +235,7 @@ mod tests {
                 success_url: "http://localhost:9999/billing/success".into(),
                 cancel_url: "http://localhost:9999/billing/cancel".into(),
                 tenant_id: 1,
+                plan_code: "pro".into(),
             })
             .await
             .expect("mock should succeed");
@@ -248,6 +254,7 @@ mod tests {
                 success_url: "http://localhost:9999/billing/success".into(),
                 cancel_url: "http://localhost:9999/billing/cancel".into(),
                 tenant_id: 1,
+                plan_code: "pro".into(),
             })
             .await
             .expect_err("mock should fail");
@@ -279,6 +286,7 @@ mod tests {
                 success_url: "http://localhost:9999/billing/success".into(),
                 cancel_url: "http://localhost:9999/billing/cancel".into(),
                 tenant_id: 42,
+                plan_code: "team".into(),
             })
             .await
             .expect("mock should succeed");

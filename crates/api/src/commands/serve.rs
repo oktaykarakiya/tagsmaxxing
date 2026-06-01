@@ -278,11 +278,14 @@ pub async fn run_serve(args: &ServeArgs) -> anyhow::Result<()> {
             Arc::new(client) as Arc<dyn stripe_client::StripeClient>
         });
 
+    // Stripe webhook signing secret (P11-T3): optional, gated on STRIPE_WEBHOOK_SECRET env var.
+    let webhook_secret = std::env::var("STRIPE_WEBHOOK_SECRET").ok();
+
     // Public base URL for Stripe callback construction (P11-T2).
     let public_base_url =
         std::env::var("PUBLIC_BASE_URL").unwrap_or_else(|_| format!("http://0.0.0.0:{bind_port}"));
 
-    let state = AppState {
+    let mut state = AppState {
         session_store,
         pg_store,
         session_ttl: Duration::from_secs(kb_core::session::DEFAULT_SESSION_TTL_SECS),
@@ -296,8 +299,13 @@ pub async fn run_serve(args: &ServeArgs) -> anyhow::Result<()> {
         degradation: Some(degradation.clone()),
         inflight_limiter: Some(inflight_limiter),
         stripe_client,
+        stripe_webhook_secret: None,
         public_base_url,
     };
+    if let Some(ws) = webhook_secret {
+        use std::sync::Arc;
+        state.stripe_webhook_secret = Some(Arc::new(arc_swap::ArcSwap::new(Arc::new(ws))));
+    }
 
     // ── Build router ────────────────────────────────────────────────────────
     let router = kb_api::build_router(state);

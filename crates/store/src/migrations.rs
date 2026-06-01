@@ -16,14 +16,14 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
-    /// All eighteen migrations are present, in version order (1–18).
+    /// All nineteen migrations are present, in version order (1–19).
     #[test]
     fn embeds_the_schema_migrations() {
         let versions: Vec<i64> = MIGRATOR.iter().map(|m| m.version).collect();
         assert_eq!(
             versions,
             vec![
-                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19
             ]
         );
     }
@@ -94,6 +94,7 @@ mod tests {
             "settings",
             "sessions",
             "plans",
+            "stripe_events",
         ] {
             assert!(
                 sql.contains(&format!("CREATE TABLE {table} ")),
@@ -468,5 +469,35 @@ mod tests {
         assert!(sql.contains("10000"), "free plan: 10K tokens");
         assert!(sql.contains("500000"), "pro plan: 500K tokens");
         assert!(sql.contains("2000000"), "team plan: 2M tokens");
+    }
+
+    /// Migration 0019 (P11-T3): stripe_events table for webhook idempotency.
+    #[test]
+    fn schema_adds_stripe_events_table() {
+        let sql: String = MIGRATOR
+            .iter()
+            .map(|m| m.sql.as_ref())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            sql.contains("CREATE TABLE stripe_events"),
+            "missing CREATE TABLE stripe_events (migration 0019)"
+        );
+
+        // Primary key on event_id for idempotent ON CONFLICT skipping.
+        assert!(sql.contains("event_id"), "stripe_events.event_id missing");
+        assert!(
+            sql.contains("event_type"),
+            "stripe_events.event_type missing"
+        );
+        assert!(
+            sql.contains("processed_at"),
+            "stripe_events.processed_at missing"
+        );
+        assert!(
+            sql.contains("TEXT PRIMARY KEY"),
+            "event_id must be TEXT PRIMARY KEY for ON CONFLICT dedup"
+        );
     }
 }

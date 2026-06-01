@@ -89,6 +89,7 @@ mod tests {
             degradation,
             inflight_limiter: None,
             stripe_client: None,
+            stripe_webhook_secret: None,
             public_base_url: "http://localhost:9999".into(),
         })
     }

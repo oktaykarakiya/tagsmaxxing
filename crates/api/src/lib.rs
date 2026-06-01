@@ -22,6 +22,7 @@ pub mod web;
 use std::sync::Arc;
 use std::time::Duration;
 
+use arc_swap::ArcSwap;
 use axum::Json;
 use axum::Router;
 use axum::http::StatusCode;
@@ -87,6 +88,10 @@ pub struct AppState {
     /// Stripe client for billing operations (P11-T2+). Handlers return 500 when
     /// `None` and billing is requested.
     pub stripe_client: Option<Arc<dyn StripeClient>>,
+    /// Stripe webhook signing secret (`whsec_…`), hot-swappable so an operator can
+    /// rotate it without restarting (P11-T3+). Wrapped in `Arc` so [`AppState`]
+    /// stays `Clone`. When `None`, the webhook endpoint returns 500.
+    pub stripe_webhook_secret: Option<Arc<ArcSwap<String>>>,
     /// Publicly-reachable base URL of this server, used to construct Stripe
     /// Checkout success / cancel callback URLs (P11-T2+).
     /// Default: `http://localhost:9999`.
@@ -125,6 +130,7 @@ impl AppState {
             degradation: None,
             inflight_limiter: None,
             stripe_client: None,
+            stripe_webhook_secret: None,
             public_base_url: "http://localhost:9999".into(),
         }
     }
@@ -158,6 +164,7 @@ impl AppState {
             degradation: None,
             inflight_limiter: None,
             stripe_client: None,
+            stripe_webhook_secret: None,
             public_base_url: "http://localhost:9999".into(),
         }
     }
@@ -233,6 +240,16 @@ impl AppState {
         self.public_base_url = url.into();
         self
     }
+
+    /// Builder: attach the Stripe webhook signing secret for signature
+    /// verification (P11-T3). The secret is stored behind an [`ArcSwap`] so
+    /// it can be rotated at runtime without restarting the server
+    /// (CLAUDE.md hot-swappable rule).
+    #[must_use]
+    pub fn with_stripe_webhook_secret(mut self, secret: impl Into<String>) -> Self {
+        self.stripe_webhook_secret = Some(Arc::new(ArcSwap::new(Arc::new(secret.into()))));
+        self
+    }
 }
 
 // ── Router ─────────────────────────────────────────────────────────────────────
@@ -255,6 +272,7 @@ impl AppState {
 /// | POST   | `/billing/checkout`            | yes   | Stripe Checkout Session (P11-T2)     |
 /// | GET    | `/billing/success`             | no    | Post-Checkout interstitial (P11-T2)  |
 /// | GET    | `/billing/cancel`              | no    | Checkout-cancel redirect (P11-T2)    |
+/// | POST   | `/stripe/webhook`              | no    | Stripe webhook handler (P11-T3)      |
 /// | GET    | `/metrics`                     | no    | Prometheus metrics (plan §15)        |
 ///
 /// Route table — Web UI (P6-T4):
@@ -276,6 +294,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/auth/register", post(handlers::auth::register))
         .route("/billing/success", get(handlers::billing::get_success))
         .route("/billing/cancel", get(handlers::billing::get_cancel))
+        .route("/stripe/webhook", post(handlers::webhook::post_webhook))
         .route("/metrics", get(metrics_handler))
         .route("/health", get(health_handler));
 
@@ -451,6 +470,7 @@ mod tests {
             degradation: None,
             inflight_limiter: None,
             stripe_client: None,
+            stripe_webhook_secret: None,
             public_base_url: "http://localhost:9999".into(),
         })
     }

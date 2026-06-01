@@ -13,3 +13,4 @@ pub mod documents;
 pub mod ingest;
 pub mod jobs;
 pub mod search;
+pub mod webhook;

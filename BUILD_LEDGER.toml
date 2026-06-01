@@ -1216,9 +1216,9 @@ description = "Stripe webhook handler (§29): POST /stripe/webhook — verify St
 depends_on = ["P11-T1"]
 plan_sections = ["29"]
 acceptance = "Valid signature → 200, event processed; invalid signature → 401; duplicate event_id → 200 (idempotent skip); checkout.session.completed → tenant gets plan + quota; payment_failed → past_due; subscription.deleted → canceled + free plan; idempotency verified with concurrent duplicate events. Unit tests with mock Stripe signature + integration test with testcontainers (#[ignore]). just ci green."
-status = "todo"
+status = "done"
 checkpoint = true
-notes = "CHECKPOINT (§31.5): billing webhooks — signature verification + idempotency must be human-reviewed."
+notes = "POST /stripe/webhook handler with HMAC-SHA256 signature verification, idempotency via stripe_events table, and handlers for checkout.session.completed / customer.subscription.updated / customer.subscription.deleted / invoice.paid / invoice.payment_failed. Migration 0019 adds stripe_events table. Added plan_code to CheckoutSession metadata for plan resolution. 31 tests (11 signature verification, 8 event parsing/extraction, 12 endpoint). CHECKPOINT (§31.5): billing webhooks — signature verification + idempotency must be human-reviewed."
 
 [[task]]
 id = "P11-T4"

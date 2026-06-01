@@ -57,7 +57,7 @@ pub struct TenantBilling {
 
 /// A raw row from the `plans` table.
 #[derive(sqlx::FromRow)]
-struct PlanRow {
+pub(crate) struct PlanRow {
     id: i64,
     code: String,
     stripe_price: String,

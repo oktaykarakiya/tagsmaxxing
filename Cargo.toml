@@ -52,6 +52,7 @@ sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio
 tree_magic_mini = "3.2.2"
 zip = "2"
 sha2 = "0.10"
+hmac = "0.12"
 argon2 = "0.5"
 rand = "0.10"
 clap = { version = "4.6.1", features = ["derive"] }

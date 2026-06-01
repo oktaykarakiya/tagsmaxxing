@@ -38,6 +38,7 @@ tower-http = { workspace = true, features = ["fs"] }
 rand = { workspace = true }
 arc-swap = { workspace = true }
 async-trait = { workspace = true }
+hmac = { workspace = true }
 
 [dev-dependencies]
 kb-mock-backend = { workspace = true }
