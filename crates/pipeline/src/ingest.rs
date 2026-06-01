@@ -191,6 +191,7 @@ impl IngestPipeline {
         tenant_id: i64,
         files: Vec<IngestFile>,
         user_note: Option<String>,
+        local_only: bool,
     ) -> anyhow::Result<IngestOutput> {
         anyhow::ensure!(!files.is_empty(), "at least one file is required");
 
@@ -265,12 +266,12 @@ impl IngestPipeline {
             kind: merged.kind,
             meta: merged.merged_meta.clone(),
         };
-        let tag_output = self.tagger.tag(&tag_input).await?;
+        let tag_output = self.tagger.tag(&tag_input, local_only).await?;
 
         // 6. Canonicalize tags against the tenant's existing tag set.
         let tag_ids = self
             .canonicalizer
-            .canonicalize(tenant_id, &tag_output.tags)
+            .canonicalize(tenant_id, &tag_output.tags, local_only)
             .await?;
 
         // 7. Chunk + embed — one batch per file so transactional_ingest
@@ -290,7 +291,7 @@ impl IngestPipeline {
             } else {
                 let embedded = self
                     .embedder
-                    .embed_chunks(text_chunks, tenant_id, document.id)
+                    .embed_chunks(text_chunks, tenant_id, document.id, local_only)
                     .await?;
                 embedded_per_file.push(embedded);
             }
@@ -310,6 +311,7 @@ impl IngestPipeline {
             page_count: merged.page_count,
             status: ProcessingStatus::Ready,
             created_at: document.created_at,
+            local_only,
         };
 
         let doc_id = self
@@ -373,7 +375,7 @@ where
         .map_err(|e| e.to_string())?;
 
     pipeline
-        .ingest(job.tenant_id, files, None)
+        .ingest(job.tenant_id, files, None, false)
         .await
         .map_err(|e| e.to_string())
 }
@@ -465,6 +467,7 @@ pub async fn process_retag_job(
     tagger: &dyn Tagger,
     canonicalizer: &TagCanonicalizer,
     store: &dyn RetagStore,
+    local_only: bool,
 ) -> Result<Vec<i64>, String> {
     // 1. Snapshot locked tags before clearing.
     let locked_ids = store
@@ -486,13 +489,13 @@ pub async fn process_retag_job(
         meta: serde_json::Value::Null,
     };
     let tag_output = tagger
-        .tag(&tag_input)
+        .tag(&tag_input, local_only)
         .await
         .map_err(|e| format!("tagger failed: {e}"))?;
 
     // 4. Canonicalize.
     let new_tag_ids = canonicalizer
-        .canonicalize(tenant_id, &tag_output.tags)
+        .canonicalize(tenant_id, &tag_output.tags, local_only)
         .await
         .map_err(|e| format!("canonicalizer failed: {e}"))?;
 
@@ -697,7 +700,7 @@ mod tests {
 
     #[async_trait]
     impl Tagger for MockTagger {
-        async fn tag(&self, _: &TagInput) -> anyhow::Result<TagOutput> {
+        async fn tag(&self, _: &TagInput, _local_only: bool) -> anyhow::Result<TagOutput> {
             Ok(self.output.clone())
         }
     }
@@ -707,7 +710,7 @@ mod tests {
 
     #[async_trait]
     impl Tagger for FailingTagger {
-        async fn tag(&self, _: &TagInput) -> anyhow::Result<TagOutput> {
+        async fn tag(&self, _: &TagInput, _local_only: bool) -> anyhow::Result<TagOutput> {
             anyhow::bail!("simulated tagger failure")
         }
     }
@@ -918,7 +921,7 @@ mod tests {
         }];
 
         let output = pipeline
-            .ingest(1 /* tenant_id */, files, Some("my note".into()))
+            .ingest(1 /* tenant_id */, files, Some("my note".into()), false)
             .await
             .unwrap();
 
@@ -951,7 +954,7 @@ mod tests {
         )
         .await;
 
-        let err = pipeline.ingest(1, vec![], None).await.unwrap_err();
+        let err = pipeline.ingest(1, vec![], None, false).await.unwrap_err();
         assert!(
             err.to_string().contains("at least one file"),
             "expected 'at least one file' error, got: {err}"
@@ -1017,7 +1020,7 @@ mod tests {
             kind: DocKind::Document,
             meta: serde_json::json!({}),
         };
-        let err = tagger.tag(&input).await.unwrap_err();
+        let err = tagger.tag(&input, false).await.unwrap_err();
         assert!(
             err.to_string().contains("simulated tagger failure"),
             "expected tagger failure error, got: {err}"
@@ -1099,7 +1102,7 @@ mod tests {
             path: Some("bytes-test.txt".into()),
         }];
 
-        let _output = pipeline.ingest(1, files, None).await.unwrap();
+        let _output = pipeline.ingest(1, files, None, false).await.unwrap();
 
         // Verify the extractor received the exact bytes.
         let received = recording.received_bytes();
@@ -1177,7 +1180,7 @@ mod tests {
             path: Some("unknown.bin".into()),
         }];
 
-        let output = pipeline.ingest(1, files, None).await.unwrap();
+        let output = pipeline.ingest(1, files, None, false).await.unwrap();
 
         // The document should still be created (with empty text, tag only).
         assert_eq!(output.document_id, 10);
@@ -1252,7 +1255,7 @@ mod tests {
             path: Some("blob.txt".into()),
         }];
 
-        let output = pipeline.ingest(1, files, None).await.unwrap();
+        let output = pipeline.ingest(1, files, None, false).await.unwrap();
         assert_eq!(output.document_id, 77);
 
         // Read the blob back — the key is tenant-prefixed hex(sha256),
@@ -1306,7 +1309,7 @@ mod tests {
         ];
 
         let output = pipeline
-            .ingest(1, files, Some("two pages".into()))
+            .ingest(1, files, Some("two pages".into()), false)
             .await
             .unwrap();
 
@@ -1329,7 +1332,7 @@ mod tests {
         }
         #[async_trait]
         impl Tagger for NoteRecordingTagger {
-            async fn tag(&self, input: &TagInput) -> anyhow::Result<TagOutput> {
+            async fn tag(&self, input: &TagInput, _local_only: bool) -> anyhow::Result<TagOutput> {
                 self.received_notes
                     .lock()
                     .unwrap()
@@ -1402,7 +1405,7 @@ mod tests {
         }];
 
         let _output = pipeline
-            .ingest(1, files, Some("my custom note".into()))
+            .ingest(1, files, Some("my custom note".into()), false)
             .await
             .unwrap();
 
@@ -1523,6 +1526,7 @@ mod tests {
             page_count: 1,
             status: ProcessingStatus::Ready,
             created_at: chrono::Utc::now(),
+            local_only: false,
         };
         let files = vec![];
         let tag_ids = vec![1i64, 2];
@@ -1619,7 +1623,7 @@ mod tests {
             path: Some("photo.png".into()),
         }];
 
-        let output = pipeline.ingest(1, files, None).await.unwrap();
+        let output = pipeline.ingest(1, files, None, false).await.unwrap();
         assert_eq!(output.document_id, 33);
         assert_eq!(output.chunk_count, 0, "empty text → zero chunks");
 
@@ -1754,7 +1758,7 @@ mod tests {
 
     #[async_trait]
     impl Tagger for FixedTagger {
-        async fn tag(&self, _input: &TagInput) -> anyhow::Result<TagOutput> {
+        async fn tag(&self, _input: &TagInput, _local_only: bool) -> anyhow::Result<TagOutput> {
             Ok(self.output.clone())
         }
     }
@@ -1777,9 +1781,10 @@ mod tests {
             },
         };
 
-        let result = process_retag_job(1, 42, "document text", &tagger, &canon, &retag_store)
-            .await
-            .unwrap();
+        let result =
+            process_retag_job(1, 42, "document text", &tagger, &canon, &retag_store, false)
+                .await
+                .unwrap();
 
         // Locked tag 100 + LLM tags should all be present.
         assert!(result.contains(&100), "locked tag must be in result");
@@ -1808,7 +1813,7 @@ mod tests {
             },
         };
 
-        let result = process_retag_job(1, 42, "text", &tagger, &canon, &retag_store)
+        let result = process_retag_job(1, 42, "text", &tagger, &canon, &retag_store, false)
             .await
             .unwrap();
 
@@ -1844,7 +1849,7 @@ mod tests {
             },
         };
 
-        let result = process_retag_job(1, 42, "text", &tagger, &canon, &retag_store)
+        let result = process_retag_job(1, 42, "text", &tagger, &canon, &retag_store, false)
             .await
             .unwrap();
 
@@ -1864,7 +1869,7 @@ mod tests {
         struct ErrorTagger;
         #[async_trait]
         impl Tagger for ErrorTagger {
-            async fn tag(&self, _input: &TagInput) -> anyhow::Result<TagOutput> {
+            async fn tag(&self, _input: &TagInput, _local_only: bool) -> anyhow::Result<TagOutput> {
                 anyhow::bail!("tag service unavailable");
             }
         }
@@ -1877,7 +1882,7 @@ mod tests {
         // the tagger.
         mock.scenario().lock().await.embed_content = Some(vec![vec![0.1, 0.2]]);
 
-        let err = process_retag_job(1, 42, "text", &ErrorTagger, &canon, &retag_store)
+        let err = process_retag_job(1, 42, "text", &ErrorTagger, &canon, &retag_store, false)
             .await
             .unwrap_err();
         assert!(
@@ -1907,7 +1912,7 @@ mod tests {
             },
         };
 
-        let result = process_retag_job(1, 99, "text", &tagger, &canon, &retag_store)
+        let result = process_retag_job(1, 99, "text", &tagger, &canon, &retag_store, false)
             .await
             .unwrap();
 

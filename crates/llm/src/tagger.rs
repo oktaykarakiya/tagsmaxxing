@@ -146,7 +146,7 @@ impl Tagger for JsonSchemaTagger {
     ///
     /// Returns an error if the model call fails or the output violates the schema
     /// after one corrective retry.
-    async fn tag(&self, input: &TagInput) -> anyhow::Result<TagOutput> {
+    async fn tag(&self, input: &TagInput, local_only: bool) -> anyhow::Result<TagOutput> {
         let messages = Self::build_messages(input);
         let schema = tagger_json_schema();
 
@@ -160,7 +160,7 @@ impl Tagger for JsonSchemaTagger {
         // First attempt.
         let resp = self
             .client
-            .chat(Role::Text, &self.model, &req)
+            .chat(Role::Text, &self.model, &req, local_only)
             .await
             .map_err(|e| anyhow::anyhow!("tagger model call failed: {e}"))?;
 
@@ -191,7 +191,7 @@ impl Tagger for JsonSchemaTagger {
 
                 let retry_resp = self
                     .client
-                    .chat(Role::Text, &self.model, &retry_req)
+                    .chat(Role::Text, &self.model, &retry_req, local_only)
                     .await
                     .map_err(|e| {
                         anyhow::anyhow!(
@@ -433,7 +433,7 @@ mod tests {
         let (tagger, mock) = tagger_with_mock().await;
         mock.scenario().lock().await.chat_content = Some(valid_tag_output_json());
 
-        let output = tagger.tag(&sample_input()).await.unwrap();
+        let output = tagger.tag(&sample_input(), false).await.unwrap();
         assert_eq!(output.title, "Rust Programming Guide");
         assert_eq!(output.tags.len(), 3);
 
@@ -446,7 +446,7 @@ mod tests {
         let (tagger, mock) = tagger_with_mock().await;
         mock.scenario().lock().await.chat_content = Some(empty_tags_output_json());
 
-        let output = tagger.tag(&sample_input()).await.unwrap();
+        let output = tagger.tag(&sample_input(), false).await.unwrap();
         assert_eq!(output.tags, Vec::<String>::new());
         assert!(!output.title.is_empty());
 
@@ -465,7 +465,7 @@ mod tests {
         // message mentions retry.
         mock.scenario().lock().await.chat_content = Some("not valid json".to_string());
 
-        let err = tagger.tag(&sample_input()).await.unwrap_err();
+        let err = tagger.tag(&sample_input(), false).await.unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("still invalid after retry"),
@@ -481,7 +481,7 @@ mod tests {
         let (tagger, mock) = tagger_with_mock().await;
         mock.scenario().lock().await.chat = ResponseMode::ServerError;
 
-        let err = tagger.tag(&sample_input()).await.unwrap_err();
+        let err = tagger.tag(&sample_input(), false).await.unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("tagger model call failed"), "{msg}");
 
@@ -498,7 +498,7 @@ mod tests {
             user_note: None,
             ..sample_input()
         };
-        let output = tagger.tag(&input).await.unwrap();
+        let output = tagger.tag(&input, false).await.unwrap();
         assert_eq!(output.title, "Rust Programming Guide");
 
         mock.shutdown().await;
@@ -515,7 +515,7 @@ mod tests {
                 kind,
                 ..sample_input()
             };
-            let output = tagger.tag(&input).await.unwrap();
+            let output = tagger.tag(&input, false).await.unwrap();
             assert!(!output.title.is_empty(), "failed for kind {kind:?}");
         }
 

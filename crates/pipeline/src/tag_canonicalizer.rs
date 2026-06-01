@@ -152,6 +152,7 @@ impl TagCanonicalizer {
         &self,
         tenant_id: i64,
         raw_tags: &[String],
+        local_only: bool,
     ) -> anyhow::Result<Vec<i64>> {
         let mut tag_ids = Vec::with_capacity(raw_tags.len());
 
@@ -166,7 +167,7 @@ impl TagCanonicalizer {
             }
 
             // 2. Embed the raw tag name.
-            let embedding = self.embed_tag_name(raw_tag).await?;
+            let embedding = self.embed_tag_name(raw_tag, local_only).await?;
 
             // 3. Cosine-match against existing tags (including those just inserted).
             if let Some((best_id, _score)) =
@@ -196,14 +197,14 @@ impl TagCanonicalizer {
     ///
     /// # Errors
     /// Returns an error if the LLM backend call fails or returns zero vectors.
-    async fn embed_tag_name(&self, name: &str) -> anyhow::Result<Vec<f32>> {
+    async fn embed_tag_name(&self, name: &str, local_only: bool) -> anyhow::Result<Vec<f32>> {
         let req = EmbedReq {
             texts: vec![name.to_string()],
         };
 
         let resp = self
             .llm
-            .embed(&self.embed_model, &req)
+            .embed(&self.embed_model, &req, local_only)
             .await
             .map_err(|e| anyhow::anyhow!("failed to embed tag name '{name}': {e}"))?;
 
@@ -499,7 +500,10 @@ mod tests {
 
         let (canon, mock) = canonicalizer_with_mock(store.clone()).await;
 
-        let ids = canon.canonicalize(1, &["rust-lang".into()]).await.unwrap();
+        let ids = canon
+            .canonicalize(1, &["rust-lang".into()], false)
+            .await
+            .unwrap();
         assert_eq!(
             ids,
             vec![10],
@@ -518,7 +522,10 @@ mod tests {
         // The mock returns [1.0, 0.0] by default — cos=1.0 with the seeded tag.
         mock.scenario().lock().await.embed_content = Some(vec![vec![1.0, 0.0]]);
 
-        let ids = canon.canonicalize(1, &["bill".into()]).await.unwrap();
+        let ids = canon
+            .canonicalize(1, &["bill".into()], false)
+            .await
+            .unwrap();
         assert_eq!(
             ids,
             vec![5],
@@ -540,7 +547,10 @@ mod tests {
         // The mock returns [1.0, 0.0] — cos ≈ 0.0 with [0.0, 1.0] (below threshold).
         mock.scenario().lock().await.embed_content = Some(vec![vec![1.0, 0.0]]);
 
-        let ids = canon.canonicalize(1, &["newtopic".into()]).await.unwrap();
+        let ids = canon
+            .canonicalize(1, &["newtopic".into()], false)
+            .await
+            .unwrap();
         assert_eq!(ids.len(), 1);
         assert!(ids[0] > 0, "new tag must get a positive id");
         // The new tag should exist in the store.
@@ -554,7 +564,7 @@ mod tests {
         let store = Arc::new(MockTagStore::new());
         let (canon, mock) = canonicalizer_with_mock(store.clone()).await;
 
-        let ids = canon.canonicalize(1, &[]).await.unwrap();
+        let ids = canon.canonicalize(1, &[], false).await.unwrap();
         assert!(ids.is_empty());
         mock.shutdown().await;
     }
@@ -572,7 +582,7 @@ mod tests {
 
         // "first" → alias to 1, "second" → cos-match to beta(2).
         let ids = canon
-            .canonicalize(1, &["first".into(), "second".into()])
+            .canonicalize(1, &["first".into(), "second".into()], false)
             .await
             .unwrap();
         assert_eq!(ids.len(), 2, "2 inputs → 2 outputs");
@@ -591,7 +601,7 @@ mod tests {
         mock.scenario().lock().await.embed_content = Some(vec![vec![0.7, 0.7]]);
 
         let ids = canon
-            .canonicalize(1, &["invoice".into(), "bill".into()])
+            .canonicalize(1, &["invoice".into(), "bill".into()], false)
             .await
             .unwrap();
         assert_eq!(ids.len(), 2);
@@ -617,7 +627,7 @@ mod tests {
         mock.scenario().lock().await.embed_content = Some(vec![vec![0.5, 0.5]]);
 
         let ids = canon
-            .canonicalize(1, &["known-alias".into(), "new-tag".into()])
+            .canonicalize(1, &["known-alias".into(), "new-tag".into()], false)
             .await
             .unwrap();
         assert_eq!(ids.len(), 2);
@@ -635,7 +645,7 @@ mod tests {
         mock.scenario().lock().await.embed_content = Some(vec![vec![0.3, 0.9]]);
 
         let ids = canon
-            .canonicalize(1, &["dup".into(), "dup".into(), "dup".into()])
+            .canonicalize(1, &["dup".into(), "dup".into(), "dup".into()], false)
             .await
             .unwrap();
         assert_eq!(ids.len(), 3);
@@ -655,7 +665,7 @@ mod tests {
         mock.scenario().lock().await.embed_content = Some(vec![vec![0.5, 0.5]]);
 
         let ids = canon
-            .canonicalize(1, &["a".into(), "b".into(), "c".into()])
+            .canonicalize(1, &["a".into(), "b".into(), "c".into()], false)
             .await
             .unwrap();
         assert_eq!(ids.len(), 3);
@@ -679,7 +689,7 @@ mod tests {
 
         // Tenant 1 asks for the same names — must NOT see tenant 2's data.
         let ids = canon
-            .canonicalize(1, &["shared-name".into(), "alias-t2".into()])
+            .canonicalize(1, &["shared-name".into(), "alias-t2".into()], false)
             .await
             .unwrap();
         assert_eq!(ids.len(), 2);
@@ -703,7 +713,7 @@ mod tests {
         mock.scenario().lock().await.embed = kb_mock_backend::ResponseMode::ServerError;
 
         let err = canon
-            .canonicalize(1, &["new-tag".into()])
+            .canonicalize(1, &["new-tag".into()], false)
             .await
             .unwrap_err();
         assert!(
@@ -728,7 +738,7 @@ mod tests {
 
         // Only aliases — no embedding needed.
         let ids = canon
-            .canonicalize(1, &["feline".into(), "kitty".into()])
+            .canonicalize(1, &["feline".into(), "kitty".into()], false)
             .await
             .unwrap();
         assert_eq!(ids, vec![1, 1]);
@@ -744,7 +754,10 @@ mod tests {
         // Return empty data array from embed endpoint.
         mock.scenario().lock().await.embed_content = Some(vec![]);
 
-        let err = canon.canonicalize(1, &["orphan".into()]).await.unwrap_err();
+        let err = canon
+            .canonicalize(1, &["orphan".into()], false)
+            .await
+            .unwrap_err();
         assert!(
             err.to_string().contains("zero vectors"),
             "expected zero vectors error, got: {err}"

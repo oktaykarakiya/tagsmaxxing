@@ -77,7 +77,12 @@ mod tests {
 
     #[async_trait]
     impl Reranker for PassThroughReranker {
-        async fn rerank(&self, _query: &str, docs: &[String]) -> anyhow::Result<Vec<f32>> {
+        async fn rerank(
+            &self,
+            _query: &str,
+            docs: &[String],
+            _local_only: bool,
+        ) -> anyhow::Result<Vec<f32>> {
             Ok(docs.iter().map(|_| 1.0).collect())
         }
     }
@@ -366,6 +371,7 @@ mod tests {
                     filters: QueryFilters::default(),
                     top_k: 10,
                 },
+                false,
             )
             .await
             .unwrap();
@@ -456,6 +462,7 @@ mod tests {
                     filters: QueryFilters::default(),
                     top_k: 10,
                 },
+                false,
             )
             .await
             .unwrap();
@@ -477,6 +484,7 @@ mod tests {
                     filters: QueryFilters::default(),
                     top_k: 10,
                 },
+                false,
             )
             .await
             .unwrap();
@@ -558,6 +566,7 @@ mod tests {
                     },
                     top_k: 10,
                 },
+                false,
             )
             .await
             .unwrap();
@@ -585,6 +594,7 @@ mod tests {
                     },
                     top_k: 10,
                 },
+                false,
             )
             .await
             .unwrap();
@@ -629,8 +639,8 @@ mod tests {
             top_k: 10,
         };
 
-        let hits1 = pipeline.retrieve(1, &query).await.unwrap();
-        let hits2 = pipeline.retrieve(1, &query).await.unwrap();
+        let hits1 = pipeline.retrieve(1, &query, false).await.unwrap();
+        let hits2 = pipeline.retrieve(1, &query, false).await.unwrap();
 
         assert_eq!(
             hits1.len(),
@@ -710,6 +720,7 @@ mod tests {
                     filters: QueryFilters::default(),
                     top_k: 10,
                 },
+                false,
             )
             .await
             .unwrap();
@@ -778,6 +789,7 @@ mod tests {
                     filters: QueryFilters::default(),
                     top_k: 10,
                 },
+                false,
             )
             .await
             .unwrap();
@@ -843,6 +855,7 @@ mod tests {
                     filters: QueryFilters::default(),
                     top_k: 10,
                 },
+                false,
             )
             .await
             .unwrap();
@@ -895,6 +908,7 @@ mod tests {
                     filters: QueryFilters::default(),
                     top_k: 2,
                 },
+                false,
             )
             .await
             .unwrap();
@@ -914,6 +928,7 @@ mod tests {
                     filters: QueryFilters::default(),
                     top_k: 0,
                 },
+                false,
             )
             .await
             .unwrap();

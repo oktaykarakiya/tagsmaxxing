@@ -552,6 +552,7 @@ mod tests {
             page_count: 1,
             status: kb_core::status::ProcessingStatus::Ready,
             created_at: chrono::Utc::now(),
+            local_only: false,
         }
     }
 

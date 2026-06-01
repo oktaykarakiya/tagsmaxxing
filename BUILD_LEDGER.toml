@@ -1059,9 +1059,9 @@ description = "Data residency enforcement (§26.6): add a `residency` column to 
 depends_on = ["P9-T6", "P5-T1"]
 plan_sections = ["26.6", "17"]
 acceptance = "Tenant with local_only → acquire() never returns Remote backends; document with local_only flag → ingest uses Local backends only; tenant allow_remote + no document flag → Remote backends eligible; changing residency takes effect on next acquire() (hot-swap via routing reload). Unit tests for acquire() filtering + integration test with mock backends of both DataClasses. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "Migration 0012 adds tenants.residency (local_only/allow_remote) + documents.local_only; kb-core gains Residency enum + Document.local_only; Pool::acquire(local_only) filters DataClass::Remote backends in both tiered+legacy paths; threaded through LlamaClient→ChunkEmbedder→Tagger/Reranker→IngestPipeline/RetrievalPipeline; just ci green (81.66% lines)."
 
 [[task]]
 id = "P9-T10"

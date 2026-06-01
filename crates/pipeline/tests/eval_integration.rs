@@ -43,7 +43,12 @@ mod tests {
 
     #[async_trait]
     impl Reranker for PassThroughReranker {
-        async fn rerank(&self, _query: &str, docs: &[String]) -> anyhow::Result<Vec<f32>> {
+        async fn rerank(
+            &self,
+            _query: &str,
+            docs: &[String],
+            _local_only: bool,
+        ) -> anyhow::Result<Vec<f32>> {
             Ok(docs.iter().map(|_| 1.0).collect())
         }
     }
@@ -202,6 +207,7 @@ mod tests {
                         filters: QueryFilters::default(),
                         top_k: 10,
                     },
+                    false,
                 )
                 .await
                 .unwrap();

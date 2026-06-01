@@ -24,7 +24,7 @@ pub async fn run_ingest(
 
     let note = args.note.clone();
     let output = pipeline
-        .ingest(tenant_id, files, note)
+        .ingest(tenant_id, files, note, false)
         .await
         .context("ingest pipeline failed")?;
 

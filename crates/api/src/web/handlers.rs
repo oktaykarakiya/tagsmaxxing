@@ -464,7 +464,7 @@ pub async fn search_submit(
         top_k: 20, // web UI shows more results
     };
 
-    let hits = match retrieval.retrieve(auth_user.tenant_id, &query).await {
+    let hits = match retrieval.retrieve(auth_user.tenant_id, &query, false).await {
         Ok(h) => h,
         Err(e) => {
             tracing::warn!(error = %e, "search failed");
@@ -815,7 +815,12 @@ mod tests {
         }
         #[async_trait::async_trait]
         impl Reranker for MockReranker {
-            async fn rerank(&self, _query: &str, _docs: &[String]) -> anyhow::Result<Vec<f32>> {
+            async fn rerank(
+                &self,
+                _query: &str,
+                _docs: &[String],
+                _local_only: bool,
+            ) -> anyhow::Result<Vec<f32>> {
                 Ok(self.scores.clone())
             }
         }

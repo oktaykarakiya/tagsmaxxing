@@ -38,7 +38,11 @@ pub struct TagOutput {
 pub trait Tagger: Send + Sync {
     /// Tag a document.
     ///
+    /// `local_only` constrains the backend selection to on-premises backends
+    /// only (plan §26.6, P9-T9). When `true`, the call must not reach a remote
+    /// provider. The scheduler enforces this at acquire time.
+    ///
     /// # Errors
     /// Returns an error if the model call fails or the output violates the schema.
-    async fn tag(&self, input: &TagInput) -> anyhow::Result<TagOutput>;
+    async fn tag(&self, input: &TagInput, local_only: bool) -> anyhow::Result<TagOutput>;
 }

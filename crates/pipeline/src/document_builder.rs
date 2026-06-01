@@ -175,6 +175,7 @@ impl DocumentBuilder {
             page_count,
             status: ProcessingStatus::Pending,
             created_at: now,
+            local_only: false,
         };
 
         (document, file_records)

@@ -31,4 +31,9 @@ pub struct Document {
     pub status: ProcessingStatus,
     /// Row creation time.
     pub created_at: DateTime<Utc>,
+    /// If `true`, this document's content must never be sent to a remote
+    /// provider — even if the tenant allows remote. Set automatically for
+    /// `identity_document` kind (plan §17) and optionally by the user.
+    /// Enforced at the Pool::acquire level (plan §26.6, P9-T9).
+    pub local_only: bool,
 }

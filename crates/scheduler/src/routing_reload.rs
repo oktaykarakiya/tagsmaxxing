@@ -579,7 +579,7 @@ mod tests {
         let pool2 = pool.clone();
         let acquire_task = tokio::spawn(async move {
             for _ in 0..10 {
-                let lease = pool2.acquire(Role::Text).await;
+                let lease = pool2.acquire(Role::Text, false).await;
                 if let Ok(l) = lease {
                     tokio::time::sleep(Duration::from_millis(1)).await;
                     drop(l);

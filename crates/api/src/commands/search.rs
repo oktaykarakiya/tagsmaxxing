@@ -27,7 +27,7 @@ pub async fn run_search(
 ) -> anyhow::Result<()> {
     let query = build_query(args);
     let hits = pipeline
-        .retrieve(tenant_id, &query)
+        .retrieve(tenant_id, &query, false)
         .await
         .context("search pipeline failed")?;
 

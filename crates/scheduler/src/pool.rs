@@ -133,6 +133,10 @@ impl Pool {
     /// `(priority, free-slots↓)` with fast-path `try_acquire` + bounded
     /// wait path via [`FuturesUnordered`].
     ///
+    /// `local_only` enforces data-residency policy (plan §26.6, P9-T9):
+    /// when `true`, backends with [`DataClass::Remote`](kb_core::data_class::DataClass)
+    /// are excluded — the call must never reach a remote provider.
+    ///
     /// # Errors
     ///
     /// - [`AcquireError::NoBackend`] — no healthy, usable backend serves `role`.
@@ -141,7 +145,7 @@ impl Pool {
     /// - [`AcquireError::CapacityExhausted`] — tiered path: all tiers
     ///   exhausted without acquiring capacity.
     /// - [`AcquireError::Closed`] — all candidate capacity guards are closed.
-    pub async fn acquire(&self, role: Role) -> Result<Lease, AcquireError> {
+    pub async fn acquire(&self, role: Role, local_only: bool) -> Result<Lease, AcquireError> {
         // Check for an active routing table — use tiered path if available.
         let routing_guard = self.routing.load();
         if let Some(table) = (*routing_guard).as_ref() {
@@ -152,21 +156,23 @@ impl Pool {
                 &self.backends,
                 self.acquire_timeout,
                 &self.rr_counters,
+                local_only, // P9-T9: data-residency enforcement (§26.6)
             )
             .await;
         }
 
         // Legacy flat-priority path (§6.3).
-        self.acquire_legacy(role).await
+        self.acquire_legacy(role, local_only).await
     }
 
     /// Legacy flat-priority acquire (plan §6.3).
     ///
     /// Used when no [`RoutingTable`] is active.  See [`acquire`](Self::acquire)
     /// for the combined documentation.
-    async fn acquire_legacy(&self, role: Role) -> Result<Lease, AcquireError> {
+    async fn acquire_legacy(&self, role: Role, local_only: bool) -> Result<Lease, AcquireError> {
         // 1. Gather healthy candidates with endpoints (dead-host + cooldown skip
         //    + skip Rated backends with exhausted token buckets).
+        //    P9-T9: when `local_only`, exclude Remote backends (§26.6).
         let mut cands: Vec<Arc<Backend>> = self
             .backends_for(role)
             .into_iter()
@@ -174,6 +180,7 @@ impl Pool {
             .filter(|b| !b.cooldown_active())
             .filter(|b| b.capacity.is_usable())
             .filter(|b| b.endpoint.is_some())
+            .filter(|b| !local_only || b.data_class == kb_core::data_class::DataClass::Local)
             .collect();
 
         if cands.is_empty() {
@@ -381,7 +388,7 @@ mod tests {
         let b = tb("b1", "http://x:8001", vec![Role::Text], 0, 2);
         let pool = Pool::new(vec![Arc::clone(&b)], Duration::from_secs(5));
 
-        let lease = pool.acquire(Role::Text).await.unwrap();
+        let lease = pool.acquire(Role::Text, false).await.unwrap();
         assert_eq!(lease.backend_id, "b1");
         assert_eq!(lease.endpoint, "http://x:8001");
         assert_eq!(b.free(), 1, "one slot consumed");
@@ -400,7 +407,7 @@ mod tests {
             Duration::from_secs(5),
         );
 
-        let lease = pool.acquire(Role::Text).await.unwrap();
+        let lease = pool.acquire(Role::Text, false).await.unwrap();
         assert_eq!(
             lease.backend_id, "pri0",
             "priority 0 must be picked before priority 10 when both free"
@@ -420,7 +427,7 @@ mod tests {
             Duration::from_secs(5),
         );
 
-        let lease = pool.acquire(Role::Text).await.unwrap();
+        let lease = pool.acquire(Role::Text, false).await.unwrap();
         assert_eq!(
             lease.backend_id, "free",
             "backend with free slots must be picked"
@@ -435,7 +442,7 @@ mod tests {
         let _hold = b.capacity.try_acquire().unwrap();
         let pool = Pool::new(vec![Arc::clone(&b)], Duration::from_millis(10));
 
-        let err = pool.acquire(Role::Text).await.unwrap_err();
+        let err = pool.acquire(Role::Text, false).await.unwrap_err();
         match err {
             AcquireError::Timeout(d) => {
                 assert_eq!(d, Duration::from_millis(10));
@@ -456,7 +463,7 @@ mod tests {
             Duration::from_secs(5),
         );
 
-        let lease = pool.acquire(Role::Text).await.unwrap();
+        let lease = pool.acquire(Role::Text, false).await.unwrap();
         assert_eq!(
             lease.backend_id, "alive",
             "unhealthy backend must be skipped regardless of free slots"
@@ -467,7 +474,7 @@ mod tests {
     #[tokio::test]
     async fn no_backend_role_unknown() {
         let pool = Pool::new(vec![], Duration::from_secs(5));
-        let err = pool.acquire(Role::Embed).await.unwrap_err();
+        let err = pool.acquire(Role::Embed, false).await.unwrap_err();
         match err {
             AcquireError::NoBackend { role } => assert_eq!(role, Role::Embed),
             other => panic!("expected NoBackend, got {other:?}"),
@@ -481,7 +488,7 @@ mod tests {
         b.healthy.store(false, Ordering::Release);
         let pool = Pool::new(vec![Arc::clone(&b)], Duration::from_secs(5));
 
-        let err = pool.acquire(Role::Text).await.unwrap_err();
+        let err = pool.acquire(Role::Text, false).await.unwrap_err();
         match err {
             AcquireError::NoBackend { role } => assert_eq!(role, Role::Text),
             other => panic!("expected NoBackend, got {other:?}"),
@@ -503,7 +510,7 @@ mod tests {
         });
 
         // acquire should block briefly then succeed once the slot is freed.
-        let lease = pool.acquire(Role::Text).await.unwrap();
+        let lease = pool.acquire(Role::Text, false).await.unwrap();
         assert_eq!(lease.backend_id, "b1");
 
         release.await.unwrap();
@@ -518,13 +525,13 @@ mod tests {
         let pool = Pool::new(vec![Arc::clone(&b)], Duration::from_secs(5));
 
         // Acquire and immediately drop.
-        let lease = pool.acquire(Role::Text).await.unwrap();
+        let lease = pool.acquire(Role::Text, false).await.unwrap();
         assert_eq!(b.free(), 0);
         drop(lease);
         assert_eq!(b.free(), 1);
 
         // A subsequent acquire must succeed (slot was returned).
-        let lease2 = pool.acquire(Role::Text).await.unwrap();
+        let lease2 = pool.acquire(Role::Text, false).await.unwrap();
         assert_eq!(lease2.backend_id, "b1");
         assert_eq!(b.free(), 0);
     }
@@ -537,11 +544,11 @@ mod tests {
         let pool2 = pool1.clone();
 
         // Acquire through pool1 consumes a slot visible through pool2.
-        let _l1 = pool1.acquire(Role::Text).await.unwrap();
+        let _l1 = pool1.acquire(Role::Text, false).await.unwrap();
         assert_eq!(b.free(), 1);
 
         // pool2 sees the same exhaustion.
-        let _l2 = pool2.acquire(Role::Text).await.unwrap();
+        let _l2 = pool2.acquire(Role::Text, false).await.unwrap();
         assert_eq!(b.free(), 0);
     }
 
@@ -560,7 +567,7 @@ mod tests {
             Duration::from_secs(5),
         );
 
-        let lease = pool.acquire(Role::Text).await.unwrap();
+        let lease = pool.acquire(Role::Text, false).await.unwrap();
         assert_eq!(
             lease.backend_id, "alive",
             "cooldown backend must be skipped"
@@ -600,7 +607,7 @@ mod tests {
         assert!(!rated_cap.is_usable());
 
         let pool = Pool::new(vec![Arc::clone(&b_rated)], Duration::from_secs(5));
-        let err = pool.acquire(Role::Text).await.unwrap_err();
+        let err = pool.acquire(Role::Text, false).await.unwrap_err();
         // No usable backends → NoBackend.
         assert!(matches!(err, AcquireError::NoBackend { .. }));
     }
@@ -628,7 +635,7 @@ mod tests {
         });
 
         let pool = Pool::new(vec![Arc::clone(&b)], Duration::from_secs(5));
-        let err = pool.acquire(Role::Text).await.unwrap_err();
+        let err = pool.acquire(Role::Text, false).await.unwrap_err();
         assert!(
             matches!(err, AcquireError::NoBackend { .. }),
             "backend without endpoint must be skipped"
@@ -654,7 +661,7 @@ mod tests {
         let pool = Pool::new(vec![Arc::clone(&b)], Duration::from_secs(5));
 
         // Fast-path: mock is healthy (default), slots are free.
-        let lease = pool.acquire(Role::Text).await.unwrap();
+        let lease = pool.acquire(Role::Text, false).await.unwrap();
         assert_eq!(lease.backend_id, "mock-1");
         assert!(lease.endpoint.starts_with("http://127.0.0.1:"));
         assert!(lease.endpoint.ends_with("/v1"));

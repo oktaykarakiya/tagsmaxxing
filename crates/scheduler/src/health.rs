@@ -259,7 +259,10 @@ mod tests {
         let (hl_handle, hl_shutdown) = loop_.spawn();
 
         // First, healthy → acquire works.
-        let l1 = pool.acquire(kb_core::role::Role::Text).await.unwrap();
+        let l1 = pool
+            .acquire(kb_core::role::Role::Text, false)
+            .await
+            .unwrap();
         assert_eq!(l1.backend_id, "mock-1");
         drop(l1);
 
@@ -268,7 +271,10 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(40)).await;
 
         // Acquire must return NoBackend (the only backend is now unhealthy).
-        let err = pool.acquire(kb_core::role::Role::Text).await.unwrap_err();
+        let err = pool
+            .acquire(kb_core::role::Role::Text, false)
+            .await
+            .unwrap_err();
         match err {
             crate::AcquireError::NoBackend { role } => {
                 assert_eq!(role, kb_core::role::Role::Text);
@@ -306,7 +312,10 @@ mod tests {
         let (hl_handle, hl_shutdown) = loop_.spawn();
 
         // Acquire must fail while the backend is unhealthy.
-        let err = pool.acquire(kb_core::role::Role::Text).await.unwrap_err();
+        let err = pool
+            .acquire(kb_core::role::Role::Text, false)
+            .await
+            .unwrap_err();
         assert!(matches!(err, crate::AcquireError::NoBackend { .. }));
 
         // Recover.
@@ -314,7 +323,10 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(40)).await;
 
         // Now acquire must succeed.
-        let lease = pool.acquire(kb_core::role::Role::Text).await.unwrap();
+        let lease = pool
+            .acquire(kb_core::role::Role::Text, false)
+            .await
+            .unwrap();
         assert_eq!(lease.backend_id, "mock-1");
 
         drop(lease);

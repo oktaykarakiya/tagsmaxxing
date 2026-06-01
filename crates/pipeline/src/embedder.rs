@@ -66,13 +66,16 @@ impl ChunkEmbedder {
         chunks: Vec<TextChunk>,
         tenant_id: i64,
         document_id: i64,
+        local_only: bool,
     ) -> anyhow::Result<Vec<Chunk>> {
         if chunks.is_empty() {
             return Ok(Vec::new());
         }
 
         let texts: Vec<String> = chunks.iter().map(|c| c.content.clone()).collect();
-        let vectors = self.batch_embed(&texts, EmbedKind::Document).await?;
+        let vectors = self
+            .batch_embed(&texts, EmbedKind::Document, local_only)
+            .await?;
 
         anyhow::ensure!(
             vectors.len() == chunks.len(),
@@ -108,8 +111,13 @@ impl ChunkEmbedder {
     ///
     /// Returns an error if the embedding call fails or any vector's dimension does
     /// not match [`expected_dim`](Self::new).
-    pub async fn embed_tag_names(&self, names: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
-        self.batch_embed(names, EmbedKind::Document).await
+    pub async fn embed_tag_names(
+        &self,
+        names: &[String],
+        local_only: bool,
+    ) -> anyhow::Result<Vec<Vec<f32>>> {
+        self.batch_embed(names, EmbedKind::Document, local_only)
+            .await
     }
 
     /// Embed a single query text for retrieval (plan §8 step 2).
@@ -122,9 +130,13 @@ impl ChunkEmbedder {
     ///
     /// Returns an error if the embedding call fails or the returned vector's
     /// dimension does not match [`expected_dim`](Self::new).
-    pub async fn embed_query(&self, query_text: &str) -> anyhow::Result<Vec<f32>> {
+    pub async fn embed_query(
+        &self,
+        query_text: &str,
+        local_only: bool,
+    ) -> anyhow::Result<Vec<f32>> {
         let vectors = self
-            .batch_embed(&[query_text.to_string()], EmbedKind::Query)
+            .batch_embed(&[query_text.to_string()], EmbedKind::Query, local_only)
             .await?;
         anyhow::ensure!(
             vectors.len() == 1,
@@ -141,6 +153,7 @@ impl ChunkEmbedder {
         &self,
         texts: &[String],
         _kind: EmbedKind,
+        local_only: bool,
     ) -> anyhow::Result<Vec<Vec<f32>>> {
         let mut all_vectors = Vec::with_capacity(texts.len());
 
@@ -151,7 +164,7 @@ impl ChunkEmbedder {
 
             let resp = self
                 .llm
-                .embed(&self.embed_model, &req)
+                .embed(&self.embed_model, &req, local_only)
                 .await
                 .context("failed to embed batch")?;
 
@@ -236,7 +249,7 @@ mod tests {
 
         let input = vec![tc("hello", 0, 1, 1)];
         let chunks = embedder
-            .embed_chunks(input, 42 /* tenant */, 7 /* doc */)
+            .embed_chunks(input, 42 /* tenant */, 7 /* doc */, false)
             .await
             .unwrap();
 
@@ -255,7 +268,7 @@ mod tests {
     #[tokio::test]
     async fn embed_chunks_empty_input() {
         let (embedder, mock) = embedder_with_mock(MOCK_DIM).await;
-        let result = embedder.embed_chunks(vec![], 1, 1).await.unwrap();
+        let result = embedder.embed_chunks(vec![], 1, 1, false).await.unwrap();
         assert!(result.is_empty());
         mock.shutdown().await;
     }
@@ -271,7 +284,7 @@ mod tests {
             file_id: 10,
             ts_offset: Some(15.5),
         }];
-        let chunks = embedder.embed_chunks(input, 1, 1).await.unwrap();
+        let chunks = embedder.embed_chunks(input, 1, 1, false).await.unwrap();
         assert_eq!(chunks[0].ts_offset, Some(15.5));
 
         mock.shutdown().await;
@@ -283,7 +296,7 @@ mod tests {
         let (embedder, mock) = embedder_with_mock(512).await;
 
         let input = vec![tc("hello", 0, 1, 1)];
-        let err = embedder.embed_chunks(input, 1, 1).await.unwrap_err();
+        let err = embedder.embed_chunks(input, 1, 1, false).await.unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("dimension mismatch"),
@@ -303,7 +316,10 @@ mod tests {
     async fn embed_tag_names_success() {
         let (embedder, mock) = embedder_with_mock(MOCK_DIM).await;
 
-        let vectors = embedder.embed_tag_names(&["invoice".into()]).await.unwrap();
+        let vectors = embedder
+            .embed_tag_names(&["invoice".into()], false)
+            .await
+            .unwrap();
 
         assert_eq!(vectors.len(), 1);
         for v in &vectors {
@@ -316,7 +332,7 @@ mod tests {
     #[tokio::test]
     async fn embed_tag_names_empty_input() {
         let (embedder, mock) = embedder_with_mock(MOCK_DIM).await;
-        let vectors = embedder.embed_tag_names(&[]).await.unwrap();
+        let vectors = embedder.embed_tag_names(&[], false).await.unwrap();
         assert!(vectors.is_empty());
         mock.shutdown().await;
     }
@@ -333,7 +349,10 @@ mod tests {
         let text_chunks = chunk_text(text, 42, Some(2), None, 2048, 64);
         assert_eq!(text_chunks.len(), 1);
 
-        let embedded = embedder.embed_chunks(text_chunks, 1, 99).await.unwrap();
+        let embedded = embedder
+            .embed_chunks(text_chunks, 1, 99, false)
+            .await
+            .unwrap();
         assert_eq!(embedded.len(), 1);
 
         assert_eq!(embedded[0].file_id, 42);

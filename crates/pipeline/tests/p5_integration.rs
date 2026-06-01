@@ -72,7 +72,7 @@ struct FixedTagger {
 
 #[async_trait]
 impl Tagger for FixedTagger {
-    async fn tag(&self, _input: &TagInput) -> anyhow::Result<TagOutput> {
+    async fn tag(&self, _input: &TagInput, _local_only: bool) -> anyhow::Result<TagOutput> {
         Ok(self.output.clone())
     }
 }
@@ -98,7 +98,12 @@ struct PassThroughReranker;
 
 #[async_trait]
 impl Reranker for PassThroughReranker {
-    async fn rerank(&self, _query: &str, docs: &[String]) -> anyhow::Result<Vec<f32>> {
+    async fn rerank(
+        &self,
+        _query: &str,
+        docs: &[String],
+        _local_only: bool,
+    ) -> anyhow::Result<Vec<f32>> {
         Ok(docs.iter().map(|_| 1.0).collect())
     }
 }
@@ -307,6 +312,7 @@ async fn e2e_multi_tenant_ingest_and_search_isolation() {
                 path: Some("quantum-guide.txt".into()),
             }],
             Some("research material".into()),
+            false,
         )
         .await
         .unwrap();
@@ -333,6 +339,7 @@ async fn e2e_multi_tenant_ingest_and_search_isolation() {
                 path: Some("ocean-study.txt".into()),
             }],
             None,
+            false,
         )
         .await
         .unwrap();
@@ -352,6 +359,7 @@ async fn e2e_multi_tenant_ingest_and_search_isolation() {
                 filters: QueryFilters::default(),
                 top_k: 10,
             },
+            false,
         )
         .await
         .unwrap();
@@ -378,6 +386,7 @@ async fn e2e_multi_tenant_ingest_and_search_isolation() {
                 filters: QueryFilters::default(),
                 top_k: 10,
             },
+            false,
         )
         .await
         .unwrap();
@@ -401,6 +410,7 @@ async fn e2e_multi_tenant_ingest_and_search_isolation() {
                 filters: QueryFilters::default(),
                 top_k: 10,
             },
+            false,
         )
         .await
         .unwrap();
@@ -555,6 +565,7 @@ async fn e2e_export_produces_valid_zip() {
                 path: Some("docs/export-test.txt".into()),
             }],
             Some("export-test note".into()),
+            false,
         )
         .await
         .unwrap();

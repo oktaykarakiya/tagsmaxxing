@@ -80,9 +80,14 @@ impl RetrievalPipeline {
     ///
     /// Returns an error if embedding or search fails. An empty result set
     /// is not an error — it returns an empty `Vec<Hit>`.
-    pub async fn retrieve(&self, tenant_id: i64, query: &Query) -> anyhow::Result<Vec<Hit>> {
+    pub async fn retrieve(
+        &self,
+        tenant_id: i64,
+        query: &Query,
+        local_only: bool,
+    ) -> anyhow::Result<Vec<Hit>> {
         // 1. Embed query text.
-        let query_embedding = self.embedder.embed_query(&query.text).await?;
+        let query_embedding = self.embedder.embed_query(&query.text, local_only).await?;
 
         // 2. Hybrid search (vector + keyword) with RRF fusion + document rollup.
         let hits = self
@@ -96,7 +101,10 @@ impl RetrievalPipeline {
         }
 
         let doc_texts: Vec<String> = hits.iter().map(|h| h.snippet.clone()).collect();
-        let rerank_scores = self.reranker.rerank(&query.text, &doc_texts).await?;
+        let rerank_scores = self
+            .reranker
+            .rerank(&query.text, &doc_texts, local_only)
+            .await?;
 
         anyhow::ensure!(
             rerank_scores.len() == hits.len(),
@@ -256,7 +264,12 @@ mod tests {
 
     #[async_trait]
     impl Reranker for MockReranker {
-        async fn rerank(&self, _query: &str, _docs: &[String]) -> anyhow::Result<Vec<f32>> {
+        async fn rerank(
+            &self,
+            _query: &str,
+            _docs: &[String],
+            _local_only: bool,
+        ) -> anyhow::Result<Vec<f32>> {
             Ok(self.scores.to_vec())
         }
     }
@@ -282,7 +295,12 @@ mod tests {
 
     #[async_trait]
     impl Reranker for RecordingReranker {
-        async fn rerank(&self, _query: &str, docs: &[String]) -> anyhow::Result<Vec<f32>> {
+        async fn rerank(
+            &self,
+            _query: &str,
+            docs: &[String],
+            _local_only: bool,
+        ) -> anyhow::Result<Vec<f32>> {
             *self.last_docs.lock().unwrap() = docs.to_vec();
             Ok(self.scores.to_vec())
         }
@@ -293,7 +311,12 @@ mod tests {
 
     #[async_trait]
     impl Reranker for FailingReranker {
-        async fn rerank(&self, _query: &str, _docs: &[String]) -> anyhow::Result<Vec<f32>> {
+        async fn rerank(
+            &self,
+            _query: &str,
+            _docs: &[String],
+            _local_only: bool,
+        ) -> anyhow::Result<Vec<f32>> {
             anyhow::bail!("simulated reranker failure")
         }
     }
@@ -404,7 +427,7 @@ mod tests {
         let (pipeline, mock) = build_test_pipeline(store_hits, rerank_scores).await;
         let q = query("test query", 10);
 
-        let results = pipeline.retrieve(1, &q).await.unwrap();
+        let results = pipeline.retrieve(1, &q, false).await.unwrap();
 
         assert_eq!(results.len(), 3);
         // Sorted by reranker score descending.
@@ -439,7 +462,7 @@ mod tests {
 
         // Request only top-2.
         let q = query("top 2 query", 2);
-        let results = pipeline.retrieve(1, &q).await.unwrap();
+        let results = pipeline.retrieve(1, &q, false).await.unwrap();
 
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].document_id, 1);
@@ -457,7 +480,7 @@ mod tests {
         let (pipeline, mock) = build_test_pipeline(store_hits, rerank_scores).await;
         let q = query("query", 0);
 
-        let results = pipeline.retrieve(1, &q).await.unwrap();
+        let results = pipeline.retrieve(1, &q, false).await.unwrap();
         assert!(results.is_empty());
 
         mock.shutdown().await;
@@ -470,7 +493,7 @@ mod tests {
         let (pipeline, mock) = build_test_pipeline(vec![], vec![]).await;
         let q = query("nothing matches", 10);
 
-        let results = pipeline.retrieve(1, &q).await.unwrap();
+        let results = pipeline.retrieve(1, &q, false).await.unwrap();
         assert!(results.is_empty());
         // Reranker is never called when hits are empty (verified by the
         // MockStore returning empty — if reranker were called with empty docs,
@@ -491,7 +514,7 @@ mod tests {
             build_test_pipeline_with_recording_reranker(store_hits, vec![0.7, 0.3]).await;
 
         let q = query("find me", 10);
-        let _results = pipeline.retrieve(1, &q).await.unwrap();
+        let _results = pipeline.retrieve(1, &q, false).await.unwrap();
 
         let docs = pipeline.recording_reranker.last_docs();
         // Verify the reranker received the snippets.
@@ -567,7 +590,7 @@ mod tests {
         let (pipeline, mock) = build_test_pipeline_with_failing_reranker(store_hits).await;
         let q = query("query", 10);
 
-        let err = pipeline.retrieve(1, &q).await.unwrap_err();
+        let err = pipeline.retrieve(1, &q, false).await.unwrap_err();
         assert!(
             err.to_string().contains("simulated reranker failure"),
             "expected reranker failure error, got: {err}"
@@ -636,7 +659,7 @@ mod tests {
             RetrievalPipeline::new(embedder, Arc::clone(&store) as Arc<dyn Store>, reranker);
 
         let q = query("find this text", 10);
-        let _results = pipeline.retrieve(1, &q).await.unwrap();
+        let _results = pipeline.retrieve(1, &q, false).await.unwrap();
 
         // Verify the store received the correct query text and embedding.
         assert_eq!(store.last_query_text().as_deref(), Some("find this text"));
@@ -665,7 +688,7 @@ mod tests {
         let (pipeline, mock) = build_test_pipeline(store_hits, rerank_scores).await;
         let q = query("key", 10);
 
-        let results = pipeline.retrieve(1, &q).await.unwrap();
+        let results = pipeline.retrieve(1, &q, false).await.unwrap();
         assert_eq!(results.len(), 1);
 
         let hit = &results[0];
@@ -699,7 +722,7 @@ mod tests {
             build_test_pipeline_with_mismatched_reranker(store_hits, rerank_scores).await;
         let q = query("mismatch", 10);
 
-        let err = pipeline.retrieve(1, &q).await.unwrap_err();
+        let err = pipeline.retrieve(1, &q, false).await.unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("reranker returned"),
@@ -760,7 +783,7 @@ mod tests {
         let (pipeline, mock) = build_test_pipeline(store_hits, rerank_scores).await;
         let q = query("tied", 10);
 
-        let results = pipeline.retrieve(1, &q).await.unwrap();
+        let results = pipeline.retrieve(1, &q, false).await.unwrap();
         assert_eq!(results.len(), 3);
         // All scores are now 0.5.
         for hit in &results {
@@ -804,7 +827,7 @@ mod tests {
         // Mock returns [0.1, 0.2, 0.3] (dim=3).
         let embedder = ChunkEmbedder::new(llm, "model".into(), 3);
 
-        let vec = embedder.embed_query("find me").await.unwrap();
+        let vec = embedder.embed_query("find me", false).await.unwrap();
         assert_eq!(vec.len(), 3);
 
         mock.shutdown().await;
@@ -840,7 +863,7 @@ mod tests {
         // expected_dim=512 but mock returns dim=3 → error.
         let embedder = ChunkEmbedder::new(llm, "model".into(), 512);
 
-        let err = embedder.embed_query("find me").await.unwrap_err();
+        let err = embedder.embed_query("find me", false).await.unwrap_err();
         assert!(
             err.to_string().contains("dimension mismatch"),
             "expected dimension mismatch, got: {err}"

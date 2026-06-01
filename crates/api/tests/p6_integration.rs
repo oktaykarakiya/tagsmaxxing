@@ -80,7 +80,7 @@ struct FixedTagger {
 
 #[async_trait]
 impl Tagger for FixedTagger {
-    async fn tag(&self, _input: &TagInput) -> anyhow::Result<TagOutput> {
+    async fn tag(&self, _input: &TagInput, _local_only: bool) -> anyhow::Result<TagOutput> {
         Ok(self.output.clone())
     }
 }
@@ -106,7 +106,12 @@ struct PassThroughReranker;
 
 #[async_trait]
 impl Reranker for PassThroughReranker {
-    async fn rerank(&self, _query: &str, docs: &[String]) -> anyhow::Result<Vec<f32>> {
+    async fn rerank(
+        &self,
+        _query: &str,
+        docs: &[String],
+        _local_only: bool,
+    ) -> anyhow::Result<Vec<f32>> {
         Ok(docs.iter().map(|_| 1.0).collect())
     }
 }
@@ -314,6 +319,7 @@ async fn e2e_cli_ingest_and_search_roundtrip() {
                 path: Some("docs/cli-guide.txt".into()),
             }],
             Some("cli-test note".into()),
+            false,
         )
         .await
         .unwrap();
@@ -349,6 +355,7 @@ async fn e2e_cli_ingest_and_search_roundtrip() {
                 filters: QueryFilters::default(),
                 top_k: 10,
             },
+            false,
         )
         .await
         .unwrap();
@@ -413,6 +420,7 @@ async fn e2e_api_ingest_search_document_detail() {
                 path: Some("api-test.txt".into()),
             }],
             None,
+            false,
         )
         .await
         .unwrap();
@@ -541,6 +549,7 @@ async fn e2e_web_ui_search_and_document_detail() {
                 path: Some("web-ui-test.txt".into()),
             }],
             None,
+            false,
         )
         .await
         .unwrap();
@@ -677,6 +686,7 @@ async fn e2e_admin_tenant_user_crud() {
                 path: Some("admin-test.txt".into()),
             }],
             None,
+            false,
         )
         .await
         .unwrap();
@@ -810,6 +820,7 @@ async fn e2e_cross_tenant_isolation_api() {
                 path: Some("secret-alpha.txt".into()),
             }],
             None,
+            false,
         )
         .await
         .unwrap();
@@ -832,6 +843,7 @@ async fn e2e_cross_tenant_isolation_api() {
                 path: Some("public-beta.txt".into()),
             }],
             None,
+            false,
         )
         .await
         .unwrap();

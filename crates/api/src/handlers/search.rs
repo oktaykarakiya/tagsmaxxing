@@ -160,7 +160,7 @@ pub async fn search(
     };
 
     let hits = retrieval
-        .retrieve(auth_user.tenant_id, &query)
+        .retrieve(auth_user.tenant_id, &query, false)
         .await
         .map_err(|e| {
             tracing::warn!(error = %e, "search failed");
@@ -292,7 +292,12 @@ mod tests {
 
     #[async_trait]
     impl Reranker for MockReranker {
-        async fn rerank(&self, _query: &str, _docs: &[String]) -> anyhow::Result<Vec<f32>> {
+        async fn rerank(
+            &self,
+            _query: &str,
+            _docs: &[String],
+            _local_only: bool,
+        ) -> anyhow::Result<Vec<f32>> {
             Ok(self.scores.to_vec())
         }
     }

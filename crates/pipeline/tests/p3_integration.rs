@@ -44,7 +44,7 @@ mod tests {
 
     #[async_trait]
     impl Tagger for TestTagger {
-        async fn tag(&self, _input: &TagInput) -> anyhow::Result<TagOutput> {
+        async fn tag(&self, _input: &TagInput, _local_only: bool) -> anyhow::Result<TagOutput> {
             Ok(self.output.clone())
         }
     }
@@ -167,7 +167,7 @@ mod tests {
         };
 
         let output = pipeline
-            .ingest(1, vec![file], Some("Learning material".into()))
+            .ingest(1, vec![file], Some("Learning material".into()), false)
             .await
             .unwrap();
 
@@ -219,7 +219,7 @@ mod tests {
             page_label: None,
             path: Some("rust-book.txt".into()),
         };
-        let output2 = pipeline.ingest(1, vec![file2], None).await.unwrap();
+        let output2 = pipeline.ingest(1, vec![file2], None, false).await.unwrap();
         // Same sha256 → same document id (upsert).
         assert_eq!(output2.document_id, output.document_id);
 

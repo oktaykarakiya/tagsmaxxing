@@ -1324,7 +1324,7 @@ impl PgStore {
         let pool = self.app_pool()?;
         let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
         let rows: Vec<DocumentRow> = sqlx::query_as(
-            "SELECT id, tenant_id, title, summary, user_note, kind, meta, page_count, status, created_at \
+            "SELECT id, tenant_id, title, summary, user_note, kind, meta, page_count, local_only, status, created_at \
              FROM documents WHERE tenant_id = $1 ORDER BY id",
         )
         .bind(tenant_id)
@@ -1538,7 +1538,7 @@ impl PgStore {
         let pool = self.app_pool()?;
         let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
         let row: Option<DocumentRow> = sqlx::query_as(
-            "SELECT id, tenant_id, title, summary, user_note, kind, meta, page_count, status, created_at \
+            "SELECT id, tenant_id, title, summary, user_note, kind, meta, page_count, local_only, status, created_at \
              FROM documents WHERE id = $1",
         )
         .bind(doc_id)
@@ -1746,6 +1746,8 @@ struct DocumentRow {
     kind: String,
     meta: serde_json::Value,
     page_count: i32,
+    #[allow(dead_code)]
+    local_only: bool,
     status: String,
     created_at: chrono::DateTime<chrono::Utc>,
 }
@@ -1768,6 +1770,7 @@ fn document_from_row(r: DocumentRow) -> anyhow::Result<Document> {
         page_count: r.page_count,
         status,
         created_at: r.created_at,
+        local_only: r.local_only,
     })
 }
 
@@ -2446,6 +2449,7 @@ mod tests {
             page_count,
             status: kb_core::status::ProcessingStatus::Pending,
             created_at: chrono::Utc::now(),
+            local_only: false,
         }
     }
 
@@ -2840,6 +2844,7 @@ mod tests {
                     page_count: 1,
                     status: ProcessingStatus::Ready,
                     created_at: chrono::Utc::now(),
+                    local_only: false,
                 };
 
                 let _doc_id2 = store
@@ -3253,6 +3258,7 @@ mod tests {
             kind: "document".into(),
             meta: serde_json::json!({}),
             page_count: 1,
+            local_only: false,
             status: "ready".into(),
             created_at: chrono::Utc::now(),
         };
@@ -3275,6 +3281,7 @@ mod tests {
             kind: "not_a_valid_kind".into(),
             meta: serde_json::json!({}),
             page_count: 1,
+            local_only: false,
             status: "ready".into(),
             created_at: chrono::Utc::now(),
         };

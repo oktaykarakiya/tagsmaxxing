@@ -601,6 +601,7 @@ async fn transactional_ingest_respects_tenant_boundary() -> anyhow::Result<()> {
         page_count: 1,
         status: ProcessingStatus::Pending,
         created_at: Utc::now(),
+        local_only: false,
     };
     let rec = make_file_rec(s.tenant_a, 0, 1, "isolated-page");
     let tag_id = s

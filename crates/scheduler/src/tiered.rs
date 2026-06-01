@@ -45,6 +45,7 @@ pub(crate) async fn acquire_tiered(
     backends: &DashMap<String, Arc<Backend>>,
     global_timeout: Duration,
     rr_counters: &DashMap<RrKey, AtomicUsize>,
+    local_only: bool,
 ) -> Result<Lease, AcquireError> {
     let tiers = table.tiers_for(tenant_id, role);
 
@@ -75,7 +76,8 @@ pub(crate) async fn acquire_tiered(
         let spill_after = Duration::from_millis(spill_ms as u64);
 
         // Resolve routing entries → live backends, with filtering.
-        let mut candidates: Vec<Arc<Backend>> = resolve_and_filter(tier_entries, backends);
+        let mut candidates: Vec<Arc<Backend>> =
+            resolve_and_filter(tier_entries, backends, local_only);
 
         if candidates.is_empty() {
             continue;
@@ -119,9 +121,13 @@ pub(crate) async fn acquire_tiered(
 }
 
 /// Resolve routing entries to live backends, filtering out ineligible ones.
+///
+/// When `local_only` is `true`, backends with [`DataClass::Remote`] are
+/// excluded regardless of health or capacity (plan §26.6, P9-T9).
 fn resolve_and_filter(
     entries: &[RoutingEntry],
     backends: &DashMap<String, Arc<Backend>>,
+    local_only: bool,
 ) -> Vec<Arc<Backend>> {
     let mut candidates = Vec::with_capacity(entries.len());
     for entry in entries {
@@ -132,6 +138,7 @@ fn resolve_and_filter(
                 && !b.cooldown_active()
                 && b.capacity.is_usable()
                 && b.endpoint.is_some()
+                && !(local_only && b.data_class == kb_core::data_class::DataClass::Remote)
             {
                 candidates.push(b);
             }
@@ -475,6 +482,7 @@ mod tests {
             &backends,
             Duration::from_secs(5),
             &rr,
+            false,
         )
         .await
         .unwrap();
@@ -505,6 +513,7 @@ mod tests {
             &backends,
             Duration::from_secs(5),
             &rr,
+            false,
         )
         .await
         .unwrap();
@@ -626,6 +635,7 @@ mod tests {
             &backends,
             Duration::from_millis(200), // short global timeout
             &rr,
+            false,
         )
         .await
         .unwrap_err();
@@ -708,6 +718,7 @@ mod tests {
             &backends,
             Duration::from_secs(5),
             &rr,
+            false,
         )
         .await
         .unwrap();
@@ -745,6 +756,7 @@ mod tests {
             &backends,
             Duration::from_secs(5),
             &rr,
+            false,
         )
         .await
         .unwrap();
@@ -779,6 +791,7 @@ mod tests {
             &backends,
             Duration::from_secs(5),
             &rr,
+            false,
         )
         .await
         .unwrap();
@@ -846,6 +859,7 @@ mod tests {
             &backends,
             Duration::from_secs(5),
             &rr,
+            false,
         )
         .await
         .unwrap();
@@ -919,6 +933,7 @@ mod tests {
             &backends,
             Duration::from_secs(5),
             &rr,
+            false,
         )
         .await
         .unwrap();
@@ -950,6 +965,7 @@ mod tests {
             &backends,
             Duration::from_millis(200),
             &rr,
+            false,
         )
         .await
         .unwrap_err();
@@ -980,6 +996,7 @@ mod tests {
             &backends,
             Duration::from_secs(5),
             &rr,
+            false,
         )
         .await
         .unwrap_err();
@@ -1054,6 +1071,7 @@ mod tests {
                 &backends,
                 Duration::from_secs(5),
                 &rr,
+                false,
             )
             .await
             .unwrap();
@@ -1112,6 +1130,7 @@ mod tests {
             &backends,
             Duration::from_secs(5),
             &rr,
+            false,
         )
         .await
         .unwrap();
@@ -1209,6 +1228,7 @@ mod tests {
             &backends,
             Duration::from_secs(5),
             &rr,
+            false,
         )
         .await
         .unwrap();
@@ -1221,7 +1241,7 @@ mod tests {
         let b = tb("24", 2, 0);
         let pool = Pool::new(vec![Arc::clone(&b)], Duration::from_secs(5));
 
-        let lease = pool.acquire(Role::Text).await.unwrap();
+        let lease = pool.acquire(Role::Text, false).await.unwrap();
         assert_eq!(lease.backend_id, "24");
         assert_eq!(b.free(), 1);
         drop(lease);
@@ -1245,13 +1265,13 @@ mod tests {
         );
         pool.set_routing(table);
 
-        let lease = pool.acquire(Role::Text).await.unwrap();
+        let lease = pool.acquire(Role::Text, false).await.unwrap();
         assert_eq!(lease.backend_id, "25");
         drop(lease);
 
         // Clear routing and verify fallback.
         pool.clear_routing();
-        let lease2 = pool.acquire(Role::Text).await.unwrap();
+        let lease2 = pool.acquire(Role::Text, false).await.unwrap();
         assert_eq!(lease2.backend_id, "25"); // still works via legacy path
     }
 

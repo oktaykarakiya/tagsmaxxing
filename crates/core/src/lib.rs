@@ -34,6 +34,7 @@ pub mod provider;
 pub mod query;
 pub mod quota;
 pub mod reranker;
+pub mod residency;
 pub mod role;
 pub mod routing;
 pub mod secret;
