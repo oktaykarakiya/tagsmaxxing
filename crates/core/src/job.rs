@@ -21,6 +21,13 @@ str_enum! {
         /// Restore the latest pgBackRest backup to a scratch Postgres instance and
         /// run integrity checks to verify the backup is viable (plan §21, P8-T7).
         RestoreTest = "restore_test",
+        /// Find and delete B2 blobs with no corresponding DB row (orphaned by
+        /// failed dual-writes), and log DB rows whose blob is missing from B2
+        /// as data-loss events (plan §23, P8-T10).
+        OrphanGc = "orphan_gc",
+        /// Periodically re-hash a random sample of B2 blobs and compare to the
+        /// stored SHA-256 to detect bit-rot or tampering (plan §23, P8-T10).
+        IntegrityScan = "integrity_scan",
     }
 }
 
@@ -83,7 +90,9 @@ mod tests {
         assert_eq!(JobKind::Export.as_str(), "export");
         assert_eq!(JobKind::Retag.as_str(), "retag");
         assert_eq!(JobKind::RestoreTest.as_str(), "restore_test");
-        assert_eq!(JobKind::all().len(), 5);
+        assert_eq!(JobKind::OrphanGc.as_str(), "orphan_gc");
+        assert_eq!(JobKind::IntegrityScan.as_str(), "integrity_scan");
+        assert_eq!(JobKind::all().len(), 7);
     }
 
     #[test]

@@ -49,6 +49,12 @@ pub struct Config {
     /// Graceful-degradation settings (plan §22, P8-T9).
     #[serde(default, rename = "degradation")]
     pub degradation: Degradation,
+    /// Orphan GC job settings (plan §23, P8-T10).
+    #[serde(default, rename = "orphan_gc")]
+    pub orphan_gc: OrphanGc,
+    /// Integrity scan job settings (plan §23, P8-T10).
+    #[serde(default, rename = "integrity_scan")]
+    pub integrity_scan: IntegrityScan,
 }
 
 /// Durable-storage configuration.
@@ -310,6 +316,94 @@ impl Default for Degradation {
     }
 }
 
+/// Orphan GC job settings (plan §23, P8-T10).
+///
+/// The orphan GC finds B2 blobs with no corresponding files row in the database
+/// (orphaned by failed dual-writes) and deletes them after a configurable grace
+/// period. It also detects DB rows whose blob is missing from B2 and logs them
+/// as data-loss events.
+#[derive(Debug, Clone, Deserialize)]
+pub struct OrphanGc {
+    /// Whether the orphan GC job is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Hour of day to run (0–23 UTC). Default: 2 (02:00 UTC).
+    #[serde(default = "default_orphan_gc_hour")]
+    pub schedule_hour: u8,
+    /// Minute of hour to run (0–59). Default: 0.
+    #[serde(default = "default_orphan_gc_minute")]
+    pub schedule_minute: u8,
+    /// Grace period in hours before an orphaned blob is deleted. Blobs younger
+    /// than this (based on their files.row `ingested_at` or the object's own
+    /// last-modified timestamp) are skipped to avoid deleting blobs of
+    /// in-flight transactions. Default: 24.
+    #[serde(default = "default_blob_gc_grace_hours")]
+    pub grace_hours: u32,
+}
+
+const fn default_orphan_gc_hour() -> u8 {
+    2
+}
+const fn default_orphan_gc_minute() -> u8 {
+    0
+}
+const fn default_blob_gc_grace_hours() -> u32 {
+    24
+}
+
+impl Default for OrphanGc {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            schedule_hour: default_orphan_gc_hour(),
+            schedule_minute: default_orphan_gc_minute(),
+            grace_hours: default_blob_gc_grace_hours(),
+        }
+    }
+}
+
+/// Integrity scan job settings (plan §23, P8-T10).
+///
+/// The integrity scan periodically re-hashes a random sample of B2 blobs and
+/// compares the computed SHA-256 to the value stored in the files table, detecting
+/// bit-rot or tampering.
+#[derive(Debug, Clone, Deserialize)]
+pub struct IntegrityScan {
+    /// Whether the integrity scan job is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Hour of day to run (0–23 UTC). Default: 4 (04:00 UTC).
+    #[serde(default = "default_integrity_scan_hour")]
+    pub schedule_hour: u8,
+    /// Minute of hour to run (0–59). Default: 0.
+    #[serde(default = "default_integrity_scan_minute")]
+    pub schedule_minute: u8,
+    /// Percentage of blobs to sample (1–100). Default: 10.
+    #[serde(default = "default_integrity_scan_sample_pct")]
+    pub sample_pct: u8,
+}
+
+const fn default_integrity_scan_hour() -> u8 {
+    4
+}
+const fn default_integrity_scan_minute() -> u8 {
+    0
+}
+const fn default_integrity_scan_sample_pct() -> u8 {
+    10
+}
+
+impl Default for IntegrityScan {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            schedule_hour: default_integrity_scan_hour(),
+            schedule_minute: default_integrity_scan_minute(),
+            sample_pct: default_integrity_scan_sample_pct(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -472,5 +566,67 @@ blob_health_interval_secs = 10
         let d = &config.degradation;
         assert_eq!(d.max_inflight_ingest, 100);
         assert_eq!(d.blob_circuit_breaker_threshold, 3);
+    }
+
+    #[test]
+    fn orphan_gc_defaults() {
+        let og = OrphanGc::default();
+        assert!(!og.enabled);
+        assert_eq!(og.schedule_hour, 2);
+        assert_eq!(og.schedule_minute, 0);
+        assert_eq!(og.grace_hours, 24);
+    }
+
+    #[test]
+    fn orphan_gc_deserialization() {
+        let toml_str = r#"
+[orphan_gc]
+enabled = true
+schedule_hour = 5
+schedule_minute = 30
+grace_hours = 48
+"#;
+        let cfg: Config = toml::from_str(toml_str).expect("parse should succeed");
+        let og = &cfg.orphan_gc;
+        assert!(og.enabled);
+        assert_eq!(og.schedule_hour, 5);
+        assert_eq!(og.schedule_minute, 30);
+        assert_eq!(og.grace_hours, 48);
+    }
+
+    #[test]
+    fn orphan_gc_in_config_default_inherits() {
+        let toml_str = "[orphan_gc]\nenabled = true";
+        let cfg: Config = toml::from_str(toml_str).expect("parse should succeed");
+        let og = &cfg.orphan_gc;
+        assert!(og.enabled);
+        assert_eq!(og.schedule_hour, 2);
+        assert_eq!(og.grace_hours, 24);
+    }
+
+    #[test]
+    fn integrity_scan_defaults() {
+        let is = IntegrityScan::default();
+        assert!(!is.enabled);
+        assert_eq!(is.schedule_hour, 4);
+        assert_eq!(is.schedule_minute, 0);
+        assert_eq!(is.sample_pct, 10);
+    }
+
+    #[test]
+    fn integrity_scan_deserialization() {
+        let toml_str = r#"
+[integrity_scan]
+enabled = true
+schedule_hour = 6
+schedule_minute = 15
+sample_pct = 25
+"#;
+        let cfg: Config = toml::from_str(toml_str).expect("parse should succeed");
+        let is = &cfg.integrity_scan;
+        assert!(is.enabled);
+        assert_eq!(is.schedule_hour, 6);
+        assert_eq!(is.schedule_minute, 15);
+        assert_eq!(is.sample_pct, 25);
     }
 }

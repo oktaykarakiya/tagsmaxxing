@@ -16,11 +16,11 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
-    /// All nine migrations are present, in version order (1–9).
+    /// All ten migrations are present, in version order (1–10).
     #[test]
     fn embeds_the_schema_migrations() {
         let versions: Vec<i64> = MIGRATOR.iter().map(|m| m.version).collect();
-        assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
     }
 
     /// Forward-only and monotonic: no down/reversible scripts, strictly increasing versions,
@@ -157,6 +157,26 @@ mod tests {
         assert!(
             sql.contains("'restore_test'"),
             "jobs kind CHECK must include 'restore_test' for the automated restore-test job (P8-T7)"
+        );
+    }
+
+    /// Migration 0010 (P8-T10): the jobs.kind CHECK must include `'orphan_gc'` and
+    /// `'integrity_scan'`.
+    #[test]
+    fn schema_adds_orphan_gc_and_integrity_scan_kinds() {
+        let sql: String = MIGRATOR
+            .iter()
+            .map(|m| m.sql.as_ref())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            sql.contains("'orphan_gc'"),
+            "jobs kind CHECK must include 'orphan_gc' for the orphan GC job (P8-T10)"
+        );
+        assert!(
+            sql.contains("'integrity_scan'"),
+            "jobs kind CHECK must include 'integrity_scan' for the integrity scan job (P8-T10)"
         );
     }
 

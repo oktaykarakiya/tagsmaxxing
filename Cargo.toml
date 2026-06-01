@@ -60,6 +60,8 @@ tower-http = "0.6"
 testcontainers = "0.27.3"
 # Object store abstraction for S3-compatible backends (Backblaze B2, plan §20)
 object_store = { version = "0.13.2", default-features = false }
+# Stream combinators for consuming object_store list streams (§23, P8-T10)
+futures = "0.3"
 # SQLite for the B2 blob read-through cache metadata (plan §20, P8-T2)
 rusqlite = { version = "0.32", features = ["bundled"] }
 # AES-256-GCM for envelope encryption (plan §20/§24/§28, P8-T5)

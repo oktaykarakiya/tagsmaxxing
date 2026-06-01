@@ -22,8 +22,10 @@ pub mod eval;
 pub mod export;
 pub mod folder_watcher;
 pub mod ingest;
+pub mod integrity_scan;
 pub mod job_queue;
 pub mod metadata_merge;
+pub mod orphan_gc;
 pub mod restore_test;
 pub mod retrieval;
 pub mod rrf;
@@ -43,7 +45,15 @@ pub use ingest::{
     ExtractorRouter, IngestFile, IngestOutput, IngestPipeline, IngestStore, RetagStore,
     process_ingest_job, process_retag_job,
 };
+pub use integrity_scan::{
+    FileShaRecord, IntegrityScanRunner, process_integrity_scan_job, run_integrity_scan,
+    select_sample, should_run_now as integrity_scan_should_run_now, verify_hash,
+};
 pub use job_queue::{JobQueue, run_worker_pool};
+pub use orphan_gc::{
+    DbBlobRecord, OrphanGcRunner, filter_by_grace_period, find_missing_db_blobs, find_orphan_blobs,
+    process_orphan_gc_job, run_orphan_gc, should_run_now as orphan_gc_should_run_now,
+};
 pub use restore_test::{
     BackupStatus, IntegrityCheck, IntegrityReport, RestoreTestRunner, ShellRestoreTestRunner,
     build_check_constraint_query, build_row_count_query, check_backup_staleness, parse_row_counts,

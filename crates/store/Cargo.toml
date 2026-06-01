@@ -37,6 +37,8 @@ tracing = { workspace = true }
 aes-gcm = { workspace = true }
 # CSPRNG for DEK/nonce generation (plan §24, P8-T5)
 rand = { workspace = true }
+# Stream combinators for listing blobs (plan §23, P8-T10)
+futures = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "fs"] }

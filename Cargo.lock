@@ -2062,6 +2062,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "chrono",
+ "futures",
  "hex",
  "kb-core",
  "kb-testsupport",

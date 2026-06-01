@@ -15,6 +15,8 @@
 //! - [`record_circuit_breaker`] — sets the per-dependency circuit-breaker gauge (P8-T9).
 //! - [`record_inflight_ingest`] — sets the in-flight ingest gauge (P8-T9).
 //! - [`record_ingest_throttled`] — increments the throttled-ingest counter (P8-T9).
+//! - [`record_orphan_gc_result`] — sets the orphan GC result gauges (P8-T10).
+//! - [`record_integrity_scan_result`] — sets the integrity scan result gauges (P8-T10).
 //!
 //! # Optional features
 //!
@@ -152,6 +154,30 @@ fn describe_all() {
         "kb_ingest_throttled_total",
         "Number of ingest requests rejected due to backpressure (429)"
     );
+
+    // Orphan GC (plan §23, P8-T10)
+    metrics::describe_gauge!(
+        "kb_orphan_gc_blobs_deleted",
+        "Number of orphaned blobs deleted in the most recent GC run"
+    );
+    metrics::describe_gauge!(
+        "kb_orphan_gc_blobs_found",
+        "Number of orphaned blobs found in the most recent GC run"
+    );
+    metrics::describe_gauge!(
+        "kb_missing_blobs_found",
+        "Number of DB rows referencing blobs that do not exist in B2 (data-loss events)"
+    );
+
+    // Integrity scan (plan §23, P8-T10)
+    metrics::describe_gauge!(
+        "kb_integrity_scan_verified",
+        "Number of blobs verified in the most recent integrity scan"
+    );
+    metrics::describe_gauge!(
+        "kb_integrity_scan_failed",
+        "Number of integrity check failures in the most recent scan"
+    );
 }
 
 // ── Request-level recording helpers ──────────────────────────────────────────────
@@ -286,6 +312,32 @@ pub fn record_inflight_ingest(count: usize) {
 /// Call when an ingest request is rejected with 429 due to backpressure.
 pub fn record_ingest_throttled() {
     metrics::counter!("kb_ingest_throttled_total").increment(1);
+}
+
+// ── Orphan GC metrics (plan §23, P8-T10) ─────────────────────────────────────────────
+
+/// Set the orphan GC result gauges.
+///
+/// Called after each orphan GC run. `blobs_found` is the total number of orphaned
+/// blobs detected; `blobs_deleted` is how many were actually deleted (excluding
+/// those still within the grace period). `missing_rows` counts DB rows whose
+/// referenced blob does not exist in B2.
+pub fn record_orphan_gc_result(blobs_found: u64, blobs_deleted: u64, missing_rows: u64) {
+    metrics::gauge!("kb_orphan_gc_blobs_found").set(blobs_found as f64);
+    metrics::gauge!("kb_orphan_gc_blobs_deleted").set(blobs_deleted as f64);
+    metrics::gauge!("kb_missing_blobs_found").set(missing_rows as f64);
+}
+
+// ── Integrity scan metrics (plan §23, P8-T10) ────────────────────────────────────────
+
+/// Set the integrity scan result gauges.
+///
+/// Called after each integrity scan run. `verified` is the number of blobs that
+/// passed the hash check; `failed` is the number whose computed SHA-256 did not
+/// match the stored value.
+pub fn record_integrity_scan_result(verified: u64, failed: u64) {
+    metrics::gauge!("kb_integrity_scan_verified").set(verified as f64);
+    metrics::gauge!("kb_integrity_scan_failed").set(failed as f64);
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────────
@@ -586,5 +638,91 @@ mod tests {
         assert!(text.contains("# TYPE kb_inflight_ingest gauge"));
         assert!(text.contains("# HELP kb_ingest_throttled_total"));
         assert!(text.contains("# TYPE kb_ingest_throttled_total counter"));
+    }
+
+    // ── Orphan GC metrics tests (P8-T10) ────────────────────────────────────
+
+    #[test]
+    fn orphan_gc_result_gauges() {
+        let _h = ensure_init();
+        record_orphan_gc_result(10, 7, 3);
+
+        let text = render();
+        // All three gauges should be present (values may be overwritten by
+        // parallel tests — gauges are global and unlabelled).
+        assert!(
+            text.contains("kb_orphan_gc_blobs_found"),
+            "kb_orphan_gc_blobs_found not found in: {text}"
+        );
+        assert!(
+            text.contains("kb_orphan_gc_blobs_deleted"),
+            "kb_orphan_gc_blobs_deleted not found in: {text}"
+        );
+        assert!(
+            text.contains("kb_missing_blobs_found"),
+            "kb_missing_blobs_found not found in: {text}"
+        );
+    }
+
+    #[test]
+    fn orphan_gc_metrics_have_help_and_type() {
+        let _h = ensure_init();
+        record_orphan_gc_result(1, 1, 0);
+
+        let text = render();
+        assert!(text.contains("# HELP kb_orphan_gc_blobs_found"));
+        assert!(text.contains("# TYPE kb_orphan_gc_blobs_found gauge"));
+        assert!(text.contains("# HELP kb_orphan_gc_blobs_deleted"));
+        assert!(text.contains("# TYPE kb_orphan_gc_blobs_deleted gauge"));
+        assert!(text.contains("# HELP kb_missing_blobs_found"));
+        assert!(text.contains("# TYPE kb_missing_blobs_found gauge"));
+    }
+
+    // ── Integrity scan metrics tests (P8-T10) ───────────────────────────────
+
+    #[test]
+    fn integrity_scan_result_gauges() {
+        let _h = ensure_init();
+        record_integrity_scan_result(42, 0);
+
+        let text = render();
+        // Gauges should be present (values may be overwritten by parallel tests).
+        assert!(
+            text.contains("kb_integrity_scan_verified"),
+            "kb_integrity_scan_verified not found in: {text}"
+        );
+        assert!(
+            text.contains("kb_integrity_scan_failed"),
+            "kb_integrity_scan_failed not found in: {text}"
+        );
+    }
+
+    #[test]
+    fn integrity_scan_failure_gauges() {
+        let _h = ensure_init();
+        record_integrity_scan_result(38, 4);
+
+        let text = render();
+        // Gauges should be present (values may be overwritten by parallel tests).
+        assert!(
+            text.contains("kb_integrity_scan_verified"),
+            "kb_integrity_scan_verified not found in: {text}"
+        );
+        assert!(
+            text.contains("kb_integrity_scan_failed"),
+            "kb_integrity_scan_failed not found in: {text}"
+        );
+    }
+
+    #[test]
+    fn integrity_scan_metrics_have_help_and_type() {
+        let _h = ensure_init();
+        record_integrity_scan_result(1, 0);
+
+        let text = render();
+        assert!(text.contains("# HELP kb_integrity_scan_verified"));
+        assert!(text.contains("# TYPE kb_integrity_scan_verified gauge"));
+        assert!(text.contains("# HELP kb_integrity_scan_failed"));
+        assert!(text.contains("# TYPE kb_integrity_scan_failed gauge"));
     }
 }

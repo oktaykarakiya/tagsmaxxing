@@ -23,6 +23,7 @@ use anyhow::Context;
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use bytes::Bytes;
+use object_store::ObjectStore;
 use object_store::ObjectStoreExt;
 use object_store::aws::AmazonS3Builder;
 use object_store::path::Path as OSPath;
@@ -203,6 +204,30 @@ impl B2Blob {
         // empty keys anyway.
         debug_assert!(!key.is_empty(), "blob key must be non-empty");
         OSPath::from(key)
+    }
+
+    /// List blob keys under a given prefix.
+    ///
+    /// This uses the `object_store` `list` method to enumerate objects in B2.
+    /// Each returned key is the full object-store path (e.g.
+    /// `tenant-1/abcdef0123…`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the list operation fails (e.g. network error).
+    pub async fn list_keys(&self, prefix: &str) -> anyhow::Result<Vec<String>> {
+        use futures::StreamExt;
+
+        let store = self.current_store();
+        let path = OSPath::from(prefix);
+        let mut stream = store.list(Some(&path));
+        let mut keys = Vec::new();
+        while let Some(item) = stream.next().await {
+            let meta: object_store::ObjectMeta =
+                item.with_context(|| format!("B2 list failed for prefix `{prefix}`"))?;
+            keys.push(meta.location.to_string());
+        }
+        Ok(keys)
     }
 
     /// Start a streaming multipart upload to the given key.

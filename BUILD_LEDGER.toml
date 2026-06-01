@@ -918,9 +918,9 @@ description = "Orphan GC + blob integrity scan jobs (§23): (a) Orphan GC: perio
 depends_on = ["P8-T1", "P2-T3"]
 plan_sections = ["23", "25"]
 acceptance = "Orphan GC finds blob without DB row → deletes after grace period; blob within grace period → skipped; DB row references missing blob → ERROR log + metric; integrity scan verifies SHA256 of random sample; both jobs report results to metrics (P6-T9). Unit tests with mock B2 backend. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "OrphanGc + IntegrityScan JobKind variants; migration 0010; OrphanGc/IntegrityScan config (hot-swappable); B2Blob::list_keys; kb_orphan_gc_* + kb_integrity_scan_* + kb_missing_blobs_found gauges; OrphanGcRunner trait + MockRunner (8 orch tests); IntegrityScanRunner trait + MockRunner (8 orch tests); pure functions: find_orphan_blobs, find_missing_db_blobs, filter_by_grace_period, select_sample, verify_hash, should_run_now (x2). just ci green."
 
 [[task]]
 id = "P8-T11"
