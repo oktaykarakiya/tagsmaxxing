@@ -60,6 +60,8 @@ tower-http = "0.6"
 testcontainers = "0.27.3"
 # Object store abstraction for S3-compatible backends (Backblaze B2, plan §20)
 object_store = { version = "0.13.2", default-features = false }
+# SQLite for the B2 blob read-through cache metadata (plan §20, P8-T2)
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 # Workspace-wide lints, inherited by every crate via `[lints] workspace = true`.
 # These enforce the §31 quality bar mechanically (docs, no-stubs, no-unwrap).

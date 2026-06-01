@@ -15,6 +15,7 @@
 pub mod admin_queries;
 pub mod b2_blob;
 pub mod blob;
+pub mod blob_cache;
 pub(crate) mod hybrid_search;
 mod migrations;
 pub mod pg_store;
@@ -23,6 +24,7 @@ pub mod session_store;
 pub use admin_queries::UserView;
 pub use b2_blob::{B2Blob, B2Config};
 pub use blob::LocalBlob;
+pub use blob_cache::BlobCache;
 pub use migrations::MIGRATOR;
 pub use pg_store::PgStore;
 pub use session_store::{InMemorySessionStore, PgSessionStore};

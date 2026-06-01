@@ -830,9 +830,9 @@ description = "Local read-through cache for B2 blobs (§20): a size-capped on-di
 depends_on = ["P8-T1"]
 plan_sections = ["20"]
 acceptance = "First get → B2 fetch (cache miss); second get → cache hit (no B2 call); put → B2 + cache; eviction removes least-recently-used entries; total cache size stays under limit; cache clear → subsequent get re-fetches; SHA256 validation catches corrupted cache entries. Unit tests with mock B2 backend + temp dir. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "BlobCache in kb-store::blob_cache: wraps any Blob impl with SQLite-backed LRU cache (bundled rusqlite 0.32), monotonic access_seq for deterministic LRU ordering (no wall-clock flakiness), SHA256-validated paranoid mode, write-through put with best-effort cache (log+warn on cache failure after backend success), two-level hash-based file naming, WAL mode, clear() empties both DB+files. 32 unit tests: construction, cache miss→fetch→cache→hit, write-through put, delete both-sides, clear+re-fetch, eviction under limit + LRU-order, paranoid validation + corruption detection, exists/get_range/presigned delegation, file_path determinism, size tracking. just ci green (blob_cache.rs 93.79% lines)."
 
 [[task]]
 id = "P8-T3"

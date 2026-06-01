@@ -26,6 +26,13 @@ arc-swap = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["fs", "sync"] }
 chrono = { workspace = true }
+# SQLite for blob cache metadata (plan §20, P8-T2)
+rusqlite = { workspace = true }
+# SHA256 hashing for cache validation and file path derivation
+sha2 = { workspace = true }
+hex = { workspace = true }
+# Logging for cache write warnings
+tracing = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "fs"] }
