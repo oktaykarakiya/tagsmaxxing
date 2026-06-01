@@ -37,6 +37,13 @@ pub enum Command {
     /// Results are ranked by relevance (hybrid vector + keyword search with reranking).
     /// Filter by document kind (`--kind image`) or tag (`--tag invoice`).
     Search(SearchArgs),
+    /// Start the HTTP API server (plan §10, §12).
+    ///
+    /// Serves the REST API on port 9999 (configurable via config.toml or the
+    /// `--port` flag) plus the Askama-rendered Web UI. The server handles auth,
+    /// ingest, search, document detail, file download, job status, Prometheus
+    /// metrics, and the admin panel.
+    Serve(ServeArgs),
 }
 
 /// Arguments for `kb ingest`.
@@ -85,6 +92,18 @@ pub struct SearchArgs {
     /// Maximum number of results to return (default: 10).
     #[arg(long, default_value = "10", value_name = "N")]
     pub limit: usize,
+}
+
+/// Arguments for `kb serve`.
+#[derive(Args, Clone, Debug)]
+pub struct ServeArgs {
+    /// TCP port to listen on (overrides config.toml `api.port`).
+    #[arg(long, value_name = "PORT")]
+    pub port: Option<u16>,
+
+    /// Path to the config.toml file.
+    #[arg(long, value_name = "PATH", default_value = "config.toml")]
+    pub config: String,
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -238,6 +257,53 @@ mod tests {
         match cli.command {
             Command::Search(args) => assert_eq!(args.limit, 10),
             other => panic!("expected Search, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_serve_defaults() {
+        let cli = Cli::try_parse_from(["kb", "serve"]).unwrap();
+        match cli.command {
+            Command::Serve(args) => {
+                assert!(args.port.is_none());
+                assert_eq!(args.config, "config.toml");
+            }
+            other => panic!("expected Serve, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_serve_with_port() {
+        let cli = Cli::try_parse_from(["kb", "serve", "--port", "8080"]).unwrap();
+        match cli.command {
+            Command::Serve(args) => {
+                assert_eq!(args.port, Some(8080));
+            }
+            other => panic!("expected Serve, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_serve_with_config() {
+        let cli = Cli::try_parse_from(["kb", "serve", "--config", "/etc/kb/config.toml"]).unwrap();
+        match cli.command {
+            Command::Serve(args) => {
+                assert_eq!(args.config, "/etc/kb/config.toml");
+            }
+            other => panic!("expected Serve, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_serve_with_tenant_id() {
+        let cli =
+            Cli::try_parse_from(["kb", "--tenant-id", "5", "serve", "--port", "3000"]).unwrap();
+        assert_eq!(cli.tenant_id, 5);
+        match cli.command {
+            Command::Serve(args) => {
+                assert_eq!(args.port, Some(3000));
+            }
+            other => panic!("expected Serve, got {other:?}"),
         }
     }
 }

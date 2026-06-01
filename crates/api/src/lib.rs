@@ -11,7 +11,6 @@
 
 pub mod bootstrap;
 pub mod cli;
-pub mod commands;
 pub mod handlers;
 pub mod metrics_collector;
 pub mod middleware;
@@ -20,6 +19,7 @@ pub mod web;
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::Json;
 use axum::Router;
 use axum::http::StatusCode;
 use axum::middleware::from_fn_with_state;
@@ -199,7 +199,8 @@ pub fn build_router(state: AppState) -> Router {
     let public = Router::new()
         .route("/auth/login", post(handlers::auth::login))
         .route("/auth/register", post(handlers::auth::register))
-        .route("/metrics", get(metrics_handler));
+        .route("/metrics", get(metrics_handler))
+        .route("/health", get(health_handler));
 
     // Protected API routes (auth required, P6-T2+).
     let api = Router::new()
@@ -222,6 +223,20 @@ pub fn build_router(state: AppState) -> Router {
 
     // Merge public + protected API + Web UI, attach shared state.
     public.merge(api).merge(web).with_state(state)
+}
+
+// ── Health handler ────────────────────────────────────────────────────────────
+
+/// Liveness probe (plan §14, P7-T1).
+///
+/// Returns 200 OK with a minimal JSON body. This endpoint is used by the
+/// Containerfile HEALTHCHECK instruction and by orchestrator probes. It
+/// asserts only that the HTTP server is alive and accepting connections —
+/// it does **not** check upstream dependencies (database, backends, blob store).
+///
+/// No authentication is required.
+async fn health_handler() -> impl IntoResponse {
+    (StatusCode::OK, Json(serde_json::json!({"status": "ok"})))
 }
 
 // ── Metrics handler ──────────────────────────────────────────────────────────
@@ -251,4 +266,19 @@ pub struct AuthUser {
     pub user_id: i64,
     /// The user's role within the tenant.
     pub role: kb_core::user::UserRole,
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    /// The health handler returns 200 OK with a JSON `{"status":"ok"}` body.
+    #[tokio::test]
+    async fn health_handler_returns_ok() {
+        let response = health_handler().await.into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
 }

@@ -9,6 +9,9 @@ pub const DEFAULT_PORT: u16 = 9999;
 const fn default_port() -> u16 {
     DEFAULT_PORT
 }
+const fn default_secure_cookies() -> bool {
+    true
+}
 const fn default_acquire_timeout_secs() -> u64 {
     30
 }
@@ -66,11 +69,20 @@ pub struct Api {
     /// TCP port the HTTP API listens on (defaults to [`DEFAULT_PORT`]).
     #[serde(default = "default_port")]
     pub port: u16,
+    /// Whether session cookies get the `Secure` flag.
+    ///
+    /// Must be `false` for local dev without TLS, `true` for production behind
+    /// HTTPS. Defaults to `true` to avoid accidentally shipping insecure cookies.
+    #[serde(default = "default_secure_cookies")]
+    pub secure_cookies: bool,
 }
 
 impl Default for Api {
     fn default() -> Self {
-        Self { port: DEFAULT_PORT }
+        Self {
+            port: DEFAULT_PORT,
+            secure_cookies: true,
+        }
     }
 }
 
@@ -193,6 +205,8 @@ mod tests {
     #[test]
     fn section_defaults_match_helpers() {
         assert_eq!(Api::default().port, default_port());
+        assert!(Api::default().secure_cookies);
+        assert!(default_secure_cookies());
         let s = Scheduler::default();
         assert_eq!(s.acquire_timeout_secs, default_acquire_timeout_secs());
         assert_eq!(s.health_interval_secs, default_health_interval_secs());

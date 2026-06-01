@@ -191,6 +191,12 @@ async fn run() -> anyhow::Result<()> {
 
             commands::search::run_search(&args, &pipeline, cli.tenant_id).await?;
         }
+        Command::Serve(args) => {
+            // The serve command does its own config loading and wiring inside
+            // `commands::serve::run_serve` — it manages the global tracing subscriber,
+            // metrics, and all pipeline components independently.
+            commands::serve::run_serve(&args).await?;
+        }
     }
 
     Ok(())

@@ -23,3 +23,4 @@ pub use admin_queries::UserView;
 pub use blob::LocalBlob;
 pub use migrations::MIGRATOR;
 pub use pg_store::PgStore;
+pub use session_store::{InMemorySessionStore, PgSessionStore};

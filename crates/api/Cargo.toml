@@ -20,12 +20,12 @@ kb-metrics = { workspace = true }
 # axum 0.8: the current stable line. Works with tokio 1.x and edition 2024.
 axum = { version = "0.8", features = ["multipart"] }
 clap = { workspace = true }
-tokio = { workspace = true, features = ["sync", "rt", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["sync", "rt", "rt-multi-thread", "net", "signal"] }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["json"] }
 anyhow = { workspace = true }
 chrono = { workspace = true }
 sha2 = { workspace = true }

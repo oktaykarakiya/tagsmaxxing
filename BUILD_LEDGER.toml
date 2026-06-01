@@ -734,9 +734,9 @@ description = "Multi-stage Containerfile: (a) chef stage: cargo-chef for depende
 depends_on = ["P6-T2"]
 plan_sections = ["14"]
 acceptance = "`podman build -t kb:latest .` succeeds; resulting image runs as non-root (verify with `id`); binary is rustls-linked (no libssl dependency); HEALTHCHECK passes; image size < 200 MB (debian:slim base). just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "Multi-stage Containerfile (chef→planner→builder→runtime), kb serve subcommand (wires all pipeline components + health loop + metrics collector + graceful shutdown), /health endpoint (200 OK with JSON), PgSessionStore+InMemorySessionStore re-exported from kb-store. Containerfile uses rust:1.92.0-slim-bookworm chef/builder, debian:bookworm-slim non-root runtime with HEALTHCHECK. just ci green."
 
 [[task]]
 id = "P7-T2"
