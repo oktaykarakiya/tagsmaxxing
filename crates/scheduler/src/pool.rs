@@ -1,19 +1,22 @@
 //! [`Pool`]: the role-indexed registry of backends (plan §6.2, §6.6) and
-//! its acquire algorithm (§6.3).
+//! its acquire algorithm (§6.3, §26.4).
 
 use std::collections::HashSet;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use futures::stream::{FuturesUnordered, StreamExt};
 use kb_config::Config;
 use kb_core::role::Role;
+use kb_core::routing::RoutingTable;
 
 use crate::backend::Backend;
 use crate::error::AcquireError;
 use crate::lease::Lease;
+use crate::tiered;
 
 /// The scheduler's registry of backends, indexed by the role they serve.
 ///
@@ -22,15 +25,31 @@ use crate::lease::Lease;
 /// pool. The pool owns live capacity guards and is a long-lived component: build
 /// it once at startup with [`Pool::from_config`].
 ///
-/// Hot-reload note (CLAUDE.md): because the capacity guards hold in-flight
-/// [`crate::Lease`]s, a config change should *reconcile* the registry and timeout
-/// in place rather than rebuild the pool wholesale. The acquire path therefore
-/// reads the timeout per call via [`Pool::acquire_timeout`] (the live seam); the
-/// reconcile step lands with the tiered routing in P9-T6.
+/// # Tiered routing (P9-T6)
+///
+/// When a [`RoutingTable`] is set via [`set_routing`](Self::set_routing),
+/// [`acquire`](Self::acquire) uses the tiered failover algorithm from plan
+/// §26.4 (primary tier → wait `spill_after` → next tier → … → union wait →
+/// capacity exhausted).  If no routing table is active, it falls back to the
+/// legacy flat priority-based candidate list (§6.3).
+///
+/// Hot-reload note (CLAUDE.md): the routing table is stored behind an
+/// [`ArcSwap`] so hot-reload (P9-T7) is lock-free for readers.
 #[derive(Clone)]
 pub struct Pool {
+    /// Backends indexed by role (legacy + current — always populated).
     by_role: Arc<DashMap<Role, Vec<Arc<Backend>>>>,
+    /// Flat registry of every backend by its string ID, for fast lookup
+    /// from routing-table model references.
+    backends: Arc<DashMap<String, Arc<Backend>>>,
+    /// The global acquire timeout.
     acquire_timeout: Duration,
+    /// Tiered routing table (P9-T6).  When `Some`, `acquire` uses the
+    /// tiered algorithm; when `None`, it falls back to the legacy flat pool.
+    /// Wrapped in [`ArcSwap`] for lock-free hot-reload (P9-T7).
+    routing: Arc<ArcSwap<Option<Arc<RoutingTable>>>>,
+    /// Per-(role, tier) round-robin counters for the `RoundRobin` strategy.
+    rr_counters: Arc<DashMap<(u8, i32), AtomicUsize>>,
 }
 
 impl Pool {
@@ -40,7 +59,10 @@ impl Pool {
     /// as determined by [`Backend::supports`].
     pub fn new(backends: Vec<Arc<Backend>>, acquire_timeout: Duration) -> Self {
         let by_role: DashMap<Role, Vec<Arc<Backend>>> = DashMap::new();
+        let backends_map: DashMap<String, Arc<Backend>> = DashMap::new();
         for backend in backends {
+            // Register in the flat ID→Backend map.
+            backends_map.insert(backend.id.clone(), Arc::clone(&backend));
             // Register the backend under every role its CapSet supports.
             for role in Role::all() {
                 if backend.supports(*role) {
@@ -50,7 +72,10 @@ impl Pool {
         }
         Self {
             by_role: Arc::new(by_role),
+            backends: Arc::new(backends_map),
             acquire_timeout,
+            routing: Arc::new(ArcSwap::new(Arc::new(None))),
+            rr_counters: Arc::new(DashMap::new()),
         }
     }
 
@@ -75,28 +100,71 @@ impl Pool {
         self.acquire_timeout
     }
 
-    /// Acquire capacity on any healthy backend serving `role` (plan §6.3, §26.2).
+    /// Set or replace the tiered routing table (P9-T6).
     ///
-    /// **Candidate filtering:** healthy, not in cooldown, capacity is usable
-    /// (`Rated` backends with exhausted RPM buckets are skipped), has an endpoint.
+    /// After setting, subsequent [`acquire`](Self::acquire) calls use the
+    /// tiered failover algorithm (§26.4) instead of the legacy flat-priority
+    /// candidate list.  The swap is wait-free for readers (ArcSwap).
+    pub fn set_routing(&self, table: Arc<RoutingTable>) {
+        self.routing.store(Arc::new(Some(table)));
+    }
+
+    /// Remove the routing table, reverting to the legacy flat-priority
+    /// acquire algorithm.
+    pub fn clear_routing(&self) {
+        self.routing.store(Arc::new(None));
+    }
+
+    /// Whether a routing table is currently active.
+    pub fn has_routing(&self) -> bool {
+        self.routing.load().is_some()
+    }
+
+    /// Acquire capacity on any eligible backend serving `role`.
     ///
-    /// **Fast path:** probe candidates sorted by `(priority, free-slots↓)`
-    /// with [`Capacity::try_acquire`];
-    /// **Wait path:** await all candidates concurrently via
-    /// [`FuturesUnordered`], first freed slot wins, bounded by the pool's
-    /// [`acquire_timeout`](Self::acquire_timeout).
+    /// When a [`RoutingTable`] is active (set via [`set_routing`](Self::set_routing)),
+    /// this uses the **tiered failover algorithm** from plan §26.4: walk tiers
+    /// in order, filter + order candidates by strategy, try each, wait
+    /// `spill_after`, then spill to the next tier.  [`Role::Embed`] is locked
+    /// to tier 0 only (plan §11 — no cross-model failover for embeddings).
     ///
-    /// Unhealthy and cooldown backends are filtered before both steps
-    /// (dead-host skip). Backends without an endpoint are also skipped
-    /// (they use native SDKs with their own connection pools).
+    /// When no routing table is set, this falls back to the **legacy
+    /// flat-priority algorithm** (§6.3): candidates sorted by
+    /// `(priority, free-slots↓)` with fast-path `try_acquire` + bounded
+    /// wait path via [`FuturesUnordered`].
     ///
     /// # Errors
     ///
     /// - [`AcquireError::NoBackend`] — no healthy, usable backend serves `role`.
-    /// - [`AcquireError::Timeout`] — every candidate stayed busy for the full
-    ///   acquire-timeout.
+    /// - [`AcquireError::Timeout`] — legacy path: every candidate stayed busy
+    ///   for the full acquire-timeout.
+    /// - [`AcquireError::CapacityExhausted`] — tiered path: all tiers
+    ///   exhausted without acquiring capacity.
     /// - [`AcquireError::Closed`] — all candidate capacity guards are closed.
     pub async fn acquire(&self, role: Role) -> Result<Lease, AcquireError> {
+        // Check for an active routing table — use tiered path if available.
+        let routing_guard = self.routing.load();
+        if let Some(table) = (*routing_guard).as_ref() {
+            return tiered::acquire_tiered(
+                role,
+                None, // tenant_id — global routes for now (P9-T9 adds per-tenant).
+                table,
+                &self.backends,
+                self.acquire_timeout,
+                &self.rr_counters,
+            )
+            .await;
+        }
+
+        // Legacy flat-priority path (§6.3).
+        self.acquire_legacy(role).await
+    }
+
+    /// Legacy flat-priority acquire (plan §6.3).
+    ///
+    /// Used when no [`RoutingTable`] is active.  See [`acquire`](Self::acquire)
+    /// for the combined documentation.
+    async fn acquire_legacy(&self, role: Role) -> Result<Lease, AcquireError> {
         // 1. Gather healthy candidates with endpoints (dead-host + cooldown skip
         //    + skip Rated backends with exhausted token buckets).
         let mut cands: Vec<Arc<Backend>> = self
@@ -125,8 +193,6 @@ impl Pool {
         }
 
         // 4. WAIT PATH — whichever capacity guard frees first wins, bounded by timeout.
-        //    For Slots/Concurrency this waits on the semaphore; for Rated it also
-        //    checks token buckets after the semaphore frees.
         let mut waiters = FuturesUnordered::new();
         for b in &cands {
             let capacity = b.capacity.clone();

@@ -22,6 +22,7 @@ mod error;
 mod health;
 mod lease;
 mod pool;
+pub(crate) mod tiered;
 
 pub use backend::{Backend, test_backend};
 pub use capacity::{Capacity, CapacityPermit, Clock, TokenBucket, WallClock};

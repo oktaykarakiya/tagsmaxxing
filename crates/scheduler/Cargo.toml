@@ -19,6 +19,7 @@ thiserror = { workspace = true }
 # Futures meta-crate for FuturesUnordered in the wait path (plan §6.3).
 futures = "0.3"
 reqwest = { workspace = true }
+arc-swap = { workspace = true }
 
 [dev-dependencies]
 kb-mock-backend = { workspace = true }

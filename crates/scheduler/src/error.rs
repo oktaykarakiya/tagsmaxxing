@@ -21,6 +21,15 @@ pub enum AcquireError {
     /// A backend semaphore was closed — the pool is shutting down.
     #[error("scheduler pool is closed")]
     Closed,
+    /// All routing tiers were exhausted without acquiring capacity
+    /// (plan §26.4, tiered failover final step).
+    #[error("capacity exhausted for role `{role}` after {tiers_attempted} tiers")]
+    CapacityExhausted {
+        /// The role that had no available capacity.
+        role: Role,
+        /// How many tiers were attempted before giving up.
+        tiers_attempted: usize,
+    },
 }
 
 #[cfg(test)]
@@ -45,5 +54,17 @@ mod tests {
     #[test]
     fn closed_has_a_stable_message() {
         assert_eq!(AcquireError::Closed.to_string(), "scheduler pool is closed");
+    }
+
+    #[test]
+    fn capacity_exhausted_names_role_and_tiers() {
+        let msg = AcquireError::CapacityExhausted {
+            role: Role::Text,
+            tiers_attempted: 3,
+        }
+        .to_string();
+        assert!(msg.contains("text"), "{msg}");
+        assert!(msg.contains("3 tiers"), "{msg}");
+        assert!(msg.contains("capacity exhausted"), "{msg}");
     }
 }

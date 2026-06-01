@@ -2111,6 +2111,7 @@ dependencies = [
 name = "kb-scheduler"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "dashmap",
  "futures",
  "kb-config",

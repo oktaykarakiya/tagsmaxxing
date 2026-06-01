@@ -1026,9 +1026,9 @@ description = "Tiered failover routes in Pool::acquire (§26.4): rewrite Pool::a
 depends_on = ["P9-T4", "P9-T5"]
 plan_sections = ["26.4", "6"]
 acceptance = "Tier 0 candidate available → acquired; tier 0 all busy → waits spill_after → spills to tier 1; embed role → tier 0 only (tier 1+ ignored); CostAsc prefers cheapest; 429 sets cooldown, next acquire skips; 5xx marks suspect; Priority ordering respects explicit order; existing P1-T2 acquire tests updated + new tests for tier spill + 429 cooldown + strategy ordering + embed-no-spill. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "Tiered failover routing in Pool::acquire (§26.4). Pool gains backends (flat DashMap), routing (ArcSwap<Option<Arc<RoutingTable>>>), and rr_counters. acquire() delegates to tiered::acquire_tiered when routing table is active; falls back to legacy acquire_legacy otherwise. Algorithm: walk tiers → resolve entries → filter (healthy/cooldown/usable/endpoint) → order by strategy (LeastLoaded/RoundRobin/CostAsc/Priority) → try_acquire fast path → wait spill_after → spill next tier → union wait → CapacityExhausted. Embed locked to tier 0 (§11). New AcquireError::CapacityExhausted variant. 94 tests all pass (18 new tiered tests + 76 existing). just ci green."
 
 [[task]]
 id = "P9-T7"
