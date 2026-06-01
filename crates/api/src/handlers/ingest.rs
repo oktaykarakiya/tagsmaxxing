@@ -57,6 +57,17 @@ pub struct ErrorResponse {
 /// Payload size limit for ingest requests: 100 MiB.
 pub const MAX_PAYLOAD_BYTES: u64 = 100 * 1024 * 1024;
 
+/// Build a user-facing error message from a [`QuotaError`], including an
+/// upsell suggestion when plan context is available (P11-T5).
+pub(crate) fn quota_error_response(err: &kb_core::quota::QuotaError) -> String {
+    let mut msg = err.to_string();
+    if let Some(upsell) = err.upsell_message() {
+        msg.push_str(". ");
+        msg.push_str(&upsell);
+    }
+    msg
+}
+
 // ── Handler ────────────────────────────────────────────────────────────────────
 
 /// `POST /api/ingest` — multipart upload of 1..N files, enqueues an ingest job.
@@ -118,6 +129,29 @@ pub async fn ingest(
 
     if parsed.files.is_empty() {
         return Err(bad_request("no_files", "at least one file is required"));
+    }
+
+    // ── Storage quota check (plan-driven, P11-T5) ───────────────────────────
+    let total_bytes: i64 = parsed.files.iter().map(|f| f.bytes.len() as i64).sum();
+    if let Err(e) = state
+        .pg_store
+        .check_plan_storage_quota(auth_user.tenant_id, total_bytes)
+        .await
+    {
+        // Check if this is a QuotaError → 413 with upsell.
+        if let Some(qe) = e.downcast_ref::<kb_core::quota::QuotaError>() {
+            let message = quota_error_response(qe);
+            return Err((
+                StatusCode::PAYLOAD_TOO_LARGE,
+                Json(ErrorResponse {
+                    error: "storage_quota_exceeded".into(),
+                    message,
+                }),
+            ));
+        }
+        // Otherwise it's a database error.
+        tracing::error!(error = %e, "ingest: storage quota check failed");
+        return Err(internal_error(e));
     }
 
     // ── Ensure required components are present ───────────────────────────────

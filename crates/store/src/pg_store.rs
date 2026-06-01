@@ -1383,9 +1383,14 @@ impl PgStore {
     /// The caller is responsible for setting `app.current_tenant` before calling
     /// (this method calls [`set_tenant`] internally so RLS gates the insert).
     ///
+    /// Before inserting, this method checks the tenant's plan `max_users` limit
+    /// (P11-T5). The check is **best-effort** — concurrent user creations may
+    /// briefly exceed the cap.
+    ///
     /// # Errors
-    /// Returns an error if the database is not connected, the email is already taken
-    /// within the tenant, or the query fails.
+    /// Returns an error if the database is not connected, the plan `max_users`
+    /// limit is exceeded, the email is already taken within the tenant, or the
+    /// query fails.
     pub async fn create_user(
         &self,
         tenant_id: i64,
@@ -1393,6 +1398,10 @@ impl PgStore {
         password_hash: &str,
         role: kb_core::user::UserRole,
     ) -> anyhow::Result<i64> {
+        // Plan-driven max_users enforcement (P11-T5). Best-effort — concurrent
+        // user creations may briefly exceed the cap.
+        self.check_tenant_max_users(tenant_id, 1).await?;
+
         let pool = self.app_pool()?;
         let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
         let role_str = role.as_str();

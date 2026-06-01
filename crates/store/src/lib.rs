@@ -25,6 +25,7 @@ pub(crate) mod hybrid_search;
 mod migrations;
 pub mod multipart_stream;
 pub mod pg_store;
+pub mod plan_enforcement;
 pub mod plans;
 pub mod session_store;
 pub mod stripe_events;

@@ -587,7 +587,41 @@ pub async fn upload_submit(
             .into_response();
     }
 
-    // ── 4. Ensure pipeline components are present ────────────────────────────
+    // ── 4. Storage quota check (plan-driven, P11-T5) ───────────────────────
+    {
+        let total_bytes: i64 = parsed.files.iter().map(|f| f.bytes.len() as i64).sum();
+        match state
+            .pg_store
+            .check_plan_storage_quota(auth_user.tenant_id, total_bytes)
+            .await
+        {
+            Ok(()) => {}
+            Err(e) => {
+                if let Some(qe) = e.downcast_ref::<kb_core::quota::QuotaError>() {
+                    let msg = crate::handlers::ingest::quota_error_response(qe);
+                    return (
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        Json(serde_json::json!({
+                            "error": "storage_quota_exceeded",
+                            "message": msg
+                        })),
+                    )
+                        .into_response();
+                }
+                tracing::error!(error = %e, "upload_submit: storage quota check failed");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({
+                        "error": "internal_error",
+                        "message": "an unexpected error occurred"
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    // ── 5. Ensure pipeline components are present ────────────────────────────
     let blob = match state.blob.as_ref() {
         Some(b) => b,
         None => {
@@ -615,7 +649,7 @@ pub async fn upload_submit(
         }
     };
 
-    // ── 4. Process upload ────────────────────────────────────────────────────
+    // ── 6. Process upload ────────────────────────────────────────────────────
     match crate::handlers::ingest::process_upload_files(
         blob.as_ref(),
         job_queue.as_ref(),

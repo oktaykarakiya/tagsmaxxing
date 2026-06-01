@@ -83,6 +83,38 @@ impl From<PlanRow> for Plan {
     }
 }
 
+// ── Plan feature extraction helpers (P11-T5) ───────────────────────────────────
+
+impl Plan {
+    /// Whether remote models are allowed by this plan.
+    ///
+    /// Reads `features.remote_models` (JSONB boolean). Returns `false` when the
+    /// key is missing, not a boolean, or explicitly `false`. Only an explicit
+    /// `true` unlocks remote backends.
+    ///
+    /// This gates the [`Residency`](kb_core::residency::Residency) policy: when
+    /// the plan disallows remote models, all LLM calls for that tenant must
+    /// use `local_only = true` (P9-T9, P11-T5).
+    pub fn remote_models_allowed(&self) -> bool {
+        self.features
+            .get("remote_models")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    }
+
+    /// Maximum number of users allowed by this plan.
+    ///
+    /// Reads `features.max_users` (JSONB integer). Returns `None` when the key
+    /// is missing or not an integer (interpreted as unlimited). An explicit
+    /// `0` means no additional users can be created.
+    pub fn max_users(&self) -> Option<i32> {
+        self.features
+            .get("max_users")
+            .and_then(|v| v.as_i64())
+            .map(|n| n as i32)
+    }
+}
+
 // ── PgStore billing methods ───────────────────────────────────────────────────
 
 impl PgStore {

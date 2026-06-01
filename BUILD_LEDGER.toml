@@ -1238,9 +1238,9 @@ description = "Plan-driven quota enforcement (§29): replace P5-T6's static quot
 depends_on = ["P11-T1", "P5-T6", "P9-T9"]
 plan_sections = ["29", "13"]
 acceptance = "Free plan (50 MB) → upload 60 MB file → 413 with upsell; Pro plan (5 GB) → upload passes; token budget exceeded → 429; NULL plan → unlimited; feature gate: free plan → remote models disabled (P9-T9 residency); max_users: team plan (20) → 21st user creation → 403; admin override quota takes precedence. Unit tests for plan resolution + override logic. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "Core: QuotaError +UserLimitExceeded, upsell fields, resolve_effective_quota, check_user_limit. Store: migration 0020, plan_enforcement.rs (8 methods: override CRUD, plan-aware storage/token/user/remote-models enforcement, upsell resolution). API: storage quota check in ingest + web upload handlers → 413 with upsell. create_user enforces max_users. 63 new unit tests + 10 #[ignore] integration tests. just ci green."
 
 [[task]]
 id = "P11-T6"
