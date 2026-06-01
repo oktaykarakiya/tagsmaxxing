@@ -64,6 +64,8 @@ object_store = { version = "0.13.2", default-features = false }
 futures = "0.3"
 # SQLite for the B2 blob read-through cache metadata (plan §20, P8-T2)
 rusqlite = { version = "0.32", features = ["bundled"] }
+# UUID generation (plan §28, P10-T1 DataKey)
+uuid = { version = "1", features = ["v4", "serde"] }
 # AES-256-GCM for envelope encryption (plan §20/§24/§28, P8-T5)
 aes-gcm = "0.10"
 # Base64 encoding for the KEK env var (plan §24, P8-T5)

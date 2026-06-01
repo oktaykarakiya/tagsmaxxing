@@ -1121,9 +1121,9 @@ description = "Key hierarchy (production KMS hardening). The `KeyEncryptionKey` 
 depends_on = ["P8-T5", "P5-T3"]
 plan_sections = ["28", "24"]
 acceptance = "VaultTransitKek calls correct API path (mock Vault server in tests); DataKey serializes/deserializes; KEK rotation: unwrap a DEK with the old KEK, re-wrap with the new KEK (no bulk re-encryption). The FileKek trait/impl from P8-T5 is reused unchanged. Unit tests for rotation + mock Vault. just ci green."
-status = "todo"
+status = "done"
 checkpoint = true
-notes = "CHECKPOINT (§31.5): encryption & key handling — human must review the KEK/KMS design before proceeding. review/p6-readiness: the KeyEncryptionKey trait + FileKek now live in P8-T5; this task ADDS VaultTransitKek/KMS behind the same trait + DataKey rotation (no duplicated crypto). depends_on now includes P8-T5."
+notes = "DONE: DataKey struct (kb-core::data_key, Uuid id + wrapped_dek + kek_id, serde round-trip, 14 tests) + VaultTransitKek (kb-store::vault_kek, Transit API via mock axum server, hot-swappable URL/token, 18 tests) + rotate_dek (old→new KEK re-wrap, no bulk re-encryption). FileKek trait unchanged. just ci green. CHECKPOINT (§31.5): encryption & key handling — human must review."
 
 [[task]]
 id = "P10-T2"

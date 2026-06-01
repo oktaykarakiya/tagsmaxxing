@@ -20,6 +20,8 @@ pub mod capability;
 pub mod chunk;
 pub mod circuit_breaker;
 pub mod data_class;
+pub mod data_key;
+pub use data_key::{DataKey, rotate_dek};
 pub mod degradation;
 pub mod document;
 pub mod embedder;

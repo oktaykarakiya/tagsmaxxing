@@ -24,6 +24,7 @@ mod migrations;
 pub mod multipart_stream;
 pub mod pg_store;
 pub mod session_store;
+pub mod vault_kek;
 
 pub use admin_queries::UserView;
 pub use b2_blob::{B2Blob, B2Config};
@@ -35,3 +36,4 @@ pub use migrations::MIGRATOR;
 pub use multipart_stream::{MultipartUploadConfig, PartProgress, StreamingMultipartUpload};
 pub use pg_store::PgStore;
 pub use session_store::{InMemorySessionStore, PgSessionStore};
+pub use vault_kek::VaultTransitKek;

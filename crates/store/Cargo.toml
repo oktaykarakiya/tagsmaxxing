@@ -37,13 +37,19 @@ tracing = { workspace = true }
 aes-gcm = { workspace = true }
 # CSPRNG for DEK/nonce generation (plan §24, P8-T5)
 rand = { workspace = true }
+# Serde for VaultTransitKek API types (plan §28, P10-T1)
+serde = { workspace = true }
+# Base64 for Vault Transit API plaintext encoding (plan §28, P10-T1)
+base64 = { workspace = true }
+# UUID for DataKey integration tests (plan §28, P10-T1)
+uuid = { workspace = true }
 # Stream combinators for listing blobs (plan §23, P8-T10)
 futures = { workspace = true }
 # Prometheus metrics for budget/cost gauges (plan §26.6, P9-T10)
 kb-metrics = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "fs"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "fs", "net"] }
 testcontainers = { workspace = true }
 tempfile = { workspace = true }
 chrono = { workspace = true }
@@ -51,3 +57,5 @@ chrono = { workspace = true }
 kb-testsupport = { workspace = true }
 # Mock HTTP server for test_connection tests.
 kb-mock-backend = { workspace = true }
+# In-process HTTP server for mock Vault Transit tests (plan §28, P10-T1)
+axum = "0.8"
