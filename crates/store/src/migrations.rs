@@ -16,13 +16,15 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
-    /// All seventeen migrations are present, in version order (1–17).
+    /// All eighteen migrations are present, in version order (1–18).
     #[test]
     fn embeds_the_schema_migrations() {
         let versions: Vec<i64> = MIGRATOR.iter().map(|m| m.version).collect();
         assert_eq!(
             versions,
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+            vec![
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18
+            ]
         );
     }
 
@@ -91,6 +93,7 @@ mod tests {
             "usage_events",
             "settings",
             "sessions",
+            "plans",
         ] {
             assert!(
                 sql.contains(&format!("CREATE TABLE {table} ")),
@@ -371,5 +374,99 @@ mod tests {
         // The operation column should support the known values.
         assert!(sql.contains("unwrap_dek"));
         assert!(sql.contains("unwrap_provider_key"));
+    }
+
+    /// Migration 0018 (P11-T1): billing plans table, tenant billing columns, and seed data.
+    #[test]
+    fn schema_adds_plans_table_and_tenant_billing_columns() {
+        let sql: String = MIGRATOR
+            .iter()
+            .map(|m| m.sql.as_ref())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // plans table with all required columns.
+        assert!(
+            sql.contains("CREATE TABLE plans"),
+            "missing CREATE TABLE plans (migration 0018)"
+        );
+        assert!(sql.contains("code"), "plans.code missing");
+        assert!(sql.contains("stripe_price"), "plans.stripe_price missing");
+        assert!(sql.contains("quota_bytes"), "plans.quota_bytes missing");
+        assert!(sql.contains("token_budget"), "plans.token_budget missing");
+        assert!(sql.contains("features"), "plans.features missing");
+        assert!(sql.contains("price_cents"), "plans.price_cents missing");
+        assert!(sql.contains("currency"), "plans.currency missing");
+
+        // UNIQUE constraint on code.
+        assert!(
+            sql.contains("TEXT UNIQUE NOT NULL"),
+            "plans.code must be UNIQUE NOT NULL"
+        );
+
+        // Tenant billing columns.
+        for col in [
+            "plan_id",
+            "stripe_customer_id",
+            "subscription_id",
+            "billing_status",
+            "current_period_end",
+        ] {
+            assert!(
+                sql.contains(&format!("ADD COLUMN IF NOT EXISTS {col}")),
+                "missing tenant billing column: {col} (migration 0018)"
+            );
+        }
+
+        // billing_status default is 'inactive'.
+        assert!(
+            sql.contains("'inactive'"),
+            "billing_status default must be 'inactive'"
+        );
+
+        // FK from tenants.plan_id → plans.id.
+        assert!(
+            sql.contains("REFERENCES plans(id)"),
+            "tenants.plan_id must reference plans(id)"
+        );
+
+        // Three seed plans (free, pro, team) — each is inserted idempotently.
+        assert!(
+            sql.contains("'free'"),
+            "seed plan 'free' missing (migration 0018)"
+        );
+        assert!(
+            sql.contains("'pro'"),
+            "seed plan 'pro' missing (migration 0018)"
+        );
+        assert!(
+            sql.contains("'team'"),
+            "seed plan 'team' missing (migration 0018)"
+        );
+
+        // ON CONFLICT DO NOTHING for idempotent seed.
+        assert!(
+            sql.contains("ON CONFLICT (code) DO NOTHING"),
+            "seed inserts must be idempotent (ON CONFLICT DO NOTHING)"
+        );
+
+        // Quota values match the plan spec (§29 / P11-T1).
+        assert!(
+            sql.contains("52428800"),
+            "free plan: 50 MB = 52428800 bytes"
+        );
+        assert!(
+            sql.contains("5368709120"),
+            "pro plan: 5 GB = 5368709120 bytes"
+        );
+        assert!(
+            sql.contains("53687091200"),
+            "team plan: 50 GB = 53687091200 bytes"
+        );
+
+        // Token budgets.
+        assert!(sql.contains("10000"), "free plan: 10K tokens");
+        assert!(sql.contains("500000"), "pro plan: 500K tokens");
+        assert!(sql.contains("2000000"), "team plan: 2M tokens");
     }
 }

@@ -25,6 +25,7 @@ pub(crate) mod hybrid_search;
 mod migrations;
 pub mod multipart_stream;
 pub mod pg_store;
+pub mod plans;
 pub mod session_store;
 pub mod vault_kek;
 
@@ -37,5 +38,6 @@ pub use encrypted_blob::EncryptedBlob;
 pub use migrations::MIGRATOR;
 pub use multipart_stream::{MultipartUploadConfig, PartProgress, StreamingMultipartUpload};
 pub use pg_store::PgStore;
+pub use plans::{Plan, TenantBilling};
 pub use session_store::{InMemorySessionStore, PgSessionStore};
 pub use vault_kek::VaultTransitKek;

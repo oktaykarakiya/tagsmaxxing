@@ -1194,9 +1194,9 @@ description = "Plans table + migration + seed data (§29): migration adding `pla
 depends_on = ["P0-T6", "P5-T6"]
 plan_sections = ["29"]
 acceptance = "Migration creates plans + alters tenants with new columns; seed plans inserted (idempotent — ON CONFLICT DO NOTHING); get_plan returns correct quota/features; list_plans ordered by price; existing tenants have NULL plan_id (unlimited); plan features JSONB parsed correctly. Unit tests for seed idempotency + CRUD + #[ignore] integration tests against testcontainers. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "Migration 0018 creates plans table + alters tenants with billing columns (plan_id FK, stripe_customer_id, subscription_id, billing_status, current_period_end); seeds free/pro/team plans idempotently. PgStore methods: get_plan, get_plan_by_code, list_plans, update_tenant_plan, get_tenant_billing. Plan + TenantBilling types exported. 8 unit + 6 #[ignore] integration tests. just ci green."
 
 [[task]]
 id = "P11-T2"
