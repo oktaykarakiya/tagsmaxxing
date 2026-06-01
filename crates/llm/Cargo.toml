@@ -21,4 +21,5 @@ async-trait = { workspace = true }
 
 [dev-dependencies]
 kb-mock-backend = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "net"] }
+axum = "0.8"

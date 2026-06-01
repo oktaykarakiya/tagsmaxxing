@@ -971,9 +971,9 @@ description = "ProviderAdapter trait + OpenAiCompat adapter (§26.1): define the
 depends_on = ["P1-T5"]
 plan_sections = ["26", "26.1"]
 acceptance = "OpenAiCompat adapter sends correctly-formed chat + embed requests; Authorization header present when key set; supports(Role::Text) = true, supports(Role::Rerank) = depends on endpoint; error on non-2xx response with status + body; response parsed into ChatResp/EmbedResp; works against MockBackend (P1-T3) + a separate mock remote server. Unit tests for request shape + error handling + role support. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "ProviderAdapter trait & ProviderConn already existed in kb-core. Added OpenAiCompat adapter in kb-llm::adapter (503 lines, 20 tests) with configurable role support, Auth header injection, and non-2xx error handling. Tests against MockBackend + dedicated echo server for auth header verification. just ci green (83.63% lines)."
 
 [[task]]
 id = "P9-T2"
