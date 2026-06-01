@@ -940,9 +940,9 @@ description = "Ingest-time thumbnails + B2 egress economics (review/p6-readiness
 depends_on = ["P8-T1", "P8-T3", "P2-T6"]
 plan_sections = ["20", "12"]
 acceptance = "Ingest produces a thumbnail blob per document; the browse/search UI references thumbnails, not originals (verified: a grid render issues no full-original B2 GET); thumbnail generation handles image/pdf/video kinds; a configured CDN base URL rewrites blob URLs; the egress path (Cloudflare Bandwidth Alliance) is documented. Unit tests for thumbnail generation + URL rewriting. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "ThumbnailGenerator (image resize via `image` 0.25 crate, video keyframe via ffmpeg trait, content-addressed blob keys), CdnRewriter (Cloudflare Bandwidth Alliance URL rewriting), Thumbnail config section + cdn_base_url in Storage (both hot-swappable). 30 thumbnail tests (MIME routing, resize aspect-ratio, config, mock video) + 19 CDN tests (rewriting, passthrough, presigned-query-preservation). just ci green (83.50% lines, thumbnail.rs 98.47%). PDF thumbnails deferred (needs renderer)."
 
 [[task]]
 id = "P8-T12"

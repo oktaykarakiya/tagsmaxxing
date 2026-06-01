@@ -15,6 +15,7 @@
 //! - The **batch embedder** (plan §7, P3-T4): batches chunk content (and tag names)
 //!   through [`LlamaClient`], verifying output dimensions against the schema.
 
+pub mod cdn;
 pub mod chunker;
 pub mod document_builder;
 pub mod embedder;
@@ -32,7 +33,9 @@ pub mod retrieval;
 pub mod rrf;
 pub mod tag_canonicalizer;
 pub mod tag_store;
+pub mod thumbnail;
 
+pub use cdn::rewrite_blob_url;
 pub use eval::{
     EvalBaseline, EvalMetrics, LabeledQuery, check_regression, compute_metrics, eval_queries,
     fixture_corpus, format_vector, recall_at_k, reciprocal_rank, spike_1024,
@@ -67,3 +70,6 @@ pub use restore_test::{
 };
 pub use retrieval::RetrievalPipeline;
 pub use tag_store::TagStore;
+pub use thumbnail::{
+    FfmpegThumbnailer, ThumbnailConfig, ThumbnailGenerator, ThumbnailOutput, VideoThumbnailer,
+};

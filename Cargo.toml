@@ -68,6 +68,8 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 aes-gcm = "0.10"
 # Base64 encoding for the KEK env var (plan §24, P8-T5)
 base64 = "0.22"
+# Image processing library for thumbnail generation (plan §20, P8-T13)
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
 
 # Workspace-wide lints, inherited by every crate via `[lints] workspace = true`.
 # These enforce the §31 quality bar mechanically (docs, no-stubs, no-unwrap).

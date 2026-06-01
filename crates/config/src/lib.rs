@@ -18,5 +18,5 @@ pub use error::ConfigError;
 pub use load::{load_path, load_str, validate};
 pub use model::{
     Api, Backend, Config, DEFAULT_PORT, Degradation, FolderWatch, IntegrityScan, OrphanGc,
-    RestoreTest, Scheduler, Storage,
+    RestoreTest, Scheduler, Storage, Thumbnail,
 };

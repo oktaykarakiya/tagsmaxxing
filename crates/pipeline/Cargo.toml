@@ -31,6 +31,7 @@ notify = { workspace = true }
 kb-metrics = { workspace = true }
 kb-config = { workspace = true }
 kb-logging = { workspace = true }
+image = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }

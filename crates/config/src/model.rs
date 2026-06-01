@@ -55,6 +55,9 @@ pub struct Config {
     /// Integrity scan job settings (plan §23, P8-T10).
     #[serde(default, rename = "integrity_scan")]
     pub integrity_scan: IntegrityScan,
+    /// Thumbnail generation settings (plan §20, P8-T13).
+    #[serde(default, rename = "thumbnail")]
+    pub thumbnail: Thumbnail,
 }
 
 /// Durable-storage configuration.
@@ -73,6 +76,14 @@ pub struct Storage {
     /// (single-role mode — RLS then relies on the explicit `tenant_id` filters only).
     #[serde(default)]
     pub app_postgres_url: String,
+    /// Optional CDN base URL for blob egress (plan §20, P8-T13).
+    ///
+    /// When set, presigned B2 URLs are rewritten through this CDN (e.g. Cloudflare in
+    /// front of B2). B2 + Cloudflare are in the Bandwidth Alliance → B2→Cloudflare egress
+    /// is free + edge-cached. This is the primary COGS lever for a low-priced product.
+    /// Hot-swappable at runtime.
+    #[serde(default)]
+    pub cdn_base_url: String,
 }
 
 /// HTTP API configuration.
@@ -358,6 +369,44 @@ impl Default for OrphanGc {
             schedule_hour: default_orphan_gc_hour(),
             schedule_minute: default_orphan_gc_minute(),
             grace_hours: default_blob_gc_grace_hours(),
+        }
+    }
+}
+
+/// Thumbnail generation settings (plan §20, P8-T13).
+///
+/// At ingest time, the pipeline can generate small preview/thumbnail blobs
+/// (downscaled JPEG for images, keyframe for video) so the browse/grid/search
+/// UI serves tiny cached thumbnails and never pulls the full original from B2.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Thumbnail {
+    /// Whether thumbnail generation is enabled at ingest time. Default: true.
+    #[serde(default = "default_thumbnail_enabled")]
+    pub enabled: bool,
+    /// Maximum dimension (width or height) in pixels. Default: 256.
+    #[serde(default = "default_thumbnail_max_dimension")]
+    pub max_dimension: u32,
+    /// JPEG quality 1–100. Default: 70.
+    #[serde(default = "default_thumbnail_jpeg_quality")]
+    pub jpeg_quality: u8,
+}
+
+const fn default_thumbnail_enabled() -> bool {
+    true
+}
+const fn default_thumbnail_max_dimension() -> u32 {
+    256
+}
+const fn default_thumbnail_jpeg_quality() -> u8 {
+    70
+}
+
+impl Default for Thumbnail {
+    fn default() -> Self {
+        Self {
+            enabled: default_thumbnail_enabled(),
+            max_dimension: default_thumbnail_max_dimension(),
+            jpeg_quality: default_thumbnail_jpeg_quality(),
         }
     }
 }
