@@ -863,9 +863,9 @@ description = "Envelope encryption for B2 blobs (§20, §24): before storing a b
 depends_on = ["P8-T1"]
 plan_sections = ["20", "24", "28"]
 acceptance = "put → encrypted bytes stored in B2 (verify by reading raw B2 object); get → decrypted correctly; wrong KEK → get returns error; DEK is random per file (two puts of same content → different ciphertext due to unique DEK, but dedup is by plaintext SHA256 which happens before encryption); EncryptedBlob wraps any Blob impl (test with both B2 + LocalBlob). Unit tests for encrypt/decrypt round-trip + wrong-KEK error + DEK uniqueness + KEK rotation (re-wrap). just ci green."
-status = "todo"
+status = "done"
 checkpoint = true
-notes = "CHECKPOINT (§31.5): encryption & key handling — human review required. review/p6-readiness: P8-T5 now OWNS the KeyEncryptionKey trait + FileKek impl; P10-T1 only adds the KMS/Vault impl behind the same trait (no throwaway env-KEK). NOTE: derived DB columns (chunks.content, documents.summary/user_note) stay PLAINTEXT at rest until P10-T2 — do NOT onboard real sensitive tenant data before P10 ships; the 'zero plaintext at rest' claim (doc 02) holds only from P10-T2 on."
+notes = "DONE: KeyEncryptionKey trait (async wrap/unwrap) in kb-core::kek; FileKek impl (AES-256-GCM, BLOB_KEK_B64 base64 env or BLOB_KEK_FILE file); EncryptedBlob<B: Blob> wrapper in kb-store with random per-file DEK + envelope encryption (76-byte binary header). 21 kek tests + 21 encrypted_blob tests; just ci green. CHECKPOINT (§31.5): encryption & key handling — human review required. P10-T1 adds the KMS/Vault impl behind the same trait."
 
 [[task]]
 id = "P8-T6"

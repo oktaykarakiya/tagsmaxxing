@@ -33,6 +33,10 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 # Logging for cache write warnings
 tracing = { workspace = true }
+# AES-256-GCM for EncryptedBlob envelope encryption (plan §20/§24, P8-T5)
+aes-gcm = { workspace = true }
+# CSPRNG for DEK/nonce generation (plan §24, P8-T5)
+rand = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "fs"] }

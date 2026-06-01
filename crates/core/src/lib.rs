@@ -23,6 +23,7 @@ pub mod extractor;
 pub mod file;
 pub mod hash;
 pub mod job;
+pub mod kek;
 pub mod kind;
 pub mod provider;
 pub mod query;
