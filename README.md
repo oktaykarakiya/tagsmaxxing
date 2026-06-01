@@ -62,6 +62,85 @@ accepting connections and Tika is serving. Postgres is published on `127.0.0.1:5
 against these sidecars. Tear down with `podman compose down` (add `-v` to also drop the data
 volume).
 
+## Deploy with Quadlet (systemd)
+
+For single-node Podman users, **Quadlet `.container` files** are the recommended production
+method (plan §14). Quadlet translates `.container` / `.pod` / `.volume` files into native
+systemd units, so your stack starts on boot, restarts on failure, and logs via `journalctl`.
+
+All files are in [`quadlet/`](./quadlet). Copy them into the systemd user unit directory:
+
+```bash
+mkdir -p ~/.config/containers/systemd
+cp quadlet/* ~/.config/containers/systemd/
+```
+
+### Units
+
+| File | What it runs |
+|------|-------------|
+| `kb.pod` | Shared pod — all containers share a network namespace (services reach each other via `localhost`) |
+| `kb-postgres.container` | Postgres 17 + pgvector (data-checksums on, §23), persistent volume |
+| `kb-tika.container` | Apache Tika 3.3 (document text/metadata extraction, §2) |
+| `kb-app.container` | The `kb` binary — API on `:9999` (`/health`, search, ingest, web UI) |
+| `kb-llama.container` | llama.cpp server — optional GPU inference (chat + embed + rerank) |
+| `kb-whisper.container` | whisper.cpp server — optional GPU transcription |
+| `kb-pgdata.volume` | Persistent named volume for Postgres data |
+| `kb-app-data.volume` | Persistent named volume for the app (blob store + logs) |
+
+### Quick start
+
+```bash
+# 1. Build the app image
+podman build -t kb:latest .
+
+# 2. Place your GGUF models (optional — only for GPU inference)
+mkdir -p ~/.config/containers/systemd/models
+cp /path/to/model.gguf ~/.config/containers/systemd/models/model.gguf
+cp /path/to/whisper-model.gguf ~/.config/containers/systemd/models/whisper-model.gguf
+
+# 3. Edit the container files to set passwords / secrets:
+#    - kb-postgres.container: POSTGRES_PASSWORD
+#    - kb-app.container: SESSION_SECRET (≥32 bytes), POSTGRES_URL passwords
+
+# 4. Reload systemd and start the core stack
+systemctl --user daemon-reload
+systemctl --user start kb-postgres.service kb-tika.service kb-app.service
+
+# 5. (Optional) Enable GPU inference — only if you have an NVIDIA GPU
+#    + nvidia-container-toolkit installed
+systemctl --user start kb-llama.service kb-whisper.service
+
+# 6. Verify
+curl http://localhost:9999/health
+journalctl --user -u kb-app.service -f
+
+# 7. Enable on boot
+systemctl --user enable kb-postgres.service kb-tika.service kb-app.service
+```
+
+> **Inside the pod** all containers share `localhost`, so the app connects to Postgres at
+> `localhost:5432` and Tika at `localhost:9998`. The pod publishes ports to the host
+> (loopback by default — remove `127.0.0.1:` in `kb.pod` for LAN access).
+
+> **GPU services** have `AddDevice=nvidia.com/gpu=all`. Remove that line to run CPU-only,
+> or just don't enable those two units. See `compose.cpu.yaml` for the equivalent compose
+> override.
+
+To validate your files before starting:
+
+```bash
+/usr/libexec/podman/quadlet -dryrun -user
+```
+
+To tear down:
+
+```bash
+systemctl --user stop kb-llama.service kb-whisper.service kb-app.service \
+                    kb-tika.service kb-postgres.service
+podman pod rm -f kb
+```
+
 ## Autonomous build loop
 
 Development is **ledger-driven**: one small task at a time, each gated by `just ci`

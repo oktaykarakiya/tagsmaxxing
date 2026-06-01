@@ -1,0 +1,49 @@
+# kb-app.container — the kb binary (plan §14, P7-T3).
+#
+# Built from the project Containerfile (P7-T1):
+#   podman build -t kb:latest .
+#
+# Shares the kb.pod network namespace — Postgres at localhost:5432,
+# Tika at localhost:9998, llama-server at localhost:8080,
+# whisper-server at localhost:8081.
+#
+# Environment variables override the values in /etc/kb/config.toml.
+# CHANGE SESSION_SECRET for anything but throwaway local dev (≥32 bytes).
+
+[Container]
+Image=kb:latest
+Pod=kb.pod
+
+# ── Storage — inside the pod, Postgres is at localhost:5432 ─────────────
+Environment=POSTGRES_URL=postgres://kb:kb@localhost:5432/kb APP_POSTGRES_URL=postgres://kb_app:kb_app@localhost:5432/kb
+
+# ── Sidecar URLs (inside the pod, all services share localhost) ─────────
+Environment=TIKA_URL=http://localhost:9998 WHISPER_URL=http://localhost:8081
+
+# ── API port ────────────────────────────────────────────────────────────
+Environment=PORT=9999
+
+# ── Auth / logging (CHANGE SESSION_SECRET for production) ───────────────
+Environment=SESSION_SECRET=change-me-to-a-long-random-value LOG_LEVEL=info LOG_FORMAT=json LOG_DIR=/data/logs
+
+# ── Volumes ─────────────────────────────────────────────────────────────
+# Persistent app data (blobs + logs).
+Volume=kb-app-data.volume:/data
+# Deployment config mounted read-only.
+Volume=./compose/config.toml:/etc/kb/config.toml:ro
+
+# ── Container command ───────────────────────────────────────────────────
+Exec=serve --config /etc/kb/config.toml
+
+HealthCmd=curl -sf http://localhost:9999/health
+HealthInterval=30s
+HealthTimeout=3s
+HealthStartPeriod=10s
+HealthRetries=3
+
+[Service]
+Restart=on-failure
+TimeoutStartSec=120
+
+[Install]
+WantedBy=default.target

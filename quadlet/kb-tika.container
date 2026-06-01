@@ -1,0 +1,29 @@
+# kb-tika.container — Apache Tika for document extraction (plan §14, P7-T3).
+#
+# Extracts text + metadata from arbitrary documents (plan §2).
+# Override TIKA_IMAGE locally for the `-full` variant (adds Tesseract OCR).
+#
+# Shares the kb.pod network namespace — other pod members reach it at
+# localhost:9998.
+
+[Container]
+Image=docker.io/apache/tika:3.3.0.0
+Pod=kb.pod
+
+# Tika serves on port 9998 by default inside the container.  The pod
+# publishes host:9998 -> container:9998 (defined in kb.pod).
+
+# The minimal Tika image ships no curl/wget, but is Ubuntu-based so bash
+# /dev/tcp probes the port.  Tika binds 9998 only once ready.
+HealthCmd=timeout 5 bash -c "exec 3<>/dev/tcp/127.0.0.1/9998"
+HealthInterval=10s
+HealthTimeout=6s
+HealthStartPeriod=20s
+HealthRetries=12
+
+[Service]
+Restart=on-failure
+TimeoutStartSec=120
+
+[Install]
+WantedBy=default.target

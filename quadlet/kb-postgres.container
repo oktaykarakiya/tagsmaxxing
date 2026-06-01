@@ -1,0 +1,35 @@
+# kb-postgres.container — Postgres + pgvector (plan §14, P7-T3).
+#
+# Two-role RLS model (P6-T14, §13): the POSTGRES_USER is the PRIVILEGED
+# owner/superuser for migrations + cross-tenant job queue. Migration 0006
+# auto-creates the non-privileged `kb_app` role (NOSUPERUSER NOBYPASSRLS)
+# for tenant-scoped data.  Rotate passwords for real deployments.
+#
+# This container shares the kb.pod network namespace — other pod members
+# reach it at localhost:5432.
+
+[Container]
+Image=docker.io/pgvector/pgvector:pg17
+Pod=kb.pod
+
+Environment=POSTGRES_USER=kb POSTGRES_PASSWORD=kb POSTGRES_DB=kb POSTGRES_INITDB_ARGS=--data-checksums
+
+Volume=kb-pgdata.volume:/var/lib/postgresql/data
+
+# Headroom for parallel pgvector HNSW index builds (default /dev/shm in a
+# container is a cramped 64 MB).
+ShmSize=268435456
+
+# pg_isready over TCP — the init-phase socket-only server won't false-positive.
+HealthCmd=pg_isready -h 127.0.0.1 -p 5432
+HealthInterval=10s
+HealthTimeout=5s
+HealthStartPeriod=30s
+HealthRetries=12
+
+[Service]
+Restart=on-failure
+TimeoutStartSec=120
+
+[Install]
+WantedBy=default.target

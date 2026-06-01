@@ -1,0 +1,6 @@
+# kb-app-data.volume — persistent app data volume (plan §14, P7-T3).
+#
+# Holds the blob store (/data/kb-blobs) and logs (/data/logs).
+# Separate from pgdata so you can reset one without the other.
+
+[Volume]

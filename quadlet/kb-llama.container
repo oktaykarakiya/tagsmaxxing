@@ -1,0 +1,41 @@
+# kb-llama.container — llama.cpp server (GPU inference, plan §14, P7-T3).
+#
+# Runs an LLM locally with GPU acceleration via CDI (nvidia.com/gpu=all).
+# The server handles chat, vision (multimodal model), embeddings, and
+# reranking in a single process.
+#
+# Shares the kb.pod network namespace — the app reaches it at
+# localhost:8080 (the container's port 8080 proxied from the pod).
+#
+# ONLY enable this unit if you have an NVIDIA GPU + nvidia-container-toolkit.
+# For CPU-only inference, replace AddDevice with LLAMA_ARG_N_GPU_LAYERS=0
+# below and remove the CDI device line.
+#
+# Place your GGUF model at ./models/model.gguf (relative to the directory
+# where quadlet files are installed, or use an absolute path).
+
+[Container]
+Image=docker.io/ghcr.io/ggerganov/llama.cpp:server
+Pod=kb.pod
+
+Environment=LLAMA_ARG_MODEL=/models/model.gguf LLAMA_ARG_HOST=0.0.0.0 LLAMA_ARG_PORT=8080 LLAMA_ARG_N_GPU_LAYERS=99 LLAMA_ARG_CTX_SIZE=8192
+
+# Model directory mounted read-only.
+Volume=./models:/models:ro
+
+# CDI device mount for GPU access (Podman GPU passthrough).
+# Remove this line + set LLAMA_ARG_N_GPU_LAYERS=0 for CPU-only.
+AddDevice=nvidia.com/gpu=all
+
+HealthCmd=curl -sf http://localhost:8080/health
+HealthInterval=30s
+HealthTimeout=5s
+HealthStartPeriod=30s
+HealthRetries=3
+
+[Service]
+Restart=on-failure
+TimeoutStartSec=180
+
+[Install]
+WantedBy=default.target

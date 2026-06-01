@@ -756,9 +756,9 @@ description = "Quadlet .container units for systemd deployment (§14): ship `.co
 depends_on = ["P7-T1", "P7-T2"]
 plan_sections = ["14"]
 acceptance = "Quadlet files are valid (podlet or quadlet --dry-run passes); the pod brings up all services with correct ordering; volumes mapped correctly; env vars documented. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "8 quadlet files (kb.pod, 5 .container, 2 .volume) validated with quadlet -dryrun (zero errors) + 23 structural tests in kb-api/tests/quadlet_validation.rs. README documents quadlet deployment as recommended production method."
 
 [[task]]
 id = "P7-T4"

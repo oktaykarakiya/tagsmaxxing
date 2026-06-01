@@ -1,0 +1,6 @@
+# kb-pgdata.volume — persistent Postgres data volume (plan §14, P7-T3).
+#
+# This volume holds /var/lib/postgresql/data.  Do not delete it unless you
+# want to start fresh (the compose.yaml `pgdata` volume is separate).
+
+[Volume]

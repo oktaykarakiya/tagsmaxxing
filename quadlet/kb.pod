@@ -1,0 +1,26 @@
+# kb.pod — shared pod for the Local File Knowledge Base (plan §14, P7-T3).
+#
+# All containers in this pod share a network namespace, so services reach
+# each other via localhost. Ports are published at the pod level.
+#
+# This pod groups the core services (app, postgres, tika) plus the optional
+# GPU inference services (llama-server, whisper-server).  Enable only the
+# .container units you need via `systemctl --user enable kb-<name>.service`.
+
+[Pod]
+PodName=kb
+
+# ── Published ports (loopback by default — remove 127.0.0.1: for LAN) ───
+# HTTP API (kb serve --port)
+PublishPort=127.0.0.1:9999:9999
+# Postgres (for host-tool access, e.g. psql)
+PublishPort=127.0.0.1:5432:5432
+# Apache Tika
+PublishPort=127.0.0.1:9998:9998
+# llama.cpp server (GPU / CPU)
+PublishPort=127.0.0.1:8080:8080
+# whisper.cpp server
+PublishPort=127.0.0.1:8081:8080
+
+[Install]
+WantedBy=default.target

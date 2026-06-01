@@ -1,0 +1,41 @@
+# kb-whisper.container — whisper.cpp server (GPU inference, plan §14, P7-T3).
+#
+# Runs speech-to-text locally with GPU acceleration via CDI (nvidia.com/gpu=all).
+# Provides an OpenAI-compatible /v1/audio/transcriptions endpoint.
+#
+# Shares the kb.pod network namespace — the app reaches it at
+# localhost:8081 (the container's port 8080 in the pod, published as
+# host:8081 -> container:8080).
+#
+# ONLY enable this unit if you have an NVIDIA GPU + nvidia-container-toolkit.
+# For CPU-only, remove the AddDevice line below.
+#
+# Place your whisper GGUF model at ./models/whisper-model.gguf (relative
+# to the directory where quadlet files are installed, or use an absolute
+# path).
+
+[Container]
+Image=docker.io/ghcr.io/ggerganov/whisper.cpp:server
+Pod=kb.pod
+
+Environment=WHISPER_MODEL=/models/whisper-model.gguf
+
+# Model directory mounted read-only.
+Volume=./models:/models:ro
+
+# CDI device mount for GPU access.
+# Remove this line for CPU-only inference.
+AddDevice=nvidia.com/gpu=all
+
+HealthCmd=curl -sf http://localhost:8080/health
+HealthInterval=30s
+HealthTimeout=5s
+HealthStartPeriod=15s
+HealthRetries=3
+
+[Service]
+Restart=on-failure
+TimeoutStartSec=120
+
+[Install]
+WantedBy=default.target
