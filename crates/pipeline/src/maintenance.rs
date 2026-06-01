@@ -271,9 +271,9 @@ impl MaintenanceScheduler {
 
     /// Check all registered jobs and run those that are due.
     ///
-    /// This is `pub(crate)` so integration tests can call it directly without
+    /// This is `pub` so integration tests can call it directly without
     /// spawning a background task.
-    async fn run_due_jobs(&self) {
+    pub async fn run_due_jobs(&self) {
         let now = self.clock.now();
         for job in &self.jobs {
             let last = *job.last_run.lock().unwrap_or_else(|e| e.into_inner());

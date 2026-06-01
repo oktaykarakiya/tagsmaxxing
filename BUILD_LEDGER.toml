@@ -951,9 +951,9 @@ description = "P8 phase integration test: (a) B2 mock: put → encrypt → store
 depends_on = ["P8-T1", "P8-T2", "P8-T3", "P8-T4", "P8-T5", "P8-T8", "P8-T9", "P8-T10", "P8-T11", "P8-T13"]
 plan_sections = ["20", "22", "23", "31"]
 acceptance = "Full encrypted blob round-trip through mock B2; multipart upload + download; degradation matrix works; GC cleans orphans; integrity scan validates hashes; all gates green. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "p8_integration.rs: 60 tests (54 non-ignored + 6 #[ignore] for testcontainers). Covers full layered blob stack (Cache→Encrypt→Local), circuit breaker+degradation integration, maintenance scheduler with fake clock+spy handlers, orphan GC+integrity scan with mock runners+real PgStore runners, module exports smoke tests. Made maintenance::run_due_jobs pub for integration test access. P8 PHASE COMPLETE."
 
 # ── Phase P9 — Pluggable providers + DB-driven routing (§26) ─────────────────
 #
