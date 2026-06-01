@@ -190,6 +190,20 @@ fn describe_all() {
         "kb_maintenance_last_failure",
         "Unix timestamp of the last failed run, per maintenance job kind"
     );
+
+    // Budget / cost tracking (plan §26.6, P9-T10)
+    metrics::describe_gauge!(
+        "kb_tenant_spend_monthly_micros",
+        "Current month's total spend in micro-dollars for this tenant"
+    );
+    metrics::describe_gauge!(
+        "kb_tenant_budget_exceeded",
+        "1 if the tenant's monthly spend exceeds their budget, 0 otherwise"
+    );
+    metrics::describe_gauge!(
+        "kb_tenant_budget_cents",
+        "Monthly spend budget in cents (USD) for this tenant"
+    );
 }
 
 // ── Request-level recording helpers ──────────────────────────────────────────────
@@ -378,6 +392,35 @@ pub fn record_maintenance_failure(kind: &str) {
         .unwrap_or_default()
         .as_secs_f64();
     metrics::gauge!("kb_maintenance_last_failure", "kind" => kind.to_owned()).set(now);
+}
+
+// ── Budget / cost tracking metrics (plan §26.6, P9-T10) ──────────────────────
+
+/// Set the per-tenant monthly spend gauge (micro-dollars).
+///
+/// Also records the tenant's budget in cents as a parallel gauge for
+/// Prometheus alert-rule consumption (computing percentage from two
+/// gauges).
+pub fn record_tenant_spend_monthly(tenant_id: i64, spend_micros: u64) {
+    let tid = tenant_id.to_string();
+    metrics::gauge!("kb_tenant_spend_monthly_micros", "tenant_id" => tid).set(spend_micros as f64);
+}
+
+/// Set the per-tenant budget-exceeded alert gauge.
+///
+/// `exceeded` = true → gauge = 1.0 (the alert should fire).
+pub fn record_tenant_budget_exceeded(tenant_id: i64, exceeded: bool) {
+    let val: f64 = if exceeded { 1.0 } else { 0.0 };
+    metrics::gauge!("kb_tenant_budget_exceeded", "tenant_id" => tenant_id.to_string()).set(val);
+}
+
+/// Set the per-tenant budget cap in cents.
+///
+/// This exists so Prometheus can compute spend-percentage relative
+/// to the cap without an extra data source.
+pub fn record_tenant_budget_cents(tenant_id: i64, budget_cents: u64) {
+    metrics::gauge!("kb_tenant_budget_cents", "tenant_id" => tenant_id.to_string())
+        .set(budget_cents as f64);
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────────
@@ -764,5 +807,61 @@ mod tests {
         assert!(text.contains("# TYPE kb_integrity_scan_verified gauge"));
         assert!(text.contains("# HELP kb_integrity_scan_failed"));
         assert!(text.contains("# TYPE kb_integrity_scan_failed gauge"));
+    }
+
+    // ── Budget metrics tests (P9-T10) ────────────────────────────────────
+
+    #[test]
+    fn tenant_spend_monthly_gauge() {
+        let _h = ensure_init();
+        record_tenant_spend_monthly(1, 5_000_000);
+        record_tenant_spend_monthly(2, 250_000);
+
+        let text = render();
+        assert!(text.contains("kb_tenant_spend_monthly_micros{tenant_id=\"1\"} 5000000"));
+        assert!(text.contains("kb_tenant_spend_monthly_micros{tenant_id=\"2\"} 250000"));
+    }
+
+    #[test]
+    fn tenant_budget_exceeded_gauge() {
+        let _h = ensure_init();
+        record_tenant_budget_exceeded(1, false);
+        record_tenant_budget_exceeded(2, true);
+
+        let text = render();
+        // Both label variants present in output.
+        assert!(
+            text.contains("kb_tenant_budget_exceeded{tenant_id=\"1\"}"),
+            "tenant 1 budget exceeded not found in: {text}"
+        );
+        assert!(
+            text.contains("kb_tenant_budget_exceeded{tenant_id=\"2\"}"),
+            "tenant 2 budget exceeded not found in: {text}"
+        );
+    }
+
+    #[test]
+    fn tenant_budget_cents_gauge() {
+        let _h = ensure_init();
+        record_tenant_budget_cents(1, 1000); // $10.00
+
+        let text = render();
+        assert!(text.contains("kb_tenant_budget_cents{tenant_id=\"1\"} 1000"));
+    }
+
+    #[test]
+    fn budget_metrics_have_help_and_type() {
+        let _h = ensure_init();
+        record_tenant_spend_monthly(1, 0);
+        record_tenant_budget_exceeded(1, false);
+        record_tenant_budget_cents(1, 0);
+
+        let text = render();
+        assert!(text.contains("# HELP kb_tenant_spend_monthly_micros"));
+        assert!(text.contains("# TYPE kb_tenant_spend_monthly_micros gauge"));
+        assert!(text.contains("# HELP kb_tenant_budget_exceeded"));
+        assert!(text.contains("# TYPE kb_tenant_budget_exceeded gauge"));
+        assert!(text.contains("# HELP kb_tenant_budget_cents"));
+        assert!(text.contains("# TYPE kb_tenant_budget_cents gauge"));
     }
 }

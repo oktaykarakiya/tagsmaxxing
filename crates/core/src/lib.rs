@@ -15,6 +15,7 @@ mod macros;
 pub mod audit;
 pub mod auth;
 pub mod blob;
+pub mod budget;
 pub mod capability;
 pub mod chunk;
 pub mod circuit_breaker;

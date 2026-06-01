@@ -16,6 +16,7 @@ pub mod admin_queries;
 pub mod b2_blob;
 pub mod blob;
 pub mod blob_cache;
+pub mod budget;
 pub mod db_routing;
 pub mod encrypted_blob;
 pub(crate) mod hybrid_search;

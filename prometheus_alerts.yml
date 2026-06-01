@@ -1,0 +1,44 @@
+# Prometheus alert rules for the Local File Knowledge Base (plan §26.6, P9-T10).
+#
+# These rules fire on per-tenant budget thresholds using the kb_tenant_* gauges
+# exported by kb-metrics.  Deploy alongside your Prometheus server config (e.g.
+# add to rule_files: in prometheus.yml).
+
+groups:
+  - name: kb_budget
+    rules:
+      # ── Budget warnings (≥ 80% consumed) ──
+      - alert: BudgetOver80Percent
+        expr: |
+          (
+            kb_tenant_spend_monthly_micros
+            /
+            (kb_tenant_budget_cents * 10000)
+          ) >= 0.8
+          and
+          kb_tenant_budget_cents > 0
+        for: 5m
+        labels:
+          severity: warning
+          category: budget
+        annotations:
+          summary: "Tenant {{ $labels.tenant_id }} monthly spend ≥ 80% of budget"
+          description: >
+            Tenant {{ $labels.tenant_id }} has spent
+            {{ $value | humanizePercentage }} of its monthly budget.
+            Current spend: {{ printf "%.2f" (query "kb_tenant_spend_monthly_micros{tenant_id=\"$labels.tenant_id\"}" | first | value | parseFloat / 1000000) }} USD.
+            Budget: {{ printf "%.2f" (query "kb_tenant_budget_cents{tenant_id=\"$labels.tenant_id\"}" | first | value | parseFloat / 100) }} USD.
+
+      # ── Budget exceeded (≥ 100% consumed) ──
+      - alert: BudgetExceeded
+        expr: kb_tenant_budget_exceeded == 1
+        for: 1m
+        labels:
+          severity: critical
+          category: budget
+        annotations:
+          summary: "Tenant {{ $labels.tenant_id }} monthly spend has exceeded its budget"
+          description: >
+            Tenant {{ $labels.tenant_id }} has exceeded its monthly budget.
+            Spend: {{ printf "%.2f" (query "kb_tenant_spend_monthly_micros{tenant_id=\"$labels.tenant_id\"}" | first | value | parseFloat / 1000000) }} USD.
+            This is a SOFT cap unless TENANT_HARD_BUDGET_CAP=true.

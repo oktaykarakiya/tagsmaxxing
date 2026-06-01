@@ -39,6 +39,8 @@ aes-gcm = { workspace = true }
 rand = { workspace = true }
 # Stream combinators for listing blobs (plan §23, P8-T10)
 futures = { workspace = true }
+# Prometheus metrics for budget/cost gauges (plan §26.6, P9-T10)
+kb-metrics = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "fs"] }

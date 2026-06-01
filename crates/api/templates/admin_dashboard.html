@@ -41,6 +41,17 @@
       </div>
     </div>
 
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+      <div class="bg-white rounded-lg shadow p-6">
+        <p class="text-sm font-medium text-gray-500">Monthly Spend</p>
+        <p class="text-3xl font-bold text-indigo-600">${{ monthly_spend_micros }}</p>
+      </div>
+      <div class="bg-white rounded-lg shadow p-6">
+        <p class="text-sm font-medium text-gray-500">Monthly Budget</p>
+        <p class="text-3xl font-bold text-indigo-600">{{ budget_display }}</p>
+      </div>
+    </div>
+
     <h2 class="text-lg font-semibold text-gray-900 mb-4">Model Backends</h2>
     <div class="bg-white rounded-lg shadow overflow-hidden mb-8">
       <table class="min-w-full divide-y divide-gray-200">

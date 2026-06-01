@@ -136,6 +136,13 @@ pub async fn admin_dashboard(
     let document_count = pg.admin_document_count(tid).await.unwrap_or(0);
     let storage_used = pg.get_storage_usage(tid).await.unwrap_or(0);
     let token_usage = pg.get_token_usage(tid).await.unwrap_or(0);
+    let monthly_spend_micros = pg.admin_monthly_spend(tid).await.unwrap_or(0);
+    let budget_cents = pg.get_tenant_budget(tid).await.unwrap_or(None);
+    let budget_display = match budget_cents {
+        None => "unlimited".to_string(),
+        Some(0) => "unlimited".to_string(),
+        Some(c) => format!("${:.2}", c as f64 / 100.0),
+    };
 
     // Recent jobs: up to 10
     let recent_jobs = match pg.admin_list_jobs(tid, None, 10).await {
@@ -212,6 +219,8 @@ pub async fn admin_dashboard(
         document_count,
         storage_used_bytes: storage_used,
         token_usage,
+        monthly_spend_micros,
+        budget_display,
         recent_jobs,
         recent_audit,
         backends,
@@ -238,13 +247,21 @@ pub async fn admin_tenants_page(
     let tenants = match pg.admin_list_tenants().await {
         Ok(list) => list
             .into_iter()
-            .map(|t| AdminTenantRow {
-                id: t.id,
-                slug: t.slug,
-                name: t.name,
-                quota_bytes_display: quota_display(t.quota_bytes),
-                quota_tokens_display: quota_display(t.quota_tokens),
-                created_at: t.created_at.to_rfc3339(),
+            .map(|t| {
+                let budget = match t.budget_monthly_cents {
+                    None => "unlimited".to_string(),
+                    Some(c) if c <= 0 => "unlimited".to_string(),
+                    Some(c) => format!("${:.2}", c as f64 / 100.0),
+                };
+                AdminTenantRow {
+                    id: t.id,
+                    slug: t.slug,
+                    name: t.name,
+                    quota_bytes_display: quota_display(t.quota_bytes),
+                    quota_tokens_display: quota_display(t.quota_tokens),
+                    budget_display: budget,
+                    created_at: t.created_at.to_rfc3339(),
+                }
             })
             .collect(),
         Err(e) => {
@@ -897,6 +914,8 @@ mod tests {
             document_count: 99,
             storage_used_bytes: 1_048_576,
             token_usage: 5000,
+            monthly_spend_micros: 1_250_000,
+            budget_display: "$10.00".to_string(),
             recent_jobs: vec![AdminJobRow {
                 id: 1,
                 kind: "ingest".into(),
@@ -940,6 +959,8 @@ mod tests {
             document_count: 0,
             storage_used_bytes: 0,
             token_usage: 0,
+            monthly_spend_micros: 0,
+            budget_display: "unlimited".to_string(),
             recent_jobs: vec![],
             recent_audit: vec![],
             backends: vec![],
@@ -961,6 +982,7 @@ mod tests {
                 name: "Demo Tenant".into(),
                 quota_bytes_display: "unlimited".into(),
                 quota_tokens_display: "1000000".into(),
+                budget_display: "$5.00".to_string(),
                 created_at: "2026-06-01T00:00:00Z".into(),
             }],
         };

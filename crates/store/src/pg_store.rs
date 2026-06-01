@@ -400,7 +400,7 @@ fn parse_vector_text(s: &str) -> anyhow::Result<Vec<f32>> {
 /// SQL fragment shared by `upsert_document` and `transactional_ingest`.
 const DOC_UPDATE_SQL: &str = "UPDATE documents SET tenant_id=$1,title=$2,summary=$3,user_note=$4,kind=$5,meta=$6,page_count=$7,status=$8 WHERE id=$9 RETURNING id";
 const DOC_INSERT_SQL: &str = "INSERT INTO documents (tenant_id,title,summary,user_note,kind,meta,page_count,status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id";
-const USAGE_INSERT_SQL: &str = "INSERT INTO usage_events (tenant_id,user_id,model,role,backend_id,prompt_tokens,completion_tokens,latency_ms) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id";
+const USAGE_INSERT_SQL: &str = "INSERT INTO usage_events (tenant_id,user_id,model,role,backend_id,prompt_tokens,completion_tokens,latency_ms,cost_micros) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id";
 
 // ── Store implementation ─────────────────────────────────────────────────────
 
@@ -903,6 +903,7 @@ impl PgStore {
             .bind(event.prompt_tokens)
             .bind(event.completion_tokens)
             .bind(event.latency_ms)
+            .bind(event.cost_micros)
             .fetch_one(&mut *tx)
             .await
             .context("failed to insert usage event")?;
@@ -2464,6 +2465,7 @@ mod tests {
             prompt_tokens: Some(512),
             completion_tokens: Some(0),
             latency_ms: Some(42),
+            cost_micros: None,
             created_at: chrono::Utc::now(),
         }
     }
@@ -2570,7 +2572,8 @@ mod tests {
         assert!(USAGE_INSERT_SQL.starts_with("INSERT INTO usage_events"));
         assert!(USAGE_INSERT_SQL.contains("RETURNING id"));
         assert!(USAGE_INSERT_SQL.contains("$1"));
-        assert!(USAGE_INSERT_SQL.contains("$8"));
+        assert!(USAGE_INSERT_SQL.contains("$9"));
+        assert!(USAGE_INSERT_SQL.contains("cost_micros"));
     }
 
     #[tokio::test]

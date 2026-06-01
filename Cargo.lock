@@ -2138,6 +2138,7 @@ dependencies = [
  "futures",
  "hex",
  "kb-core",
+ "kb-metrics",
  "kb-mock-backend",
  "kb-testsupport",
  "object_store",

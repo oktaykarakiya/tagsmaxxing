@@ -16,11 +16,11 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
-    /// All twelve migrations are present, in version order (1–12).
+    /// All thirteen migrations are present, in version order (1–13).
     #[test]
     fn embeds_the_schema_migrations() {
         let versions: Vec<i64> = MIGRATOR.iter().map(|m| m.version).collect();
-        assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+        assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
     }
 
     /// Forward-only and monotonic: no down/reversible scripts, strictly increasing versions,
@@ -261,5 +261,28 @@ mod tests {
                 "kb_app must not be granted DML on {forbidden}"
             );
         }
+    }
+
+    /// Migration 0013 (P9-T10): cost-tracking columns — `usage_events.cost_micros` and
+    /// `tenants.budget_monthly_cents`.
+    #[test]
+    fn schema_adds_cost_tracking_columns() {
+        let sql: String = MIGRATOR
+            .iter()
+            .map(|m| m.sql.as_ref())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // cost_micros column on usage_events for priced remote calls.
+        assert!(
+            sql.contains("usage_events\n    ADD COLUMN IF NOT EXISTS cost_micros"),
+            "missing cost_micros column on usage_events (migration 0013)"
+        );
+
+        // budget_monthly_cents column on tenants for per-tenant budget caps.
+        assert!(
+            sql.contains("tenants\n    ADD COLUMN IF NOT EXISTS budget_monthly_cents"),
+            "missing budget_monthly_cents column on tenants (migration 0013)"
+        );
     }
 }

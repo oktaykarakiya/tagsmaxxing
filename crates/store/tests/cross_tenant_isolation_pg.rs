@@ -352,6 +352,7 @@ async fn usage_events_are_tenant_scoped() -> anyhow::Result<()> {
         prompt_tokens: Some(512),
         completion_tokens: Some(0),
         latency_ms: Some(42),
+        cost_micros: None,
         created_at: Utc::now(),
     };
     let ev_id = s.store.insert_usage_event(&event_a).await?;

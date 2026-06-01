@@ -27,6 +27,10 @@ pub struct UsageEvent {
     pub completion_tokens: Option<i32>,
     /// End-to-end latency in milliseconds, if measured.
     pub latency_ms: Option<i32>,
+    /// Micro-dollar cost of this call, computed from tokens × pricing.
+    /// `None` means the call was free (local backend) or pricing was
+    /// unavailable. Plan §26.6; stored in `usage_events.cost_micros`.
+    pub cost_micros: Option<i64>,
     /// When the call occurred.
     pub created_at: DateTime<Utc>,
 }

@@ -1070,9 +1070,9 @@ description = "Cost tracking + budget alerts (§26.6): on every LLM call (chat/e
 depends_on = ["P9-T4", "P9-T5", "P5-T6", "P6-T9"]
 plan_sections = ["26.6"]
 acceptance = "Remote call → cost calculated from tokens × pricing; usage_events.cost_micros populated; monthly sum under budget → allowed; over budget → WARN + gauge; hard cap mode → 429; NULL budget → unlimited; per-tenant spend visible in admin; Prometheus alert rules defined. Unit tests for cost calc + budget check + hard cap. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "Added cost_micros to usage_events (migration 0013), budget_monthly_cents to tenants, kb_core::budget module (check_budget/BudgetStatus/BudgetExceeded), kb_store::budget PgStore extension (get_monthly_cost/get_tenant_budget/check_tenant_budget with hard-cap), Prometheus gauges (spend/budget-exceeded/cents), admin dashboard spend/budget display, prometheus_alerts.yml. 25 new tests across all modules. just ci green."
 
 [[task]]
 id = "P9-T12"

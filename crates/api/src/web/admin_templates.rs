@@ -32,6 +32,11 @@ pub(crate) struct AdminDashboardPage {
     pub storage_used_bytes: i64,
     /// Token usage count.
     pub token_usage: i64,
+    /// Monthly spend in micro-dollars (human-readable in the template). 0 when no
+    /// priced calls have been made this month.
+    pub monthly_spend_micros: u64,
+    /// Monthly spend budget display string (e.g. "$10.00" or "unlimited").
+    pub budget_display: String,
     /// Recent jobs (up to 10).
     pub recent_jobs: Vec<AdminJobRow>,
     /// Recent audit events (up to 10).
@@ -99,6 +104,7 @@ pub(crate) struct AdminTenantRow {
     pub name: String,
     pub quota_bytes_display: String,
     pub quota_tokens_display: String,
+    pub budget_display: String,
     pub created_at: String,
 }
 

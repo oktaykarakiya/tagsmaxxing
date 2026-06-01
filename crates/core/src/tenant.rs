@@ -17,6 +17,8 @@ pub struct Tenant {
     pub quota_bytes: Option<i64>,
     /// Token budget; `None` = unlimited.
     pub quota_tokens: Option<i64>,
+    /// Monthly spend budget in cents (USD); `None` = unlimited (plan §26.6).
+    pub budget_monthly_cents: Option<i64>,
     /// Row creation time.
     pub created_at: DateTime<Utc>,
 }

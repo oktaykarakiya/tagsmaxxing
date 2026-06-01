@@ -27,6 +27,7 @@
             <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
             <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Storage Quota</th>
             <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Token Quota</th>
+            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Budget</th>
             <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Created</th>
           </tr>
         </thead>
@@ -38,11 +39,12 @@
             <td class="px-4 py-2 text-sm font-medium text-gray-900">{{ t.name }}</td>
             <td class="px-4 py-2 text-sm text-gray-600">{{ t.quota_bytes_display }}</td>
             <td class="px-4 py-2 text-sm text-gray-600">{{ t.quota_tokens_display }}</td>
+            <td class="px-4 py-2 text-sm text-gray-600">{{ t.budget_display }}</td>
             <td class="px-4 py-2 text-sm text-gray-500">{{ t.created_at }}</td>
           </tr>
           {% endfor %}
           {% if tenants.is_empty() %}
-          <tr><td colspan="6" class="px-4 py-4 text-sm text-gray-500 text-center">No tenants found.</td></tr>
+          <tr><td colspan="7" class="px-4 py-4 text-sm text-gray-500 text-center">No tenants found.</td></tr>
           {% endif %}
         </tbody>
       </table>

@@ -50,10 +50,11 @@ impl PgStore {
             name: String,
             quota_bytes: Option<i64>,
             quota_tokens: Option<i64>,
+            budget_monthly_cents: Option<i64>,
             created_at: chrono::DateTime<chrono::Utc>,
         }
         let rows: Vec<Row> = sqlx::query_as(
-            "SELECT id, slug, name, quota_bytes, quota_tokens, created_at \
+            "SELECT id, slug, name, quota_bytes, quota_tokens, budget_monthly_cents, created_at \
              FROM tenants ORDER BY id",
         )
         .fetch_all(&pool)
@@ -67,6 +68,7 @@ impl PgStore {
                 name: r.name,
                 quota_bytes: r.quota_bytes,
                 quota_tokens: r.quota_tokens,
+                budget_monthly_cents: r.budget_monthly_cents,
                 created_at: r.created_at,
             })
             .collect())
@@ -218,6 +220,30 @@ impl PgStore {
             .fetch_one(&pool)
             .await
             .context("failed to count documents")
+    }
+
+    /// Sum the monthly spend (cost_micros) for a tenant in the current calendar
+    /// month (for the admin dashboard, plan §26.6).
+    ///
+    /// Uses the admin pool; read-only. Only non-NULL `cost_micros` rows are
+    /// summed (free/local calls have NULL and are excluded).
+    ///
+    /// # Errors
+    /// Returns an error if the database is not connected or the query fails.
+    pub async fn admin_monthly_spend(&self, tenant_id: i64) -> anyhow::Result<u64> {
+        let pool = self.pool()?;
+        let total: Option<i64> = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(cost_micros), 0) \
+             FROM usage_events \
+             WHERE tenant_id = $1 \
+               AND cost_micros IS NOT NULL \
+               AND date_trunc('month', created_at) = date_trunc('month', now())",
+        )
+        .bind(tenant_id)
+        .fetch_one(&pool)
+        .await
+        .context("failed to query monthly spend")?;
+        Ok(total.unwrap_or(0) as u64)
     }
 
     // ── Job admin methods (dead-letter queue) ──────────────────────────────
@@ -589,6 +615,13 @@ mod tests {
     async fn admin_document_count_errors_before_connect() {
         let store = test_store();
         let err = store.admin_document_count(1).await.unwrap_err();
+        assert!(err.to_string().contains("not connected"));
+    }
+
+    #[tokio::test]
+    async fn admin_monthly_spend_errors_before_connect() {
+        let store = test_store();
+        let err = store.admin_monthly_spend(1).await.unwrap_err();
         assert!(err.to_string().contains("not connected"));
     }
 
