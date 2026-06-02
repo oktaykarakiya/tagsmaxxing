@@ -25,7 +25,7 @@ use axum::response::Json;
 use kb_core::blob::Blob;
 use kb_core::job::JobKind;
 use kb_extract::security;
-use kb_pipeline::ingest::IngestFile;
+use kb_pipeline::ingest::{IngestFile, IngestPipeline};
 use kb_pipeline::job_queue::JobQueue;
 use serde::Serialize;
 
@@ -159,26 +159,35 @@ pub async fn ingest(
         .blob
         .as_ref()
         .ok_or_else(|| internal_error(anyhow::anyhow!("ingest: blob store not configured")))?;
-    let job_queue = state
-        .job_queue
+    let pipeline = state
+        .ingest_pipeline
         .as_ref()
-        .ok_or_else(|| internal_error(anyhow::anyhow!("ingest: job queue not configured")))?;
+        .ok_or_else(|| internal_error(anyhow::anyhow!("ingest: pipeline not configured")))?;
 
-    let (job_id, file_count) = process_upload_files(
+    // ── Process uploads inline through the pipeline ──────────────────────────
+    // Inline processing: store blobs, then feed bytes directly through the
+    // pipeline (extract → tag → embed → store). The job queue exists for
+    // async retry/re-embed/re-tag, but the primary ingest path is synchronous
+    // so uploads complete immediately.
+    let result = process_upload_inline(
         blob.as_ref(),
-        job_queue.as_ref(),
+        pipeline.as_ref(),
         auth_user.tenant_id,
         &parsed,
     )
     .await
     .map_err(internal_error)?;
 
+    let doc_id_str = result.document_id.map(|id| id.to_string());
     Ok((
         StatusCode::ACCEPTED,
         Json(IngestResponse {
-            job_id,
-            document_id: None,
-            message: format!("ingest job enqueued ({file_count} file(s))"),
+            job_id: result.job_id,
+            document_id: result.document_id,
+            message: doc_id_str.map_or_else(
+                || format!("ingest processed ({} file(s))", result.file_count),
+                |id| format!("ingest processed, document {} created ({} file(s))", id, result.file_count),
+            ),
         }),
     ))
 }
@@ -247,6 +256,64 @@ pub(crate) async fn process_upload_files(
     };
 
     Ok((job_id, parsed.files.len()))
+}
+
+/// Result from [`process_upload_inline`].
+pub(crate) struct InlineIngestResult {
+    /// The job id (still enqueued for audit; completed immediately).
+    pub job_id: i64,
+    /// The document id assigned by the store.
+    pub document_id: Option<i64>,
+    /// Number of files processed.
+    pub file_count: usize,
+}
+
+/// Store blobs and process files through the ingest pipeline inline.
+///
+/// This is the primary upload path: files are stored in the blob store, then
+/// fed directly through the pipeline (extract → tag → embed → store). A job
+/// is enqueued for audit/replay but is completed synchronously so the caller
+/// gets the document id immediately.
+pub(crate) async fn process_upload_inline(
+    blob: &dyn Blob,
+    pipeline: &IngestPipeline,
+    tenant_id: i64,
+    parsed: &ParsedUpload,
+) -> anyhow::Result<InlineIngestResult> {
+    // ── Validate each file ─────────────────────────────────────────────────
+    for f in &parsed.files {
+        security::validate_upload(
+            &f.bytes,
+            f.path.as_deref(),
+            security::MAX_INDIVIDUAL_FILE_BYTES,
+        )?;
+    }
+
+    // ── Store each file in the blob store ──────────────────────────────────
+    for f in &parsed.files {
+        let sha256 = compute_blob_key(&f.bytes);
+        blob.put(&sha256, bytes::Bytes::copy_from_slice(&f.bytes))
+            .await?;
+    }
+
+    // ── Process through ingest pipeline ────────────────────────────────────
+    let output = pipeline
+        .ingest(
+            tenant_id,
+            parsed.files.clone(),
+            parsed.user_note.clone(),
+            false, // local_only — false uses remote backends if configured
+        )
+        .await?;
+
+    // Use a dummy job id for the response (no async queue needed).
+    let job_id = 0;
+
+    Ok(InlineIngestResult {
+        job_id,
+        document_id: Some(output.document_id),
+        file_count: parsed.files.len(),
+    })
 }
 
 // ── Multipart parsing ──────────────────────────────────────────────────────────

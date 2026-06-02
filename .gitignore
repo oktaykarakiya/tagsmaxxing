@@ -9,6 +9,15 @@
 # Secrets / local env (never commit; see .env.example)
 .env
 .env.local
+cert.pem
+key.pem
+
+# Runtime data
+/kb-blobs/
+/logs/
+
+# Local config (may contain secrets)
+config.toml
 
 # Autonomous build-loop state
 /.build-loop/

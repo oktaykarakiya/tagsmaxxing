@@ -104,6 +104,16 @@ pub struct ServeArgs {
     /// Path to the config.toml file.
     #[arg(long, value_name = "PATH", default_value = "config.toml")]
     pub config: String,
+
+    /// Path to a TLS certificate PEM file (enables HTTPS).
+    /// Must be used together with `--tls-key`.
+    #[arg(long, value_name = "PATH")]
+    pub tls_cert: Option<String>,
+
+    /// Path to a TLS private key PEM file (enables HTTPS).
+    /// Must be used together with `--tls-cert`.
+    #[arg(long, value_name = "PATH")]
+    pub tls_key: Option<String>,
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

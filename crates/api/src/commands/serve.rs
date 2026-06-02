@@ -63,6 +63,11 @@ const COOLDOWN_SECS: u64 = 30;
 /// Returns an error if config loading fails, database connection fails,
 /// or the server fails to bind.
 pub async fn run_serve(args: &ServeArgs) -> anyhow::Result<()> {
+    // ── Install rustls crypto provider (needed for TLS) ───────────────────
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("failed to install rustls ring crypto provider");
+
     // ── Initialise tracing ──────────────────────────────────────────────────
     let log_config = kb_logging::LogConfig::from_env();
     kb_logging::init_tracing(&log_config).context("failed to initialise tracing subscriber")?;
@@ -323,25 +328,58 @@ pub async fn run_serve(args: &ServeArgs) -> anyhow::Result<()> {
 
     // ── Bind and serve ──────────────────────────────────────────────────────
     let addr = SocketAddr::from(([0, 0, 0, 0], bind_port));
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .with_context(|| format!("failed to bind to {addr}"))?;
-
-    info!("kb API server listening on http://{addr}");
 
     // Graceful shutdown: on ctrl_c, signal the collector, stop the health
     // loop, stop the log janitor, close the listener, and wait for in-flight
     // requests to drain.
-    axum::serve(listener, router)
-        .with_graceful_shutdown(async move {
-            let _ = tokio::signal::ctrl_c().await;
-            info!("shutdown signal received, draining...");
-            let _ = shutdown_tx.send(true);
-            let _ = health_shutdown.send(());
-            let _ = janitor_shutdown.send(true);
-        })
-        .await
-        .context("server error")?;
+    let shutdown_signal = async move {
+        let _ = tokio::signal::ctrl_c().await;
+        info!("shutdown signal received, draining...");
+        let _ = shutdown_tx.send(true);
+        let _ = health_shutdown.send(());
+        let _ = janitor_shutdown.send(true);
+    };
+
+    match (args.tls_cert.as_deref(), args.tls_key.as_deref()) {
+        (Some(cert_path), Some(key_path)) => {
+            // ── TLS (HTTPS) path ────────────────────────────────────────────
+            use axum_server::tls_rustls::{RustlsConfig, bind_rustls};
+
+            let tls_config = RustlsConfig::from_pem_file(cert_path, key_path)
+                .await
+                .map_err(|e| anyhow::anyhow!("failed to load TLS config: {e}"))?;
+
+            let handle = axum_server::Handle::new();
+            let shutdown_handle = handle.clone();
+
+            // Spawn graceful-shutdown watcher.
+            tokio::spawn(async move {
+                shutdown_signal.await;
+                shutdown_handle.graceful_shutdown(Some(Duration::from_secs(30)));
+            });
+
+            info!("kb API server listening on https://{addr}");
+
+            bind_rustls(addr, tls_config)
+                .handle(handle)
+                .serve(router.into_make_service())
+                .await
+                .context("TLS server error")?;
+        }
+        _ => {
+            // ── Plain HTTP path ─────────────────────────────────────────────
+            let listener = tokio::net::TcpListener::bind(addr)
+                .await
+                .with_context(|| format!("failed to bind to {addr}"))?;
+
+            info!("kb API server listening on http://{addr}");
+
+            axum::serve(listener, router)
+                .with_graceful_shutdown(shutdown_signal)
+                .await
+                .context("server error")?;
+        }
+    }
 
     // Wait for background tasks to drain.
     let _ = tokio::time::timeout(Duration::from_secs(10), janitor_handle).await;
