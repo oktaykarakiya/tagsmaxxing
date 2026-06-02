@@ -1,0 +1,22 @@
+{% extends "email/base_email.html" %}
+{% block title %}{{ quota_label }} Quota Warning{% endblock %}
+{% block heading %}{{ quota_label }} Usage at {{ percent_used }}%{% endblock %}
+{% block body %}
+<p>Your workspace <strong>{{ workspace_name }}</strong> has reached <strong>{{ percent_used }}%</strong> of its {{ quota_label|lower }} quota.</p>
+<table role="presentation" width="100%" style="border-collapse: collapse; margin: 16px 0;" cellpadding="8">
+    <tr style="background-color: #f9fafb;">
+        <td style="border-bottom: 1px solid #e5e7eb; font-weight: 600;">Used</td>
+        <td style="border-bottom: 1px solid #e5e7eb;">{{ used_display }}</td>
+    </tr>
+    <tr>
+        <td style="border-bottom: 1px solid #e5e7eb; font-weight: 600;">Limit</td>
+        <td style="border-bottom: 1px solid #e5e7eb;">{{ limit_display }}</td>
+    </tr>
+</table>
+{% if percent_used >= 100 %}
+<p style="color: #dc2626; font-weight: 600;">You have exceeded your quota. Uploads and processing may be blocked until you upgrade or quota resets.</p>
+{% endif %}
+<p style="text-align: center; margin: 32px 0;">
+    <a href="{{ upgrade_url }}" style="display: inline-block; padding: 12px 32px; background-color: #4f46e5; color: #ffffff; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 16px;">{% if percent_used >= 100 %}Upgrade Plan{% else %}View Usage{% endif %}</a>
+</p>
+{% endblock %}

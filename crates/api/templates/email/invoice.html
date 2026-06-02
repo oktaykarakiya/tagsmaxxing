@@ -1,0 +1,22 @@
+{% extends "email/base_email.html" %}
+{% block title %}Invoice for {{ plan_name }}{% endblock %}
+{% block heading %}Payment Receipt{% endblock %}
+{% block body %}
+<p>Thank you for your subscription to {{ plan_name }}.</p>
+<p>Your payment has been processed. Here is a summary:</p>
+<table role="presentation" width="100%" style="border-collapse: collapse; margin: 16px 0;" cellpadding="8">
+    <tr style="background-color: #f9fafb;">
+        <td style="border-bottom: 1px solid #e5e7eb; font-weight: 600;">Plan</td>
+        <td style="border-bottom: 1px solid #e5e7eb;">{{ plan_name }}</td>
+    </tr>
+    <tr>
+        <td style="border-bottom: 1px solid #e5e7eb; font-weight: 600;">Amount</td>
+        <td style="border-bottom: 1px solid #e5e7eb;">{{ amount_display }}</td>
+    </tr>
+    <tr style="background-color: #f9fafb;">
+        <td style="border-bottom: 1px solid #e5e7eb; font-weight: 600;">Date</td>
+        <td style="border-bottom: 1px solid #e5e7eb;">{{ invoice_date }}</td>
+    </tr>
+</table>
+<p>You can view your billing history and manage your subscription from your <a href="{{ account_url }}" style="color: #4f46e5;">account settings</a>.</p>
+{% endblock %}

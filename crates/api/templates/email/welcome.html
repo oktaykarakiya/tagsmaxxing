@@ -1,0 +1,15 @@
+{% extends "email/base_email.html" %}
+{% block title %}Welcome to Local KB{% endblock %}
+{% block heading %}Welcome, {{ workspace_name }}!{% endblock %}
+{% block body %}
+<p>Your workspace <strong>{{ workspace_name }}</strong> is ready to go.</p>
+<p>Here's what you can do next:</p>
+<ul style="padding-left: 20px;">
+    <li>Upload your first file — documents, images, code, and more</li>
+    <li>Invite team members from your account settings</li>
+    <li>Search across all your files with AI-powered retrieval</li>
+</ul>
+<p style="text-align: center; margin: 32px 0;">
+    <a href="{{ login_url }}" style="display: inline-block; padding: 12px 32px; background-color: #4f46e5; color: #ffffff; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 16px;">Go to Your Workspace</a>
+</p>
+{% endblock %}

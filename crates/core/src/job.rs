@@ -31,6 +31,10 @@ str_enum! {
         /// Crypto-shred a tenant: revoke sessions, delete DB rows, delete B2 blobs,
         /// destroy the DEK, and create a tombstone record (plan §28, P10-T4).
         DeleteTenant = "delete_tenant",
+        /// Send a transactional email via the configured email provider (P12-T7).
+        /// Payload is a JSON-serialized [`EmailJobPayload`] stored in `last_error`
+        /// (reused as a payload column for this job kind).
+        SendEmail = "send_email",
     }
 }
 
@@ -99,7 +103,7 @@ mod tests {
         assert_eq!(JobKind::OrphanGc.as_str(), "orphan_gc");
         assert_eq!(JobKind::IntegrityScan.as_str(), "integrity_scan");
         assert_eq!(JobKind::DeleteTenant.as_str(), "delete_tenant");
-        assert_eq!(JobKind::all().len(), 8);
+        assert_eq!(JobKind::all().len(), 9);
     }
 
     #[test]

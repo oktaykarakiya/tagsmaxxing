@@ -1,0 +1,10 @@
+{% extends "email/base_email.html" %}
+{% block title %}Ingest Failed{% endblock %}
+{% block heading %}File Processing Failed{% endblock %}
+{% block body %}
+<p>The file <strong>{{ file_name }}</strong> could not be processed.</p>
+<p style="color: #dc2626; background-color: #fef2f2; padding: 12px; border-radius: 6px; border: 1px solid #fecaca;">
+    {{ error_message }}
+</p>
+<p>You can try uploading the file again from your <a href="{{ upload_url }}" style="color: #4f46e5;">upload page</a>. If the problem persists, check that the file is not corrupted and is in a supported format.</p>
+{% endblock %}

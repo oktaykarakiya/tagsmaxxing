@@ -1344,9 +1344,9 @@ description = "Transactional email (§30): define an `EmailProvider` trait: `asy
 depends_on = ["P12-T2", "P2-T3"]
 plan_sections = ["30"]
 acceptance = "LogEmail writes email content to log; ResendEmail sends HTTP request with correct API shape (mock server in tests); verification email contains valid token link; reset email contains valid token link; quota warning triggers at 80% and 100%; failed payment email sent; all emails enqueued as jobs (non-blocking); email job failure retries (3×) then dead-letters. Unit tests with mock email server + template rendering. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "P12-T7: EmailProvider trait (generic send) + LogEmail (tracing::info!) in kb-core; ResendEmail (reqwest HTTP, hot-swappable API key via ArcSwap) in kb-api; 8 Askama HTML email templates (verification, password_reset, welcome, invoice, payment_failed, quota_warning, ingest_failed, invite); EmailKind enum + EmailJobPayload; enqueue_email_job_via_pool for non-blocking delivery; process_email_job worker handler; JobKind::SendEmail (9 variants now); AppState.email_provider field + builder; backward-compat NoopEmailSender→LogEmail alias with deprecation. 39 new tests. just ci green."
 
 [[task]]
 id = "P12-T8"

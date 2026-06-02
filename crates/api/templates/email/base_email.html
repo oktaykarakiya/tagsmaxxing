@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Local KB{% endblock %}</title>
+</head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #f9fafb; margin: 0; padding: 0;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color: #f9fafb; padding: 24px;">
+        <tr>
+            <td align="center">
+                <table role="presentation" width="100%" style="max-width: 600px; background-color: #ffffff; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);" cellpadding="0" cellspacing="0">
+                    {# Header #}
+                    <tr>
+                        <td style="padding: 32px 32px 0 32px; text-align: center;">
+                            <h1 style="font-size: 24px; font-weight: 700; color: #111827; margin: 0;">
+                                {% block heading %}Local KB{% endblock %}
+                            </h1>
+                        </td>
+                    </tr>
+                    {# Body #}
+                    <tr>
+                        <td style="padding: 24px 32px 32px 32px; color: #374151; font-size: 16px; line-height: 1.6;">
+                            {% block body %}{% endblock %}
+                        </td>
+                    </tr>
+                    {# Footer #}
+                    <tr>
+                        <td style="padding: 0 32px 24px 32px; text-align: center; color: #9ca3af; font-size: 12px; border-top: 1px solid #e5e7eb; padding-top: 16px;">
+                            <p style="margin: 0;">Local KB — Self-hosted File Knowledge Base</p>
+                            {% block footer_extra %}{% endblock %}
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+    </table>
+</body>
+</html>

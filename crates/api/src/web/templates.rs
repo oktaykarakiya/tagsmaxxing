@@ -631,3 +631,103 @@ pub(crate) struct CookiesPage;
 #[derive(Debug, Template)]
 #[template(path = "retention.html")]
 pub(crate) struct RetentionPage;
+
+// ── Email template types (P12-T7) ────────────────────────────────────────────────
+
+/// Email sent after signup — contains the verification link.
+///
+/// Rendered by the email job worker from `email/verification.html`.
+#[derive(Debug, Template)]
+#[template(path = "email/verification.html")]
+pub(crate) struct VerificationEmail {
+    /// Full verification URL (base + /verify?token=…).
+    pub verify_url: String,
+}
+
+/// Email sent on password reset request — contains the reset link.
+///
+/// Rendered by the email job worker from `email/password_reset.html`.
+#[derive(Debug, Template)]
+#[template(path = "email/password_reset.html")]
+pub(crate) struct PasswordResetEmail {
+    /// Full reset URL (base + /reset?token=…).
+    pub reset_url: String,
+}
+
+/// Welcome email sent after successful signup and email verification.
+#[derive(Debug, Template)]
+#[template(path = "email/welcome.html")]
+pub(crate) struct WelcomeEmail {
+    /// Human-readable workspace name.
+    pub workspace_name: String,
+    /// Link to the login page.
+    pub login_url: String,
+}
+
+/// Invoice / payment receipt email sent after a successful Stripe payment.
+#[derive(Debug, Template)]
+#[template(path = "email/invoice.html")]
+pub(crate) struct InvoiceEmail {
+    /// Human-readable plan name (e.g. "Pro").
+    pub plan_name: String,
+    /// Formatted amount (e.g. "$9.00").
+    pub amount_display: String,
+    /// Human-readable date of the invoice.
+    pub invoice_date: String,
+    /// Link to the account/billing page.
+    pub account_url: String,
+}
+
+/// Payment failed / dunning email sent when a Stripe payment cannot be processed.
+#[derive(Debug, Template)]
+#[template(path = "email/payment_failed.html")]
+pub(crate) struct PaymentFailedEmail {
+    /// Human-readable plan name.
+    pub plan_name: String,
+    /// Reason the payment failed (e.g. "card declined").
+    pub failure_reason: String,
+    /// Link to update the payment method.
+    pub billing_url: String,
+}
+
+/// Quota warning email sent when storage or token usage reaches 80% or 100%.
+#[derive(Debug, Template)]
+#[template(path = "email/quota_warning.html")]
+pub(crate) struct QuotaWarningEmail {
+    /// "Storage" or "Tokens".
+    pub quota_label: String,
+    /// Integer percentage 0–100.
+    pub percent_used: u8,
+    /// Human-readable used amount (e.g. "4.2 GB").
+    pub used_display: String,
+    /// Human-readable limit (e.g. "5.0 GB").
+    pub limit_display: String,
+    /// Workspace / tenant display name.
+    pub workspace_name: String,
+    /// Link to the upgrade / usage page.
+    pub upgrade_url: String,
+}
+
+/// Ingest-failed alert email sent when a file upload job exhausts retries.
+#[derive(Debug, Template)]
+#[template(path = "email/ingest_failed.html")]
+pub(crate) struct IngestFailedEmail {
+    /// Original filename that failed to process.
+    pub file_name: String,
+    /// The error message from the last attempt.
+    pub error_message: String,
+    /// Link to the upload page.
+    pub upload_url: String,
+}
+
+/// Team invitation email sent when an admin invites a new member.
+#[derive(Debug, Template)]
+#[template(path = "email/invite.html")]
+pub(crate) struct InviteEmail {
+    /// Workspace / tenant display name.
+    pub workspace_name: String,
+    /// Display name or email of the inviter.
+    pub invited_by: String,
+    /// Full invitation acceptance URL.
+    pub invite_url: String,
+}

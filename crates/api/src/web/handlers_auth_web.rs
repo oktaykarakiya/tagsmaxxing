@@ -737,7 +737,7 @@ mod tests {
     use askama::Template;
     use axum::body::Body;
     use axum::http::{StatusCode, header};
-    use kb_core::email::NoopEmailSender;
+    use kb_core::email::LogEmail;
     use kb_store::PgStore;
     use kb_store::session_store::InMemorySessionStore;
     use tower::ServiceExt;
@@ -750,7 +750,7 @@ mod tests {
         let session_store: Arc<dyn kb_core::session::SessionStore> =
             Arc::new(InMemorySessionStore::new());
         let pg_store = Arc::new(PgStore::new("postgres://localhost/test?sslmode=disable"));
-        let email_sender: Arc<dyn kb_core::email::EmailSender> = Arc::new(NoopEmailSender);
+        let email_sender: Arc<dyn kb_core::email::EmailSender> = Arc::new(LogEmail);
         Arc::new(
             AppState::new(
                 session_store,

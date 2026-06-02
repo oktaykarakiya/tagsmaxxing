@@ -13,6 +13,7 @@ pub mod backpressure;
 pub mod bootstrap;
 pub mod cli;
 pub mod degradation_middleware;
+pub mod email_jobs;
 pub mod handlers;
 pub mod metrics_collector;
 pub mod middleware;
@@ -32,7 +33,7 @@ use axum::routing::{get, post};
 use kb_core::api_token::ApiTokenStore;
 use kb_core::blob::Blob;
 use kb_core::degradation::DegradationState;
-use kb_core::email::EmailSender;
+use kb_core::email::{EmailProvider, EmailSender};
 use kb_core::session::SessionStore;
 use kb_pipeline::RetrievalPipeline;
 use kb_pipeline::ingest::IngestPipeline;
@@ -101,6 +102,11 @@ pub struct AppState {
     /// Email sender for verification, password reset, and notifications (P12-T2).
     /// When `None`, email-sending handlers return 500. Set via [`AppState::with_email_sender`].
     pub email_sender: Option<Arc<dyn EmailSender>>,
+    /// Low-level email provider used by the email job worker (P12-T7).
+    /// Separate from `email_sender` — the job worker calls [`EmailProvider::send`]
+    /// directly with pre-rendered HTML. When `None`, email jobs will dead-letter.
+    /// Set via [`AppState::with_email_provider`].
+    pub email_provider: Option<Arc<dyn EmailProvider>>,
     /// API token store for Bearer-auth (P12-T5).
     /// When `None`, Bearer authentication is disabled (cookie-only mode) and the
     /// /api/tokens CRUD endpoints return 500. Set via [`AppState::with_api_token_store`].
@@ -142,6 +148,7 @@ impl AppState {
             stripe_webhook_secret: None,
             public_base_url: "http://localhost:9999".into(),
             email_sender: None,
+            email_provider: None,
             api_token_store: None,
         }
     }
@@ -178,6 +185,7 @@ impl AppState {
             stripe_webhook_secret: None,
             public_base_url: "http://localhost:9999".into(),
             email_sender: None,
+            email_provider: None,
             api_token_store: None,
         }
     }
@@ -259,6 +267,14 @@ impl AppState {
     #[must_use]
     pub fn with_email_sender(mut self, sender: Arc<dyn EmailSender>) -> Self {
         self.email_sender = Some(sender);
+        self
+    }
+
+    /// Builder: attach the low-level email provider for the email job worker
+    /// (P12-T7). When `None`, email jobs will dead-letter.
+    #[must_use]
+    pub fn with_email_provider(mut self, provider: Arc<dyn EmailProvider>) -> Self {
+        self.email_provider = Some(provider);
         self
     }
 
@@ -519,6 +535,7 @@ mod tests {
             stripe_webhook_secret: None,
             public_base_url: "http://localhost:9999".into(),
             email_sender: None,
+            email_provider: None,
             api_token_store: None,
         })
     }

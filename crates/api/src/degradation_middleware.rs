@@ -92,6 +92,7 @@ mod tests {
             stripe_webhook_secret: None,
             public_base_url: "http://localhost:9999".into(),
             email_sender: None,
+            email_provider: None,
             api_token_store: None,
         })
     }

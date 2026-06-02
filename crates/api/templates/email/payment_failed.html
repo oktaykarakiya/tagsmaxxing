@@ -1,0 +1,12 @@
+{% extends "email/base_email.html" %}
+{% block title %}Payment Failed{% endblock %}
+{% block heading %}Payment Failed{% endblock %}
+{% block body %}
+<p>Your recent payment for <strong>{{ plan_name }}</strong> could not be processed.</p>
+<p>Reason: <strong>{{ failure_reason }}</strong></p>
+<p>To avoid interruption to your service, please update your payment method by clicking below:</p>
+<p style="text-align: center; margin: 32px 0;">
+    <a href="{{ billing_url }}" style="display: inline-block; padding: 12px 32px; background-color: #dc2626; color: #ffffff; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 16px;">Update Payment Method</a>
+</p>
+<p>If we cannot process payment after several attempts, your account may be suspended. You will receive a separate notice before any service interruption.</p>
+{% endblock %}
