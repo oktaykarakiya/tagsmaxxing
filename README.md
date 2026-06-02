@@ -1,4 +1,6 @@
-# Local File Knowledge Base
+# TagsMaxxing — Local File Knowledge Base
+
+**https://tagsmaxxing.com**
 
 A self-hosted, modular tool that ingests files of **any** type, enriches them with an
 LLM-generated title/summary/tags plus your notes and extracted metadata, stores everything in
@@ -14,31 +16,72 @@ Full design: [`local-kb-plan.md`](./local-kb-plan.md). Architecture:
 
 ```bash
 # 1. Clone
-git clone https://github.com/example/local-kb.git
-cd local-kb
+git clone git@github.com:oktaykarakiya/tagsmaxxing.git
+cd tagsmaxxing
 
 # 2. Start the sidecar stack (Postgres + pgvector, Apache Tika)
 cp .env.example .env           # optional: override ports / credentials
 podman compose up -d           # healthchecks pass in ~9s
 
-# 3. Build and run the app (serves on :9999)
-cargo run -- serve
-# Open http://localhost:9999 in your browser
+# 3. Create a config file (or copy and edit the example)
+cp config.example.toml config.toml   # edit DB credentials if needed
 
-# 4. Ingest a file via CLI
+# 4. Build and run the app
+cargo run --bin kb -- serve --config config.toml
+# Open https://localhost:9999 in your browser (HTTP without TLS: omit cert/key)
+
+# 5. Run with TLS (self-signed cert for local dev)
+openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem \
+  -days 365 -nodes -subj "/CN=localhost"
+cargo run --bin kb -- serve --config config.toml \
+  --tls-cert cert.pem --tls-key key.pem
+
+# 6. Ingest a file via CLI
 echo "Hello, world." > example.txt
-cargo run -- ingest example.txt --note "my first file"
+cargo run --bin kb -- ingest example.txt --note "my first file"
 
-# 5. Search
-cargo run -- search "hello"
+# 7. Search
+cargo run --bin kb -- search "hello"
 
-# 6. Tear down
+# 8. Tear down
 podman compose down -v
 ```
 
 > **GPU inference** (llama.cpp, whisper.cpp) uses a separate profile:
 > `podman compose --profile gpu up -d`. See `compose.cpu.yaml` for CPU-only overrides.
 > All commands work under **Podman only** — no Docker engine required.
+
+## Web UI
+
+The app ships a full SaaS web interface at **https://tagsmaxxing.com** (or your own domain):
+
+| Page | Path | What it does |
+|------|------|-------------|
+| Landing | `/` | Public hero, features, pricing, FAQ |
+| Sign up | `/signup` | Create an account with email verification |
+| Login | `/login` | Multi-tenant login (tenant slug + email + password) |
+| Dashboard | `/dashboard` | Document/file/tag counts, quota bars, daily token chart, activity feed |
+| Upload | `/upload` | Drag-and-drop or file-picker upload with voice-note recording, group-as-document toggle |
+| Search | `/search` | Natural-language hybrid search with reranked results |
+| Account | `/account` | Profile, plan, team, API tokens, danger zone |
+| Admin | `/admin` | Tenants, users, providers, models, routes, jobs, tags, decrypt audit |
+
+All pages are server-rendered with Askama templates and Tailwind CSS + HTMX for
+interactivity. No JavaScript framework required on the client.
+
+## CLI
+
+```bash
+# Ingest files
+kb ingest [--as-document] [--note "…"] [--no-wait] FILES...
+
+# Search
+kb search [--kind image] [--tag invoice] [--limit 5] "quarterly report"
+
+# Start the API + web server
+kb serve [--port 9999] [--config config.toml]
+         [--tls-cert cert.pem] [--tls-key key.pem]
+```
 
 ## Architecture
 
@@ -146,6 +189,50 @@ Postgres is published on `127.0.0.1:5432` and Tika on `127.0.0.1:9998` by defaul
 (change `POSTGRES_PORT` / `TIKA_PORT`). The app serves on **port 9999**. Tear down with
 `podman compose down` (add `-v` to also drop the data volume).
 
+## Configuration
+
+The app reads a TOML config file (default: `config.toml`). Multi-backend setups route
+requests to different models on different ports by role:
+
+```toml
+[storage]
+postgres_url = "postgres://kb:kb@127.0.0.1:5432/kb"
+app_postgres_url = "postgres://kb_app:kb_app@127.0.0.1:5432/kb"
+
+[api]
+port = 9999
+secure_cookies = true
+
+[scheduler]
+acquire_timeout_secs = 120
+health_interval_secs = 10
+max_retries = 3
+
+[[backend]]
+id = "qwen3vl"
+base_url = "http://127.0.0.1:8080/v1"
+roles = ["text", "vision", "code"]
+slots = 2
+priority = 0
+
+[[backend]]
+id = "bge-m3"
+base_url = "http://127.0.0.1:8081/v1"
+roles = ["embed"]
+slots = 4
+priority = 0
+
+[[backend]]
+id = "bge-reranker"
+base_url = "http://127.0.0.1:8082/v1"
+roles = ["rerank"]
+slots = 4
+priority = 0
+```
+
+The scheduler acquires a free slot from the pool before forwarding requests, so backends
+are never oversubscribed. Routing is hot-reloadable from the database (`/admin/routes`).
+
 ## Deploy with Quadlet (systemd)
 
 For single-node Podman users, **Quadlet `.container` files** are the recommended production
@@ -225,7 +312,7 @@ The app uses `tracing` with configurable format and size-based rotation enforcin
 LOG_LEVEL=info      # trace, debug, info, warn, error
 LOG_FORMAT=json     # json or pretty
 LOG_DIR=./logs
-LOG_MAX_GB=2        # enforced hard cap via file-rotate
+LOG_MAX_GB=5        # enforced hard cap via file-rotate
 ```
 
 ## SBOM — Software Bill of Materials
