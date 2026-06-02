@@ -134,6 +134,10 @@ pub(crate) fn generate_fresh_csrf() -> String {
 /// so the user is authenticated by the time we get here).
 ///
 /// Returns a `303 See Other` redirect.
+///
+/// This handler is retained for test use; the production router now directs `/`
+/// through [`super::handlers_marketing::landing_page`] (P12-T1).
+#[allow(dead_code)]
 pub async fn root_redirect(Extension(_auth_user): Extension<AuthUser>) -> impl IntoResponse {
     Redirect::to("/search")
 }

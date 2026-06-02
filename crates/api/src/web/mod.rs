@@ -29,6 +29,7 @@ pub(crate) mod admin_templates;
 pub(crate) mod csrf;
 pub(crate) mod handlers;
 pub(crate) mod handlers_documents;
+pub(crate) mod handlers_marketing;
 pub(crate) mod security;
 pub(crate) mod templates;
 
@@ -39,17 +40,20 @@ pub(crate) mod templates;
 ///
 /// Route table:
 ///
-/// | Method | Path        | Auth? | Description                     |
-/// |--------|-------------|-------|---------------------------------|
-/// | GET    | `/`         | yes   | Redirect to /search             |
-/// | GET    | `/login`    | no    | Login form (HTML)               |
-/// | POST   | `/login`    | no    | Login form submission           |
-/// | GET    | `/register` | no    | Registration form (HTML)        |
-/// | POST   | `/register` | no    | Registration form submission    |
-/// | POST   | `/logout`  | yes   | Revoke session, redirect        |
-/// | GET    | `/search`   | yes   | Search page (P6-T5)             |
-/// | POST   | `/search`   | yes   | HTMX search fragment (P6-T5)    |
-/// | GET    | `/upload`   | yes   | Upload page (P6-T6)             |
+/// | Method | Path          | Auth? | Description                        |
+/// |--------|---------------|-------|------------------------------------|
+/// | GET    | `/`           | no*   | Landing page (or redirect to /search if authed) |
+/// | GET    | `/pricing`    | no    | Pricing page with plans from DB    |
+/// | GET    | `/features`   | no    | Features page with file type matrix|
+/// | GET    | `/faq`        | no    | FAQ page with expandable questions |
+/// | GET    | `/login`      | no    | Login form (HTML)                  |
+/// | POST   | `/login`      | no    | Login form submission              |
+/// | GET    | `/register`   | no    | Registration form (HTML)           |
+/// | POST   | `/register`   | no    | Registration form submission       |
+/// | POST   | `/logout`     | yes   | Revoke session, redirect           |
+/// | GET    | `/search`     | yes   | Search page (P6-T5)                |
+/// | POST   | `/search`     | yes   | HTMX search fragment (P6-T5)       |
+/// | GET    | `/upload`     | yes   | Upload page (P6-T6)                |
 /// | POST   | `/upload`   | yes   | Multipart upload submit (P6-T6) |
 /// | GET    | `/documents/:id` | yes | Document detail page (P6-T7)  |
 /// | POST   | `/documents/:id/tags/:tag_id/remove` | yes | Remove tag (P6-T7) |
@@ -65,6 +69,10 @@ pub(crate) fn build_web_router(
 
     // Public web routes (no auth required).
     let public = axum::Router::new()
+        .route("/", get(handlers_marketing::landing_page))
+        .route("/pricing", get(handlers_marketing::pricing_page))
+        .route("/features", get(handlers_marketing::features_page))
+        .route("/faq", get(handlers_marketing::faq_page))
         .route(
             "/login",
             get(handlers::login_page).post(handlers::login_submit),
@@ -76,7 +84,6 @@ pub(crate) fn build_web_router(
 
     // Protected web routes (auth required).
     let protected = axum::Router::new()
-        .route("/", get(handlers::root_redirect))
         .route(
             "/search",
             get(handlers::search_page).post(handlers::search_submit),

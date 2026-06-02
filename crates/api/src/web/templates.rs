@@ -203,3 +203,96 @@ pub(crate) struct DocumentFileEntry {
     /// File size in a human-readable format (e.g. "2.4 MB").
     pub size_display: String,
 }
+
+// ── Marketing page types (P12-T1) ────────────────────────────────────────────────
+
+/// `GET /` — the public landing page with hero, how-it-works (3 steps),
+/// social proof placeholder, and CTA.
+///
+/// When `is_authenticated` is true, the nav shows links to the app instead
+/// of login/signup. Marketing pages are always public but detect auth from
+/// the session cookie for correct navigation.
+#[derive(Debug, Template)]
+#[template(path = "landing.html")]
+pub(crate) struct LandingPage {
+    /// Whether a valid session cookie was detected.
+    pub is_authenticated: bool,
+}
+
+/// `GET /pricing` — the public pricing page rendered from the plans database.
+///
+/// Each [`PlanCard`] is derived from a [`Plan`](kb_store::plans::Plan) row.
+/// When the database is not reachable, `plans` is empty and the template
+/// shows a loading placeholder.
+#[derive(Debug, Template)]
+#[template(path = "pricing.html")]
+pub(crate) struct PricingPage {
+    /// Whether a valid session cookie was detected.
+    pub is_authenticated: bool,
+    /// Plan cards for display, ordered by price (free first).
+    pub plans: Vec<PlanCard>,
+}
+
+/// A single plan card rendered on the pricing page.
+///
+/// Fields are pre-formatted for template display — no logic in the template.
+#[derive(Debug, Clone)]
+pub(crate) struct PlanCard {
+    /// Machine-readable code: `free`, `pro`, `team`.
+    pub code: String,
+    /// Human-readable name: `Free`, `Pro`, `Team`.
+    pub name: String,
+    /// Formatted price string (e.g. `"Free"`, `"$9/mo"`).
+    pub price_display: String,
+    /// Human-readable storage quota (e.g. `"50 MB"`, `"5 GB"`).
+    pub quota_display: String,
+    /// Feature list items for the plan card.
+    pub features: Vec<String>,
+    /// URL the CTA button links to.
+    pub cta_url: String,
+    /// CTA button text (e.g. `"Get Started"`, `"Subscribe"`).
+    pub cta_text: String,
+    /// Whether this is the highlighted/recommended plan.
+    pub highlighted: bool,
+}
+
+/// `GET /features` — the public features page listing supported file types
+/// and core capabilities.
+#[derive(Debug, Template)]
+#[template(path = "features.html")]
+pub(crate) struct FeaturesPage {
+    /// Whether a valid session cookie was detected.
+    pub is_authenticated: bool,
+    /// Per-filetype support entries.
+    pub file_types: Vec<FileTypeSupport>,
+}
+
+/// A single row in the supported-file-types grid.
+#[derive(Debug, Clone)]
+pub(crate) struct FileTypeSupport {
+    /// Comma-separated extensions (e.g. `".pdf, .docx"`).
+    pub extension: String,
+    /// Human-readable name (e.g. `"PDF & Office documents"`).
+    pub name: String,
+    /// Whether Local KB can extract text and metadata.
+    pub supported: bool,
+}
+
+/// `GET /faq` — the public FAQ page with expandable question/answer items.
+#[derive(Debug, Template)]
+#[template(path = "faq.html")]
+pub(crate) struct FaqPage {
+    /// Whether a valid session cookie was detected.
+    pub is_authenticated: bool,
+    /// Question-and-answer pairs.
+    pub faqs: Vec<FaqItem>,
+}
+
+/// A single question-and-answer pair for the FAQ page.
+#[derive(Debug, Clone)]
+pub(crate) struct FaqItem {
+    /// The question text.
+    pub question: String,
+    /// The answer text (may contain basic HTML like links).
+    pub answer: String,
+}

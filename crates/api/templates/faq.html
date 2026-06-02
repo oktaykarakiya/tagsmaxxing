@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+
+{% block title %}FAQ{% endblock %}
+
+{% block head_extra %}
+<meta name="description" content="Frequently asked questions about Local KB — pricing, file types, security, deployment, and more.">
+{% endblock %}
+
+{% block content %}
+{# ── Public navigation ─────────────────────────────────────────────────── #}
+<nav class="bg-white/90 backdrop-blur-sm border-b border-gray-200 sticky top-0 z-50">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="flex justify-between h-14 items-center">
+            <a href="/" class="text-lg font-bold text-indigo-600 tracking-tight">Local KB</a>
+            <div class="flex items-center space-x-1 sm:space-x-4">
+                <a href="/features" class="text-sm text-gray-600 hover:text-indigo-600 px-2 py-1">Features</a>
+                <a href="/pricing" class="text-sm text-gray-600 hover:text-indigo-600 px-2 py-1">Pricing</a>
+                <a href="/faq" class="text-sm font-semibold text-indigo-600 px-2 py-1">FAQ</a>
+                {% if is_authenticated %}
+                <a href="/search" class="text-sm text-gray-600 hover:text-indigo-600 px-2 py-1">Search</a>
+                {% else %}
+                <a href="/login" class="text-sm text-gray-600 hover:text-indigo-600 px-2 py-1">Log in</a>
+                <a href="/register" class="ml-2 rounded-md bg-indigo-600 px-4 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 transition">
+                    Sign up
+                </a>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</nav>
+
+{# ── Hero ─────────────────────────────────────────────────────────────── #}
+<section class="bg-gradient-to-br from-indigo-50 via-white to-purple-50 py-16">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
+        <h1 class="text-3xl sm:text-4xl lg:text-5xl font-extrabold text-gray-900">
+            Frequently asked questions
+        </h1>
+        <p class="mt-4 text-lg text-gray-500 max-w-2xl mx-auto">
+            Everything you need to know about Local KB. Can't find what you're looking for?
+            Reach out to our support team.
+        </p>
+    </div>
+</section>
+
+{# ── FAQ items ────────────────────────────────────────────────────────── #}
+<section class="py-16 bg-white">
+    <div class="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 space-y-4">
+        {% for faq in faqs %}
+        <details class="group rounded-xl border border-gray-200 bg-white transition-all duration-200 open:shadow-sm">
+            <summary class="flex cursor-pointer items-center justify-between px-6 py-4 text-left font-medium text-gray-900 hover:text-indigo-600 list-none [&::-webkit-details-marker]:hidden">
+                {{ faq.question }}
+                <svg class="w-5 h-5 text-gray-400 group-open:rotate-180 transition-transform flex-shrink-0 ml-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+                </svg>
+            </summary>
+            <div class="px-6 pb-4 text-sm text-gray-500 leading-relaxed border-t border-gray-100 pt-4">
+                {{ faq.answer }}
+            </div>
+        </details>
+        {% endfor %}
+    </div>
+</section>
+
+{# ── Still have questions CTA ─────────────────────────────────────────── #}
+<section class="py-16 bg-gray-50">
+    <div class="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
+        <h2 class="text-xl font-semibold text-gray-900">Still have questions?</h2>
+        <p class="mt-2 text-sm text-gray-500">
+            We're happy to help. Start a free account and reach out from the dashboard.
+        </p>
+        <div class="mt-6">
+            <a href="/register" class="inline-block rounded-lg bg-indigo-600 px-6 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 transition">
+                Get started
+            </a>
+        </div>
+    </div>
+</section>
+
+{# ── Footer ──────────────────────────────────────────────────────────── #}
+<footer class="border-t border-gray-200 bg-white py-10">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="flex flex-col sm:flex-row justify-between items-center gap-4">
+            <p class="text-sm text-gray-400">&copy; 2026 Local KB. All rights reserved.</p>
+            <div class="flex space-x-6">
+                <a href="/features" class="text-sm text-gray-400 hover:text-gray-600">Features</a>
+                <a href="/pricing" class="text-sm text-gray-400 hover:text-gray-600">Pricing</a>
+                <a href="/faq" class="text-sm text-gray-400 hover:text-gray-600">FAQ</a>
+            </div>
+        </div>
+    </div>
+</footer>
+{% endblock %}

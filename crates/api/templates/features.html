@@ -1,0 +1,192 @@
+{% extends "base.html" %}
+
+{% block title %}Features{% endblock %}
+
+{% block head_extra %}
+<meta name="description" content="AI-powered file organization: support for 30+ file formats, hybrid search, multi-tenant isolation, encryption, and data export.">
+{% endblock %}
+
+{% block content %}
+{# ── Public navigation ─────────────────────────────────────────────────── #}
+<nav class="bg-white/90 backdrop-blur-sm border-b border-gray-200 sticky top-0 z-50">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="flex justify-between h-14 items-center">
+            <a href="/" class="text-lg font-bold text-indigo-600 tracking-tight">Local KB</a>
+            <div class="flex items-center space-x-1 sm:space-x-4">
+                <a href="/features" class="text-sm font-semibold text-indigo-600 px-2 py-1">Features</a>
+                <a href="/pricing" class="text-sm text-gray-600 hover:text-indigo-600 px-2 py-1">Pricing</a>
+                <a href="/faq" class="text-sm text-gray-600 hover:text-indigo-600 px-2 py-1">FAQ</a>
+                {% if is_authenticated %}
+                <a href="/search" class="text-sm text-gray-600 hover:text-indigo-600 px-2 py-1">Search</a>
+                {% else %}
+                <a href="/login" class="text-sm text-gray-600 hover:text-indigo-600 px-2 py-1">Log in</a>
+                <a href="/register" class="ml-2 rounded-md bg-indigo-600 px-4 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 transition">
+                    Sign up
+                </a>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</nav>
+
+{# ── Hero ─────────────────────────────────────────────────────────────── #}
+<section class="bg-gradient-to-br from-indigo-50 via-white to-purple-50 py-16">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
+        <h1 class="text-3xl sm:text-4xl lg:text-5xl font-extrabold text-gray-900">
+            Everything you need to organize your files
+        </h1>
+        <p class="mt-4 text-lg text-gray-500 max-w-2xl mx-auto">
+            From automatic AI tagging to hybrid search, multi-tenant isolation,
+            and encrypted storage — Local KB is built for teams that care about their data.
+        </p>
+    </div>
+</section>
+
+{# ── Supported file types ─────────────────────────────────────────────── #}
+<section class="py-16 bg-white">
+    <div class="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
+        <h2 class="text-2xl font-bold text-gray-900 text-center mb-10">Supported file types</h2>
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+            {% for ft in file_types %}
+            <div class="flex items-center gap-3 rounded-lg border border-gray-200 p-4">
+                {% if ft.supported %}
+                <div class="flex-shrink-0 w-8 h-8 rounded-md bg-green-100 flex items-center justify-center">
+                    <svg class="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/>
+                    </svg>
+                </div>
+                {% else %}
+                <div class="flex-shrink-0 w-8 h-8 rounded-md bg-gray-100 flex items-center justify-center">
+                    <span class="text-gray-400 text-xs font-bold">&mdash;</span>
+                </div>
+                {% endif %}
+                <div>
+                    <p class="font-medium text-gray-900 text-sm">{{ ft.name }}</p>
+                    <p class="text-xs text-gray-400 font-mono">{{ ft.extension }}</p>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</section>
+
+{# ── Capability highlights ────────────────────────────────────────────── #}
+<section class="py-16 bg-gray-50">
+    <div class="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
+        <h2 class="text-2xl font-bold text-gray-900 text-center mb-12">Core capabilities</h2>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+            {# Hybrid search #}
+            <div class="bg-white rounded-xl border border-gray-200 p-6">
+                <div class="w-10 h-10 rounded-lg bg-indigo-100 flex items-center justify-center mb-4">
+                    <svg class="w-5 h-5 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                    </svg>
+                </div>
+                <h3 class="font-semibold text-gray-900 mb-2">Hybrid search</h3>
+                <p class="text-sm text-gray-500 leading-relaxed">
+                    Combines keyword matching (full-text) with semantic vector search using
+                    Reciprocal Rank Fusion. Find documents by meaning, not just exact words.
+                </p>
+            </div>
+
+            {# Multi-tenant #}
+            <div class="bg-white rounded-xl border border-gray-200 p-6">
+                <div class="w-10 h-10 rounded-lg bg-purple-100 flex items-center justify-center mb-4">
+                    <svg class="w-5 h-5 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
+                    </svg>
+                </div>
+                <h3 class="font-semibold text-gray-900 mb-2">Multi-tenant isolation</h3>
+                <p class="text-sm text-gray-500 leading-relaxed">
+                    Every tenant's data is strictly isolated at the database level with
+                    PostgreSQL Row-Level Security. One tenant can never access another's files.
+                </p>
+            </div>
+
+            {# Encryption #}
+            <div class="bg-white rounded-xl border border-gray-200 p-6">
+                <div class="w-10 h-10 rounded-lg bg-amber-100 flex items-center justify-center mb-4">
+                    <svg class="w-5 h-5 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 11V7a4 4 0 118 0m-4 8v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z"/>
+                    </svg>
+                </div>
+                <h3 class="font-semibold text-gray-900 mb-2">Encryption at rest</h3>
+                <p class="text-sm text-gray-500 leading-relaxed">
+                    Per-tenant encryption keys (AES-256-GCM) for all stored content. Files are
+                    encrypted before they touch disk, with keys you control.
+                </p>
+            </div>
+
+            {# Export #}
+            <div class="bg-white rounded-xl border border-gray-200 p-6">
+                <div class="w-10 h-10 rounded-lg bg-green-100 flex items-center justify-center mb-4">
+                    <svg class="w-5 h-5 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                    </svg>
+                </div>
+                <h3 class="font-semibold text-gray-900 mb-2">Data export</h3>
+                <p class="text-sm text-gray-500 leading-relaxed">
+                    Export all your data as a streaming ZIP archive (original files + metadata
+                    in JSONL). Fully round-trippable — import into another instance.
+                </p>
+            </div>
+
+            {# AI tagging #}
+            <div class="bg-white rounded-xl border border-gray-200 p-6">
+                <div class="w-10 h-10 rounded-lg bg-rose-100 flex items-center justify-center mb-4">
+                    <svg class="w-5 h-5 text-rose-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z"/>
+                    </svg>
+                </div>
+                <h3 class="font-semibold text-gray-900 mb-2">AI auto-tagging</h3>
+                <p class="text-sm text-gray-500 leading-relaxed">
+                    Every ingested file gets a descriptive title, summary, and semantic tags
+                    from LLM analysis. Tags are canonicalized across your tenant for consistency.
+                </p>
+            </div>
+
+            {# Flexible deployment #}
+            <div class="bg-white rounded-xl border border-gray-200 p-6">
+                <div class="w-10 h-10 rounded-lg bg-cyan-100 flex items-center justify-center mb-4">
+                    <svg class="w-5 h-5 text-cyan-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"/>
+                    </svg>
+                </div>
+                <h3 class="font-semibold text-gray-900 mb-2">Self-hostable</h3>
+                <p class="text-sm text-gray-500 leading-relaxed">
+                    Runs on your own infrastructure with Podman containers. Local LLM backends
+                    supported — your files never leave your network unless you choose remote models.
+                </p>
+            </div>
+        </div>
+    </div>
+</section>
+
+{# ── CTA ───────────────────────────────────────────────────────────────── #}
+<section class="py-16 bg-white">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
+        <h2 class="text-2xl font-bold text-gray-900">See it in action</h2>
+        <p class="mt-4 text-gray-500">Start organizing your files with AI today.</p>
+        <div class="mt-6">
+            <a href="/register" class="inline-block rounded-lg bg-indigo-600 px-6 py-3 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 transition">
+                Get started free
+            </a>
+        </div>
+    </div>
+</section>
+
+{# ── Footer ──────────────────────────────────────────────────────────── #}
+<footer class="border-t border-gray-200 bg-white py-10">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="flex flex-col sm:flex-row justify-between items-center gap-4">
+            <p class="text-sm text-gray-400">&copy; 2026 Local KB. All rights reserved.</p>
+            <div class="flex space-x-6">
+                <a href="/features" class="text-sm text-gray-400 hover:text-gray-600">Features</a>
+                <a href="/pricing" class="text-sm text-gray-400 hover:text-gray-600">Pricing</a>
+                <a href="/faq" class="text-sm text-gray-400 hover:text-gray-600">FAQ</a>
+            </div>
+        </div>
+    </div>
+</footer>
+{% endblock %}

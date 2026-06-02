@@ -1,0 +1,154 @@
+{% extends "base.html" %}
+
+{% block title %}File Knowledge Base{% endblock %}
+
+{% block head_extra %}
+<meta name="description" content="Your files, instantly searchable with AI-powered tagging and semantic search. Upload, auto-tag, and find anything across documents, images, audio, video, and code.">
+{% endblock %}
+
+{% block content %}
+{# ── Public navigation ─────────────────────────────────────────────────── #}
+<nav class="bg-white/90 backdrop-blur-sm border-b border-gray-200 sticky top-0 z-50">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="flex justify-between h-14 items-center">
+            <a href="/" class="text-lg font-bold text-indigo-600 tracking-tight">Local KB</a>
+            <div class="flex items-center space-x-1 sm:space-x-4">
+                <a href="/features" class="text-sm text-gray-600 hover:text-indigo-600 px-2 py-1">Features</a>
+                <a href="/pricing" class="text-sm text-gray-600 hover:text-indigo-600 px-2 py-1">Pricing</a>
+                <a href="/faq" class="text-sm text-gray-600 hover:text-indigo-600 px-2 py-1">FAQ</a>
+                {% if is_authenticated %}
+                <a href="/search" class="text-sm text-gray-600 hover:text-indigo-600 px-2 py-1">Search</a>
+                {% else %}
+                <a href="/login" class="text-sm text-gray-600 hover:text-indigo-600 px-2 py-1">Log in</a>
+                <a href="/register" class="ml-2 rounded-md bg-indigo-600 px-4 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 transition">
+                    Sign up
+                </a>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</nav>
+
+{# ── Hero section ─────────────────────────────────────────────────────── #}
+<section class="relative overflow-hidden bg-gradient-to-br from-indigo-50 via-white to-purple-50">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20 sm:py-28 lg:py-32">
+        <div class="text-center max-w-3xl mx-auto">
+            <h1 class="text-4xl sm:text-5xl lg:text-6xl font-extrabold tracking-tight text-gray-900">
+                Your files,
+                <span class="text-transparent bg-clip-text bg-gradient-to-r from-indigo-600 to-purple-600">instantly searchable</span>
+            </h1>
+            <p class="mt-6 text-lg sm:text-xl text-gray-600 leading-relaxed">
+                Upload any file — documents, images, audio, video, code — and let AI
+                automatically tag, summarize, and organize everything. Find what you need
+                with natural language search, not folders.
+            </p>
+            <div class="mt-10 flex flex-col sm:flex-row gap-4 justify-center">
+                <a href="/register" class="rounded-lg bg-indigo-600 px-8 py-3.5 text-base font-semibold text-white shadow-lg hover:bg-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 transition">
+                    Get started free
+                </a>
+                <a href="/features" class="rounded-lg bg-white border border-gray-300 px-8 py-3.5 text-base font-semibold text-gray-700 shadow-sm hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:ring-offset-2 transition">
+                    See how it works
+                </a>
+            </div>
+        </div>
+    </div>
+</section>
+
+{# ── How it works (3 steps) ──────────────────────────────────────────── #}
+<section id="how-it-works" class="py-20 bg-white">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="text-center mb-16">
+            <h2 class="text-3xl sm:text-4xl font-bold text-gray-900">How it works</h2>
+            <p class="mt-4 text-lg text-gray-500 max-w-2xl mx-auto">
+                Three simple steps to turn your unstructured files into a searchable knowledge base.
+            </p>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-8 lg:gap-12">
+            {# Step 1 #}
+            <div class="text-center">
+                <div class="inline-flex items-center justify-center w-14 h-14 rounded-xl bg-indigo-100 text-indigo-600 mb-5">
+                    <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/>
+                    </svg>
+                </div>
+                <h3 class="text-lg font-semibold text-gray-900 mb-2">1. Upload your files</h3>
+                <p class="text-sm text-gray-500 leading-relaxed">
+                    Drag and drop any file type — PDFs, photos, scanned documents, videos, code
+                    repositories, audio recordings. We handle them all, from a single page to
+                    multi-page documents.
+                </p>
+            </div>
+
+            {# Step 2 #}
+            <div class="text-center">
+                <div class="inline-flex items-center justify-center w-14 h-14 rounded-xl bg-purple-100 text-purple-600 mb-5">
+                    <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z"/>
+                    </svg>
+                </div>
+                <h3 class="text-lg font-semibold text-gray-900 mb-2">2. AI auto-tagging</h3>
+                <p class="text-sm text-gray-500 leading-relaxed">
+                    Your content is analyzed by local or remote AI models. Files get descriptive
+                    titles, summaries, and semantic tags — no manual labeling needed.
+                </p>
+            </div>
+
+            {# Step 3 #}
+            <div class="text-center">
+                <div class="inline-flex items-center justify-center w-14 h-14 rounded-xl bg-green-100 text-green-600 mb-5">
+                    <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                    </svg>
+                </div>
+                <h3 class="text-lg font-semibold text-gray-900 mb-2">3. Search naturally</h3>
+                <p class="text-sm text-gray-500 leading-relaxed">
+                    Ask questions in plain English. Find that invoice, vacation photo, meeting
+                    recording, or code snippet instantly — across all file types.
+                </p>
+            </div>
+        </div>
+    </div>
+</section>
+
+{# ── Social proof placeholder ────────────────────────────────────────── #}
+<section class="py-16 bg-gray-50">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
+        <p class="text-sm font-medium text-gray-400 uppercase tracking-wide mb-6">Built for teams that care about their data</p>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-8 items-center opacity-50">
+            <div class="text-gray-300 text-lg font-bold">ACME Corp</div>
+            <div class="text-gray-300 text-lg font-bold">Globex</div>
+            <div class="text-gray-300 text-lg font-bold">Initech</div>
+            <div class="text-gray-300 text-lg font-bold">Umbrella</div>
+        </div>
+        <p class="mt-8 text-sm text-gray-400 italic">(Real customer logos coming soon — we just launched!)</p>
+    </div>
+</section>
+
+{# ── CTA section ─────────────────────────────────────────────────────── #}
+<section class="py-20 bg-white">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
+        <h2 class="text-3xl font-bold text-gray-900">Ready to find anything, instantly?</h2>
+        <p class="mt-4 text-lg text-gray-500">Start free. No credit card required.</p>
+        <div class="mt-8">
+            <a href="/register" class="rounded-lg bg-indigo-600 px-8 py-3.5 text-base font-semibold text-white shadow-lg hover:bg-indigo-500 transition">
+                Get started free
+            </a>
+        </div>
+    </div>
+</section>
+
+{# ── Footer ──────────────────────────────────────────────────────────── #}
+<footer class="border-t border-gray-200 bg-white py-10">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="flex flex-col sm:flex-row justify-between items-center gap-4">
+            <p class="text-sm text-gray-400">&copy; 2026 Local KB. All rights reserved.</p>
+            <div class="flex space-x-6">
+                <a href="/features" class="text-sm text-gray-400 hover:text-gray-600">Features</a>
+                <a href="/pricing" class="text-sm text-gray-400 hover:text-gray-600">Pricing</a>
+                <a href="/faq" class="text-sm text-gray-400 hover:text-gray-600">FAQ</a>
+            </div>
+        </div>
+    </div>
+</footer>
+{% endblock %}

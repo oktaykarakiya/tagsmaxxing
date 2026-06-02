@@ -1278,9 +1278,9 @@ description = "Marketing pages (§30): (a) Landing page (/) — hero, value prop
 depends_on = ["P6-T4", "P11-T1"]
 plan_sections = ["30", "12"]
 acceptance = "Landing page loads at /; pricing shows plans from DB; features page lists capabilities; FAQ answers common questions; nav has correct links for unauthenticated vs authenticated users; pages are responsive (Tailwind); meta tags present. Unit tests for template rendering + pricing-from-DB. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "4 marketing pages (landing / pricing / features / FAQ) with public routes, Askama+Tailwind, pricing from DB (list_plans), conditional nav, responsive viewport, SEO meta tags. 35 new tests (19 pure-logic + 12 template-render + 4 axum-integration). just ci green."
 
 [[task]]
 id = "P12-T2"
