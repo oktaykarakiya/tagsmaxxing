@@ -66,7 +66,7 @@ pub async fn run_serve(args: &ServeArgs) -> anyhow::Result<()> {
     // ── Install rustls crypto provider (needed for TLS) ───────────────────
     rustls::crypto::ring::default_provider()
         .install_default()
-        .expect("failed to install rustls ring crypto provider");
+        .map_err(|_| anyhow::anyhow!("failed to install rustls ring crypto provider"))?;
 
     // ── Initialise tracing ──────────────────────────────────────────────────
     let log_config = kb_logging::LogConfig::from_env();

@@ -186,7 +186,12 @@ pub async fn ingest(
             document_id: result.document_id,
             message: doc_id_str.map_or_else(
                 || format!("ingest processed ({} file(s))", result.file_count),
-                |id| format!("ingest processed, document {} created ({} file(s))", id, result.file_count),
+                |id| {
+                    format!(
+                        "ingest processed, document {} created ({} file(s))",
+                        id, result.file_count
+                    )
+                },
             ),
         }),
     ))
