@@ -16,7 +16,15 @@ all-features = false
 [advisories]
 # RustSec defaults apply (known vulnerabilities -> error). Add IDs here only with a
 # documented justification.
-ignore = []
+ignore = [
+    # rustls-pemfile is unmaintained (repo archived Aug 2025), NOT a vulnerability.
+    # It is pulled in transitively only by axum-server 0.7's `tls-rustls` feature
+    # (our HTTPS listener); we never call it directly. The advisory states no safe
+    # upgrade exists — the crate is now a thin wrapper over rustls-pki-types'
+    # `PemObject`, which axum-server has not yet migrated to. Revisit/remove this
+    # once axum-server ships a release that drops rustls-pemfile.
+    "RUSTSEC-2025-0134", # rustls-pemfile unmaintained — transitive via axum-server tls-rustls
+]
 
 [licenses]
 # Explicit allow-list; any dependency license not listed fails the gate.
