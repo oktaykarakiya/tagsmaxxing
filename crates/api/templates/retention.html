@@ -1,0 +1,155 @@
+{% extends "base.html" %}
+
+{% block title %}Data Retention &amp; Erasure{% endblock %}
+
+{% block head_extra %}
+<meta name="description" content="Data Retention &amp; Erasure policy for Local KB — how data is retained, deleted, and cryptographically shredded.">
+{% endblock %}
+
+{% block content %}
+{# ── Navigation ─────────────────────────────────────────────────────────── #}
+<nav class="bg-white/90 backdrop-blur-sm border-b border-gray-200 sticky top-0 z-50">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="flex justify-between h-14 items-center">
+            <a href="/" class="text-lg font-bold text-indigo-600 tracking-tight">Local KB</a>
+            <div class="flex items-center space-x-1 sm:space-x-4">
+                <a href="/features" class="text-sm text-gray-600 hover:text-indigo-600 px-2 py-1">Features</a>
+                <a href="/pricing" class="text-sm text-gray-600 hover:text-indigo-600 px-2 py-1">Pricing</a>
+                <a href="/faq" class="text-sm text-gray-600 hover:text-indigo-600 px-2 py-1">FAQ</a>
+                <a href="/login" class="text-sm text-gray-600 hover:text-indigo-600 px-2 py-1">Log in</a>
+                <a href="/register" class="ml-2 rounded-md bg-indigo-600 px-4 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 transition">Sign up</a>
+            </div>
+        </div>
+    </div>
+</nav>
+
+{# ── Content ────────────────────────────────────────────────────────────── #}
+<section class="bg-white">
+    <div class="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-16">
+        <h1 class="text-3xl sm:text-4xl font-extrabold tracking-tight text-gray-900">Data Retention &amp; Erasure</h1>
+        <p class="mt-2 text-sm text-gray-500">Last updated: June 1, 2026</p>
+
+        <div class="mt-12 space-y-12 text-gray-700 leading-relaxed">
+
+            {# 1. Overview #}
+            <section>
+                <h2 class="text-lg font-semibold text-gray-900">1. Overview</h2>
+                <p class="mt-3">This policy describes how Local KB (&ldquo;we,&rdquo; &ldquo;our,&rdquo; or &ldquo;us&rdquo;) retains and deletes customer data. It covers the full data lifecycle: from upload to deletion, including the cryptographic erasure (&ldquo;crypto-shredding&rdquo;) process that ensures data is irrecoverable after deletion.</p>
+            </section>
+
+            {# 2. Data Retention During Active Use #}
+            <section>
+                <h2 class="text-lg font-semibold text-gray-900">2. Data Retention During Active Use</h2>
+                <p class="mt-3">While your account is active, we retain:</p>
+                <ul class="mt-2 list-disc pl-6 space-y-1">
+                    <li><strong>Uploaded files:</strong> Stored in the blob store (encrypted at rest) for as long as the associated document exists;</li>
+                    <li><strong>Document metadata:</strong> Tags, summaries, titles, user notes, and document structure retained for the life of the document;</li>
+                    <li><strong>Search embeddings:</strong> Vector embeddings retained for the life of the associated chunks;</li>
+                    <li><strong>Usage records:</strong> Token usage and API call records retained for billing and quota enforcement;</li>
+                    <li><strong>Account information:</strong> Email, hashed password, workspace details, and team membership retained for the life of the account;</li>
+                    <li><strong>Audit logs:</strong> Security-relevant events (decrypt access, key operations) retained for the life of the tenant.</li>
+                </ul>
+                <p class="mt-3">You may delete individual documents at any time through the application. Deleting a document removes its metadata, tags, chunks, and embeddings. The associated files are queued for permanent deletion from the blob store.</p>
+            </section>
+
+            {# 3. Account Deletion #}
+            <section>
+                <h2 class="text-lg font-semibold text-gray-900">3. Account Deletion</h2>
+                <p class="mt-3">When you request deletion of your account (through <a href="/account/danger" class="text-indigo-600 hover:underline">account settings</a>), we initiate a multi-stage deletion process:</p>
+                <ol class="mt-2 list-decimal pl-6 space-y-2">
+                    <li><strong>Immediate suspension (T+0):</strong> Your account is deactivated. All access tokens and sessions are revoked. No further API calls or logins are accepted. Your data is no longer accessible through the Service.</li>
+                    <li><strong>Grace period (T+0 to T+7 days):</strong> Your data is retained in encrypted form but inaccessible. During this period, you may contact support to reverse the deletion if the request was made in error.</li>
+                    <li><strong>Crypto-shredding (T+7 days):</strong> The per-tenant Data Encryption Key (DEK) is permanently deleted. All file content, metadata, and embeddings encrypted with that DEK become irrecoverable — no ciphertext can be decrypted without the key.</li>
+                    <li><strong>Blob store cleanup (T+7 to T+30 days):</strong> Encrypted blobs are garbage-collected from the object store. Database rows for the tenant are purged. Backups containing the tenant&rsquo;s data age out according to the backup retention schedule (maximum 30 days).</li>
+                </ol>
+                <p class="mt-3">After 30 days, no trace of the tenant&rsquo;s data remains in the live system or backups.</p>
+            </section>
+
+            {# 4. Cryptographic Shredding #}
+            <section>
+                <h2 class="text-lg font-semibold text-gray-900">4. Cryptographic Shredding (Crypto-Shredding)</h2>
+                <p class="mt-3">Local KB uses a two-tier encryption key hierarchy to enable secure, verifiable data erasure:</p>
+
+                <div class="mt-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
+                    <h3 class="font-medium text-gray-900 text-sm">Key Hierarchy</h3>
+                    <ul class="mt-2 space-y-2 text-sm">
+                        <li><strong>Key Encryption Key (KEK):</strong> One per deployment cluster. Stored in a hardware security module (HSM) or secure keystore. The KEK never leaves the secure boundary. It is used exclusively to wrap (encrypt) and unwrap (decrypt) Data Encryption Keys.</li>
+                        <li><strong>Data Encryption Key (DEK):</strong> One per tenant. Generated on tenant creation using a cryptographically secure random number generator (CSPRNG). Stored encrypted (wrapped by the KEK). Used for all tenant data encryption: file content (AES-256-GCM), sensitive metadata, and encryption-at-rest for search indexes.</li>
+                    </ul>
+                </div>
+
+                <p class="mt-4">When crypto-shredding is triggered:</p>
+                <ol class="mt-2 list-decimal pl-6 space-y-1">
+                    <li>The tenant&rsquo;s DEK is permanently deleted from the database;</li>
+                    <li>Any in-memory copies of the DEK are zeroed;</li>
+                    <li>Since all tenant data was encrypted with that DEK, and the DEK itself was encrypted with the KEK, deleting the DEK renders the ciphertext irrecoverable — even if an attacker obtains the ciphertext and the KEK, there is no DEK to decrypt;</li>
+                    <li>A deletion audit event is recorded (tenant_id, timestamp) as proof of erasure;</li>
+                    <li>Backup retention ensures that any backup containing the DEK ages out within 30 days.</li>
+                </ol>
+
+                <p class="mt-3">Crypto-shredding is the primary deletion mechanism because it is:</p>
+                <ul class="mt-2 list-disc pl-6 space-y-1">
+                    <li><strong>Fast:</strong> Deleting a single key is near-instantaneous, regardless of how much data was encrypted;</li>
+                    <li><strong>Verifiable:</strong> The absence of the DEK record is auditable proof of erasure;</li>
+                    <li><strong>Secure:</strong> Even if encrypted blobs linger in storage or backups, they are mathematically irrecoverable without the DEK;</li>
+                    <li><strong>Compliant:</strong> Meets GDPR Article 17 (Right to Erasure) and similar data protection requirements.</li>
+                </ul>
+            </section>
+
+            {# 5. Backup Retention #}
+            <section>
+                <h2 class="text-lg font-semibold text-gray-900">5. Backup Retention</h2>
+                <p class="mt-3">Database backups are retained according to the following schedule:</p>
+                <ul class="mt-2 list-disc pl-6 space-y-1">
+                    <li><strong>Daily backups:</strong> Retained for 7 days;</li>
+                    <li><strong>Weekly backups:</strong> Retained for 30 days;</li>
+                    <li><strong>Monthly backups:</strong> Retained for 90 days.</li>
+                </ul>
+                <p class="mt-3">Backups are encrypted at rest using the same encryption infrastructure as live data. After crypto-shredding, any backup containing the deleted tenant&rsquo;s DEK will have that key rendered useless within the retention window — and the backup itself will expire and be purged. The maximum time for complete purge of tenant data from all backups is 30 days (weekly backup window).</p>
+            </section>
+
+            {# 6. Export Before Deletion #}
+            <section>
+                <h2 class="text-lg font-semibold text-gray-900">6. Data Export Before Deletion</h2>
+                <p class="mt-3">Before deleting your account, you may export your data using the built-in export feature. The export includes:</p>
+                <ul class="mt-2 list-disc pl-6 space-y-1">
+                    <li>All original files;</li>
+                    <li>Document metadata (titles, summaries, tags, user notes);</li>
+                    <li>Chunk and embedding data in JSONL format;</li>
+                    <li>A manifest with schema version and export metadata.</li>
+                </ul>
+                <p class="mt-3">The export format is fully round-trippable — you can import it into another Local KB instance. See the <a href="/faq" class="text-indigo-600 hover:underline">FAQ</a> for instructions.</p>
+            </section>
+
+            {# 7. Legal Holds #}
+            <section>
+                <h2 class="text-lg font-semibold text-gray-900">7. Legal Holds</h2>
+                <p class="mt-3">In rare circumstances, we may be required by law to preserve data beyond the normal retention period (e.g., in response to a valid legal process). If a legal hold is placed on your account, we will notify you unless prohibited by law. Data subject to a legal hold is exempt from the standard deletion schedule until the hold is lifted.</p>
+            </section>
+
+            {# 8. Contact #}
+            <section>
+                <h2 class="text-lg font-semibold text-gray-900">8. Contact</h2>
+                <p class="mt-3">For questions about data retention, deletion, or to request a data export before deletion, contact us at <a href="mailto:privacy@localkb.example.com" class="text-indigo-600 hover:underline">privacy@localkb.example.com</a>.</p>
+            </section>
+
+        </div>
+    </div>
+</section>
+
+{# ── Footer ──────────────────────────────────────────────────────────── #}
+<footer class="border-t border-gray-200 bg-white py-10">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="flex flex-col sm:flex-row justify-between items-center gap-4">
+            <p class="text-sm text-gray-400">&copy; 2026 Local KB. All rights reserved.</p>
+            <div class="flex space-x-6">
+                <a href="/features" class="text-sm text-gray-400 hover:text-gray-600">Features</a>
+                <a href="/pricing" class="text-sm text-gray-400 hover:text-gray-600">Pricing</a>
+                <a href="/faq" class="text-sm text-gray-400 hover:text-gray-600">FAQ</a>
+                <a href="/terms" class="text-sm text-gray-400 hover:text-gray-600">Terms</a>
+                <a href="/privacy" class="text-sm text-gray-400 hover:text-gray-600">Privacy</a>
+            </div>
+        </div>
+    </div>
+</footer>
+{% endblock %}

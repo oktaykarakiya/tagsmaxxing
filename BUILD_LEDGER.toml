@@ -1333,9 +1333,9 @@ description = "Legal pages (§30): (a) Terms of Service (/terms) — usage terms
 depends_on = ["P6-T4"]
 plan_sections = ["30"]
 acceptance = "All 6 legal pages load at their routes; DPA dynamically lists sub-processors from routing table; content is reasonable placeholder (not lorem ipsum); pages are accessible without auth; linked from footer on all pages. Unit tests for route accessibility + DPA sub-processor list. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "Legal pages (P12-T6): 6 Askama templates (terms, privacy, dpa, aup, cookies, retention) + 6 template types + handlers + routes + footer links on all marketing pages. DPA dynamically lists remote AI providers from routing table. 25 new tests (7 template rendering + 4 provider_kind_label + 8 axum integration + 2 pure logic). just ci green."
 
 [[task]]
 id = "P12-T7"

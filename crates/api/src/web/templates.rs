@@ -565,3 +565,69 @@ pub(crate) struct DailyChartPoint {
     /// Completion tokens used on that day.
     pub completion: i64,
 }
+
+// ── Legal page types (P12-T6) ─────────────────────────────────────────────────
+
+/// `GET /terms` — the Terms of Service page.
+///
+/// Static content, no database queries. Linked from the footer on all pages.
+#[derive(Debug, Template)]
+#[template(path = "terms.html")]
+pub(crate) struct TermsPage;
+
+/// `GET /privacy` — the Privacy Policy page.
+///
+/// Static content describing data collection, usage, sub-processors, and
+/// user rights. Linked from the footer on all pages.
+#[derive(Debug, Template)]
+#[template(path = "privacy.html")]
+pub(crate) struct PrivacyPage;
+
+/// `GET /dpa` — the Data Processing Agreement page.
+///
+/// Dynamically lists current sub-processors from the routing table for
+/// remote AI model providers. Static sub-processors (B2, Stripe, email
+/// provider) are embedded in the template.
+#[derive(Debug, Template)]
+#[template(path = "dpa.html")]
+pub(crate) struct DpaPage {
+    /// Remote AI providers from the current routing table.
+    pub sub_processors: Vec<SubProcessorEntry>,
+}
+
+/// A single row in the DPA sub-processor table, derived from a configured
+/// AI model provider.
+#[derive(Debug, Clone)]
+pub(crate) struct SubProcessorEntry {
+    /// Provider display name (e.g. "llama-gpu", "openai-paid").
+    pub name: String,
+    /// Provider kind as a human-readable label (e.g. "OpenAI-compatible", "Anthropic").
+    pub kind: String,
+    /// Data location (currently static; may become configurable per-provider).
+    pub location: String,
+}
+
+/// `GET /aup` — the Acceptable Use Policy page.
+///
+/// Describes prohibited content, prohibited activities, AI model usage
+/// rules, and enforcement procedures.
+#[derive(Debug, Template)]
+#[template(path = "aup.html")]
+pub(crate) struct AupPage;
+
+/// `GET /cookies` — the Cookie Policy page.
+///
+/// Lists the strictly necessary cookies used by the Service, their purpose,
+/// duration, and security properties. No third-party tracking cookies are set.
+#[derive(Debug, Template)]
+#[template(path = "cookies.html")]
+pub(crate) struct CookiesPage;
+
+/// `GET /retention` — the Data Retention & Erasure statement.
+///
+/// Explains the full data lifecycle, including the crypto-shredding process
+/// (DEK deletion = irrecoverable data), backup retention schedule, and
+/// data export before deletion.
+#[derive(Debug, Template)]
+#[template(path = "retention.html")]
+pub(crate) struct RetentionPage;

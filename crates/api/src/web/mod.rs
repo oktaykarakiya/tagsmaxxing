@@ -32,6 +32,7 @@ pub(crate) mod handlers_account;
 pub(crate) mod handlers_auth_web;
 pub(crate) mod handlers_dashboard;
 pub(crate) mod handlers_documents;
+pub(crate) mod handlers_legal;
 pub(crate) mod handlers_marketing;
 pub(crate) mod security;
 pub(crate) mod templates;
@@ -76,6 +77,13 @@ pub(crate) fn build_web_router(
         .route("/pricing", get(handlers_marketing::pricing_page))
         .route("/features", get(handlers_marketing::features_page))
         .route("/faq", get(handlers_marketing::faq_page))
+        // Legal pages (P12-T6): public, no auth required.
+        .route("/terms", get(handlers_legal::terms_page))
+        .route("/privacy", get(handlers_legal::privacy_page))
+        .route("/dpa", get(handlers_legal::dpa_page))
+        .route("/aup", get(handlers_legal::aup_page))
+        .route("/cookies", get(handlers_legal::cookies_page))
+        .route("/retention", get(handlers_legal::retention_page))
         .route(
             "/login",
             get(handlers::login_page).post(handlers::login_submit),
