@@ -959,6 +959,7 @@ mod tests {
             tenant_id: 1,
             user_id: 1,
             role: UserRole::Owner,
+            email_verified: true,
         };
         assert!(require_admin(&u).is_ok());
         assert!(require_owner(&u).is_ok());
@@ -970,6 +971,7 @@ mod tests {
             tenant_id: 1,
             user_id: 2,
             role: UserRole::Admin,
+            email_verified: true,
         };
         assert!(require_admin(&u).is_ok());
         assert!(require_owner(&u).is_err());
@@ -981,6 +983,7 @@ mod tests {
             tenant_id: 1,
             user_id: 3,
             role: UserRole::Member,
+            email_verified: true,
         };
         assert!(require_admin(&u).is_err());
         assert!(require_owner(&u).is_err());
@@ -1220,7 +1223,7 @@ mod tests {
         let state = test_app_state();
         let token = state
             .session_store
-            .create(1, 50, UserRole::Member, Duration::from_secs(3600))
+            .create(1, 50, UserRole::Member, true, Duration::from_secs(3600))
             .await
             .unwrap();
         let request = axum::http::Request::builder()
@@ -1244,7 +1247,7 @@ mod tests {
         let state = test_app_state();
         let token = state
             .session_store
-            .create(1, 50, UserRole::Admin, Duration::from_secs(3600))
+            .create(1, 50, UserRole::Admin, true, Duration::from_secs(3600))
             .await
             .unwrap();
         let request = axum::http::Request::builder()
@@ -1268,7 +1271,7 @@ mod tests {
         let state = test_app_state();
         let token = state
             .session_store
-            .create(1, 50, UserRole::Member, Duration::from_secs(3600))
+            .create(1, 50, UserRole::Member, true, Duration::from_secs(3600))
             .await
             .unwrap();
         let request = axum::http::Request::builder()
@@ -1292,7 +1295,7 @@ mod tests {
         let state = test_app_state();
         let token = state
             .session_store
-            .create(1, 50, UserRole::Member, Duration::from_secs(3600))
+            .create(1, 50, UserRole::Member, true, Duration::from_secs(3600))
             .await
             .unwrap();
         let request = axum::http::Request::builder()
@@ -1339,7 +1342,7 @@ mod tests {
         let state = test_app_state();
         let token = state
             .session_store
-            .create(1, 50, UserRole::Owner, Duration::from_secs(3600))
+            .create(1, 50, UserRole::Owner, true, Duration::from_secs(3600))
             .await
             .unwrap();
         let request = axum::http::Request::builder()
@@ -1364,7 +1367,7 @@ mod tests {
         let state = test_app_state();
         let token = state
             .session_store
-            .create(1, 50, UserRole::Admin, Duration::from_secs(3600))
+            .create(1, 50, UserRole::Admin, true, Duration::from_secs(3600))
             .await
             .unwrap();
         let request = axum::http::Request::builder()
@@ -1388,7 +1391,7 @@ mod tests {
         let state = test_app_state();
         let token = state
             .session_store
-            .create(1, 50, UserRole::Admin, Duration::from_secs(3600))
+            .create(1, 50, UserRole::Admin, true, Duration::from_secs(3600))
             .await
             .unwrap();
         let request = axum::http::Request::builder()
@@ -1412,7 +1415,7 @@ mod tests {
         let state = test_app_state();
         let token = state
             .session_store
-            .create(1, 50, UserRole::Admin, Duration::from_secs(3600))
+            .create(1, 50, UserRole::Admin, true, Duration::from_secs(3600))
             .await
             .unwrap();
         let request = axum::http::Request::builder()
@@ -1436,7 +1439,7 @@ mod tests {
         let state = test_app_state();
         let token = state
             .session_store
-            .create(1, 50, UserRole::Owner, Duration::from_secs(3600))
+            .create(1, 50, UserRole::Owner, true, Duration::from_secs(3600))
             .await
             .unwrap();
         let csrf_val = "aaaa1111222233334444555566667777888899990000111122223333444455556666";
@@ -1483,7 +1486,7 @@ mod tests {
         let state = test_app_state();
         let token = state
             .session_store
-            .create(1, 50, UserRole::Owner, Duration::from_secs(3600))
+            .create(1, 50, UserRole::Owner, true, Duration::from_secs(3600))
             .await
             .unwrap();
         let csrf_val = "bbbb1111222233334444555566667777888899990000111122223333444455556666";
@@ -1524,7 +1527,7 @@ mod tests {
         let state = test_app_state();
         let token = state
             .session_store
-            .create(1, 50, UserRole::Owner, Duration::from_secs(3600))
+            .create(1, 50, UserRole::Owner, true, Duration::from_secs(3600))
             .await
             .unwrap();
         let csrf_val = "cccc1111222233334444555566667777888899990000111122223333444455556666";
@@ -1564,7 +1567,7 @@ mod tests {
         let state = test_app_state();
         let token = state
             .session_store
-            .create(1, 50, UserRole::Admin, Duration::from_secs(3600))
+            .create(1, 50, UserRole::Admin, true, Duration::from_secs(3600))
             .await
             .unwrap();
         // Admin tries to invite a new Owner — should be rejected.
@@ -1611,7 +1614,7 @@ mod tests {
         let state = test_app_state();
         let token = state
             .session_store
-            .create(1, 50, UserRole::Admin, Duration::from_secs(3600))
+            .create(1, 50, UserRole::Admin, true, Duration::from_secs(3600))
             .await
             .unwrap();
         // Admin tries to promote someone to Owner — should be rejected with 403.

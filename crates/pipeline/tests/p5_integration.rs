@@ -278,6 +278,7 @@ async fn e2e_multi_tenant_ingest_and_search_isolation() {
             infra.tenant_a,
             1,
             kb_core::user::UserRole::Admin,
+            true,
             Duration::from_secs(3600),
         )
         .await
@@ -288,6 +289,7 @@ async fn e2e_multi_tenant_ingest_and_search_isolation() {
             infra.tenant_b,
             2,
             kb_core::user::UserRole::Admin,
+            true,
             Duration::from_secs(3600),
         )
         .await

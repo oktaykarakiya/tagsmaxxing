@@ -28,6 +28,9 @@ pub struct LoginRequest {
     pub email: String,
     /// Plaintext password.
     pub password: String,
+    /// If `true`, the session TTL is extended to 30 days (P12-T2).
+    #[serde(default)]
+    pub remember_me: bool,
 }
 
 /// Registration request body.
@@ -114,9 +117,14 @@ pub async fn login(
     }
 
     // ── 4. Create session ──────────────────────────────────────────────────
+    let ttl = if req.remember_me {
+        std::time::Duration::from_secs(kb_core::session::REMEMBER_ME_SESSION_TTL_SECS)
+    } else {
+        state.session_ttl
+    };
     let token = state
         .session_store
-        .create(user.tenant_id, user.id, user.role, state.session_ttl)
+        .create(user.tenant_id, user.id, user.role, user.email_verified, ttl)
         .await
         .map_err(internal_error)?;
 
@@ -124,7 +132,7 @@ pub async fn login(
     let mut headers = HeaderMap::new();
     headers.insert(
         SET_COOKIE,
-        session_cookie_value(&token, state.session_ttl, state.secure_cookies),
+        session_cookie_value(&token, ttl, state.secure_cookies),
     );
 
     let body = AuthResponse {
@@ -191,7 +199,13 @@ pub async fn register(
     // ── 4. Create session ──────────────────────────────────────────────────
     let token = state
         .session_store
-        .create(tenant_id, user_id, UserRole::Member, state.session_ttl)
+        .create(
+            tenant_id,
+            user_id,
+            UserRole::Member,
+            false,
+            state.session_ttl,
+        )
         .await
         .map_err(internal_error)?;
 
@@ -444,7 +458,7 @@ mod tests {
         // Create a session.
         let token = state
             .session_store
-            .create(1, 42, UserRole::Member, Duration::from_secs(3600))
+            .create(1, 42, UserRole::Member, true, Duration::from_secs(3600))
             .await
             .unwrap();
 

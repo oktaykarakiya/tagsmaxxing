@@ -273,7 +273,7 @@ fn build_app_state(
 async fn create_session(infra: &P6Infra, tenant_id: i64, user_id: i64, role: UserRole) -> String {
     infra
         .sessions
-        .create(tenant_id, user_id, role, Duration::from_secs(3600))
+        .create(tenant_id, user_id, role, true, Duration::from_secs(3600))
         .await
         .unwrap()
 }
@@ -1166,7 +1166,7 @@ async fn authenticated_session_reaches_api_handler() {
 
     // Create a session.
     let token = session_store
-        .create(1, 42, UserRole::Member, Duration::from_secs(3600))
+        .create(1, 42, UserRole::Member, true, Duration::from_secs(3600))
         .await
         .unwrap();
 

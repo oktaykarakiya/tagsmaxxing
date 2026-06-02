@@ -301,6 +301,7 @@ pub async fn run_serve(args: &ServeArgs) -> anyhow::Result<()> {
         stripe_client,
         stripe_webhook_secret: None,
         public_base_url,
+        email_sender: Some(Arc::new(kb_core::email::NoopEmailSender)),
     };
     if let Some(ws) = webhook_secret {
         use std::sync::Arc;

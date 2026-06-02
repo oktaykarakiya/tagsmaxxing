@@ -459,7 +459,7 @@ mod tests {
     async fn login(state: &AppState) -> String {
         state
             .session_store
-            .create(1, 42, UserRole::Member, Duration::from_secs(3600))
+            .create(1, 42, UserRole::Member, true, Duration::from_secs(3600))
             .await
             .unwrap()
     }

@@ -149,7 +149,7 @@ async fn create_session(
 ) -> String {
     state
         .session_store
-        .create(tenant_id, user_id, role, Duration::from_secs(3600))
+        .create(tenant_id, user_id, role, true, Duration::from_secs(3600))
         .await
         .unwrap()
 }

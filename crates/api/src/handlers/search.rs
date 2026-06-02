@@ -397,7 +397,7 @@ mod tests {
         let state = test_state();
         let token = state
             .session_store
-            .create(1, 42, UserRole::Member, Duration::from_secs(3600))
+            .create(1, 42, UserRole::Member, true, Duration::from_secs(3600))
             .await
             .unwrap();
         let router = search_router(state);
@@ -419,7 +419,7 @@ mod tests {
         let state = test_state();
         let token = state
             .session_store
-            .create(1, 42, UserRole::Member, Duration::from_secs(3600))
+            .create(1, 42, UserRole::Member, true, Duration::from_secs(3600))
             .await
             .unwrap();
         let router = search_router(state);
@@ -460,7 +460,7 @@ mod tests {
 
         let token = new_state
             .session_store
-            .create(1, 42, UserRole::Member, Duration::from_secs(3600))
+            .create(1, 42, UserRole::Member, true, Duration::from_secs(3600))
             .await
             .unwrap();
         let router = search_router(new_state);
@@ -508,7 +508,7 @@ mod tests {
 
         let token = state
             .session_store
-            .create(1, 42, UserRole::Member, Duration::from_secs(3600))
+            .create(1, 42, UserRole::Member, true, Duration::from_secs(3600))
             .await
             .unwrap();
         let router = search_router(state);
@@ -531,7 +531,7 @@ mod tests {
         let state = test_state();
         let token = state
             .session_store
-            .create(1, 42, UserRole::Member, Duration::from_secs(3600))
+            .create(1, 42, UserRole::Member, true, Duration::from_secs(3600))
             .await
             .unwrap();
         let router = search_router(state);
@@ -575,7 +575,7 @@ mod tests {
 
         let token = state
             .session_store
-            .create(1, 42, UserRole::Member, Duration::from_secs(3600))
+            .create(1, 42, UserRole::Member, true, Duration::from_secs(3600))
             .await
             .unwrap();
         let router = search_router(state);
@@ -619,7 +619,7 @@ mod tests {
 
         let token = state
             .session_store
-            .create(1, 42, UserRole::Member, Duration::from_secs(3600))
+            .create(1, 42, UserRole::Member, true, Duration::from_secs(3600))
             .await
             .unwrap();
         let router = search_router(state);

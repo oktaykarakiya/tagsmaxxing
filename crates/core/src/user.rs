@@ -33,6 +33,8 @@ pub struct User {
     pub password_hash: String,
     /// Role within the tenant.
     pub role: UserRole,
+    /// Whether the user's email address has been verified (P12-T2).
+    pub email_verified: bool,
     /// Row creation time.
     pub created_at: DateTime<Utc>,
 }

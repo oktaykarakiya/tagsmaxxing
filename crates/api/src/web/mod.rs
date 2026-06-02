@@ -28,6 +28,7 @@ pub(crate) mod admin_routing_templates;
 pub(crate) mod admin_templates;
 pub(crate) mod csrf;
 pub(crate) mod handlers;
+pub(crate) mod handlers_auth_web;
 pub(crate) mod handlers_documents;
 pub(crate) mod handlers_marketing;
 pub(crate) mod security;
@@ -80,6 +81,22 @@ pub(crate) fn build_web_router(
         .route(
             "/register",
             get(handlers::register_page).post(handlers::register_submit),
+        )
+        // Auth flow (P12-T2): signup, email verification, password reset.
+        .route(
+            "/signup",
+            get(handlers_auth_web::signup_page).post(handlers_auth_web::signup_submit),
+        )
+        .route("/verify", get(handlers_auth_web::verify_email))
+        .route(
+            "/forgot",
+            get(handlers_auth_web::forgot_password_page)
+                .post(handlers_auth_web::forgot_password_submit),
+        )
+        .route(
+            "/reset",
+            get(handlers_auth_web::reset_password_page)
+                .post(handlers_auth_web::reset_password_submit),
         );
 
     // Protected web routes (auth required).

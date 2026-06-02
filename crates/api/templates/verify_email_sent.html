@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+
+{% block title %}Check your email{% endblock %}
+
+{% block content %}
+<div class="flex min-h-[80vh] items-center justify-center">
+    <div class="w-full max-w-md space-y-8 rounded-xl bg-white p-8 shadow-lg text-center">
+        <div class="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-indigo-100">
+            <svg class="h-8 w-8 text-indigo-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                      d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
+            </svg>
+        </div>
+
+        <h2 class="text-2xl font-bold tracking-tight text-gray-900">
+            Check your email
+        </h2>
+
+        <p class="text-sm text-gray-500">
+            We've sent a verification link to <strong>{{ email }}</strong>.
+            Click the link in the email to activate your account.
+        </p>
+
+        <p class="text-xs text-gray-400">
+            Didn't receive the email? Check your spam folder, or
+            <a href="/signup" class="font-medium text-indigo-600 hover:text-indigo-500">try again</a>.
+        </p>
+
+        <a href="/login"
+           class="inline-flex items-center justify-center rounded-md bg-indigo-600 px-6 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 transition">
+            Go to login
+        </a>
+    </div>
+</div>
+{% endblock %}

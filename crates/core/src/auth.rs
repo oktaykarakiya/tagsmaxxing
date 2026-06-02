@@ -114,6 +114,26 @@ impl SessionSecret {
     }
 }
 
+/// Number of random bytes in an email verification / password reset token
+/// (32 bytes → 64 hex chars).
+const EMAIL_TOKEN_BYTES: usize = 32;
+
+/// Generate a cryptographically random token for email verification or password reset.
+///
+/// Returns a 64-character hex-encoded string from 32 bytes of OS randomness. The token
+/// is suitable for embedding in a verification or password reset URL.
+///
+/// # Errors
+///
+/// Returns an error if the OS randomness source fails (extremely rare).
+pub fn generate_email_token() -> anyhow::Result<String> {
+    let mut bytes = [0u8; EMAIL_TOKEN_BYTES];
+    SysRng
+        .try_fill_bytes(&mut bytes)
+        .map_err(|e| anyhow::anyhow!("failed to generate email token: {e}"))?;
+    Ok(hex::encode(bytes))
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -262,5 +282,31 @@ mod tests {
         // for development convenience, but we verify the debug output contains
         // the type name.
         assert!(dbg.contains("SessionSecret"), "debug: {dbg}");
+    }
+
+    // ── generate_email_token ───────────────────────────────────────────────
+
+    #[test]
+    fn email_token_is_64_hex_chars() {
+        let token = generate_email_token().unwrap();
+        assert_eq!(token.len(), 64, "32 bytes hex-encoded = 64 chars");
+        assert!(token.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn email_token_is_unique_per_call() {
+        let t1 = generate_email_token().unwrap();
+        let t2 = generate_email_token().unwrap();
+        let t3 = generate_email_token().unwrap();
+        assert_ne!(t1, t2);
+        assert_ne!(t1, t3);
+        assert_ne!(t2, t3);
+    }
+
+    #[test]
+    fn email_token_is_stable_length() {
+        for _ in 0..50 {
+            assert_eq!(generate_email_token().unwrap().len(), 64);
+        }
     }
 }

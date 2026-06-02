@@ -707,6 +707,7 @@ mod tests {
             _tenant_id: i64,
             _user_id: i64,
             _user_role: kb_core::user::UserRole,
+            _email_verified: bool,
             _ttl: std::time::Duration,
         ) -> anyhow::Result<String> {
             Ok("mock-token".into())

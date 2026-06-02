@@ -56,6 +56,9 @@ pub struct LoginForm {
     pub email: String,
     /// Plaintext password.
     pub password: String,
+    /// "Remember me" checkbox — extends session TTL to 30 days (P12-T2).
+    #[serde(default)]
+    pub remember_me: bool,
 }
 
 /// HTML form data for the registration page.
@@ -204,6 +207,7 @@ pub async fn login_submit(
         tenant_slug: form.tenant_slug.clone(),
         email: form.email.clone(),
         password: form.password.clone(),
+        remember_me: form.remember_me,
     };
     let json_body = axum::Json(req);
 
@@ -1037,7 +1041,7 @@ mod tests {
         // Create a valid session.
         let token = state
             .session_store
-            .create(1, 42, UserRole::Member, Duration::from_secs(3600))
+            .create(1, 42, UserRole::Member, true, Duration::from_secs(3600))
             .await
             .unwrap();
 
@@ -1083,7 +1087,7 @@ mod tests {
 
         let token = state
             .session_store
-            .create(1, 42, UserRole::Member, Duration::from_secs(3600))
+            .create(1, 42, UserRole::Member, true, Duration::from_secs(3600))
             .await
             .unwrap();
 
@@ -1139,7 +1143,7 @@ mod tests {
         // Authenticate.
         let token = state
             .session_store
-            .create(1, 42, UserRole::Member, Duration::from_secs(3600))
+            .create(1, 42, UserRole::Member, true, Duration::from_secs(3600))
             .await
             .unwrap();
 
@@ -1194,7 +1198,7 @@ mod tests {
         let state = test_state();
         let token = state
             .session_store
-            .create(1, 42, UserRole::Member, Duration::from_secs(3600))
+            .create(1, 42, UserRole::Member, true, Duration::from_secs(3600))
             .await
             .unwrap();
         let router = web_router(state);
@@ -1235,7 +1239,7 @@ mod tests {
         let state = test_state();
         let token = state
             .session_store
-            .create(1, 42, UserRole::Member, Duration::from_secs(3600))
+            .create(1, 42, UserRole::Member, true, Duration::from_secs(3600))
             .await
             .unwrap();
         let router = web_router(state);
@@ -1261,7 +1265,7 @@ mod tests {
         let csrf_token = csrf::generate_csrf_token().unwrap();
         let token = state
             .session_store
-            .create(1, 42, UserRole::Member, Duration::from_secs(3600))
+            .create(1, 42, UserRole::Member, true, Duration::from_secs(3600))
             .await
             .unwrap();
         let router = web_router(state);
@@ -1294,7 +1298,7 @@ mod tests {
         let csrf_token = csrf::generate_csrf_token().unwrap();
         let token = state
             .session_store
-            .create(1, 42, UserRole::Member, Duration::from_secs(3600))
+            .create(1, 42, UserRole::Member, true, Duration::from_secs(3600))
             .await
             .unwrap();
         let router = web_router(state);
@@ -1347,7 +1351,7 @@ mod tests {
         let csrf_token = csrf::generate_csrf_token().unwrap();
         let token = state
             .session_store
-            .create(1, 42, UserRole::Member, Duration::from_secs(3600))
+            .create(1, 42, UserRole::Member, true, Duration::from_secs(3600))
             .await
             .unwrap();
         let router = web_router(state);
@@ -1410,7 +1414,7 @@ mod tests {
         let csrf_token = csrf::generate_csrf_token().unwrap();
         let token = state
             .session_store
-            .create(1, 42, UserRole::Member, Duration::from_secs(3600))
+            .create(1, 42, UserRole::Member, true, Duration::from_secs(3600))
             .await
             .unwrap();
         let router = web_router(state);
@@ -1459,7 +1463,7 @@ mod tests {
         let csrf_token = csrf::generate_csrf_token().unwrap();
         let token = state
             .session_store
-            .create(1, 42, UserRole::Member, Duration::from_secs(3600))
+            .create(1, 42, UserRole::Member, true, Duration::from_secs(3600))
             .await
             .unwrap();
         let router = web_router(state);
@@ -1521,7 +1525,7 @@ mod tests {
 
         let token = state
             .session_store
-            .create(1, 42, UserRole::Member, Duration::from_secs(3600))
+            .create(1, 42, UserRole::Member, true, Duration::from_secs(3600))
             .await
             .unwrap();
 
@@ -1583,7 +1587,7 @@ mod tests {
         let state = test_state();
         let token = state
             .session_store
-            .create(1, 42, UserRole::Member, Duration::from_secs(3600))
+            .create(1, 42, UserRole::Member, true, Duration::from_secs(3600))
             .await
             .unwrap();
         let router = web_router(state);
@@ -1630,7 +1634,7 @@ mod tests {
         let state = test_state();
         let token = state
             .session_store
-            .create(1, 42, UserRole::Member, Duration::from_secs(3600))
+            .create(1, 42, UserRole::Member, true, Duration::from_secs(3600))
             .await
             .unwrap();
         let router = web_router(state);
@@ -1663,7 +1667,7 @@ mod tests {
         let state = test_state();
         let token = state
             .session_store
-            .create(1, 42, UserRole::Member, Duration::from_secs(3600))
+            .create(1, 42, UserRole::Member, true, Duration::from_secs(3600))
             .await
             .unwrap();
         let router = web_router(state);
@@ -1701,7 +1705,7 @@ mod tests {
         let csrf_token = csrf::generate_csrf_token().unwrap();
         let session_token = state
             .session_store
-            .create(1, 42, UserRole::Member, Duration::from_secs(3600))
+            .create(1, 42, UserRole::Member, true, Duration::from_secs(3600))
             .await
             .unwrap();
 
@@ -1761,7 +1765,7 @@ mod tests {
         let csrf_token = csrf::generate_csrf_token().unwrap();
         let session_token = state
             .session_store
-            .create(1, 42, UserRole::Member, Duration::from_secs(3600))
+            .create(1, 42, UserRole::Member, true, Duration::from_secs(3600))
             .await
             .unwrap();
         // State without blob store → 500.
@@ -1832,7 +1836,7 @@ mod tests {
 
         let csrf_token = csrf::generate_csrf_token().unwrap();
         let session_token = session_store
-            .create(1, 42, UserRole::Member, Duration::from_secs(3600))
+            .create(1, 42, UserRole::Member, true, Duration::from_secs(3600))
             .await
             .unwrap();
         let router = web_router(state);

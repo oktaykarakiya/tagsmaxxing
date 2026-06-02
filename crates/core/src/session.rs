@@ -34,6 +34,9 @@ use crate::user::UserRole;
 /// Default session lifetime: 24 hours (plan §13).
 pub const DEFAULT_SESSION_TTL_SECS: u64 = 86_400;
 
+/// "Remember me" session lifetime: 30 days (P12-T2).
+pub const REMEMBER_ME_SESSION_TTL_SECS: u64 = 30 * 86_400;
+
 /// Number of random bytes in a session token (32 bytes → 64 hex chars).
 const SESSION_TOKEN_BYTES: usize = 32;
 
@@ -55,6 +58,8 @@ pub struct Session {
     pub user_id: i64,
     /// Role within the tenant at session creation time.
     pub user_role: UserRole,
+    /// Whether the user's email was verified at session creation time (P12-T2).
+    pub email_verified: bool,
     /// When this session expires. After this point [`SessionStore::validate`] returns
     /// `None` and the client must re-authenticate.
     pub expires_at: DateTime<Utc>,
@@ -67,7 +72,8 @@ pub struct Session {
 /// The result of a successful [`SessionStore::validate`] call.
 ///
 /// Carries the minimum information the auth middleware needs to populate request
-/// extensions: which tenant and user, and what role the user holds.
+/// extensions: which tenant and user, what role the user holds, and whether their
+/// email has been verified.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SessionInfo {
     /// Owning tenant.
@@ -76,6 +82,8 @@ pub struct SessionInfo {
     pub user_id: i64,
     /// Role within the tenant.
     pub user_role: UserRole,
+    /// Whether the user's email address has been verified (P12-T2).
+    pub email_verified: bool,
 }
 
 // ── SessionStore trait ─────────────────────────────────────────────────────────
@@ -100,8 +108,9 @@ pub trait SessionStore: Send + Sync {
     /// role of the authenticated user at session-creation time — it is stored in the
     /// session record and returned by [`validate`](Self::validate) so the auth
     /// middleware can inject it into request extensions without a separate DB lookup.
-    /// Implementations should use [`DEFAULT_SESSION_TTL_SECS`] unless the caller
-    /// explicitly overrides it.
+    /// `email_verified` is stored in the session record so the middleware can expose
+    /// it without a per-request DB query (P12-T2). Implementations should use
+    /// [`DEFAULT_SESSION_TTL_SECS`] unless the caller explicitly overrides it.
     ///
     /// # Errors
     ///
@@ -111,6 +120,7 @@ pub trait SessionStore: Send + Sync {
         tenant_id: i64,
         user_id: i64,
         user_role: UserRole,
+        email_verified: bool,
         ttl: Duration,
     ) -> anyhow::Result<String>;
 
@@ -233,6 +243,15 @@ mod tests {
         assert_eq!(
             Duration::from_secs(DEFAULT_SESSION_TTL_SECS),
             Duration::from_secs(24 * 60 * 60)
+        );
+    }
+
+    #[test]
+    fn remember_me_ttl_is_30_days() {
+        assert_eq!(REMEMBER_ME_SESSION_TTL_SECS, 2_592_000);
+        assert_eq!(
+            Duration::from_secs(REMEMBER_ME_SESSION_TTL_SECS),
+            Duration::from_secs(30 * 24 * 60 * 60)
         );
     }
 }

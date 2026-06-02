@@ -57,6 +57,7 @@ pub async fn auth_middleware(
         tenant_id: info.tenant_id,
         user_id: info.user_id,
         role: info.user_role,
+        email_verified: info.email_verified,
     });
 
     // Slide the session expiry (best-effort — failure does not reject the request).
@@ -131,7 +132,7 @@ mod tests {
     async fn create_session(state: &AppState, role: UserRole) -> String {
         state
             .session_store
-            .create(1, 42, role, Duration::from_secs(3600))
+            .create(1, 42, role, true, Duration::from_secs(3600))
             .await
             .unwrap()
     }
@@ -222,7 +223,13 @@ mod tests {
     /// Build a minimal test app: a protected route behind the middleware that
     /// returns the AuthUser details as a string.
     async fn protected_handler(axum::Extension(user): axum::Extension<AuthUser>) -> String {
-        format!("{}:{}:{}", user.tenant_id, user.user_id, user.role.as_str())
+        format!(
+            "{}:{}:{}:{}",
+            user.tenant_id,
+            user.user_id,
+            user.role.as_str(),
+            user.email_verified
+        )
     }
 
     fn test_router(state: Arc<AppState>) -> Router {
@@ -247,7 +254,7 @@ mod tests {
         let body = axum::body::to_bytes(response.into_body(), 1024)
             .await
             .unwrap();
-        assert_eq!(std::str::from_utf8(&body).unwrap(), "1:42:admin");
+        assert_eq!(std::str::from_utf8(&body).unwrap(), "1:42:admin:true");
     }
 
     #[tokio::test]
@@ -277,7 +284,7 @@ mod tests {
         // Create a session with a very short TTL.
         let token = state
             .session_store
-            .create(1, 99, UserRole::Member, Duration::from_millis(1))
+            .create(1, 99, UserRole::Member, true, Duration::from_millis(1))
             .await
             .unwrap();
         // Wait for the session to expire.
@@ -300,7 +307,7 @@ mod tests {
             .unwrap();
         assert_eq!(r1.status(), StatusCode::OK);
         let body = axum::body::to_bytes(r1.into_body(), 1024).await.unwrap();
-        assert_eq!(std::str::from_utf8(&body).unwrap(), "1:42:admin");
+        assert_eq!(std::str::from_utf8(&body).unwrap(), "1:42:admin:true");
 
         // Owner session.
         let t_owner = create_session(&state, UserRole::Owner).await;
@@ -310,7 +317,7 @@ mod tests {
             .unwrap();
         assert_eq!(r2.status(), StatusCode::OK);
         let body = axum::body::to_bytes(r2.into_body(), 1024).await.unwrap();
-        assert_eq!(std::str::from_utf8(&body).unwrap(), "1:42:owner");
+        assert_eq!(std::str::from_utf8(&body).unwrap(), "1:42:owner:true");
     }
 
     #[tokio::test]
@@ -318,7 +325,7 @@ mod tests {
         let state = test_state();
         let token = state
             .session_store
-            .create(1, 1, UserRole::Member, Duration::from_millis(200))
+            .create(1, 1, UserRole::Member, true, Duration::from_millis(200))
             .await
             .unwrap();
 

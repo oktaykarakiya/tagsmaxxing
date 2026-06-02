@@ -65,6 +65,7 @@ impl SessionStore for InMemorySessionStore {
         tenant_id: i64,
         user_id: i64,
         user_role: UserRole,
+        email_verified: bool,
         ttl: Duration,
     ) -> anyhow::Result<String> {
         let token = generate_session_token()?;
@@ -74,6 +75,7 @@ impl SessionStore for InMemorySessionStore {
             tenant_id,
             user_id,
             user_role,
+            email_verified,
             expires_at: now
                 + chrono::Duration::from_std(ttl)
                     .map_err(|e| anyhow::anyhow!("invalid TTL: {e}"))?,
@@ -96,6 +98,7 @@ impl SessionStore for InMemorySessionStore {
             tenant_id: session.tenant_id,
             user_id: session.user_id,
             user_role: session.user_role,
+            email_verified: session.email_verified,
         }))
     }
 
@@ -163,6 +166,7 @@ impl SessionStore for PgSessionStore {
         tenant_id: i64,
         user_id: i64,
         user_role: UserRole,
+        email_verified: bool,
         ttl: Duration,
     ) -> anyhow::Result<String> {
         let token = generate_session_token()?;
@@ -170,13 +174,14 @@ impl SessionStore for PgSessionStore {
         let ttl_secs = ttl.as_secs_f64();
         // Use INTERVAL arithmetic so the database clock is authoritative.
         sqlx::query(
-            "INSERT INTO sessions (id, tenant_id, user_id, user_role, expires_at, created_at)
-             VALUES ($1, $2, $3, $4, $5 + make_interval(secs => $6), $5)",
+            "INSERT INTO sessions (id, tenant_id, user_id, user_role, email_verified, expires_at, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6 + make_interval(secs => $7), $6)",
         )
         .bind(&token)
         .bind(tenant_id)
         .bind(user_id)
         .bind(user_role.as_str())
+        .bind(email_verified)
         .bind(now)
         .bind(ttl_secs)
         .execute(&self.pool)
@@ -191,10 +196,11 @@ impl SessionStore for PgSessionStore {
             tenant_id: i64,
             user_id: i64,
             user_role: String,
+            email_verified: bool,
         }
 
         let row: Option<Row> = sqlx::query_as(
-            "SELECT tenant_id, user_id, user_role FROM sessions
+            "SELECT tenant_id, user_id, user_role, email_verified FROM sessions
              WHERE id = $1 AND expires_at > now()",
         )
         .bind(token)
@@ -211,6 +217,7 @@ impl SessionStore for PgSessionStore {
                     tenant_id: r.tenant_id,
                     user_id: r.user_id,
                     user_role,
+                    email_verified: r.email_verified,
                 }))
             }
             None => Ok(None),
@@ -288,6 +295,7 @@ mod tests {
             tenant_id,
             user_id,
             user_role: role,
+            email_verified: true,
         })
     }
 
@@ -296,7 +304,7 @@ mod tests {
     #[tokio::test]
     async fn inmem_create_returns_64_char_hex_token() {
         let store = InMemorySessionStore::new();
-        let token = store.create(1, 42, role(), ttl()).await.unwrap();
+        let token = store.create(1, 42, role(), true, ttl()).await.unwrap();
         assert_eq!(token.len(), 64);
         assert!(token.chars().all(|c| c.is_ascii_hexdigit()));
     }
@@ -304,16 +312,16 @@ mod tests {
     #[tokio::test]
     async fn inmem_create_tokens_are_unique() {
         let store = InMemorySessionStore::new();
-        let t1 = store.create(1, 1, role(), ttl()).await.unwrap();
-        let t2 = store.create(1, 1, role(), ttl()).await.unwrap();
+        let t1 = store.create(1, 1, role(), true, ttl()).await.unwrap();
+        let t2 = store.create(1, 1, role(), true, ttl()).await.unwrap();
         assert_ne!(t1, t2);
     }
 
     #[tokio::test]
     async fn inmem_create_different_tenants() {
         let store = InMemorySessionStore::new();
-        let t1 = store.create(10, 100, role(), ttl()).await.unwrap();
-        let t2 = store.create(20, 200, role(), ttl()).await.unwrap();
+        let t1 = store.create(10, 100, role(), true, ttl()).await.unwrap();
+        let t2 = store.create(20, 200, role(), true, ttl()).await.unwrap();
         assert_ne!(t1, t2);
         assert_eq!(store.len().await, 2);
     }
@@ -323,7 +331,10 @@ mod tests {
     #[tokio::test]
     async fn inmem_validate_returns_info_for_valid_session() {
         let store = InMemorySessionStore::new();
-        let token = store.create(5, 99, admin_role(), ttl()).await.unwrap();
+        let token = store
+            .create(5, 99, admin_role(), true, ttl())
+            .await
+            .unwrap();
         let result = store.validate(&token).await.unwrap();
         assert_eq!(result, info(5, 99, UserRole::Admin));
     }
@@ -341,7 +352,7 @@ mod tests {
     #[tokio::test]
     async fn inmem_validate_returns_none_for_expired_session() {
         let store = InMemorySessionStore::new();
-        let token = store.create(1, 2, role(), short_ttl()).await.unwrap();
+        let token = store.create(1, 2, role(), true, short_ttl()).await.unwrap();
         // Wait for the session to expire.
         tokio::time::sleep(Duration::from_millis(1100)).await;
         let result = store.validate(&token).await.unwrap();
@@ -351,7 +362,7 @@ mod tests {
     #[tokio::test]
     async fn inmem_validate_returns_none_for_revoked_session() {
         let store = InMemorySessionStore::new();
-        let token = store.create(1, 2, role(), ttl()).await.unwrap();
+        let token = store.create(1, 2, role(), true, ttl()).await.unwrap();
         store.revoke(&token).await.unwrap();
         let result = store.validate(&token).await.unwrap();
         assert_eq!(result, None);
@@ -363,7 +374,7 @@ mod tests {
     async fn inmem_extend_bumps_expiry() {
         let store = InMemorySessionStore::new();
         // Create with a very short TTL.
-        let token = store.create(1, 2, role(), short_ttl()).await.unwrap();
+        let token = store.create(1, 2, role(), true, short_ttl()).await.unwrap();
         // Extend to a long TTL.
         store.extend(&token, ttl()).await.unwrap();
         // After short TTL + buffer, session should still be valid.
@@ -383,7 +394,7 @@ mod tests {
     #[tokio::test]
     async fn inmem_extend_never_shortens() {
         let store = InMemorySessionStore::new();
-        let token = store.create(1, 2, role(), ttl()).await.unwrap();
+        let token = store.create(1, 2, role(), true, ttl()).await.unwrap();
         // Extend with a shorter TTL — should not reduce the existing expiry.
         store.extend(&token, short_ttl()).await.unwrap();
         // Session should still be valid (the original 24h TTL is much larger).
@@ -403,8 +414,8 @@ mod tests {
     #[tokio::test]
     async fn inmem_revoke_removes_only_targeted_token() {
         let store = InMemorySessionStore::new();
-        let t1 = store.create(1, 10, role(), ttl()).await.unwrap();
-        let t2 = store.create(1, 20, role(), ttl()).await.unwrap();
+        let t1 = store.create(1, 10, role(), true, ttl()).await.unwrap();
+        let t2 = store.create(1, 20, role(), true, ttl()).await.unwrap();
         store.revoke(&t1).await.unwrap();
         assert_eq!(store.validate(&t1).await.unwrap(), None);
         assert_eq!(
@@ -419,7 +430,7 @@ mod tests {
     async fn inmem_cloned_store_shares_state() {
         let store1 = InMemorySessionStore::new();
         let store2 = store1.clone();
-        let token = store1.create(1, 42, role(), ttl()).await.unwrap();
+        let token = store1.create(1, 42, role(), true, ttl()).await.unwrap();
         assert_eq!(
             store2.validate(&token).await.unwrap(),
             info(1, 42, UserRole::Member)
@@ -431,9 +442,18 @@ mod tests {
     #[tokio::test]
     async fn inmem_preserves_user_role() {
         let store = InMemorySessionStore::new();
-        let t_owner = store.create(1, 1, UserRole::Owner, ttl()).await.unwrap();
-        let t_admin = store.create(1, 2, UserRole::Admin, ttl()).await.unwrap();
-        let t_member = store.create(1, 3, UserRole::Member, ttl()).await.unwrap();
+        let t_owner = store
+            .create(1, 1, UserRole::Owner, true, ttl())
+            .await
+            .unwrap();
+        let t_admin = store
+            .create(1, 2, UserRole::Admin, true, ttl())
+            .await
+            .unwrap();
+        let t_member = store
+            .create(1, 3, UserRole::Member, true, ttl())
+            .await
+            .unwrap();
 
         assert_eq!(
             store.validate(&t_owner).await.unwrap(),
@@ -527,7 +547,10 @@ mod tests {
     #[ignore = "needs testcontainers + podman socket"]
     async fn pg_create_and_validate_session() {
         with_pg_session_store(|store| async move {
-            let token = store.create(1, 1, UserRole::Owner, ttl()).await.unwrap();
+            let token = store
+                .create(1, 1, UserRole::Owner, true, ttl())
+                .await
+                .unwrap();
             assert_eq!(token.len(), 64);
             let result = store.validate(&token).await.unwrap();
             assert_eq!(result, info(1, 1, UserRole::Owner));
@@ -553,7 +576,7 @@ mod tests {
     async fn pg_extend_bumps_expiry() {
         with_pg_session_store(|store| async move {
             let token = store
-                .create(1, 1, UserRole::Admin, short_ttl())
+                .create(1, 1, UserRole::Admin, true, short_ttl())
                 .await
                 .unwrap();
             store.extend(&token, ttl()).await.unwrap();
@@ -568,7 +591,10 @@ mod tests {
     #[ignore = "needs testcontainers + podman socket"]
     async fn pg_revoke_removes_session() {
         with_pg_session_store(|store| async move {
-            let token = store.create(1, 1, UserRole::Member, ttl()).await.unwrap();
+            let token = store
+                .create(1, 1, UserRole::Member, true, ttl())
+                .await
+                .unwrap();
             store.revoke(&token).await.unwrap();
             let result = store.validate(&token).await.unwrap();
             assert_eq!(result, None);
@@ -580,9 +606,15 @@ mod tests {
     #[ignore = "needs testcontainers + podman socket"]
     async fn pg_revoke_then_recreate_is_new_token() {
         with_pg_session_store(|store| async move {
-            let token = store.create(1, 1, UserRole::Member, ttl()).await.unwrap();
+            let token = store
+                .create(1, 1, UserRole::Member, true, ttl())
+                .await
+                .unwrap();
             store.revoke(&token).await.unwrap();
-            let token2 = store.create(1, 1, UserRole::Admin, ttl()).await.unwrap();
+            let token2 = store
+                .create(1, 1, UserRole::Admin, true, ttl())
+                .await
+                .unwrap();
             assert_ne!(token, token2);
             assert_eq!(store.validate(&token).await.unwrap(), None);
             assert_eq!(

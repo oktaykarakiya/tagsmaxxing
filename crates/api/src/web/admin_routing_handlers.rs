@@ -1736,7 +1736,7 @@ mod tests {
         let state = test_app_state();
         let token = state
             .session_store
-            .create(1, 50, UserRole::Member, Duration::from_secs(3600))
+            .create(1, 50, UserRole::Member, true, Duration::from_secs(3600))
             .await
             .unwrap();
         let router = axum::Router::new()
@@ -1760,7 +1760,7 @@ mod tests {
         let state = test_app_state();
         let token = state
             .session_store
-            .create(1, 50, UserRole::Member, Duration::from_secs(3600))
+            .create(1, 50, UserRole::Member, true, Duration::from_secs(3600))
             .await
             .unwrap();
         let router = axum::Router::new()
@@ -1784,7 +1784,7 @@ mod tests {
         let state = test_app_state();
         let token = state
             .session_store
-            .create(1, 50, UserRole::Member, Duration::from_secs(3600))
+            .create(1, 50, UserRole::Member, true, Duration::from_secs(3600))
             .await
             .unwrap();
         let router = axum::Router::new()
@@ -1808,7 +1808,7 @@ mod tests {
         let state = test_app_state();
         let token = state
             .session_store
-            .create(1, 50, UserRole::Admin, Duration::from_secs(3600))
+            .create(1, 50, UserRole::Admin, true, Duration::from_secs(3600))
             .await
             .unwrap();
         let router = axum::Router::new()
@@ -1833,7 +1833,7 @@ mod tests {
         let state = test_app_state();
         let token = state
             .session_store
-            .create(1, 50, UserRole::Admin, Duration::from_secs(3600))
+            .create(1, 50, UserRole::Admin, true, Duration::from_secs(3600))
             .await
             .unwrap();
         let router = axum::Router::new()
@@ -1857,7 +1857,7 @@ mod tests {
         let state = test_app_state();
         let token = state
             .session_store
-            .create(1, 50, UserRole::Admin, Duration::from_secs(3600))
+            .create(1, 50, UserRole::Admin, true, Duration::from_secs(3600))
             .await
             .unwrap();
         let router = axum::Router::new()

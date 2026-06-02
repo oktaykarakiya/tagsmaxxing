@@ -204,6 +204,57 @@ pub(crate) struct DocumentFileEntry {
     pub size_display: String,
 }
 
+// ── Auth flow page types (P12-T2) ─────────────────────────────────────────────────
+
+/// `GET /signup` — the self-service signup page creating a new tenant + admin user.
+#[derive(Debug, Template)]
+#[template(path = "signup.html")]
+pub(crate) struct SignupPage {
+    /// CSRF token.
+    pub csrf_token: String,
+    /// Pre-fill the workspace name field.
+    pub tenant_name: String,
+    /// Pre-fill the email field.
+    pub email: String,
+    /// Error message to display (empty = no error).
+    pub error: String,
+}
+
+/// `GET /verify?token=…` — the "check your email" interstitial shown after signup
+/// or when a verification email is re-sent.
+#[derive(Debug, Template)]
+#[template(path = "verify_email_sent.html")]
+pub(crate) struct VerifyEmailSentPage {
+    /// The email address the verification link was sent to.
+    pub email: String,
+}
+
+/// `GET /forgot` — the forgot-password form (P12-T2).
+#[derive(Debug, Template)]
+#[template(path = "forgot_password.html")]
+pub(crate) struct ForgotPasswordPage {
+    /// CSRF token.
+    pub csrf_token: String,
+    /// Pre-fill the email field.
+    pub email: String,
+    /// Error message (empty = no error).
+    pub error: String,
+    /// Success message (empty = no success notification).
+    pub success_message: String,
+}
+
+/// `GET /reset?token=…` — the reset-password form (P12-T2).
+#[derive(Debug, Template)]
+#[template(path = "reset_password.html")]
+pub(crate) struct ResetPasswordPage {
+    /// CSRF token.
+    pub csrf_token: String,
+    /// The reset token from the URL query parameter.
+    pub token: String,
+    /// Error message (empty = no error).
+    pub error: String,
+}
+
 // ── Marketing page types (P12-T1) ────────────────────────────────────────────────
 
 /// `GET /` — the public landing page with hero, how-it-works (3 steps),

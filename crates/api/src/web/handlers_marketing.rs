@@ -879,6 +879,7 @@ mod tests {
                 1,
                 42,
                 UserRole::Member,
+                true,
                 std::time::Duration::from_secs(3600),
             )
             .await

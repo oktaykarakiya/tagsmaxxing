@@ -31,6 +31,7 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use kb_core::blob::Blob;
 use kb_core::degradation::DegradationState;
+use kb_core::email::EmailSender;
 use kb_core::session::SessionStore;
 use kb_pipeline::RetrievalPipeline;
 use kb_pipeline::ingest::IngestPipeline;
@@ -96,6 +97,9 @@ pub struct AppState {
     /// Checkout success / cancel callback URLs (P11-T2+).
     /// Default: `http://localhost:9999`.
     pub public_base_url: String,
+    /// Email sender for verification, password reset, and notifications (P12-T2).
+    /// When `None`, email-sending handlers return 500. Set via [`AppState::with_email_sender`].
+    pub email_sender: Option<Arc<dyn EmailSender>>,
 }
 
 impl AppState {
@@ -132,6 +136,7 @@ impl AppState {
             stripe_client: None,
             stripe_webhook_secret: None,
             public_base_url: "http://localhost:9999".into(),
+            email_sender: None,
         }
     }
 
@@ -166,6 +171,7 @@ impl AppState {
             stripe_client: None,
             stripe_webhook_secret: None,
             public_base_url: "http://localhost:9999".into(),
+            email_sender: None,
         }
     }
 
@@ -238,6 +244,14 @@ impl AppState {
     #[must_use]
     pub fn with_public_base_url(mut self, url: impl Into<String>) -> Self {
         self.public_base_url = url.into();
+        self
+    }
+
+    /// Builder: attach the email sender for verification, password reset, and
+    /// notifications (P12-T2). When `None`, email endpoints return 500.
+    #[must_use]
+    pub fn with_email_sender(mut self, sender: Arc<dyn EmailSender>) -> Self {
+        self.email_sender = Some(sender);
         self
     }
 
@@ -443,6 +457,8 @@ pub struct AuthUser {
     pub user_id: i64,
     /// The user's role within the tenant.
     pub role: kb_core::user::UserRole,
+    /// Whether the user's email has been verified (P12-T2).
+    pub email_verified: bool,
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -478,6 +494,7 @@ mod tests {
             stripe_client: None,
             stripe_webhook_secret: None,
             public_base_url: "http://localhost:9999".into(),
+            email_sender: None,
         })
     }
 
