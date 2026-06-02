@@ -13,6 +13,7 @@
 //!   [`PgSessionStore`](session_store::PgSessionStore) for production (plan §13, P5-T4).
 
 pub mod admin_queries;
+pub mod api_token_store;
 pub mod b2_blob;
 pub mod blob;
 pub mod blob_cache;

@@ -29,6 +29,7 @@ use axum::http::StatusCode;
 use axum::middleware::from_fn_with_state;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
+use kb_core::api_token::ApiTokenStore;
 use kb_core::blob::Blob;
 use kb_core::degradation::DegradationState;
 use kb_core::email::EmailSender;
@@ -100,6 +101,10 @@ pub struct AppState {
     /// Email sender for verification, password reset, and notifications (P12-T2).
     /// When `None`, email-sending handlers return 500. Set via [`AppState::with_email_sender`].
     pub email_sender: Option<Arc<dyn EmailSender>>,
+    /// API token store for Bearer-auth (P12-T5).
+    /// When `None`, Bearer authentication is disabled (cookie-only mode) and the
+    /// /api/tokens CRUD endpoints return 500. Set via [`AppState::with_api_token_store`].
+    pub api_token_store: Option<Arc<dyn ApiTokenStore>>,
 }
 
 impl AppState {
@@ -137,6 +142,7 @@ impl AppState {
             stripe_webhook_secret: None,
             public_base_url: "http://localhost:9999".into(),
             email_sender: None,
+            api_token_store: None,
         }
     }
 
@@ -172,6 +178,7 @@ impl AppState {
             stripe_webhook_secret: None,
             public_base_url: "http://localhost:9999".into(),
             email_sender: None,
+            api_token_store: None,
         }
     }
 
@@ -264,6 +271,15 @@ impl AppState {
         self.stripe_webhook_secret = Some(Arc::new(ArcSwap::new(Arc::new(secret.into()))));
         self
     }
+
+    /// Builder: attach the API token store for Bearer-auth (P12-T5).
+    /// When not set, Bearer authentication is disabled and /api/tokens
+    /// endpoints return 500.
+    #[must_use]
+    pub fn with_api_token_store(mut self, store: Arc<dyn ApiTokenStore>) -> Self {
+        self.api_token_store = Some(store);
+        self
+    }
 }
 
 // ── Router ─────────────────────────────────────────────────────────────────────
@@ -327,6 +343,14 @@ pub fn build_router(state: AppState) -> Router {
             get(handlers::documents::file_download),
         )
         .route("/api/jobs/{id}", get(handlers::jobs::job_status))
+        .route(
+            "/api/tokens",
+            post(handlers::api_tokens::create_token).get(handlers::api_tokens::list_tokens),
+        )
+        .route(
+            "/api/tokens/{id}",
+            axum::routing::delete(handlers::api_tokens::revoke_token),
+        )
         .route("/auth/logout", post(handlers::auth::logout))
         .route("/billing/checkout", post(handlers::billing::post_checkout))
         .route(
@@ -495,6 +519,7 @@ mod tests {
             stripe_webhook_secret: None,
             public_base_url: "http://localhost:9999".into(),
             email_sender: None,
+            api_token_store: None,
         })
     }
 

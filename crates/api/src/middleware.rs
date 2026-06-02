@@ -1,9 +1,17 @@
-//! The cookie-based authentication middleware.
+//! The combined cookie + Bearer-token authentication middleware.
 //!
-//! [`auth_middleware`] runs on every request to protected routes. It extracts the
-//! `__Host-session` cookie, validates it against the [`SessionStore`], and injects an
-//! [`AuthUser`](crate::AuthUser) into request extensions. Requests without a valid
-//! session receive a `401 Unauthorized`.
+//! [`auth_middleware`] runs on every request to protected routes. It tries two
+//! credential sources in order:
+//!
+//! 1. **Bearer token** (plan §30, P12-T5): extracts the `Authorization: Bearer <token>`
+//!    header, hashes it, and validates against the [`ApiTokenStore`]. On success,
+//!    injects [`AuthUser`](crate::AuthUser) and passes through. An *invalid* Bearer
+//!    token is a hard 401 — there is no fallback to cookies.
+//! 2. **Session cookie** (plan §13, P5-T5): extracts the `__Host-session` cookie,
+//!    validates against the [`SessionStore`]. On success, injects [`AuthUser`]
+//!    and slides the session expiry.
+//!
+//! If neither credential is present or valid, the middleware returns `401 Unauthorized`.
 
 use std::sync::Arc;
 
@@ -36,6 +44,32 @@ pub async fn auth_middleware(
     mut request: Request<axum::body::Body>,
     next: Next,
 ) -> Result<Response, StatusCode> {
+    // ── 1. Try Bearer token (API token) ─────────────────────────────────────
+    if let Some(bearer_token) = extract_bearer_token(request.headers()) {
+        // If an Authorization header is present, it MUST be valid. We do NOT
+        // fall through to the cookie check — a bad Bearer token is a hard 401.
+        if let Some(store) = &state.api_token_store {
+            match store.validate_token(&bearer_token).await {
+                Ok(Some(info)) => {
+                    request.extensions_mut().insert(AuthUser {
+                        tenant_id: info.tenant_id,
+                        user_id: info.user_id,
+                        role: info.user_role,
+                        email_verified: info.email_verified,
+                    });
+                    return Ok(next.run(request).await);
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!(error = %e, "API token store error during Bearer validation");
+                }
+            }
+        }
+        // Bearer token present but invalid → 401.
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    // ── 2. Fall back to session cookie ──────────────────────────────────────
     let token = extract_session_cookie(request.headers());
 
     let token = match token {
@@ -66,6 +100,32 @@ pub async fn auth_middleware(
     }
 
     Ok(next.run(request).await)
+}
+
+// ── Bearer token parsing ───────────────────────────────────────────────────────
+
+/// Extract the Bearer token from the `Authorization` request header.
+///
+/// Returns `Some(token)` if the header has the form `Bearer <token>` (case-insensitive
+/// prefix, one or more spaces/tabs), or `None` if the header is missing, malformed,
+/// or uses a different auth scheme.
+pub(crate) fn extract_bearer_token(headers: &axum::http::HeaderMap) -> Option<String> {
+    let auth_header = headers
+        .get(axum::http::header::AUTHORIZATION)?
+        .to_str()
+        .ok()?;
+
+    // Case-insensitive prefix match: "Bearer " or "bearer "
+    let remainder = auth_header
+        .strip_prefix("Bearer ")
+        .or_else(|| auth_header.strip_prefix("bearer "))?;
+
+    let token = remainder.trim();
+    if token.is_empty() {
+        None
+    } else {
+        Some(token.to_owned())
+    }
 }
 
 // ── Cookie parsing ─────────────────────────────────────────────────────────────
@@ -105,6 +165,7 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use axum::routing::get;
+    use kb_core::api_token::DEFAULT_API_TOKEN_TTL_SECS;
     use kb_core::session::{DEFAULT_SESSION_TTL_SECS, SessionStore};
     use kb_core::user::UserRole;
     use kb_store::session_store::InMemorySessionStore;
@@ -347,5 +408,257 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(r2.status(), StatusCode::OK);
+    }
+
+    // ── extract_bearer_token ───────────────────────────────────────────────
+
+    #[test]
+    fn parse_valid_bearer_token() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            axum::http::HeaderValue::from_static("Bearer my-api-token-abc123"),
+        );
+        let token = extract_bearer_token(&headers);
+        assert_eq!(token.as_deref(), Some("my-api-token-abc123"));
+    }
+
+    #[test]
+    fn parse_bearer_case_insensitive_prefix() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            axum::http::HeaderValue::from_static("bearer lowercase-token"),
+        );
+        let token = extract_bearer_token(&headers);
+        assert_eq!(token.as_deref(), Some("lowercase-token"));
+    }
+
+    #[test]
+    fn parse_bearer_with_extra_whitespace() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            axum::http::HeaderValue::from_static("Bearer   extra-spaces-token  "),
+        );
+        let token = extract_bearer_token(&headers);
+        assert_eq!(token.as_deref(), Some("extra-spaces-token"));
+    }
+
+    #[test]
+    fn parse_missing_auth_header_returns_none() {
+        let headers = axum::http::HeaderMap::new();
+        assert_eq!(extract_bearer_token(&headers), None);
+    }
+
+    #[test]
+    fn parse_non_bearer_scheme_returns_none() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            axum::http::HeaderValue::from_static("Basic dXNlcjpwYXNz"),
+        );
+        assert_eq!(extract_bearer_token(&headers), None);
+    }
+
+    #[test]
+    fn parse_empty_bearer_token_returns_none() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            axum::http::HeaderValue::from_static("Bearer "),
+        );
+        assert_eq!(extract_bearer_token(&headers), None);
+    }
+
+    // ── Bearer-auth middleware integration tests ────────────────────────────
+
+    /// Build a test state that also has an API token store configured.
+    fn test_state_with_api_tokens() -> Arc<AppState> {
+        let session_store: Arc<dyn SessionStore> = Arc::new(InMemorySessionStore::new());
+        let pg_store = Arc::new(kb_store::PgStore::new(
+            "postgres://localhost/test?sslmode=disable",
+        ));
+        let token_store: Arc<dyn kb_core::api_token::ApiTokenStore> =
+            Arc::new(kb_store::api_token_store::InMemoryApiTokenStore::new());
+        let mut state = AppState::new(
+            session_store,
+            pg_store,
+            Some(Duration::from_secs(DEFAULT_SESSION_TTL_SECS)),
+            false,
+        );
+        state.api_token_store = Some(token_store);
+        Arc::new(state)
+    }
+
+    /// Build a request with a Bearer authorization header.
+    fn request_with_bearer(token: &str) -> Request<Body> {
+        Request::builder()
+            .uri("/protected")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn valid_bearer_token_passes_through() {
+        let state = test_state_with_api_tokens();
+
+        // Create an API token via the store.
+        let result = state
+            .api_token_store
+            .as_ref()
+            .unwrap()
+            .create_token(
+                1,
+                42,
+                UserRole::Admin,
+                true,
+                "test-token",
+                Duration::from_secs(DEFAULT_API_TOKEN_TTL_SECS),
+            )
+            .await
+            .unwrap();
+
+        let router = test_router(state);
+        let response = router
+            .oneshot(request_with_bearer(&result.raw_token))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
+        assert_eq!(std::str::from_utf8(&body).unwrap(), "1:42:admin:true");
+    }
+
+    #[tokio::test]
+    async fn invalid_bearer_token_returns_401() {
+        let state = test_state_with_api_tokens();
+        let router = test_router(state);
+
+        let response = router
+            .oneshot(request_with_bearer("invalid-token-000000000000000000"))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn bearer_token_without_store_configured_returns_401() {
+        // When an Authorization header is present but api_token_store is None,
+        // the middleware returns 401 (doesn't fall through to cookies).
+        let state = test_state(); // no api_token_store
+        let router = test_router(state);
+
+        let response = router
+            .oneshot(request_with_bearer("some-token"))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn revoked_bearer_token_returns_401() {
+        let state = test_state_with_api_tokens();
+
+        let result = state
+            .api_token_store
+            .as_ref()
+            .unwrap()
+            .create_token(
+                1,
+                42,
+                UserRole::Member,
+                false,
+                "will-be-revoked",
+                Duration::from_secs(DEFAULT_API_TOKEN_TTL_SECS),
+            )
+            .await
+            .unwrap();
+
+        // Revoke it.
+        state
+            .api_token_store
+            .as_ref()
+            .unwrap()
+            .revoke_token(1, result.id)
+            .await
+            .unwrap();
+
+        let router = test_router(state);
+        let response = router
+            .oneshot(request_with_bearer(&result.raw_token))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn expired_bearer_token_returns_401() {
+        let state = test_state_with_api_tokens();
+
+        let result = state
+            .api_token_store
+            .as_ref()
+            .unwrap()
+            .create_token(
+                1,
+                42,
+                UserRole::Admin,
+                true,
+                "short-lived",
+                Duration::from_millis(1),
+            )
+            .await
+            .unwrap();
+
+        // Wait for expiration.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let router = test_router(state);
+        let response = router
+            .oneshot(request_with_bearer(&result.raw_token))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn bearer_token_inherits_user_role() {
+        let state = test_state_with_api_tokens();
+
+        // Token with Owner role.
+        let result = state
+            .api_token_store
+            .as_ref()
+            .unwrap()
+            .create_token(
+                1,
+                99,
+                UserRole::Owner,
+                true,
+                "owner-token",
+                Duration::from_secs(DEFAULT_API_TOKEN_TTL_SECS),
+            )
+            .await
+            .unwrap();
+
+        let router = test_router(state);
+        let response = router
+            .oneshot(request_with_bearer(&result.raw_token))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
+        assert_eq!(std::str::from_utf8(&body).unwrap(), "1:99:owner:true");
     }
 }

@@ -1322,9 +1322,9 @@ description = "API tokens for programmatic access (§30, §13): (a) /account/tok
 depends_on = ["P5-T5"]
 plan_sections = ["30", "13"]
 acceptance = "Create token → full token returned once (not recoverable later); list shows metadata only (no full token); revoke → token stops working; Bearer auth works for all API endpoints; token inherits user's tenant + role; expired token → 401; revoked token → 401; token hash is SHA256 (not plaintext in DB). Unit tests for token CRUD + Bearer middleware + rate limiting. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "API tokens: ApiTokenStore trait + InMemoryApiTokenStore + PgApiTokenStore, migration 0022, Bearer middleware (Authorization header extraction + validation), CRUD handlers (POST/GET/DELETE /api/tokens), SHA-256 hashed storage. 43 new tests (11 kb-core + 15 kb-store + 17 kb-api middleware+handlers). just ci green."
 
 [[task]]
 id = "P12-T6"
