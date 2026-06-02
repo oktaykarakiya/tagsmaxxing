@@ -386,6 +386,16 @@ notes = "p3_integration.rs: e2e test (#[ignore]) via mock LLM + LocalBlob + PgSt
 # that makes ingestion useful — the walking skeleton is complete when P4 ships.
 
 [[task]]
+id = "P3-T9"
+phase = "P3"
+status = "done"
+description = "Tagger tag-count bound: set `minItems:0, maxItems:20` in the tagger JSON schema to prevent runaway tag dumps without forcing tag fabrication on sparse documents. Update the system prompt to steer quality over quantity ('typically 5–10 for a substantial document, fewer for short ones'). Add a unit test asserting minItems==0 and maxItems==20 on tagger_json_schema(). Tags are faceting metadata (WHERE filter, §8) — a bound is a runaway guard for facet/UI hygiene and token cost, not a retrieval-precision fix."
+depends_on = ["P3-T2"]
+plan_sections = ["7", "9"]
+acceptance = "Schema returns minItems:0, maxItems:20 on tags array; test asserts both; prompt contains the steering line; no post-hoc truncation logic added. just ci green."
+checkpoint = false
+notes = "DONE: schema minItems=0/maxItems=20 + prompt steering line + test assertion guard (review/p6-readiness follow-up). Grammar-enforced via llama-server json_schema (§9). minItems 0 allows empty/near-empty docs to return 0–2 tags without hallucinating filler; maxItems 20 stops 50+ tag dumps while remaining generous for multi-topic documents."
+[[task]]
 id = "P4-T1"
 phase = "P4"
 description = "Update Store::hybrid_search trait signature to accept a query embedding vector alongside the Query text. The search needs both: the query text for full-text (tsv/ts_rank) matching and the query embedding for vector (cosine) search. Update the PgStore stub, the deferred-error test, and any callers. This is a pure API change — no SQL search yet."
