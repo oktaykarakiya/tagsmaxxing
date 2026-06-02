@@ -1311,9 +1311,9 @@ description = "Usage dashboard (§30, §15): /dashboard — charts and stats fro
 depends_on = ["P5-T6", "P12-T2", "P9-T10"]
 plan_sections = ["30", "15"]
 acceptance = "Dashboard loads with all stats for authenticated tenant; storage bar shows correct %; token usage chart has daily breakdown; spend shows correct $ amount; activity feed lists recent events; unauthenticated → redirect to /login; cross-tenant: tenant A's dashboard shows only A's data. Unit tests for query logic + template rendering. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "Dashboard at GET /dashboard: storage+token quota bars, monthly spend, daily Chart.js breakdown, activity feed, doc/file/tag counts. PgStore dashboard queries (get_document_count/get_file_count/get_tag_count/get_recent_activity/get_monthly_token_usage/get_daily_token_usage) with tenant scoping via begin_tenant_tx. 51 new tests (19 store + 32 handler). just ci green."
 
 [[task]]
 id = "P12-T5"

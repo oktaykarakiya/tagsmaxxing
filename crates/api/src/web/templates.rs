@@ -502,3 +502,66 @@ pub(crate) struct AccountGoodbyePage {
     /// The deleted tenant slug.
     pub tenant_slug: String,
 }
+
+// ── Dashboard page types (P12-T4) ──────────────────────────────────────────────
+
+/// `GET /dashboard` — the usage dashboard with charts and stats.
+///
+/// Charts are rendered client-side via Chart.js from CDN. The server provides
+/// data as JSON strings embedded in the page (no API round-trips needed after
+/// initial load). All data is scoped to the authenticated tenant.
+#[derive(Debug, Template)]
+#[template(path = "dashboard.html")]
+#[allow(dead_code)]
+pub(crate) struct DashboardPage {
+    /// Whether the current user's email is verified.
+    pub email_verified: bool,
+    /// Tenant display name.
+    pub tenant_name: String,
+    /// Human-readable plan name (e.g. "Pro").
+    pub plan_name: String,
+    /// Storage usage progress bar.
+    pub storage_bar: QuotaBar,
+    /// Token usage progress bar (current month).
+    pub token_bar: QuotaBar,
+    /// Spend display string (e.g. "$2.50" or "Free").
+    pub spend_display: String,
+    /// Number of documents in this tenant.
+    pub document_count: i64,
+    /// Number of files in this tenant.
+    pub file_count: i64,
+    /// Number of canonical tags in this tenant.
+    pub tag_count: i64,
+    /// Daily token breakdown as JSON for Chart.js (Vec<DailyChartPoint>).
+    pub daily_chart_json: String,
+    /// Recent activity feed entries (up to 20).
+    pub activity_feed: Vec<ActivityFeedEntry>,
+    /// Error message (empty when none).
+    pub error: String,
+}
+
+/// A single entry in the dashboard activity feed.
+#[derive(Debug, Clone)]
+pub(crate) struct ActivityFeedEntry {
+    /// ISO 8601 timestamp for display.
+    pub timestamp: String,
+    /// Human-readable kind: "ingest", "search", etc.
+    pub kind: String,
+    /// Short description (model name, etc.).
+    pub description: String,
+    /// Tailwind CSS class for the kind badge colour.
+    pub kind_css: String,
+}
+
+/// A single day's token usage for the Chart.js bar chart.
+///
+/// Serialized to JSON and embedded in the page as `daily_chart_json`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub(crate) struct DailyChartPoint {
+    /// Date in `YYYY-MM-DD` format.
+    pub date: String,
+    /// Prompt tokens used on that day.
+    pub prompt: i64,
+    /// Completion tokens used on that day.
+    pub completion: i64,
+}

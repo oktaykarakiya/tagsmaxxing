@@ -30,6 +30,7 @@ pub(crate) mod csrf;
 pub(crate) mod handlers;
 pub(crate) mod handlers_account;
 pub(crate) mod handlers_auth_web;
+pub(crate) mod handlers_dashboard;
 pub(crate) mod handlers_documents;
 pub(crate) mod handlers_marketing;
 pub(crate) mod security;
@@ -135,6 +136,8 @@ pub(crate) fn build_web_router(
             post(handlers_documents::add_page),
         )
         .route("/logout", post(handlers::logout_web))
+        // Dashboard (P12-T4)
+        .route("/dashboard", get(handlers_dashboard::dashboard_page))
         // Account & billing pages (P12-T3)
         .route("/account", get(handlers_account::account_page))
         .route("/account/team", get(handlers_account::account_team_page))

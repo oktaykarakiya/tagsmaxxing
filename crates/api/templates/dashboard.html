@@ -1,0 +1,212 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard{% endblock %}
+
+{% block head_extra %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.8/dist/chart.umd.min.js"></script>
+{% endblock %}
+
+{% block content %}
+<nav class="bg-white shadow-sm border-b border-gray-200">
+  <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+    <div class="flex justify-between h-14 items-center">
+      <div class="flex items-center gap-4">
+        <a href="/dashboard" class="font-semibold text-lg text-gray-900">📊 Local KB</a>
+        <span class="text-sm text-gray-500">{{ tenant_name }}</span>
+      </div>
+      <div class="flex items-center gap-3 text-sm">
+        <a href="/dashboard" class="text-indigo-600 font-medium">Dashboard</a>
+        <a href="/search" class="text-gray-600 hover:text-gray-900">Search</a>
+        <a href="/upload" class="text-gray-600 hover:text-gray-900">Upload</a>
+        <a href="/account" class="text-gray-600 hover:text-gray-900">Account</a>
+        <form action="/logout" method="post" class="inline">
+          <button type="submit" class="text-gray-600 hover:text-gray-900">Logout</button>
+        </form>
+      </div>
+    </div>
+  </div>
+</nav>
+
+<main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+  <!-- Page header -->
+  <div class="mb-8">
+    <h1 class="text-2xl font-bold text-gray-900">Dashboard</h1>
+    <p class="text-sm text-gray-500 mt-1">{{ tenant_name }} · {{ plan_name }} Plan</p>
+  </div>
+
+  {% if !error.is_empty() %}
+  <div class="rounded-md bg-red-50 p-4 border border-red-200 mb-6">
+    <p class="text-sm text-red-700">{{ error }}</p>
+  </div>
+  {% endif %}
+
+  {% if !email_verified %}
+  <div class="rounded-md bg-yellow-50 p-4 border border-yellow-200 mb-6">
+    <p class="text-sm text-yellow-700">⚠️ Verify your email to enable all features.</p>
+  </div>
+  {% endif %}
+
+  <!-- Stat cards row -->
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+    <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
+      <p class="text-xs text-gray-500 uppercase tracking-wide">Documents</p>
+      <p class="text-2xl font-bold text-gray-900 mt-1">{{ document_count }}</p>
+    </div>
+    <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
+      <p class="text-xs text-gray-500 uppercase tracking-wide">Files</p>
+      <p class="text-2xl font-bold text-gray-900 mt-1">{{ file_count }}</p>
+    </div>
+    <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
+      <p class="text-xs text-gray-500 uppercase tracking-wide">Tags</p>
+      <p class="text-2xl font-bold text-gray-900 mt-1">{{ tag_count }}</p>
+    </div>
+    <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
+      <p class="text-xs text-gray-500 uppercase tracking-wide">Spend (this month)</p>
+      <p class="text-2xl font-bold text-gray-900 mt-1">{{ spend_display }}</p>
+    </div>
+  </div>
+
+  <!-- Quota bars -->
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+    <!-- Storage bar -->
+    <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-5">
+      <div class="flex justify-between items-baseline mb-2">
+        <span class="text-sm font-medium text-gray-700">{{ storage_bar.label }}</span>
+        <span class="text-xs text-gray-500">{{ storage_bar.used_display }} / {{ storage_bar.limit_display }}</span>
+      </div>
+      <div class="w-full bg-gray-200 rounded-full h-3">
+        {% if storage_bar.percent > 90 %}
+        <div class="bg-red-500 h-3 rounded-full" style="width: {{ storage_bar.percent }}%"></div>
+        {% else if storage_bar.percent > 70 %}
+        <div class="bg-yellow-500 h-3 rounded-full" style="width: {{ storage_bar.percent }}%"></div>
+        {% else %}
+        <div class="bg-indigo-500 h-3 rounded-full" style="width: {{ storage_bar.percent }}%"></div>
+        {% endif %}
+      </div>
+      <p class="text-xs text-gray-400 mt-1">{{ storage_bar.percent }}% of plan quota</p>
+    </div>
+
+    <!-- Token bar -->
+    <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-5">
+      <div class="flex justify-between items-baseline mb-2">
+        <span class="text-sm font-medium text-gray-700">{{ token_bar.label }}</span>
+        <span class="text-xs text-gray-500">{{ token_bar.used_display }} / {{ token_bar.limit_display }}</span>
+      </div>
+      <div class="w-full bg-gray-200 rounded-full h-3">
+        {% if token_bar.percent > 90 %}
+        <div class="bg-red-500 h-3 rounded-full" style="width: {{ token_bar.percent }}%"></div>
+        {% else if token_bar.percent > 70 %}
+        <div class="bg-yellow-500 h-3 rounded-full" style="width: {{ token_bar.percent }}%"></div>
+        {% else %}
+        <div class="bg-indigo-500 h-3 rounded-full" style="width: {{ token_bar.percent }}%"></div>
+        {% endif %}
+      </div>
+      <p class="text-xs text-gray-400 mt-1">{{ token_bar.percent }}% of plan budget</p>
+    </div>
+  </div>
+
+  <!-- Daily token chart -->
+  <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-5 mb-8">
+    <h2 class="text-sm font-semibold text-gray-700 mb-4">Daily Token Usage</h2>
+    <div class="relative" style="height: 250px;">
+      <canvas id="daily-token-chart"></canvas>
+    </div>
+    {% if daily_chart_json == "[]" %}
+    <p class="text-xs text-gray-400 text-center mt-2">No usage data this month yet.</p>
+    {% endif %}
+  </div>
+
+  <!-- Activity feed -->
+  <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-5">
+    <h2 class="text-sm font-semibold text-gray-700 mb-4">Recent Activity</h2>
+    {% if activity_feed.is_empty() %}
+    <p class="text-sm text-gray-400">No activity yet. Upload some files to get started.</p>
+    {% else %}
+    <div class="space-y-3">
+      {% for entry in activity_feed %}
+      <div class="flex items-start gap-3 text-sm">
+        <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium {{ entry.kind_css }}">
+          {{ entry.kind }}
+        </span>
+        <span class="text-gray-700">{{ entry.description }}</span>
+        <span class="text-gray-400 ml-auto whitespace-nowrap">{{ entry.timestamp }}</span>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+</main>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  var raw = {{ daily_chart_json|safe }};
+  if (!raw || raw.length === 0) return;
+
+  var labels = raw.map(function(d) { return d.date; });
+  var promptData = raw.map(function(d) { return d.prompt; });
+  var completionData = raw.map(function(d) { return d.completion; });
+
+  var ctx = document.getElementById('daily-token-chart');
+  if (!ctx) return;
+
+  new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: labels,
+      datasets: [
+        {
+          label: 'Prompt',
+          data: promptData,
+          backgroundColor: '#6366f1',
+          borderRadius: 2
+        },
+        {
+          label: 'Completion',
+          data: completionData,
+          backgroundColor: '#a5b4fc',
+          borderRadius: 2
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        x: {
+          stacked: true,
+          ticks: { maxTicksLimit: 10, font: { size: 11 } },
+          grid: { display: false }
+        },
+        y: {
+          stacked: true,
+          ticks: {
+            font: { size: 11 },
+            callback: function(v) {
+              if (v >= 1000000) return (v / 1000000).toFixed(1) + 'M';
+              if (v >= 1000) return (v / 1000).toFixed(1) + 'K';
+              return v;
+            }
+          },
+          grid: { color: '#f3f4f6' }
+        }
+      },
+      plugins: {
+        legend: { display: true, position: 'bottom', labels: { boxWidth: 12, font: { size: 11 } } },
+        tooltip: {
+          callbacks: {
+            label: function(ctx) {
+              var v = ctx.raw;
+              if (v >= 1000000) return ctx.dataset.label + ': ' + (v / 1000000).toFixed(1) + 'M';
+              if (v >= 1000) return ctx.dataset.label + ': ' + (v / 1000).toFixed(1) + 'K';
+              return ctx.dataset.label + ': ' + v;
+            }
+          }
+        }
+      }
+    }
+  });
+})();
+</script>
+{% endblock %}
