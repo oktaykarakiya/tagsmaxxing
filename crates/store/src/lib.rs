@@ -32,6 +32,7 @@ pub mod stripe_events;
 pub mod subscription_lifecycle;
 pub mod vault_kek;
 
+pub use admin_queries::TenantInfo;
 pub use admin_queries::UserView;
 pub use b2_blob::{B2Blob, B2Config};
 pub use blob::LocalBlob;

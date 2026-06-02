@@ -1300,9 +1300,9 @@ description = "Account & billing pages (§30): (a) /account — profile (email, 
 depends_on = ["P12-T2", "P11-T6", "P10-T4"]
 plan_sections = ["30", "13"]
 acceptance = "Account page shows profile + plan + usage bar; team management lists users with roles; invite creates user + sends email; change role respects admin-only gate; plan upgrade redirects to Checkout; delete account enqueues shred job; CSRF on all mutating actions. Unit tests for handlers + template rendering. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "9 new methods on PgStore (TenantInfo, get_tenant_info, admin_delete_user, admin_get_user + tests). handlers_account.rs with 8 page handlers + 4 mutating handlers (GET /account, /account/team, /account/plan, /account/danger; POST /account/team/invite, /account/team/role, /account/team/remove, /account/danger/delete). 5 Askama templates (account, account_team, account_plan, account_danger, account_goodbye). Template structs (AccountPage, AccountTeamPage, AccountPlanPage, AccountDangerPage, AccountGoodbyePage + sub-types). CSRF on all mutating routes. Role gates (Owner/Admin for invite/role change, Owner for remove). Delete enqueues JobKind::DeleteTenant. 75 unit + integration tests. just ci green (line cov 76.01%)."
 
 [[task]]
 id = "P12-T4"

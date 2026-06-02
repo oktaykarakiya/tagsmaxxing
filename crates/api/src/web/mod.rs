@@ -28,6 +28,7 @@ pub(crate) mod admin_routing_templates;
 pub(crate) mod admin_templates;
 pub(crate) mod csrf;
 pub(crate) mod handlers;
+pub(crate) mod handlers_account;
 pub(crate) mod handlers_auth_web;
 pub(crate) mod handlers_documents;
 pub(crate) mod handlers_marketing;
@@ -134,6 +135,30 @@ pub(crate) fn build_web_router(
             post(handlers_documents::add_page),
         )
         .route("/logout", post(handlers::logout_web))
+        // Account & billing pages (P12-T3)
+        .route("/account", get(handlers_account::account_page))
+        .route("/account/team", get(handlers_account::account_team_page))
+        .route(
+            "/account/team/invite",
+            post(handlers_account::account_invite_user),
+        )
+        .route(
+            "/account/team/role",
+            post(handlers_account::account_change_role),
+        )
+        .route(
+            "/account/team/remove",
+            post(handlers_account::account_remove_user),
+        )
+        .route("/account/plan", get(handlers_account::account_plan_page))
+        .route(
+            "/account/danger",
+            get(handlers_account::account_danger_page),
+        )
+        .route(
+            "/account/danger/delete",
+            post(handlers_account::account_delete),
+        )
         .layer(from_fn_with_state(
             std::sync::Arc::clone(&state),
             crate::middleware::auth_middleware,

@@ -32,6 +32,20 @@ pub struct UserView {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// Lightweight tenant info without billing/quota details (P12-T3).
+///
+/// This is a safe view for rendering account pages — it never exposes quota
+/// limits or other admin-only fields.
+#[derive(Debug, Clone)]
+pub struct TenantInfo {
+    /// Tenant id.
+    pub id: i64,
+    /// Tenant slug (URL-safe handle).
+    pub slug: String,
+    /// Human-readable display name.
+    pub name: String,
+}
+
 impl PgStore {
     // ── Tenant admin methods ─────────────────────────────────────────────────
 
@@ -587,6 +601,103 @@ impl PgStore {
             })
             .collect()
     }
+
+    // ── Tenant info (P12-T3) ──────────────────────────────────────────────────
+
+    /// Look up a tenant's slug and name by id.
+    ///
+    /// Returns `None` if no tenant with that id exists.
+    /// Uses the admin pool — the `tenants` table is outside RLS.
+    ///
+    /// # Errors
+    /// Returns an error if the database is not connected or the query fails.
+    pub async fn get_tenant_info(&self, tenant_id: i64) -> anyhow::Result<Option<TenantInfo>> {
+        let pool = self.pool()?;
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            id: i64,
+            slug: String,
+            name: String,
+        }
+        let row: Option<Row> = sqlx::query_as("SELECT id, slug, name FROM tenants WHERE id = $1")
+            .bind(tenant_id)
+            .fetch_optional(&pool)
+            .await
+            .context("failed to look up tenant info")?;
+        Ok(row.map(|r| TenantInfo {
+            id: r.id,
+            slug: r.slug,
+            name: r.name,
+        }))
+    }
+
+    // ── User management (P12-T3) ─────────────────────────────────────────────
+
+    /// Delete a user from a tenant.
+    ///
+    /// The `tenant_id` filter prevents cross-tenant user deletion (IDOR).
+    /// Uses the admin pool. Returns the number of rows affected (0 means the user
+    /// was not found in that tenant).
+    ///
+    /// The caller should prevent self-deletion of the last Owner.
+    ///
+    /// # Errors
+    /// Returns an error if the database is not connected or the query fails.
+    pub async fn admin_delete_user(&self, tenant_id: i64, user_id: i64) -> anyhow::Result<u64> {
+        let pool = self.pool()?;
+        let affected = sqlx::query("DELETE FROM users WHERE id = $1 AND tenant_id = $2")
+            .bind(user_id)
+            .bind(tenant_id)
+            .execute(&pool)
+            .await
+            .context("failed to delete user")?;
+        Ok(affected.rows_affected())
+    }
+
+    /// Look up a single user by id within a tenant, returning a [`UserView`]
+    /// without the password hash. Returns `None` if the user is not found in
+    /// that tenant.
+    ///
+    /// Uses the admin pool.
+    ///
+    /// # Errors
+    /// Returns an error if the database is not connected or the query fails.
+    pub async fn admin_get_user(
+        &self,
+        tenant_id: i64,
+        user_id: i64,
+    ) -> anyhow::Result<Option<UserView>> {
+        let pool = self.pool()?;
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            id: i64,
+            tenant_id: i64,
+            email: String,
+            role: String,
+            created_at: chrono::DateTime<chrono::Utc>,
+        }
+        let row: Option<Row> = sqlx::query_as(
+            "SELECT id, tenant_id, email, role, created_at \
+             FROM users WHERE id = $1 AND tenant_id = $2",
+        )
+        .bind(user_id)
+        .bind(tenant_id)
+        .fetch_optional(&pool)
+        .await
+        .context("failed to look up user by id")?;
+        row.map(|r| {
+            let role = UserRole::from_str(&r.role)
+                .with_context(|| format!("invalid user role in DB: {}", r.role))?;
+            Ok(UserView {
+                id: r.id,
+                tenant_id: r.tenant_id,
+                email: r.email,
+                role,
+                created_at: r.created_at,
+            })
+        })
+        .transpose()
+    }
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
@@ -769,5 +880,58 @@ mod tests {
         let store = test_store();
         let err = store.admin_list_audit_events(0, 50).await.unwrap_err();
         assert!(err.to_string().contains("not connected"));
+    }
+
+    // ── Tenant info (P12-T3) ────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn get_tenant_info_errors_before_connect() {
+        let store = test_store();
+        let err = store.get_tenant_info(1).await.unwrap_err();
+        assert!(err.to_string().contains("not connected"));
+    }
+
+    // ── User delete (P12-T3) ───────────────────────────────────────────
+
+    #[tokio::test]
+    async fn admin_delete_user_errors_before_connect() {
+        let store = test_store();
+        let err = store.admin_delete_user(1, 1).await.unwrap_err();
+        assert!(err.to_string().contains("not connected"));
+    }
+
+    #[tokio::test]
+    async fn admin_get_user_errors_before_connect() {
+        let store = test_store();
+        let err = store.admin_get_user(1, 1).await.unwrap_err();
+        assert!(err.to_string().contains("not connected"));
+    }
+
+    // ── TenantInfo struct ──────────────────────────────────────────────
+
+    #[test]
+    fn tenant_info_debug_format() {
+        let info = TenantInfo {
+            id: 42,
+            slug: "acme".into(),
+            name: "Acme Corp".into(),
+        };
+        let dbg = format!("{info:?}");
+        assert!(dbg.contains("42"));
+        assert!(dbg.contains("acme"));
+        assert!(dbg.contains("Acme Corp"));
+    }
+
+    #[test]
+    fn tenant_info_clone_is_equal() {
+        let info = TenantInfo {
+            id: 1,
+            slug: "test".into(),
+            name: "Test".into(),
+        };
+        let cloned = info.clone();
+        assert_eq!(cloned.id, info.id);
+        assert_eq!(cloned.slug, info.slug);
+        assert_eq!(cloned.name, info.name);
     }
 }

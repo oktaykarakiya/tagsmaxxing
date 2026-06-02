@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+
+{% block title %}Account{% endblock %}
+
+{% block content %}
+<div class="min-h-screen flex flex-col">
+    {# ── Navigation bar ──────────────────────────────────────────────────── #}
+    <nav class="bg-white shadow-sm border-b border-gray-200">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between h-14 items-center">
+                <a href="/search" class="text-lg font-semibold text-indigo-600">Local KB</a>
+                <div class="flex items-center space-x-4">
+                    <a href="/search" class="text-sm text-gray-700 hover:text-indigo-600">Search</a>
+                    <a href="/upload" class="text-sm text-gray-700 hover:text-indigo-600">Upload</a>
+                    <span class="text-sm font-medium text-indigo-600">Account</span>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    {# ── Sub-navigation tabs ─────────────────────────────────────────────── #}
+    <div class="bg-white border-b border-gray-200">
+        <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
+            <nav class="flex space-x-8 -mb-px" aria-label="Account tabs">
+                <a href="/account" class="border-indigo-500 text-indigo-600 whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm">Overview</a>
+                <a href="/account/team" class="border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm">Team</a>
+                <a href="/account/plan" class="border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm">Plan</a>
+                <a href="/account/danger" class="border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm">Danger Zone</a>
+            </nav>
+        </div>
+    </div>
+
+    <main class="flex-1 max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8 w-full">
+        {% if !error.is_empty() %}
+        <div class="mb-6 rounded-md bg-red-50 p-4 border border-red-200">
+            <p class="text-sm text-red-800">{{ error }}</p>
+        </div>
+        {% endif %}
+
+        {% if !email_verified %}
+        <div class="mb-6 rounded-md bg-yellow-50 p-4 border border-yellow-200">
+            <div class="flex items-center justify-between">
+                <p class="text-sm text-yellow-800">
+                    <strong>Verify your email</strong> — {{ email }} has not been verified yet.
+                    Check your inbox for the verification link.
+                </p>
+            </div>
+        </div>
+        {% endif %}
+
+        {# ── Workspace info ───────────────────────────────────────────────── #}
+        <div class="mb-8">
+            <h2 class="text-2xl font-bold text-gray-900">{{ tenant_name }}</h2>
+            <p class="text-sm text-gray-500 mt-1">{{ tenant_slug }}.lokb.dev</p>
+            <p class="text-sm text-gray-600 mt-1">{{ email }}</p>
+        </div>
+
+        {# ── Plan badge + billing ─────────────────────────────────────────── #}
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+            <div class="rounded-lg border border-gray-200 bg-white p-6">
+                <h3 class="text-sm font-medium text-gray-500 uppercase tracking-wider">Plan</h3>
+                <div class="mt-2 flex items-center justify-between">
+                    <span class="text-2xl font-bold text-gray-900 capitalize">{{ plan_name }}</span>
+                    <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium {{ badge.css_class }}">{{ badge.label }}</span>
+                </div>
+                <div class="mt-4 flex space-x-3">
+                    {% if has_stripe_customer %}
+                    <button id="manage-billing-btn"
+                            hx-post="/billing/portal"
+                            hx-headers='{"Content-Type": "application/json"}'
+                            hx-ext="json-enc"
+                            class="rounded-md bg-white px-3 py-2 text-sm font-semibold text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 hover:bg-gray-50 transition">
+                        Manage Billing
+                    </button>
+                    {% endif %}
+                    <a href="/account/plan" class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 transition">
+                        {% if has_stripe_customer %}Change Plan{% else %}Upgrade{% endif %}
+                    </a>
+                </div>
+            </div>
+
+            <div class="rounded-lg border border-gray-200 bg-white p-6">
+                <h3 class="text-sm font-medium text-gray-500 uppercase tracking-wider">Quick Stats</h3>
+                <dl class="mt-2 space-y-2">
+                    <div class="flex justify-between text-sm">
+                        <dt class="text-gray-600">Documents</dt>
+                        <dd class="font-medium text-gray-900">—</dd>
+                    </div>
+                    <div class="flex justify-between text-sm">
+                        <dt class="text-gray-600">Files</dt>
+                        <dd class="font-medium text-gray-900">—</dd>
+                    </div>
+                </dl>
+            </div>
+        </div>
+
+        {# ── Quota usage bars ─────────────────────────────────────────────── #}
+        <div class="space-y-4">
+            <h3 class="text-lg font-semibold text-gray-900">Usage</h3>
+
+            {% let storage = storage_bar %}
+            <div>
+                <div class="flex justify-between text-sm mb-1">
+                    <span class="text-gray-600">{{ storage.label }}</span>
+                    <span class="text-gray-900 font-medium">{{ storage.used_display }} / {{ storage.limit_display }}</span>
+                </div>
+                <div class="w-full bg-gray-200 rounded-full h-2.5">
+                    <div class="bg-indigo-600 h-2.5 rounded-full transition-all" style="width: {{ storage.percent }}%"></div>
+                </div>
+            </div>
+
+            {% let tokens = token_bar %}
+            <div>
+                <div class="flex justify-between text-sm mb-1">
+                    <span class="text-gray-600">{{ tokens.label }}</span>
+                    <span class="text-gray-900 font-medium">{{ tokens.used_display }} / {{ tokens.limit_display }}</span>
+                </div>
+                <div class="w-full bg-gray-200 rounded-full h-2.5">
+                    <div class="bg-indigo-600 h-2.5 rounded-full transition-all" style="width: {{ tokens.percent }}%"></div>
+                </div>
+            </div>
+        </div>
+    </main>
+</div>
+
+<script src="https://unpkg.com/htmx.org@2.0.4"></script>
+<script src="https://unpkg.com/htmx.org@2.0.4/dist/ext/json-enc.js"></script>
+<script>
+  // When the Manage Billing button gets a portal URL back,
+  // redirect the browser to it.
+  document.body.addEventListener('htmx:afterOnLoad', function(evt) {
+    if (evt.detail.elt && evt.detail.elt.id === 'manage-billing-btn') {
+      try {
+        var resp = JSON.parse(evt.detail.xhr.responseText);
+        if (resp.url) {
+          window.location.href = resp.url;
+        }
+      } catch(e) {}
+    }
+  });
+</script>
+{% endblock %}

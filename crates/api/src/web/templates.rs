@@ -347,3 +347,158 @@ pub(crate) struct FaqItem {
     /// The answer text (may contain basic HTML like links).
     pub answer: String,
 }
+
+// ── Account page types (P12-T3) ────────────────────────────────────────────────
+
+/// `GET /account` — the account overview page.
+///
+/// Shows workspace info, profile, plan badge, billing status, and quota usage bars.
+#[derive(Debug, Template)]
+#[template(path = "account.html")]
+#[allow(dead_code)]
+pub(crate) struct AccountPage {
+    /// CSRF token for any mutating forms on the page.
+    pub csrf_token: String,
+    /// The current user's email address.
+    pub email: String,
+    /// The tenant URL slug.
+    pub tenant_slug: String,
+    /// The tenant display name.
+    pub tenant_name: String,
+    /// Active plan display name (e.g. "Pro", "Free").
+    pub plan_name: String,
+    /// Billing status badge.
+    pub badge: BillingBadge,
+    /// Whether the tenant has a Stripe customer (enables Manage Billing button).
+    pub has_stripe_customer: bool,
+    /// Whether the current user's email is verified.
+    pub email_verified: bool,
+    /// Storage usage progress bar.
+    pub storage_bar: QuotaBar,
+    /// Token usage progress bar.
+    pub token_bar: QuotaBar,
+    /// Error message (empty when none).
+    pub error: String,
+}
+
+/// A billing status badge rendered on the account page.
+#[derive(Debug, Clone)]
+pub(crate) struct BillingBadge {
+    /// Human-readable status label: "Active", "Past Due", etc.
+    pub label: String,
+    /// Tailwind CSS classes for the badge (e.g. "bg-green-100 text-green-800").
+    pub css_class: String,
+}
+
+/// A quota usage progress bar.
+#[derive(Debug, Clone)]
+pub(crate) struct QuotaBar {
+    /// Label for the bar (e.g. "Storage", "Tokens").
+    pub label: String,
+    /// Human-readable used amount (e.g. "2.5 GB").
+    pub used_display: String,
+    /// Human-readable limit (e.g. "5.0 GB" or "Unlimited").
+    pub limit_display: String,
+    /// Usage percentage 0–100 for the bar width.
+    pub percent: u8,
+}
+
+/// `GET /account/team` — the team management page.
+#[derive(Debug, Template)]
+#[template(path = "account_team.html")]
+#[allow(dead_code)]
+pub(crate) struct AccountTeamPage {
+    /// CSRF token.
+    pub csrf_token: String,
+    /// Team members.
+    pub members: Vec<TeamMember>,
+    /// Number of users with the Owner role.
+    pub owner_count: i32,
+    /// Whether the current user is an Owner.
+    pub is_owner: bool,
+    /// Whether the current user is an Owner or Admin.
+    pub is_admin_or_owner: bool,
+    /// Error message (empty when none).
+    pub error: String,
+}
+
+/// A single team member row in the team table.
+#[derive(Debug, Clone)]
+pub(crate) struct TeamMember {
+    /// User id.
+    pub user_id: i64,
+    /// User email.
+    pub email: String,
+    /// Current role as a wire string (e.g. "owner", "admin", "member").
+    pub role_label: String,
+    /// Whether this row represents the currently authenticated user.
+    pub is_current_user: bool,
+    /// Available role options for the dropdown (pre-computed with selected flags).
+    pub role_options: Vec<RoleOptionSel>,
+}
+
+/// A role option in the team member role dropdown, with pre-computed selection state.
+#[derive(Debug, Clone)]
+pub(crate) struct RoleOptionSel {
+    /// Role wire string.
+    pub value: String,
+    /// Whether this option is the currently selected role.
+    pub selected: bool,
+}
+
+/// `GET /account/plan` — the plan selection page.
+#[derive(Debug, Template)]
+#[template(path = "account_plan.html")]
+#[allow(dead_code)]
+pub(crate) struct AccountPlanPage {
+    /// CSRF token.
+    pub csrf_token: String,
+    /// Current plan code.
+    pub current_plan: String,
+    /// All available plans with upgrade/downgrade options.
+    pub plans: Vec<PlanOption>,
+    /// Error message (empty when none).
+    pub error: String,
+}
+
+/// A plan card on the plan selection page.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub(crate) struct PlanOption {
+    /// Machine-readable plan code.
+    pub code: String,
+    /// Human-readable plan name.
+    pub name: String,
+    /// Formatted price string (e.g. "Free", "$9/mo").
+    pub price_display: String,
+    /// Human-readable storage quota (e.g. "50 MB", "5 GB").
+    pub quota_display: String,
+    /// Human-readable token budget (e.g. "10K", "500K").
+    pub token_display: String,
+    /// Whether this is the tenant's current plan.
+    pub is_current: bool,
+    /// CTA button label.
+    pub cta_label: String,
+    /// Checkout URL (empty for the current plan).
+    pub checkout_url: String,
+}
+
+/// `GET /account/danger` — the danger-zone / delete-account page.
+#[derive(Debug, Template)]
+#[template(path = "account_danger.html")]
+pub(crate) struct AccountDangerPage {
+    /// CSRF token.
+    pub csrf_token: String,
+    /// The tenant slug (must be typed to confirm deletion).
+    pub tenant_slug: String,
+    /// Error message (empty when none).
+    pub error: String,
+}
+
+/// The goodbye page shown after account deletion is scheduled.
+#[derive(Debug, Template)]
+#[template(path = "account_goodbye.html")]
+pub(crate) struct AccountGoodbyePage {
+    /// The deleted tenant slug.
+    pub tenant_slug: String,
+}

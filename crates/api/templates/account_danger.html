@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+
+{% block title %}Danger Zone — Account{% endblock %}
+
+{% block content %}
+<div class="min-h-screen flex flex-col">
+    {# ── Navigation bar ──────────────────────────────────────────────────── #}
+    <nav class="bg-white shadow-sm border-b border-gray-200">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between h-14 items-center">
+                <a href="/search" class="text-lg font-semibold text-indigo-600">Local KB</a>
+                <div class="flex items-center space-x-4">
+                    <a href="/search" class="text-sm text-gray-700 hover:text-indigo-600">Search</a>
+                    <a href="/upload" class="text-sm text-gray-700 hover:text-indigo-600">Upload</a>
+                    <a href="/account" class="text-sm text-gray-700 hover:text-indigo-600">Account</a>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    {# ── Sub-navigation tabs ─────────────────────────────────────────────── #}
+    <div class="bg-white border-b border-gray-200">
+        <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
+            <nav class="flex space-x-8 -mb-px" aria-label="Account tabs">
+                <a href="/account" class="border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm">Overview</a>
+                <a href="/account/team" class="border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm">Team</a>
+                <a href="/account/plan" class="border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm">Plan</a>
+                <a href="/account/danger" class="border-indigo-500 text-indigo-600 whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm">Danger Zone</a>
+            </nav>
+        </div>
+    </div>
+
+    <main class="flex-1 max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8 w-full">
+        {% if !error.is_empty() %}
+        <div class="mb-6 rounded-md bg-red-50 p-4 border border-red-200">
+            <p class="text-sm text-red-800">{{ error }}</p>
+        </div>
+        {% endif %}
+
+        <h2 class="text-2xl font-bold text-gray-900 mb-2">Danger Zone</h2>
+        <p class="text-sm text-gray-500 mb-8">
+            Irreversible actions. Please proceed with caution.
+        </p>
+
+        {# ── Delete Account card ─────────────────────────────────────────── #}
+        <div class="rounded-lg border border-red-300 bg-red-50 p-6">
+            <div class="flex items-start justify-between">
+                <div>
+                    <h3 class="text-lg font-semibold text-red-800">Delete Workspace</h3>
+                    <p class="mt-1 text-sm text-red-700 max-w-lg">
+                        Permanently delete the workspace <strong>{{ tenant_slug }}</strong> and all its data
+                        (documents, files, tags, chunks, and blobs). Encrypted data will be crypto-shredded —
+                        this action <strong>cannot be undone</strong>. A tombstone record will be kept for
+                        audit purposes.
+                    </p>
+                </div>
+            </div>
+
+            <form method="post" action="/account/danger/delete" class="mt-6" id="delete-form">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <label for="confirm-slug" class="block text-sm font-medium text-red-800 mb-1">
+                    Type <code class="bg-red-100 px-1 rounded text-red-900">{{ tenant_slug }}</code> to confirm:
+                </label>
+                <div class="flex gap-3 max-w-md">
+                    <input type="text" id="confirm-slug" name="confirm_slug"
+                           placeholder="{{ tenant_slug }}"
+                           autocomplete="off"
+                           class="flex-1 rounded-md border border-red-300 px-3 py-2 text-sm text-gray-900 shadow-sm focus:border-red-500 focus:ring-red-500">
+                    <button type="submit" id="delete-btn" disabled
+                            class="rounded-md bg-red-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-red-500 transition disabled:opacity-50 disabled:cursor-not-allowed">
+                        Delete Workspace
+                    </button>
+                </div>
+            </form>
+
+            <script>
+            (function() {
+                var slug = '{{ tenant_slug }}';
+                var input = document.getElementById('confirm-slug');
+                var btn = document.getElementById('delete-btn');
+                if (input && btn) {
+                    input.addEventListener('input', function() {
+                        btn.disabled = input.value.trim() !== slug;
+                    });
+                }
+            })();
+            </script>
+        </div>
+    </main>
+</div>
+{% endblock %}
