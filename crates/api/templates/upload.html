@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_macros.html" as nav %}
 
 {% block title %}Upload{% endblock %}
 
@@ -8,24 +9,8 @@
 
 {% block content %}
 <div class="min-h-screen flex flex-col">
-    {# ── Navigation bar ──────────────────────────────────────────────────── #}
-    <nav class="bg-white shadow-sm border-b border-gray-200">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="flex justify-between h-14 items-center">
-                <span class="text-lg font-semibold text-indigo-600">Local KB</span>
-                <div class="flex items-center space-x-4">
-                    <a href="/search" class="text-sm text-gray-700 hover:text-indigo-600">Search</a>
-                    <a href="/upload" class="text-sm font-medium text-indigo-700">Upload</a>
-                    <form method="post" action="/logout" class="inline">
-                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                        <button type="submit" class="text-sm text-gray-500 hover:text-red-600">
-                            Log out
-                        </button>
-                    </form>
-                </div>
-            </div>
-        </div>
-    </nav>
+    {# ── Navigation bar (shared macro) ───────────────────────────────────── #}
+    {% call nav::app_nav("upload", csrf_token) %}{% endcall %}
 
     {# ── Upload area ─────────────────────────────────────────────────────── #}
     <div class="flex-1 max-w-3xl mx-auto px-4 py-8 w-full">

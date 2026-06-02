@@ -1978,6 +1978,41 @@ mod tests {
         );
     }
 
+    // ── Shared app-nav macro regression test ───────────────────────────────
+
+    #[test]
+    fn search_page_nav_exposes_all_primary_links() {
+        // Regression: the post-login landing page (`/search`) previously rendered
+        // a stunted nav with only a Search link, so freshly-logged-in users had no
+        // way to reach Upload/Dashboard/Account. The shared `app_nav` macro
+        // (templates/_macros.html) must expose every primary destination here.
+        let page = SearchPage {
+            csrf_token: "nav-csrf-token".into(),
+            query: String::new(),
+            kind_filters: build_kind_filters(&[]),
+            selected_tags: String::new(),
+            hits: Vec::new(),
+        };
+        let html = page.render().expect("search template must render");
+
+        for href in ["/dashboard", "/search", "/upload", "/account"] {
+            assert!(
+                html.contains(&format!("href=\"{href}\"")),
+                "search-page nav must link to {href}"
+            );
+        }
+        // The logout form is present and carries the page CSRF token.
+        assert!(
+            html.contains("action=\"/logout\"") && html.contains("nav-csrf-token"),
+            "search-page nav must contain a CSRF-protected logout form"
+        );
+        // The current page is marked active for highlighting/accessibility.
+        assert!(
+            html.contains("aria-current=\"page\""),
+            "search-page nav must mark the active item"
+        );
+    }
+
     // ── kind_label pure-logic tests ─────────────────────────────────────────
 
     #[test]

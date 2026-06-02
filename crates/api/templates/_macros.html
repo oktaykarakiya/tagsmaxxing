@@ -1,0 +1,37 @@
+{# ── Shared Web-UI macros ──────────────────────────────────────────────────
+   Imported (not rendered directly), so this file needs no backing template
+   struct. Keep markup here in sync across every authenticated page rather than
+   hand-copying a <nav> into each template (which is how the menus drifted).
+#}
+
+{# Primary application navigation bar shown on every authenticated page.
+
+   `active`     — key of the current page for highlighting: one of
+                  "dashboard", "search", "upload", "account" (or "" for none,
+                  e.g. the document-detail page).
+   `csrf_token` — CSRF token for the logout form; pass "" when the page has no
+                  token (logout does not validate it, so an empty value is inert).
+#}
+{% macro app_nav(active, csrf_token) %}
+<nav class="bg-white shadow-sm border-b border-gray-200">
+  <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+    <div class="flex justify-between h-14 items-center">
+      <a href="/dashboard" class="font-semibold text-lg text-gray-900">📊 Local KB</a>
+      <div class="flex items-center gap-4 text-sm">
+        <a href="/dashboard"
+           {% if active == "dashboard" %}aria-current="page" class="text-indigo-600 font-medium"{% else %}class="text-gray-600 hover:text-gray-900"{% endif %}>Dashboard</a>
+        <a href="/search"
+           {% if active == "search" %}aria-current="page" class="text-indigo-600 font-medium"{% else %}class="text-gray-600 hover:text-gray-900"{% endif %}>Search</a>
+        <a href="/upload"
+           {% if active == "upload" %}aria-current="page" class="text-indigo-600 font-medium"{% else %}class="text-gray-600 hover:text-gray-900"{% endif %}>Upload</a>
+        <a href="/account"
+           {% if active == "account" %}aria-current="page" class="text-indigo-600 font-medium"{% else %}class="text-gray-600 hover:text-gray-900"{% endif %}>Account</a>
+        <form action="/logout" method="post" class="inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="text-gray-500 hover:text-red-600">Log out</button>
+        </form>
+      </div>
+    </div>
+  </div>
+</nav>
+{% endmacro %}
