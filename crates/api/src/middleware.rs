@@ -120,7 +120,8 @@ pub async fn auth_middleware(
                             }
                         }
                     }
-                    return run_maybe_idempotent(request, next).await;
+                    let response = run_maybe_idempotent(request, next).await?;
+                    return Ok(add_private_cache_control_if_html(response));
                 }
                 Ok(None) => {}
                 Err(e) => {
@@ -211,7 +212,8 @@ pub async fn auth_middleware(
         }
     }
 
-    run_maybe_idempotent(request, next).await
+    let response = run_maybe_idempotent(request, next).await?;
+    Ok(add_private_cache_control_if_html(response))
 }
 
 /// Build a JSON error response with the canonical `{error, message}` envelope
@@ -232,6 +234,37 @@ fn auth_error_response(status: StatusCode, error: &str, message: &str) -> Respon
         axum::http::header::CONTENT_TYPE,
         axum::http::HeaderValue::from_static("application/json"),
     );
+    response
+}
+
+/// Mark an authenticated HTML response as non-shared-cacheable.
+///
+/// Authenticated pages (e.g. `/account`, `/dashboard`) render tenant-private
+/// HTML. Without an explicit directive a shared/proxy cache could store one
+/// tenant's rendered page and serve it to another user. This sets
+/// `Cache-Control: private, no-store` on HTML responses (`Content-Type:
+/// text/html`) so shared caches never retain them.
+///
+/// Only HTML responses are touched: JSON API payloads and static assets pass
+/// through unchanged (they are not tenant-private HTML and may carry their own
+/// caching policy). Any pre-existing `Cache-Control` on an HTML response is
+/// replaced — private authenticated HTML must never be publicly cacheable.
+///
+/// The directive is a fixed security invariant, not an operator-tunable knob,
+/// so it is a compile-time constant rather than hot-swappable configuration.
+fn add_private_cache_control_if_html(mut response: Response) -> Response {
+    let is_html = response
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .is_some_and(|v| v.as_bytes().starts_with(b"text/html"));
+
+    if is_html {
+        response.headers_mut().insert(
+            axum::http::header::CACHE_CONTROL,
+            axum::http::HeaderValue::from_static("private, no-store"),
+        );
+    }
+
     response
 }
 
@@ -1941,6 +1974,130 @@ mod tests {
         assert!(
             json.as_object().unwrap().len() == 2,
             "error envelope must only contain 'error' and 'message' keys"
+        );
+    }
+
+    // ── add_private_cache_control_if_html unit tests ──────────────────────
+
+    /// Build a bare response carrying the given `Content-Type` header.
+    fn response_with_content_type(content_type: &'static str) -> Response {
+        let mut response = Response::new(Body::empty());
+        response.headers_mut().insert(
+            axum::http::header::CONTENT_TYPE,
+            axum::http::HeaderValue::from_static(content_type),
+        );
+        response
+    }
+
+    #[test]
+    fn cache_control_set_private_no_store_on_html() {
+        let response = add_private_cache_control_if_html(response_with_content_type(
+            "text/html; charset=utf-8",
+        ));
+        let cc = response
+            .headers()
+            .get(axum::http::header::CACHE_CONTROL)
+            .expect("HTML response must carry Cache-Control")
+            .to_str()
+            .unwrap()
+            .to_lowercase();
+        // Mirrors the e2e contract: present, not public, and private/no-store.
+        assert!(
+            !cc.contains("public"),
+            "must not be publicly cacheable: {cc}"
+        );
+        assert!(
+            cc.contains("private") || cc.contains("no-store"),
+            "must be private/no-store, got {cc}"
+        );
+    }
+
+    #[test]
+    fn cache_control_not_set_on_json_response() {
+        let response =
+            add_private_cache_control_if_html(response_with_content_type("application/json"));
+        assert!(
+            response
+                .headers()
+                .get(axum::http::header::CACHE_CONTROL)
+                .is_none(),
+            "JSON API responses must not receive the HTML private-cache directive"
+        );
+    }
+
+    #[test]
+    fn cache_control_not_set_when_content_type_absent() {
+        let response = add_private_cache_control_if_html(Response::new(Body::empty()));
+        assert!(
+            response
+                .headers()
+                .get(axum::http::header::CACHE_CONTROL)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn cache_control_replaces_existing_public_directive() {
+        let mut response = response_with_content_type("text/html");
+        response.headers_mut().insert(
+            axum::http::header::CACHE_CONTROL,
+            axum::http::HeaderValue::from_static("public, max-age=3600"),
+        );
+        let response = add_private_cache_control_if_html(response);
+        let cc = response
+            .headers()
+            .get(axum::http::header::CACHE_CONTROL)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_eq!(cc, "private, no-store");
+    }
+
+    /// Integration: an authenticated HTML route, fetched through the real
+    /// `auth_middleware`, comes back marked non-shared-cacheable. This is the
+    /// in-crate analogue of the e2e `test_authenticated_html_not_shared_cacheable`.
+    #[tokio::test]
+    async fn authenticated_html_route_is_not_shared_cacheable() {
+        async fn account_page() -> axum::response::Html<&'static str> {
+            axum::response::Html("<html><body>account</body></html>")
+        }
+
+        let state = test_state();
+        let token = create_session(&state, UserRole::Admin).await;
+        let router = Router::new()
+            .route("/account", get(account_page))
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                auth_middleware,
+            ))
+            .with_state(state);
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/account")
+                    .header("Cookie", format!("__Host-session={token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let cc = response
+            .headers()
+            .get(axum::http::header::CACHE_CONTROL)
+            .expect("authenticated HTML page must set Cache-Control")
+            .to_str()
+            .unwrap()
+            .to_lowercase();
+        assert!(
+            !cc.contains("public"),
+            "must not be publicly cacheable: {cc}"
+        );
+        assert!(
+            cc.contains("private") || cc.contains("no-store"),
+            "must be private/no-store, got {cc}"
         );
     }
 

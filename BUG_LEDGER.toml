@@ -880,9 +880,9 @@ touches = ["crates/api/src/middleware.rs"]
 conflict_group = "middleware"
 depends_on = []
 severity = "high"
-status = "todo"
+status = "done"
 acceptance = "test_authenticated_html_not_shared_cacheable passes"
-notes = "Authenticated pages (/account, /dashboard) have no Cache-Control header. A shared proxy could cache private tenant data. Add Cache-Control: private, no-store to all authenticated HTML responses."
+notes = "Added add_private_cache_control_if_html() helper in middleware.rs; auth_middleware now sets Cache-Control: private, no-store on authenticated HTML responses (Content-Type text/html) on both Bearer and session-cookie success paths, leaving JSON/static responses untouched. 5 new unit/integration tests."
 
 
 # ── Tagging Quality ─────────────────────────────────────────────────────────
