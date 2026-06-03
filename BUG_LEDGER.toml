@@ -624,9 +624,9 @@ touches = ["crates/extract/src/binary.rs", "crates/pipeline/src/ingest.rs"]
 conflict_group = "extract"
 depends_on = []
 severity = "low"
-status = "todo"
+status = "blocked"
 acceptance = "test_zero_byte_file_rejected passes"
-notes = "Uploading a 0-byte file doesn't return a clean 400. Add a zero-byte check early in the ingest pipeline with a clear error message."
+notes = "BLOCKED: not fixable within the permitted files (crates/extract/src/binary.rs + crates/pipeline/src/ingest.rs). A 0-byte upload is ALREADY rejected, just with the wrong status: verified live that POST /api/ingest of a 0-byte file returns 500 internal_error (not 400). Root cause is the HTTP layer, not the pipeline. The JSON handler crates/api/src/handlers/ingest.rs::process_upload_inline calls security::validate_upload FIRST, which rejects empty bytes because detect_upload_mime(b\"\")=\"application/x-empty\" is not in ALLOWED_MIMES (see existing unit test security.rs::empty_bytes_validated). That anyhow error is then mapped via .map_err(internal_error) -> 500; only QuotaError is downcast to a 4xx. Consequences: (a) IngestPipeline::ingest is never reached for a 0-byte file because validate_upload runs before it, so any zero-byte check added to pipeline/ingest.rs is dead code; (b) the 500-vs-400 decision lives in handlers/ingest.rs and the rejection itself in extract/src/security.rs, both OUTSIDE the permitted set. Real fix: in crates/api/src/handlers/ingest.rs, return bad_request (400) for the empty-file/upload-validation rejection instead of internal_error -- e.g. an explicit 0-byte check before process_upload_inline, or have validate_upload surface a typed UploadRejected error the handler downcasts to 400 (mirrors the QuotaError->413 pattern). Re-scope touches to include crates/api/src/handlers/ingest.rs (+ optionally crates/extract/src/security.rs). The sibling bug BUG-INGEST-07 (test_mime_magic_mismatch_rejected) shares the same structural blocker."
 
 [[bug]]
 id = "BUG-INGEST-07"
