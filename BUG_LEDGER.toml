@@ -543,9 +543,9 @@ touches = ["crates/pipeline/src/embedder.rs"]
 conflict_group = "search_pipeline"
 depends_on = ["BUG-SRCH-09"]
 severity = "medium"
-status = "todo"
+status = "done"
 acceptance = "test_multilingual_query_retrieves_same_topic_doc passes"
-notes = "The bge-m3 embedding model supports multilingual retrieval. Verify the embedder is using the correct model and that the vector index is correctly configured for cross-lingual search."
+notes = "Verified: BGE-M3 query instruction prefix (BUG-SRCH-09 fix) also enables cross-lingual retrieval — without the \"Represent this sentence for searching relevant passages: \" prefix, query embeddings land in the wrong subspace regardless of language. BGE-M3 is inherently multilingual; the embedder uses correct model (bge-m3) with 1024-dim vectors and cosine-ops index. Cross-lingual test passed 2026-06-02."
 
 
 # ── Ingest / Extraction ─────────────────────────────────────────────────────
@@ -650,9 +650,9 @@ touches = ["crates/pipeline/src/ingest.rs"]
 conflict_group = "ingest_pipeline"
 depends_on = []
 severity = "high"
-status = "todo"
+status = "done"
 acceptance = "test_path_traversal_filename_neutralized passes"
-notes = "A filename like ../../../../etc/passwd causes a server error or stores the traversal path. Sanitize filenames on ingest: strip leading ../, remove path separators, keep only the basename."
+notes = "Added sanitize_filename() to crates/pipeline/src/ingest.rs — takes basename via rsplit(['/', '\\\\']), strips '..' substrings, trims whitespace. Applied to both page_label and path of every IngestFile in IngestPipeline::ingest() before DocumentBuilder. 10 unit tests covering traversal, backslash, mixed separators, dots-only, empty, and plain filenames."
 
 [[bug]]
 id = "BUG-INGEST-09"
