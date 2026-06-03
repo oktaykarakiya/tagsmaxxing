@@ -205,9 +205,15 @@ impl SessionStore for PgSessionStore {
             email_verified: bool,
         }
 
+        // JOIN with `users` to read the authoritative `role` and `email_verified`
+        // at validation time — not the snapshot set at session creation. This ensures
+        // that a role change (admin→member) or email verification immediately
+        // propagates to live sessions without requiring a re-login.
         let row: Option<Row> = sqlx::query_as(
-            "SELECT tenant_id, user_id, user_role, email_verified FROM sessions
-             WHERE id = $1 AND expires_at > now()",
+            "SELECT s.tenant_id, s.user_id, u.role AS user_role, u.email_verified
+             FROM sessions s
+             JOIN users u ON s.tenant_id = u.tenant_id AND s.user_id = u.id
+             WHERE s.id = $1 AND s.expires_at > now()",
         )
         .bind(token)
         .fetch_optional(&self.pool)

@@ -175,6 +175,10 @@ pub struct DeleteAccountForm {
     pub csrf_token: String,
     /// Must match the tenant slug to confirm.
     pub confirm_slug: String,
+    /// Step-up reauthentication: the user's current password.
+    /// Required to prevent a stolen/walk-up session from crypto-shredding the tenant.
+    #[serde(default)]
+    pub password: String,
 }
 
 // ── GET /account ───────────────────────────────────────────────────────────────
@@ -839,9 +843,10 @@ pub async fn account_danger_page(
 
 /// `POST /account/danger/delete` — confirm account deletion.
 ///
-/// Validates CSRF, checks the confirmation slug, enqueues a [`JobKind::DeleteTenant`]
-/// job, and returns a goodbye page. The actual crypto-shredding runs asynchronously
-/// via the job queue; this handler returns immediately.
+/// Validates CSRF, verifies the user's current password (step-up reauthentication),
+/// checks the confirmation slug, enqueues a [`JobKind::DeleteTenant`] job, and returns
+/// a goodbye page. The actual crypto-shredding runs asynchronously via the job queue;
+/// this handler returns immediately.
 pub async fn account_delete(
     State(state): State<Arc<AppState>>,
     Extension(auth_user): Extension<AuthUser>,
@@ -861,6 +866,90 @@ pub async fn account_delete(
             "Only the workspace owner can delete the account",
         )
         .await;
+    }
+
+    // ── Step-up reauthentication: verify current password ───────────────
+    if form.password.is_empty() {
+        return render_danger_error(
+            &state,
+            &auth_user,
+            "Please enter your current password to confirm deletion",
+        )
+        .await;
+    }
+
+    // Look up the user's email, then fetch the password hash.
+    let user_email = match state
+        .pg_store
+        .admin_get_user(auth_user.tenant_id, auth_user.user_id)
+        .await
+    {
+        Ok(Some(user)) => user.email,
+        Ok(None) => {
+            return render_danger_error(
+                &state,
+                &auth_user,
+                "User account not found — cannot verify identity",
+            )
+            .await;
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "failed to look up user for step-up auth");
+            return render_danger_error(
+                &state,
+                &auth_user,
+                "Failed to verify identity — please try again",
+            )
+            .await;
+        }
+    };
+
+    let user_with_hash = match state
+        .pg_store
+        .find_user_by_email(auth_user.tenant_id, &user_email)
+        .await
+    {
+        Ok(Some(u)) => u,
+        Ok(None) => {
+            return render_danger_error(
+                &state,
+                &auth_user,
+                "User account not found — cannot verify identity",
+            )
+            .await;
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "failed to look up user password hash for step-up auth");
+            return render_danger_error(
+                &state,
+                &auth_user,
+                "Failed to verify identity — please try again",
+            )
+            .await;
+        }
+    };
+
+    match kb_core::auth::verify_password(&form.password, &user_with_hash.password_hash) {
+        Ok(true) => {
+            // Password is correct — proceed.
+        }
+        Ok(false) => {
+            return render_danger_error(
+                &state,
+                &auth_user,
+                "Incorrect password — account was NOT deleted",
+            )
+            .await;
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "password hash verification error during step-up auth");
+            return render_danger_error(
+                &state,
+                &auth_user,
+                "Failed to verify identity — please try again",
+            )
+            .await;
+        }
     }
 
     // ── Verify confirmation slug ──────────────────────────────────────
@@ -1943,11 +2032,26 @@ mod tests {
 
     #[test]
     fn delete_account_form_deserialization() {
-        let form: DeleteAccountForm =
-            serde_urlencoded::from_str("csrf_token=abc123&confirm_slug=myworkspace")
-                .expect("deserialize DeleteAccountForm");
+        let form: DeleteAccountForm = serde_urlencoded::from_str(
+            "csrf_token=abc123&confirm_slug=myworkspace&password=secret123",
+        )
+        .expect("deserialize DeleteAccountForm");
         assert_eq!(form.csrf_token, "abc123");
         assert_eq!(form.confirm_slug, "myworkspace");
+        assert_eq!(form.password, "secret123");
+    }
+
+    #[test]
+    fn delete_account_form_deserialization_missing_password_defaults_empty() {
+        let form: DeleteAccountForm =
+            serde_urlencoded::from_str("csrf_token=abc123&confirm_slug=myworkspace")
+                .expect("deserialize DeleteAccountForm with missing password");
+        assert_eq!(form.csrf_token, "abc123");
+        assert_eq!(form.confirm_slug, "myworkspace");
+        assert!(
+            form.password.is_empty(),
+            "missing password should default to empty string"
+        );
     }
 
     // ── format_bytes edge cases ──────────────────────────────────────────

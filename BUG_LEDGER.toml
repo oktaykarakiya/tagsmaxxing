@@ -225,9 +225,9 @@ touches = ["crates/api/src/handlers/auth.rs", "crates/core/src/auth.rs"]
 conflict_group = "auth_core"
 depends_on = []
 severity = "medium"
-status = "todo"
+status = "done"
 acceptance = "test_weak_password_rejected_on_register passes"
-notes = "The web signup form enforces >= 8 chars but the JSON /auth/register handler skips validation. Add password strength check (>= 8 chars, mixed case, digit) to the JSON handler, reusing the logic from the web handler."
+notes = "Added validate_password_strength() to kb_core::auth (>=8 chars, upper+lower+digit) with 8 unit tests; called before is_common_password in the JSON /auth/register handler returning 400 weak_password on failure."
 
 [[bug]]
 id = "BUG-AUTH-05"

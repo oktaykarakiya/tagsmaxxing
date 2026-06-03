@@ -246,6 +246,39 @@ pub fn is_common_password(password: &str) -> bool {
     COMMON_PASSWORDS.binary_search(&lower.as_str()).is_ok()
 }
 
+/// Validate that a password meets the minimum strength requirements.
+///
+/// A password must:
+/// - Be at least 8 characters long
+/// - Contain at least one uppercase letter (A-Z)
+/// - Contain at least one lowercase letter (a-z)
+/// - Contain at least one digit (0-9)
+///
+/// Returns `Ok(())` if all requirements are met, or an error message string
+/// describing the first failing requirement.
+///
+/// This check is separate from [`is_common_password`] — a password can pass
+/// the strength rules but still be too common, or vice versa. Callers should
+/// apply both checks during registration.
+pub fn validate_password_strength(password: &str) -> Result<(), &'static str> {
+    if password.len() < 8 {
+        return Err("Password must be at least 8 characters long.");
+    }
+    let has_upper = password.chars().any(|c| c.is_uppercase());
+    if !has_upper {
+        return Err("Password must contain at least one uppercase letter.");
+    }
+    let has_lower = password.chars().any(|c| c.is_lowercase());
+    if !has_lower {
+        return Err("Password must contain at least one lowercase letter.");
+    }
+    let has_digit = password.chars().any(|c| c.is_ascii_digit());
+    if !has_digit {
+        return Err("Password must contain at least one digit.");
+    }
+    Ok(())
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -494,5 +527,70 @@ mod tests {
             let b = window[1];
             assert!(a < b, "COMMON_PASSWORDS is not sorted: {a:?} >= {b:?}");
         }
+    }
+
+    // ── validate_password_strength ──────────────────────────────────────────
+
+    #[test]
+    fn accepts_strong_password() {
+        assert!(validate_password_strength("MyPassw0rd").is_ok());
+        assert!(validate_password_strength("Correct-Horse-Battery-Staple-1").is_ok());
+        assert!(validate_password_strength("A1bcdefgh").is_ok());
+    }
+
+    #[test]
+    fn rejects_too_short() {
+        let err = validate_password_strength("Ab1").unwrap_err();
+        assert!(err.contains("at least 8 characters"));
+    }
+
+    #[test]
+    fn rejects_seven_chars() {
+        // 7 chars, has upper/lower/digit but too short
+        let err = validate_password_strength("Abcde1x").unwrap_err();
+        assert!(err.contains("at least 8 characters"));
+    }
+
+    #[test]
+    fn rejects_missing_uppercase() {
+        let err = validate_password_strength("abcdefg1").unwrap_err();
+        assert!(err.contains("uppercase"));
+    }
+
+    #[test]
+    fn rejects_missing_lowercase() {
+        let err = validate_password_strength("ABCDEFG1").unwrap_err();
+        assert!(err.contains("lowercase"));
+    }
+
+    #[test]
+    fn rejects_missing_digit() {
+        let err = validate_password_strength("Abcdefgh").unwrap_err();
+        assert!(err.contains("digit"));
+    }
+
+    #[test]
+    fn rejects_empty_password() {
+        let err = validate_password_strength("").unwrap_err();
+        assert!(err.contains("at least 8 characters"));
+    }
+
+    #[test]
+    fn rejects_numeric_only() {
+        // "12345678" is 8 chars but has no letters at all
+        let err = validate_password_strength("12345678").unwrap_err();
+        assert!(err.contains("uppercase"));
+    }
+
+    #[test]
+    fn rejects_letters_only() {
+        let err = validate_password_strength("Abcdefgh").unwrap_err();
+        assert!(err.contains("digit"));
+    }
+
+    #[test]
+    fn rejects_exactly_eight_no_upper() {
+        let err = validate_password_strength("abcdefg1").unwrap_err();
+        assert!(err.contains("uppercase"));
     }
 }
