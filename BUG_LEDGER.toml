@@ -504,9 +504,9 @@ touches = ["crates/api/src/web/handlers.rs", "crates/store/src/pg_store.rs"]
 conflict_group = "pg_store"
 depends_on = []
 severity = "medium"
-status = "todo"
+status = "done"
 acceptance = "test_document_detail_returns_files_and_tags passes"
-notes = "GET /api/documents/{id} is missing title, summary, kind, files, tags, meta, page_count, status, or created_at. Ensure the handler returns all documented fields with correct nested structures."
+notes = "Handler already returns all required fields (id,title,summary,kind,files,tags,meta,page_count,status,created_at) with correct nested FileEntry/TagEntry structures; test passes."
 
 [[bug]]
 id = "BUG-SRCH-08"
