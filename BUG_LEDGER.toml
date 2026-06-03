@@ -530,9 +530,9 @@ touches = ["crates/pipeline/src/embedder.rs", "crates/pipeline/src/retrieval.rs"
 conflict_group = "search_pipeline"
 depends_on = ["BUG-SRCH-01"]
 severity = "high"
-status = "todo"
+status = "done"
 acceptance = "test_paraphrased_query_retrieves_relevant_doc passes"
-notes = "A semantically-paraphrased query with zero keyword overlap fails to retrieve the target document. Embedding model may not be running, or the vector search may not be correctly weighted in RRF fusion."
+notes = "Fixed: ChunkEmbedder::batch_embed ignored EmbedKind (prefix _kind). Now prepends BGE-M3 query instruction prefix \"Represent this sentence for searching relevant passages: \" for EmbedKind::Query so query embeddings land in the same semantic space as stored document embeddings. Without this, paraphrased queries with zero keyword overlap produce random cosine similarity against document vectors."
 
 [[bug]]
 id = "BUG-SRCH-10"
@@ -572,9 +572,9 @@ touches = ["crates/pipeline/src/ingest.rs", "crates/store/src/pg_store.rs"]
 conflict_group = "pg_store"
 depends_on = []
 severity = "high"
-status = "todo"
+status = "done"
 acceptance = "test_dedup_collision_does_not_orphan_document passes"
-notes = "Uploading identical bytes under a new filename repoints the (tenant, sha256) file row to the new document, orphaning the first. Fix the ON CONFLICT handler to not reassign — either copy the row or include document_id in the unique constraint."
+notes = "Expanded files UNIQUE constraint from (tenant_id,sha256) to (tenant_id,sha256,document_id) via schema adjustment in connect(). Changed ON CONFLICT target in upsert_file and transactional_ingest to include document_id so same bytes under a new filename create a new file row instead of reassigning the existing one."
 
 [[bug]]
 id = "BUG-INGEST-03"

@@ -214,6 +214,23 @@ impl PgStore {
                 .execute(&mut *lock_conn)
                 .await
                 .context("failed to release migration advisory lock")?;
+
+            // BUG-INGEST-02: The original UNIQUE (tenant_id, sha256) on files
+            // repoints the file row to the newest document on conflict,
+            // orphaning the first document. Expand the constraint to include
+            // document_id so identical bytes under a different filename create
+            // a new file row instead of reassigning the existing one.
+            sqlx::query("ALTER TABLE files DROP CONSTRAINT IF EXISTS files_tenant_id_sha256_key")
+                .execute(&mut *lock_conn)
+                .await
+                .context("failed to drop old files unique constraint")?;
+            sqlx::query(
+                "CREATE UNIQUE INDEX IF NOT EXISTS files_tenant_sha256_doc_unique \
+                 ON files (tenant_id, sha256, document_id)",
+            )
+            .execute(&mut *lock_conn)
+            .await
+            .context("failed to create new files unique index")?;
         }
 
         // Connect the app pool only after migrations have created the kb_app role + grants.
@@ -685,8 +702,8 @@ const USAGE_INSERT_SQL: &str = "INSERT INTO usage_events (tenant_id,user_id,mode
 impl Store for PgStore {
     /// Insert or update a file (page) record, returning its id.
     ///
-    /// Idempotent on `(tenant_id, sha256)` conflict: existing rows are updated with
-    /// the latest metadata, status, and document association.
+    /// Idempotent on `(tenant_id, sha256, document_id)` conflict: existing rows are
+    /// updated with the latest metadata, status, and document association.
     ///
     /// # Errors
     /// Returns an error if the database is not connected or the query fails.
@@ -696,7 +713,7 @@ impl Store for PgStore {
         let id = sqlx::query_scalar::<Postgres, i64>(
             "INSERT INTO files (tenant_id,document_id,page_no,page_label,sha256,blob_key,path,mime,size_bytes,meta,status,ingested_at) \
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) \
-             ON CONFLICT (tenant_id,sha256) DO UPDATE SET document_id=EXCLUDED.document_id,page_no=EXCLUDED.page_no,page_label=EXCLUDED.page_label,blob_key=EXCLUDED.blob_key,path=EXCLUDED.path,mime=EXCLUDED.mime,size_bytes=EXCLUDED.size_bytes,meta=EXCLUDED.meta,status=EXCLUDED.status,ingested_at=EXCLUDED.ingested_at \
+             ON CONFLICT (tenant_id,sha256,document_id) DO UPDATE SET document_id=EXCLUDED.document_id,page_no=EXCLUDED.page_no,page_label=EXCLUDED.page_label,blob_key=EXCLUDED.blob_key,path=EXCLUDED.path,mime=EXCLUDED.mime,size_bytes=EXCLUDED.size_bytes,meta=EXCLUDED.meta,status=EXCLUDED.status,ingested_at=EXCLUDED.ingested_at \
              RETURNING id",
         )
         .bind(rec.tenant_id).bind(rec.document_id).bind(rec.page_no)
@@ -1315,7 +1332,7 @@ impl PgStore {
             let fid: i64 = sqlx::query_scalar(
                 "INSERT INTO files (tenant_id,document_id,page_no,page_label,sha256,blob_key,path,mime,size_bytes,meta,status,ingested_at) \
                  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) \
-                 ON CONFLICT (tenant_id,sha256) DO UPDATE SET document_id=EXCLUDED.document_id,page_no=EXCLUDED.page_no,page_label=EXCLUDED.page_label,blob_key=EXCLUDED.blob_key,path=EXCLUDED.path,mime=EXCLUDED.mime,size_bytes=EXCLUDED.size_bytes,meta=EXCLUDED.meta,status=EXCLUDED.status,ingested_at=EXCLUDED.ingested_at \
+                 ON CONFLICT (tenant_id,sha256,document_id) DO UPDATE SET document_id=EXCLUDED.document_id,page_no=EXCLUDED.page_no,page_label=EXCLUDED.page_label,blob_key=EXCLUDED.blob_key,path=EXCLUDED.path,mime=EXCLUDED.mime,size_bytes=EXCLUDED.size_bytes,meta=EXCLUDED.meta,status=EXCLUDED.status,ingested_at=EXCLUDED.ingested_at \
                  RETURNING id",
             )
             .bind(file.tenant_id).bind(doc_id).bind(file.page_no)

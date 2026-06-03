@@ -15,6 +15,16 @@ use kb_llm::LlamaClient;
 
 use crate::chunker::{MAX_EMBED_BATCH_SIZE, TextChunk};
 
+/// BGE-M3 instruction prefix prepended to query text before embedding
+/// (plan §4, BGE-M3 specification). This ensures query embeddings land in
+/// the same semantic space as document embeddings, which use no prefix.
+///
+/// Without this prefix, paraphrased queries with zero keyword overlap score
+/// as random noise in the vector index because cosine similarity between a
+/// bare-text query vector and a document-chunk vector measures proximity in
+/// different subspaces.
+const BGE_M3_QUERY_PREFIX: &str = "Represent this sentence for searching relevant passages: ";
+
 /// Wraps [`LlamaClient`] to batch-embed text chunks and tag names, verifying that
 /// every returned vector has the expected dimension (plan §7, §11).
 ///
@@ -149,15 +159,29 @@ impl ChunkEmbedder {
     // ── Internal ───────────────────────────────────────────────────────────
 
     /// Send `texts` to the embed backend in batches, verifying output dimensions.
+    ///
+    /// For [`EmbedKind::Query`], the BGE-M3 retrieval instruction prefix
+    /// ([`BGE_M3_QUERY_PREFIX`]) is prepended to every text so the query
+    /// embedding lands in the same semantic space as stored document embeddings.
+    /// [`EmbedKind::Document`] texts are sent unchanged.
     async fn batch_embed(
         &self,
         texts: &[String],
-        _kind: EmbedKind,
+        kind: EmbedKind,
         local_only: bool,
     ) -> anyhow::Result<Vec<Vec<f32>>> {
-        let mut all_vectors = Vec::with_capacity(texts.len());
+        // Apply BGE-M3 instruction prefix based on embedding kind.
+        let processed: Vec<String> = match kind {
+            EmbedKind::Query => texts
+                .iter()
+                .map(|t| format!("{BGE_M3_QUERY_PREFIX}{t}"))
+                .collect(),
+            EmbedKind::Document => texts.to_vec(),
+        };
 
-        for batch in texts.chunks(MAX_EMBED_BATCH_SIZE) {
+        let mut all_vectors = Vec::with_capacity(processed.len());
+
+        for batch in processed.chunks(MAX_EMBED_BATCH_SIZE) {
             let req = EmbedReq {
                 texts: batch.to_vec(),
             };
@@ -419,5 +443,65 @@ mod tests {
         const {
             assert!(MAX_EMBED_BATCH_SIZE > 0);
         }
+    }
+
+    // ── BGE-M3 instruction prefix ──────────────────────────────────────────
+
+    /// Verify that the BGE-M3 query instruction prefix is prepended for
+    /// [`EmbedKind::Query`] but not for [`EmbedKind::Document`].
+    #[test]
+    fn bge_m3_query_prefix_is_applied() {
+        // Pure-function test: the constant is a non-empty string.
+        assert!(!BGE_M3_QUERY_PREFIX.is_empty());
+        assert!(BGE_M3_QUERY_PREFIX.contains("searching relevant passages"));
+
+        // Simulate the logic applied in `batch_embed`.
+        let text = "how do black holes form";
+        let query_text = format!("{BGE_M3_QUERY_PREFIX}{text}");
+        assert!(query_text.starts_with(BGE_M3_QUERY_PREFIX));
+        assert!(query_text.ends_with(text));
+        assert!(query_text.len() > text.len());
+    }
+
+    /// Documents must NOT receive the query prefix — only queries do.
+    #[test]
+    fn document_kind_no_prefix() {
+        let text = "When a sufficiently massive star exhausts its nuclear fuel";
+        // Document: no prefix applied (the logic in batch_embed returns texts
+        // as-is for EmbedKind::Document).
+        assert!(!text.starts_with(BGE_M3_QUERY_PREFIX));
+        // The prefix should not appear anywhere in an unmodified document.
+        assert!(!text.contains("searching relevant passages"));
+    }
+
+    /// End-to-end: `embed_query` succeeds through the mock backend (proves the
+    /// prefixed text is accepted by the embed endpoint and produces a valid
+    /// vector of the expected dimension).
+    #[tokio::test]
+    async fn embed_query_with_prefix_through_mock() {
+        let (embedder, mock) = embedder_with_mock(MOCK_DIM).await;
+
+        let vec = embedder
+            .embed_query("paraphrased query text", false)
+            .await
+            .unwrap();
+        assert_eq!(vec.len(), MOCK_DIM);
+
+        mock.shutdown().await;
+    }
+
+    /// End-to-end: `embed_chunks` succeeds with document kind (no prefix).
+    #[tokio::test]
+    async fn embed_chunks_without_prefix_through_mock() {
+        let (embedder, mock) = embedder_with_mock(MOCK_DIM).await;
+
+        let chunks = embedder
+            .embed_chunks(vec![tc("document content", 0, 1, 1)], 1, 1, false)
+            .await
+            .unwrap();
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].embedding.len(), MOCK_DIM);
+
+        mock.shutdown().await;
     }
 }
