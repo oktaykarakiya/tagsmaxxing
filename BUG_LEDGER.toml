@@ -253,7 +253,7 @@ depends_on = []
 severity = "high"
 status = "done"
 acceptance = "test_danger_zone_delete_requires_step_up_reauth passes"
-notes = "POST /account/danger/delete requires only CSRF token + slug confirmation. Add a password re-check (step-up auth) before allowing irreversible workspace deletion."
+notes = "Added password field to DeleteAccountForm with #[serde(default)], empty-password guard, and password-hash verification (admin_get_user + find_user_by_email + verify_password) in account_delete handler before slug check and job enqueue."
 
 [[bug]]
 id = "BUG-AUTH-07"
