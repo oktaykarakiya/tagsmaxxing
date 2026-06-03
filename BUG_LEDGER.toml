@@ -598,7 +598,7 @@ touches = ["crates/extract/src/text.rs"]
 conflict_group = "extract"
 depends_on = []
 severity = "medium"
-status = "todo"
+status = "done"
 acceptance = "test_markdown_html_content_is_searchable passes"
 notes = "Markdown (.md) and HTML (.html) uploads don't have text extracted. The text extractor should strip markdown/html markup and extract plain text. text/markdown and text/html MIME types may not be recognized."
 
