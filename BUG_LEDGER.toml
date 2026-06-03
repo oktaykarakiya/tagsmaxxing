@@ -478,9 +478,9 @@ touches = ["crates/store/src/hybrid_search.rs", "crates/core/src/query.rs"]
 conflict_group = "search_store"
 depends_on = ["BUG-SRCH-01"]
 severity = "medium"
-status = "todo"
+status = "done"
 acceptance = "test_search_deeplink_page_provenance passes"
-notes = "Hit schema is missing file_id and page_no fields. Add these to the Hit/ChunkHit types and populate them from the hybrid search SQL row."
+notes = "Already fixed — file_id, page_no, ts_offset were present in Hit/ChunkHit/ChunkRow/SQL SELECT/document_rollup/SearchHit since their initial commits (P0 foundation through P6-T5). just ci green."
 
 [[bug]]
 id = "BUG-SRCH-06"
