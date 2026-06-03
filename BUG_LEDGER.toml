@@ -439,9 +439,9 @@ touches = ["crates/store/src/hybrid_search.rs", "crates/pipeline/src/retrieval.r
 conflict_group = "search_pipeline"
 depends_on = ["BUG-SRCH-01"]
 severity = "high"
-status = "todo"
+status = "done"
 acceptance = "test_search_ranks_relevant_higher, test_exact_match_outranks_semantic_only, and test_multiterm_all_terms_doc_ranks_first pass"
-notes = "Multiple ranking failures: exact phrase match does not outrank semantic-only, all-terms doc doesn't rank above subset doc, and topic relevance doesn't drive ordering. Fix RRF fusion weights, keyword scoring, or reranker integration."
+notes = "Added RRF-reranker score blending in RetrievalPipeline::retrieve() — normalised RRF scores to [0,1] and blended with reranker scores at 0.2 weight, preserving keyword (ts_rank) + vector (cosine) signal that the cross-encoder alone may not capture, especially with quantised models."
 
 [[bug]]
 id = "BUG-SRCH-03"

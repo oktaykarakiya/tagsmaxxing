@@ -113,13 +113,26 @@ impl RetrievalPipeline {
             hits.len()
         );
 
-        // Attach reranker scores and sort descending.
+        // Blend RRF hybrid-search scores with reranker scores.
+        // RRF encodes keyword (ts_rank) + vector (cosine) signal that the
+        // cross-encoder may not fully capture on its own, especially with
+        // quantised models. Blending preserves the exact-match term boost
+        // while still deferring to the reranker for semantic relevance.
+        const RRF_BLEND_WEIGHT: f32 = 0.2;
+
+        // Normalise RRF scores to [0, 1] so they are range-compatible with
+        // the reranker scores before blending.
+        let max_rrf = hits.iter().map(|h| h.score).fold(0.0_f32, f32::max);
+        let norm = if max_rrf > 0.0 { 1.0 / max_rrf } else { 1.0 };
+
         let mut rescored: Vec<(Hit, f32)> = hits
             .into_iter()
             .zip(rerank_scores)
-            .map(|(mut hit, score)| {
-                hit.score = score;
-                (hit, score)
+            .map(|(mut hit, rerank_score)| {
+                let norm_rrf = hit.score * norm;
+                let blended = RRF_BLEND_WEIGHT * norm_rrf + (1.0 - RRF_BLEND_WEIGHT) * rerank_score;
+                hit.score = blended;
+                (hit, blended)
             })
             .collect();
 
@@ -433,13 +446,17 @@ mod tests {
         let results = pipeline.retrieve(1, &q, false).await.unwrap();
 
         assert_eq!(results.len(), 3);
-        // Sorted by reranker score descending.
+        // Sorted by blended score descending.
+        // With RRF_BLEND_WEIGHT=0.2 and max_rrf=0.9:
+        //   doc 20: 0.2*(0.6/0.9) + 0.8*0.95 = 0.8933
+        //   doc 10: 0.2*(0.8/0.9) + 0.8*0.50 = 0.5778
+        //   doc 30: 0.2*(0.9/0.9) + 0.8*0.30 = 0.4400
         assert_eq!(results[0].document_id, 20);
-        assert!((results[0].score - 0.95).abs() < 0.001);
+        assert!((results[0].score - 0.8933).abs() < 0.001);
         assert_eq!(results[1].document_id, 10);
-        assert!((results[1].score - 0.5).abs() < 0.001);
+        assert!((results[1].score - 0.5778).abs() < 0.001);
         assert_eq!(results[2].document_id, 30);
-        assert!((results[2].score - 0.3).abs() < 0.001);
+        assert!((results[2].score - 0.4400).abs() < 0.001);
 
         // Deep-link provenance preserved.
         assert_eq!(results[0].file_id, 200);
@@ -701,8 +718,9 @@ mod tests {
         assert_eq!(hit.file_id, 777);
         assert_eq!(hit.page_no, Some(3));
         assert_eq!(hit.ts_offset, Some(15.0));
-        // Score is updated by the reranker.
-        assert!((hit.score - 0.75).abs() < 0.001);
+        // Score is updated by blended RRF + reranker.
+        // RRF_BLEND_WEIGHT=0.2, max_rrf=0.9 → blended = 0.2*(0.9/0.9) + 0.8*0.75 = 0.8
+        assert!((hit.score - 0.8).abs() < 0.001);
 
         mock.shutdown().await;
     }
@@ -771,16 +789,16 @@ mod tests {
         (pipeline, mock)
     }
 
-    // ── Ties in reranker scores preserve input order ──────────────────────
+    // ── Ties in reranker scores: RRF scores break ties ─────────────────────
 
     #[tokio::test]
-    async fn tied_rerank_scores_preserve_original_order() {
+    async fn tied_rerank_scores_rrf_breaks_tie() {
         let store_hits = vec![
             hit(10, 0.8, "first", 100, Some(1)),
             hit(20, 0.6, "second", 200, Some(1)),
             hit(30, 0.7, "third", 300, None),
         ];
-        // All same score → no reordering.
+        // All same reranker score → RRF scores determine order.
         let rerank_scores = vec![0.5, 0.5, 0.5];
 
         let (pipeline, mock) = build_test_pipeline(store_hits, rerank_scores).await;
@@ -788,17 +806,17 @@ mod tests {
 
         let results = pipeline.retrieve(1, &q, false).await.unwrap();
         assert_eq!(results.len(), 3);
-        // All scores are now 0.5.
-        for hit in &results {
-            assert!((hit.score - 0.5).abs() < 0.001);
-        }
-        // The sort is stable because Vec::sort_by is stable in Rust when
-        // the comparison returns Ordering::Equal. However, we explicitly
-        // compare only by score, so tied scores maintain relative order
-        // from the input (which is the store's original order).
+        // With RRF_BLEND_WEIGHT=0.2 and max_rrf=0.8 (norm=1.25):
+        //   doc 10: 0.2*1.0   + 0.8*0.5 = 0.600
+        //   doc 30: 0.2*0.875 + 0.8*0.5 = 0.575
+        //   doc 20: 0.2*0.75  + 0.8*0.5 = 0.550
+        assert!((results[0].score - 0.6).abs() < 0.001);
+        assert!((results[1].score - 0.575).abs() < 0.001);
+        assert!((results[2].score - 0.55).abs() < 0.001);
+        // RRF scores break ties: highest RRF score (0.8) ranks first.
         assert_eq!(results[0].document_id, 10);
-        assert_eq!(results[1].document_id, 20);
-        assert_eq!(results[2].document_id, 30);
+        assert_eq!(results[1].document_id, 30);
+        assert_eq!(results[2].document_id, 20);
 
         mock.shutdown().await;
     }
