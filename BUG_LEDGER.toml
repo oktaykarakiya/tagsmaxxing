@@ -266,7 +266,7 @@ depends_on = ["BUG-AUTH-01"]
 severity = "high"
 status = "done"
 acceptance = "test_role_change_propagates_to_live_session passes"
-notes = "When an admin changes a user's role, the user's existing session cookie still carries the old role. The session validate function reads role from the cached session row. Fix: revoke sessions on role change, or re-read role from DB on each validation."
+notes = "PgSessionStore.validate() JOINs users table to read u.role + u.email_verified at validation time. InMemorySessionStore gained update_user_info() + internal registry so role/email changes propagate to live sessions without re-login. 6 new unit tests for role/email propagation in both stores."
 
 [[bug]]
 id = "BUG-AUTH-08"

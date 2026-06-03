@@ -19,6 +19,9 @@ use kb_core::user::UserRole;
 use sqlx::PgPool;
 use tokio::sync::RwLock;
 
+/// In-memory user-info map: `(tenant_id, user_id) → (role, email_verified)`.
+type UserInfoMap = HashMap<(i64, i64), (UserRole, bool)>;
+
 // ── InMemorySessionStore ───────────────────────────────────────────────────────
 
 /// A session store backed by an in-memory `HashMap`, protected by a `tokio::RwLock`.
@@ -27,6 +30,15 @@ use tokio::sync::RwLock;
 /// independent — sessions are **not** shared across app instances or preserved across
 /// restarts. For production use [`PgSessionStore`] instead.
 ///
+/// # Role / email_verified propagation
+///
+/// Unlike the Postgres backend (which JOINs the `users` table at validation time,
+/// so role changes and email verification propagate immediately), this store caches
+/// `user_role` and `email_verified` inside the session at creation time. To allow
+/// role or email-verification changes to take effect without revoking sessions,
+/// call [`InMemorySessionStore::update_user_info`] after mutating user state.
+/// Tests that need to simulate a role change should call that method.
+///
 /// # Cloning
 ///
 /// The store is `Clone`-able (the inner map is `Arc`-wrapped), so multiple axum
@@ -34,6 +46,12 @@ use tokio::sync::RwLock;
 #[derive(Clone, Debug)]
 pub struct InMemorySessionStore {
     sessions: Arc<RwLock<HashMap<String, Session>>>,
+    /// Authoritative per-user role and email_verified state, keyed by
+    /// `(tenant_id, user_id)`. On [`SessionStore::validate`] the store checks
+    /// this registry first; if an entry exists it overrides the session's cached
+    /// values. Call [`update_user_info`](Self::update_user_info) after a role
+    /// change or email verification.
+    user_info: Arc<RwLock<UserInfoMap>>,
 }
 
 impl InMemorySessionStore {
@@ -42,7 +60,30 @@ impl InMemorySessionStore {
     pub fn new() -> Self {
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
+            user_info: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    /// Update the stored user role and email-verification status for a user.
+    ///
+    /// Call this after mutating a user's role or marking their email as
+    /// verified. Subsequent [`SessionStore::validate`] calls for **any** session
+    /// belonging to that user will see the updated values.
+    ///
+    /// This is the in-memory analogue of the PgSessionStore JOINing the `users`
+    /// table at validation time — it ensures role changes and email verification
+    /// propagate to live sessions without requiring a re-login.
+    pub async fn update_user_info(
+        &self,
+        tenant_id: i64,
+        user_id: i64,
+        role: UserRole,
+        email_verified: bool,
+    ) {
+        self.user_info
+            .write()
+            .await
+            .insert((tenant_id, user_id), (role, email_verified));
     }
 
     /// Return the number of currently held sessions (useful for test assertions).
@@ -81,6 +122,14 @@ impl SessionStore for InMemorySessionStore {
                     .map_err(|e| anyhow::anyhow!("invalid TTL: {e}"))?,
             created_at: now,
         };
+        // Seed the authoritative user-info registry so that validate() returns
+        // consistent values even before the first call to update_user_info().
+        // Use insert (not or_insert) so that create always reflects the
+        // current state at session-creation time.
+        self.user_info
+            .write()
+            .await
+            .insert((tenant_id, user_id), (user_role, email_verified));
         self.sessions.write().await.insert(token.clone(), session);
         Ok(token)
     }
@@ -94,11 +143,21 @@ impl SessionStore for InMemorySessionStore {
         if session.expires_at <= Utc::now() {
             return Ok(None);
         }
+        // Check the user-info registry for an updated role / email_verified
+        // (set by update_user_info). If not present, fall back to the values
+        // cached in the session row.
+        let (user_role, email_verified) = {
+            let ui = self.user_info.read().await;
+            match ui.get(&(session.tenant_id, session.user_id)) {
+                Some(&(role, verified)) => (role, verified),
+                None => (session.user_role, session.email_verified),
+            }
+        };
         Ok(Some(SessionInfo {
             tenant_id: session.tenant_id,
             user_id: session.user_id,
-            user_role: session.user_role,
-            email_verified: session.email_verified,
+            user_role,
+            email_verified,
         }))
     }
 
@@ -542,6 +601,141 @@ mod tests {
         assert_eq!(
             store.validate(&t_member).await.unwrap(),
             info(1, 3, UserRole::Member)
+        );
+    }
+
+    // ── role / email_verified propagation via update_user_info ─────────────
+
+    #[tokio::test]
+    async fn inmem_role_change_propagates_to_live_session() {
+        let store = InMemorySessionStore::new();
+        // Create session as Admin.
+        let token = store
+            .create(1, 42, UserRole::Admin, true, ttl())
+            .await
+            .unwrap();
+        assert_eq!(
+            store.validate(&token).await.unwrap(),
+            info(1, 42, UserRole::Admin)
+        );
+
+        // Simulate an admin demoting the user to Member.
+        store.update_user_info(1, 42, UserRole::Member, true).await;
+
+        // The live session must now reflect the Member role.
+        assert_eq!(
+            store.validate(&token).await.unwrap(),
+            info(1, 42, UserRole::Member)
+        );
+    }
+
+    #[tokio::test]
+    async fn inmem_email_verified_propagates_to_live_session() {
+        let store = InMemorySessionStore::new();
+        // Create session as unverified.
+        let token = store
+            .create(1, 42, UserRole::Member, false, ttl())
+            .await
+            .unwrap();
+        assert_eq!(
+            store.validate(&token).await.unwrap(),
+            Some(SessionInfo {
+                tenant_id: 1,
+                user_id: 42,
+                user_role: UserRole::Member,
+                email_verified: false,
+            })
+        );
+
+        // Simulate email verification.
+        store.update_user_info(1, 42, UserRole::Member, true).await;
+
+        // The live session must now show email_verified = true.
+        assert_eq!(
+            store.validate(&token).await.unwrap(),
+            Some(SessionInfo {
+                tenant_id: 1,
+                user_id: 42,
+                user_role: UserRole::Member,
+                email_verified: true,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn inmem_update_user_info_tenant_scoped() {
+        // update_user_info only affects the targeted (tenant, user) pair.
+        let store = InMemorySessionStore::new();
+        let t1 = store
+            .create(1, 10, UserRole::Admin, true, ttl())
+            .await
+            .unwrap();
+        let t2 = store
+            .create(2, 10, UserRole::Admin, true, ttl())
+            .await
+            .unwrap();
+
+        // Demote user 10 in tenant 1 — tenant 2 must be unaffected.
+        store.update_user_info(1, 10, UserRole::Member, true).await;
+
+        assert_eq!(
+            store.validate(&t1).await.unwrap(),
+            info(1, 10, UserRole::Member)
+        );
+        assert_eq!(
+            store.validate(&t2).await.unwrap(),
+            info(2, 10, UserRole::Admin)
+        );
+    }
+
+    #[tokio::test]
+    async fn inmem_update_user_info_only_affects_target_user() {
+        let store = InMemorySessionStore::new();
+        let t1 = store
+            .create(1, 10, UserRole::Admin, true, ttl())
+            .await
+            .unwrap();
+        let t2 = store
+            .create(1, 20, UserRole::Admin, true, ttl())
+            .await
+            .unwrap();
+
+        // Demote user 10 — user 20 must stay Admin.
+        store.update_user_info(1, 10, UserRole::Member, true).await;
+
+        assert_eq!(
+            store.validate(&t1).await.unwrap(),
+            info(1, 10, UserRole::Member)
+        );
+        assert_eq!(
+            store.validate(&t2).await.unwrap(),
+            info(1, 20, UserRole::Admin)
+        );
+    }
+
+    #[tokio::test]
+    async fn inmem_update_user_info_on_unknown_user_is_harmless() {
+        let store = InMemorySessionStore::new();
+        // Calling update_user_info on a user that has no sessions is harmless
+        // (it just seeds the registry). When a session is later created, the
+        // create-time values take precedence (insert overwrites the seed).
+        store.update_user_info(1, 99, UserRole::Owner, true).await;
+
+        // Create a session for that user — the create method inserts the
+        // session-time values, so the Owner seed is overwritten.
+        let token = store
+            .create(1, 99, UserRole::Member, false, ttl())
+            .await
+            .unwrap();
+        // The create-time values (Member, not-verified) take precedence.
+        assert_eq!(
+            store.validate(&token).await.unwrap(),
+            Some(SessionInfo {
+                tenant_id: 1,
+                user_id: 99,
+                user_role: UserRole::Member,
+                email_verified: false,
+            })
         );
     }
 
