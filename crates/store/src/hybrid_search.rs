@@ -189,11 +189,11 @@ async fn execute_keyword_query(
 
     let mut builder = build_base_select();
     // Keyword match condition — must come before optional filters.
-    builder.push(" AND c.tsv @@ websearch_to_tsquery('simple', ");
+    builder.push(" AND c.tsv @@ plainto_tsquery('simple', ");
     builder.push_bind(query_text.clone());
     builder.push(")");
     push_filters(&mut builder, &query.filters, tag_ids);
-    builder.push(" ORDER BY ts_rank(c.tsv, websearch_to_tsquery('simple', ");
+    builder.push(" ORDER BY ts_rank(c.tsv, plainto_tsquery('simple', ");
     builder.push_bind(query_text);
     builder.push(")) DESC LIMIT ");
     builder.push_bind(query.top_k as i64);
