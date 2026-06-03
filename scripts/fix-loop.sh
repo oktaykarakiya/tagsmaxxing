@@ -52,7 +52,7 @@ while [[ $# -gt 0 ]]; do
     --max-batches) MAX_BATCHES="$2"; shift 2 ;;
     --batch-size)  BATCH_SIZE="$2"; shift 2 ;;
     --dry-run)     DRY_RUN=1; shift ;;
-    --yolo)        PERM_MODE="bypassPermissions"; shift ;;
+    --yolo)        export PERM_MODE="bypassPermissions"; shift ;;
     --skip-e2e)    SKIP_E2E=1; shift ;;
     --model)       FIX_MODEL="$2"; shift 2 ;;
     --effort)      EFFORT="$2"; shift 2 ;;
