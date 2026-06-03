@@ -559,9 +559,9 @@ touches = ["crates/pipeline/src/chunker.rs", "crates/pipeline/src/ingest.rs"]
 conflict_group = "ingest_pipeline"
 depends_on = []
 severity = "medium"
-status = "todo"
+status = "done"
 acceptance = "test_provenance_cited_location_contains_match passes"
-notes = "For multi-page docs, the winning hit's file_id/page_no doesn't point at the correct page. Fix chunk metadata to track original page/position and propagate through retrieval."
+notes = "Test already passes (latest E2E run 2026-06-03T08:46:34Z, 21.3s, passed). Traced full provenance lifecycle: chunk_text sets page_no+file_id per page, embed_chunks preserves metadata, transactional_ingest binds DB-assigned file_id to correct chunk batches, hybrid_search reads c.file_id+c.page_no from chunks table. Pipeline is correct; likely a false alarm during BUG_LEDGER baseline generation."
 
 [[bug]]
 id = "BUG-INGEST-02"
