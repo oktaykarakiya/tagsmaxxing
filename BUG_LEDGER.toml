@@ -465,9 +465,9 @@ touches = ["crates/api/src/handlers/search.rs"]
 conflict_group = "api_handlers"
 depends_on = []
 severity = "low"
-status = "todo"
+status = "done"
 acceptance = "test_search_empty_query passes"
-notes = "An empty q= parameter returns 400. Should return 200 with empty results for usability. Fix the search handler to treat empty query as a no-match rather than a client error."
+notes = "Changed empty/whitespace-only query from 400 to 200 with empty hits in search handler. Updated doc comment and unit test."
 
 [[bug]]
 id = "BUG-SRCH-05"

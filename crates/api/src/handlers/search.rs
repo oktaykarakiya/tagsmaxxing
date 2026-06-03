@@ -95,7 +95,7 @@ pub struct ErrorResponse {
 /// # Response
 ///
 /// * `200 OK` — [`SearchResponse`] with ranked hits.
-/// * `400 Bad Request` — missing `q` parameter or invalid filter.
+/// * `400 Bad Request` — invalid filter (e.g. unknown document kind).
 /// * `401 Unauthorized` — rejected by middleware.
 /// * `500 Internal Server Error` — pipeline or store failure.
 pub async fn search(
@@ -103,11 +103,15 @@ pub async fn search(
     Extension(auth_user): Extension<AuthUser>,
     Query(params): Query<SearchParams>,
 ) -> Result<(StatusCode, Json<SearchResponse>), (StatusCode, Json<ErrorResponse>)> {
-    // ── Validate input ───────────────────────────────────────────────────────
+    // ── Handle empty query ───────────────────────────────────────────────────
     if params.q.trim().is_empty() {
-        return Err(bad_request(
-            "missing_query",
-            "query parameter 'q' is required",
+        return Ok((
+            StatusCode::OK,
+            Json(SearchResponse {
+                hits: Vec::new(),
+                query: params.q.clone(),
+                count: 0,
+            }),
         ));
     }
 
@@ -393,7 +397,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn missing_query_returns_400() {
+    async fn empty_query_returns_200_with_empty_results() {
         let state = test_state();
         let token = state
             .session_store
@@ -402,7 +406,7 @@ mod tests {
             .unwrap();
         let router = search_router(state);
 
-        // Empty q parameter → 400.
+        // Empty q parameter → 200 with zero hits (usability — not a client error).
         let request = axum::http::Request::builder()
             .method(Method::GET)
             .uri("/api/search?q=%20%20")
@@ -411,7 +415,16 @@ mod tests {
             .unwrap();
 
         let response = router.oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(result["count"], 0);
+        assert!(result["hits"].as_array().unwrap().is_empty());
+        assert_eq!(result["query"], "  "); // echoed as-is
+        assert!(result.get("error").is_none());
     }
 
     #[tokio::test]
