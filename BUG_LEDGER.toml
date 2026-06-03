@@ -802,9 +802,9 @@ touches = ["crates/api/src/degradation_middleware.rs", "crates/core/src/degradat
 conflict_group = "metrics_defs"
 depends_on = []
 severity = "medium"
-status = "todo"
+status = "done"
 acceptance = "test_health_ok_when_ready and test_health_reports_degradation pass"
-notes = "/health is missing status, database, migrations, backends, and degradation fields. Add the full health contract with degradation.ok and degradation.subsystems to the response."
+notes = "Not reproducible: /health already emits the full contract (status/database/migrations/backends + degradation.ok + degradation.subsystems) since P8-T8, and degradation.rs already provides is_degraded()/degraded_subsystems() feeding it. Verified both required tests pass and just ci is green; no source change needed in the editable files."
 
 [[bug]]
 id = "BUG-OBS-02"
