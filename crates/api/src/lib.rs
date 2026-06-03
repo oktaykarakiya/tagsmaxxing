@@ -323,6 +323,8 @@ impl AppState {
 /// | POST   | `/billing/portal`              | yes   | Stripe Customer Portal HTMX (P11-T6) |
 /// | POST   | `/stripe/webhook`              | no    | Stripe webhook handler (P11-T3)      |
 /// | GET    | `/metrics`                     | no    | Prometheus metrics (plan §15)        |
+/// | GET    | `/health`                      | no    | Readiness probe (deep, dependency-aware) |
+/// | GET    | `/live`                        | no    | Liveness probe (process-alive only)  |
 ///
 /// Route table — Web UI (P6-T4):
 ///
@@ -346,6 +348,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/stripe/webhook", post(handlers::webhook::post_webhook))
         .route("/metrics", get(metrics_handler))
         .route("/health", get(health_handler))
+        .route("/live", get(live_handler))
         .layer(from_fn(login_rate_limit_middleware));
 
     // Protected API routes (auth required, P6-T2+).
@@ -462,6 +465,34 @@ async fn health_handler(
     (status, Json(body))
 }
 
+// ── Liveness handler ────────────────────────────────────────────────────────────
+
+/// Liveness probe (k8s-style, BUG-OBS-02).
+///
+/// Returns 200 OK whenever the process is alive and able to respond to HTTP.
+/// Unlike [`health_handler`] (the *readiness* probe), this endpoint performs
+/// **no** dependency checks — it never inspects the database, backends,
+/// migrations, or degradation state, and therefore never returns 503.
+///
+/// This separation matters for orchestrators: a Kubernetes liveness probe
+/// pointed at `/health` (which returns 503 when any dependency is degraded)
+/// would restart-loop the pod during a transient backend or DB outage,
+/// defeating restart-based recovery. A liveness probe must only confirm the
+/// process itself is alive and responding; readiness — "can it serve traffic?"
+/// — belongs on `/health`.
+///
+/// The body deliberately omits any readiness keys (`database`, `backends`,
+/// `migrations`, `degradation`) so callers cannot mistake it for a readiness
+/// check.
+///
+/// No authentication is required.
+async fn live_handler() -> (StatusCode, Json<serde_json::Value>) {
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({ "status": "alive" })),
+    )
+}
+
 /// Returns `true` when every role the pool knows about has at least one healthy
 /// backend.
 fn check_backend_readiness(pool: &kb_scheduler::Pool) -> bool {
@@ -568,6 +599,38 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    /// The liveness endpoint returns 200 even with an unconnected DB and no
+    /// backends — it must never depend on readiness.
+    #[tokio::test]
+    async fn live_returns_200_regardless_of_dependencies() {
+        let state = unconnected_state();
+        let router = Router::new()
+            .route("/live", get(live_handler))
+            .with_state(state);
+
+        let response = router
+            .oneshot(Request::builder().uri("/live").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    /// The liveness body must not carry readiness-level dependency checks
+    /// (`database`, `backends`, `migrations`, `degradation`).
+    #[tokio::test]
+    async fn live_body_omits_readiness_keys() {
+        let (status, Json(body)) = live_handler().await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["status"], "alive");
+        for key in ["database", "backends", "migrations", "degradation"] {
+            assert!(
+                body.get(key).is_none(),
+                "liveness body must not include readiness key {key:?}"
+            );
+        }
     }
 
     /// `check_backend_readiness` returns `true` when every role has at least one

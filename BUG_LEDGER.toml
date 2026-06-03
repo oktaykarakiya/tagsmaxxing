@@ -815,9 +815,9 @@ touches = ["crates/api/src/lib.rs", "crates/api/src/commands/serve.rs"]
 conflict_group = "serve_config"
 depends_on = []
 severity = "medium"
-status = "todo"
+status = "done"
 acceptance = "test_liveness_independent_of_readiness passes"
-notes = "/health returns 503 when backends are degraded. k8s liveness probe on it would restart-loop during a transient backend outage. Add a separate /live endpoint that only checks process-alive, no dependency checks."
+notes = "Added a shallow GET /live liveness probe in kb-api build_router/live_handler: returns 200 {\"status\":\"alive\"} with no dependency checks (no database/backends/migrations/degradation keys), so a k8s liveness probe never restart-loops on a transient dependency outage; /health remains the deep readiness probe. Added 2 unit tests."
 
 [[bug]]
 id = "BUG-OBS-03"
