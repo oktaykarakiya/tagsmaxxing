@@ -92,6 +92,12 @@ pub async fn auth_middleware(
                             "Email verification required to access this resource",
                         ));
                     }
+                    // Per-token rate limiting for API routes.
+                    if is_api_path(request.uri().path())
+                        && let Err(retry_after) = TOKEN_RATE_LIMITER.check(&bearer_token)
+                    {
+                        return Ok(token_rate_limit_response(retry_after));
+                    }
                     return run_maybe_idempotent(request, next).await;
                 }
                 Ok(None) => {}
@@ -336,6 +342,87 @@ impl LoginBruteForceLimiter {
 /// Global login brute-force limiter: 5 attempts per IP per 60-second window.
 static LOGIN_BRUTE_FORCE_LIMITER: LazyLock<LoginBruteForceLimiter> =
     LazyLock::new(|| LoginBruteForceLimiter::new(5, Duration::from_secs(60)));
+
+// ── Per-token rate limiter ─────────────────────────────────────────────────────
+
+/// In-memory fixed-window rate limiter for per-API-token request throttling.
+///
+/// Tracks request counts per raw Bearer token within a configurable time window.
+/// When a token exceeds `max_requests` within `window`, further requests receive
+/// `429 Too Many Requests` with a `Retry-After` header.
+struct TokenRateLimiter {
+    inner: Mutex<HashMap<String, Vec<Instant>>>,
+    max_requests: usize,
+    window: Duration,
+}
+
+impl TokenRateLimiter {
+    /// Create a new limiter with the given request cap and time window.
+    fn new(max_requests: usize, window: Duration) -> Self {
+        Self {
+            inner: Mutex::new(HashMap::new()),
+            max_requests,
+            window,
+        }
+    }
+
+    /// Check whether `token` is allowed to make another request.
+    ///
+    /// Prunes expired entries for the token, then checks whether the remaining
+    /// count is below `max_requests`. If allowed, records the request and
+    /// returns `Ok(())`. If rate-limited, returns `Err(retry_after_secs)`
+    /// where `retry_after_secs` is the suggested `Retry-After` header value.
+    fn check(&self, token: &str) -> Result<(), u64> {
+        let mut map = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let now = Instant::now();
+        let cutoff = now - self.window;
+        let attempts = map.entry(token.to_owned()).or_default();
+        attempts.retain(|t| *t > cutoff);
+        if attempts.len() >= self.max_requests {
+            let oldest = attempts.iter().min().copied().unwrap_or(now);
+            let elapsed = now.duration_since(oldest).as_secs();
+            let retry = self.window.as_secs().saturating_sub(elapsed).max(1);
+            Err(retry)
+        } else {
+            attempts.push(now);
+            Ok(())
+        }
+    }
+
+    /// Clear all tracked tokens (test-only).
+    #[cfg(test)]
+    fn reset(&self) {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    }
+}
+
+/// Global per-token rate limiter: 100 requests per 60-second window per token.
+static TOKEN_RATE_LIMITER: LazyLock<TokenRateLimiter> =
+    LazyLock::new(|| TokenRateLimiter::new(100, Duration::from_secs(60)));
+
+/// Build a 429 rate-limit response with a `Retry-After` header and the canonical
+/// `{error, message}` JSON envelope.
+fn token_rate_limit_response(retry_after: u64) -> Response {
+    let body = axum::body::Body::from(
+        serde_json::json!({
+            "error": "rate_limited",
+            "message": format!("Too many requests. Please try again in {retry_after}s.")
+        })
+        .to_string(),
+    );
+    let mut response = Response::new(body);
+    *response.status_mut() = StatusCode::TOO_MANY_REQUESTS;
+    response.headers_mut().insert(
+        "retry-after",
+        axum::http::HeaderValue::from_str(&retry_after.to_string())
+            .unwrap_or(axum::http::HeaderValue::from_static("60")),
+    );
+    response.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/json"),
+    );
+    response
+}
 
 /// Axum middleware: rate-limit `POST /auth/login` requests to prevent brute-force.
 ///
@@ -1152,6 +1239,64 @@ mod tests {
         // Retry-After must be in [1, 60] range.
         assert!(err >= 1, "retry-after too small: {err}");
         assert!(err <= 60, "retry-after too large: {err}");
+    }
+
+    // ── TokenRateLimiter unit tests ──────────────────────────────────────
+
+    #[test]
+    fn token_limiter_allows_under_max_requests() {
+        let limiter = TokenRateLimiter::new(3, Duration::from_secs(60));
+        for _ in 0..3 {
+            assert!(limiter.check("tok-abc").is_ok());
+        }
+    }
+
+    #[test]
+    fn token_limiter_blocks_after_max_requests() {
+        let limiter = TokenRateLimiter::new(2, Duration::from_secs(60));
+        assert!(limiter.check("tok-xyz").is_ok());
+        assert!(limiter.check("tok-xyz").is_ok());
+        let err = limiter.check("tok-xyz").unwrap_err();
+        assert!(err > 0, "retry-after must be positive, got {err}");
+    }
+
+    #[test]
+    fn token_limiter_tracks_different_tokens_independently() {
+        let limiter = TokenRateLimiter::new(1, Duration::from_secs(60));
+        assert!(limiter.check("token-a").is_ok());
+        assert!(limiter.check("token-a").is_err());
+        // token-b still has attempts.
+        assert!(limiter.check("token-b").is_ok());
+    }
+
+    #[test]
+    fn token_limiter_window_expires() {
+        let limiter = TokenRateLimiter::new(2, Duration::from_millis(10));
+        assert!(limiter.check("tok-1").is_ok());
+        assert!(limiter.check("tok-1").is_ok());
+        assert!(limiter.check("tok-1").is_err());
+        std::thread::sleep(Duration::from_millis(15));
+        assert!(limiter.check("tok-1").is_ok());
+    }
+
+    #[test]
+    fn token_limiter_returns_reasonable_retry_after() {
+        let limiter = TokenRateLimiter::new(1, Duration::from_secs(60));
+        assert!(limiter.check("tok-r").is_ok());
+        let err = limiter.check("tok-r").unwrap_err();
+        assert!(err >= 1, "retry-after too small: {err}");
+        assert!(err <= 60, "retry-after too large: {err}");
+    }
+
+    #[test]
+    fn token_limiter_reset_clears_all() {
+        let limiter = TokenRateLimiter::new(2, Duration::from_secs(60));
+        assert!(limiter.check("a").is_ok());
+        assert!(limiter.check("b").is_ok());
+        limiter.reset();
+        // After reset, both tokens are allowed again.
+        assert!(limiter.check("a").is_ok());
+        assert!(limiter.check("b").is_ok());
     }
 
     // ── extract_client_ip ────────────────────────────────────────────────

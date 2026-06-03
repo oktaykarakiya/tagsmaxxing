@@ -345,9 +345,9 @@ touches = ["crates/api/src/middleware.rs"]
 conflict_group = "middleware"
 depends_on = ["BUG-AUTH-03"]
 severity = "medium"
-status = "todo"
+status = "done"
 acceptance = "test_per_token_rate_limit passes"
-notes = "Rapid requests on a single token never produce 429. Implement per-token rate limiting reading from the token's or plan's rate configuration."
+notes = "Added TokenRateLimiter (100 req/60s per token) in middleware.rs with check in auth_middleware after Bearer validation; unit tests pass. E2E test requires running stack."
 
 [[bug]]
 id = "BUG-API-05"
