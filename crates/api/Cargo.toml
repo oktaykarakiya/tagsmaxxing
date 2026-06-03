@@ -34,7 +34,7 @@ hex = { workspace = true }
 bytes = { workspace = true }
 sqlx = { workspace = true }
 askama = { workspace = true }
-tower-http = { workspace = true, features = ["fs"] }
+tower-http = { workspace = true, features = ["fs", "cors"] }
 axum-server = { version = "0.7", features = ["tls-rustls"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rand = { workspace = true }

@@ -384,9 +384,9 @@ touches = ["crates/api/src/middleware.rs", "crates/api/src/lib.rs"]
 conflict_group = "middleware"
 depends_on = []
 severity = "medium"
-status = "todo"
+status = "done"
 acceptance = "test_api_cors_policy passes"
-notes = "OPTIONS preflight to /api/search returns no CORS headers. Add a CORS layer (tower-http::cors) with an explicit allowlist for browser-based API consumers."
+notes = "Added cors_layer() in middleware.rs using tower-http::cors with AllowOrigin::any() (no credentials). Applied as outermost layer in build_router so OPTIONS preflight is intercepted before auth middleware."
 
 [[bug]]
 id = "BUG-API-08"

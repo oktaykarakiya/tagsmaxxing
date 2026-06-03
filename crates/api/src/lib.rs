@@ -43,7 +43,7 @@ use kb_scheduler::Pool;
 use kb_store::PgStore;
 
 use crate::backpressure::InflightLimiter;
-use crate::middleware::{auth_middleware, login_rate_limit_middleware};
+use crate::middleware::{auth_middleware, cors_layer, login_rate_limit_middleware};
 use crate::stripe_client::StripeClient;
 
 /// Default presigned-URL TTL in seconds (1 hour, plan §20).
@@ -386,6 +386,8 @@ pub fn build_router(state: AppState) -> Router {
     // Merge public + protected API + Web UI, attach shared state.
     // The degradation middleware wraps the entire router so every
     // response carries X-Degraded when applicable.
+    // The CORS layer is outermost — it must intercept OPTIONS preflight
+    // requests before they reach any route-level middleware (auth, etc.).
     public
         .merge(api)
         .merge(web)
@@ -393,6 +395,7 @@ pub fn build_router(state: AppState) -> Router {
             state.clone(),
             degradation_middleware::degradation_middleware,
         ))
+        .layer(cors_layer())
         .with_state(state)
 }
 

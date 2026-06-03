@@ -42,6 +42,8 @@ use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::Response;
 
+use tower_http::cors::{Any, CorsLayer};
+
 use crate::AppState;
 use crate::AuthUser;
 
@@ -671,6 +673,34 @@ async fn run_maybe_idempotent(
 /// `tenant_id:user_id`.
 fn idempotency_key_for_user(user: &AuthUser, raw_key: &str) -> String {
     format!("{}:{}:{}", user.tenant_id, user.user_id, raw_key)
+}
+
+// ── CORS layer ─────────────────────────────────────────────────────────────────
+
+/// Build a Cross-Origin Resource Sharing (CORS) layer for browser-based API
+/// consumers.
+///
+/// The layer allows any origin ([`Any`]) but does **not** allow credentials.
+/// This is a safe default for a local-first application: browsers can send
+/// cross-origin requests to the API, but the dangerous `*` + `credentials`
+/// combination is prohibited (browsers refuse to send cookies with a wildcard
+/// origin).
+///
+/// Preflight (`OPTIONS`) requests are handled automatically — the layer
+/// intercepts them before they reach the auth middleware, so unauthenticated
+/// preflights succeed.
+///
+/// # Security
+///
+/// The `Access-Control-Allow-Origin: *` header is set on responses for
+/// non-credentialed requests. Cookie-based and Bearer-based authentication
+/// still gate access to protected routes — CORS only governs whether a
+/// *browser* may issue the request, not whether the server will fulfil it.
+pub fn cors_layer() -> CorsLayer {
+    CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any)
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
