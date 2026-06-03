@@ -126,6 +126,12 @@ impl SessionStore for InMemorySessionStore {
         guard.retain(|_, s| s.tenant_id != tenant_id);
         Ok(())
     }
+
+    async fn revoke_user_sessions(&self, tenant_id: i64, user_id: i64) -> anyhow::Result<()> {
+        let mut guard = self.sessions.write().await;
+        guard.retain(|_, s| !(s.tenant_id == tenant_id && s.user_id == user_id));
+        Ok(())
+    }
 }
 
 // ── PgSessionStore ─────────────────────────────────────────────────────────────
@@ -255,6 +261,16 @@ impl SessionStore for PgSessionStore {
             .execute(&self.pool)
             .await
             .context("failed to revoke all sessions for tenant")?;
+        Ok(())
+    }
+
+    async fn revoke_user_sessions(&self, tenant_id: i64, user_id: i64) -> anyhow::Result<()> {
+        sqlx::query("DELETE FROM sessions WHERE tenant_id = $1 AND user_id = $2")
+            .bind(tenant_id)
+            .bind(user_id)
+            .execute(&self.pool)
+            .await
+            .context("failed to revoke user sessions")?;
         Ok(())
     }
 }
@@ -421,6 +437,60 @@ mod tests {
         assert_eq!(
             store.validate(&t2).await.unwrap(),
             info(1, 20, UserRole::Member)
+        );
+    }
+
+    // ── revoke_user_sessions ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn inmem_revoke_user_sessions_removes_all_for_user() {
+        let store = InMemorySessionStore::new();
+        // Create two sessions for user 10 in tenant 1.
+        let t1 = store.create(1, 10, role(), true, ttl()).await.unwrap();
+        let t2 = store.create(1, 10, role(), true, ttl()).await.unwrap();
+        assert_eq!(store.len().await, 2);
+
+        store.revoke_user_sessions(1, 10).await.unwrap();
+        assert_eq!(store.validate(&t1).await.unwrap(), None);
+        assert_eq!(store.validate(&t2).await.unwrap(), None);
+        assert_eq!(store.len().await, 0);
+    }
+
+    #[tokio::test]
+    async fn inmem_revoke_user_sessions_leaves_other_users() {
+        let store = InMemorySessionStore::new();
+        let t_a = store.create(1, 10, role(), true, ttl()).await.unwrap();
+        let t_b = store.create(1, 20, role(), true, ttl()).await.unwrap();
+
+        store.revoke_user_sessions(1, 10).await.unwrap();
+        // User 10's session is gone.
+        assert_eq!(store.validate(&t_a).await.unwrap(), None);
+        // User 20's session survives.
+        assert_eq!(
+            store.validate(&t_b).await.unwrap(),
+            info(1, 20, UserRole::Member)
+        );
+    }
+
+    #[tokio::test]
+    async fn inmem_revoke_user_sessions_is_noop_for_unknown_user() {
+        let store = InMemorySessionStore::new();
+        let result = store.revoke_user_sessions(1, 99).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn inmem_revoke_user_sessions_scoped_to_tenant() {
+        // Only user sessions in the specified tenant are revoked.
+        let store = InMemorySessionStore::new();
+        let t_t1 = store.create(1, 10, role(), true, ttl()).await.unwrap();
+        let t_t2 = store.create(2, 10, role(), true, ttl()).await.unwrap(); // same user, different tenant
+
+        store.revoke_user_sessions(1, 10).await.unwrap();
+        assert_eq!(store.validate(&t_t1).await.unwrap(), None);
+        assert_eq!(
+            store.validate(&t_t2).await.unwrap(),
+            info(2, 10, UserRole::Member)
         );
     }
 
@@ -640,6 +710,35 @@ mod tests {
     async fn pg_revoke_is_noop_for_unknown_token() {
         with_pg_session_store(|store| async move {
             let result = store.revoke("unknown").await;
+            assert!(result.is_ok());
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "needs testcontainers + podman socket"]
+    async fn pg_revoke_user_sessions_removes_all_for_user() {
+        with_pg_session_store(|store| async move {
+            let t1 = store
+                .create(1, 1, UserRole::Member, true, ttl())
+                .await
+                .unwrap();
+            let t2 = store
+                .create(1, 1, UserRole::Member, true, ttl())
+                .await
+                .unwrap();
+            store.revoke_user_sessions(1, 1).await.unwrap();
+            assert_eq!(store.validate(&t1).await.unwrap(), None);
+            assert_eq!(store.validate(&t2).await.unwrap(), None);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "needs testcontainers + podman socket"]
+    async fn pg_revoke_user_sessions_is_noop_for_unknown_user() {
+        with_pg_session_store(|store| async move {
+            let result = store.revoke_user_sessions(1, 999).await;
             assert!(result.is_ok());
         })
         .await;

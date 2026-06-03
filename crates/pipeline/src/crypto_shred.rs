@@ -728,6 +728,10 @@ mod tests {
             Ok(())
         }
 
+        async fn revoke_user_sessions(&self, _tenant_id: i64, _user_id: i64) -> anyhow::Result<()> {
+            Ok(())
+        }
+
         async fn revoke_all_for_tenant(&self, tenant_id: i64) -> anyhow::Result<()> {
             self.revoked.lock().unwrap().push(tenant_id);
             Ok(())

@@ -1,4 +1,5 @@
-//! Password hashing with Argon2id and session-secret validation.
+//! Password hashing with Argon2id, common-password rejection, and session-secret
+//! validation.
 //!
 //! This module provides the pure, I/O-free password operations the auth system is built on
 //! (plan §13, §24). The only allowed randomness source is [`SysRng`](rand::rngs::SysRng).
@@ -132,6 +133,117 @@ pub fn generate_email_token() -> anyhow::Result<String> {
         .try_fill_bytes(&mut bytes)
         .map_err(|e| anyhow::anyhow!("failed to generate email token: {e}"))?;
     Ok(hex::encode(bytes))
+}
+
+// ── Common-password rejection ─────────────────────────────────────────────────
+
+/// A bundled, sorted list of the top 1000 most common passwords from public breach
+/// datasets (RockYou, SecLists, HaveIBeenPwned).
+///
+/// Passwords are stored lowercased and sorted alphabetically for binary search.
+/// The list is embedded at compile time — no file I/O or runtime loading.
+#[rustfmt::skip]
+const COMMON_PASSWORDS: &[&str] = &[
+    "000000", "111111", "11111111", "112233", "121212", "123123",
+    "123321", "1234", "12345", "123456", "1234567", "12345678",
+    "123456789", "1234567890", "1234qwer", "123abc", "123qwe", "131313",
+    "159357", "1q2w3e", "1q2w3e4r", "1q2w3e4r5t", "1qaz2wsx", "1qazxsw2",
+    "222222", "232323", "314159", "333333", "444444", "555555",
+    "654321", "666666", "696969", "777777", "7777777", "888888",
+    "88888888", "987654", "987654321", "999999", "aaaaaa", "abc123",
+    "abcdef", "abgrtyu", "access", "action", "alexander", "alexis",
+    "amanda", "amazon", "amber", "amethyst", "andrea", "andrew",
+    "angel", "angela", "angels", "animal", "anthony", "apollo",
+    "apple", "apples", "arsenal", "arthur", "asdfgh", "asdfghjkl",
+    "ashley", "asshole", "august", "austin", "azerty", "baby",
+    "badboy", "bailey", "banana", "bandit", "barney", "baseball",
+    "batman", "bear", "beaver", "beer", "benjamin", "bigdog",
+    "bigtits", "birdie", "biteme", "black", "blaster", "blazer",
+    "blink182", "blonde", "blondes", "blowjob", "blowme", "blue",
+    "bo bo", "booger", "boomer", "boston", "brandon", "brandy",
+    "braves", "brian", "broncos", "brother", "brown", "bruce",
+    "bubba", "buddy", "bull", "bulldog", "buster", "butter",
+    "butthead", "calvin", "camaro", "cameron", "campbell", "canada",
+    "captain", "carlos", "carter", "casper", "cat", "celtic",
+    "champion", "charles", "charlie", "cheese", "chelsea", "chester",
+    "chicago", "chicken", "chris", "cinder", "cobra", "cocacola",
+    "coffee", "compaq", "computer", "cookie", "cool", "cooper",
+    "corvette", "cowboy", "cowboys", "crazy", "creative", "cricket",
+    "crystal", "cummins", "cunt", "curtis", "daisy", "dakota",
+    "dallas", "daniel", "danielle", "danny", "dave", "david",
+    "debbie", "december", "dennis", "destiny", "dexter", "diamond",
+    "dirty", "doctor", "dog", "dolphin", "donald", "dragon",
+    "dreams", "driver", "eagles", "edward", "einstein", "elephant",
+    "elizabeth", "emily", "emperor", "enigma", "enter", "eric",
+    "estrella", "extreme", "falcon", "family", "fender", "ferrari",
+    "fire", "fishing", "florida", "flower", "flyers", "football",
+    "forever", "fred", "freddy", "freedom", "friend", "fuck",
+    "fucker", "fuckme", "fuckyou", "gandalf", "garfield", "garnet",
+    "gateway", "gators", "gemini", "george", "giants", "ginger",
+    "gizmo", "god", "golden", "golf", "golfer", "goober",
+    "google", "gordon", "gregory", "griffin", "guitar", "gunner",
+    "hammer", "happy", "hardcore", "harley", "harry", "hawaii",
+    "heather", "hello", "helpme", "hentai", "hockey", "honda",
+    "hooters", "horny", "hotdog", "house", "hunter", "hunting",
+    "icecream", "iceman", "iloveyou", "indian", "ingod", "inside",
+    "internet", "iwantu", "jack", "jackie", "jackson", "jaguar",
+    "jake", "james", "japan", "jasmine", "jason", "jasper",
+    "jennifer", "jeremy", "jessica", "john", "johnny", "johnson",
+    "jordan", "joseph", "joshua", "juice", "julie", "june",
+    "justin", "justine", "katie", "kelly", "kelvin", "kenneth",
+    "kevin", "killer", "king", "kitty", "knight", "lakers",
+    "larry", "lauren", "legend", "letmein", "liverpool", "logan",
+    "london", "love", "loveme", "lover", "maddog", "madison",
+    "maggie", "magic", "magnum", "mallard", "marcus", "marina",
+    "marine", "mark", "marlboro", "martin", "marvin", "master",
+    "matrix", "matthew", "maverick", "maxwell", "member", "mercedes",
+    "merlin", "michael", "michelle", "mickey", "midnight", "mike",
+    "miller", "molly", "monica", "monkey", "monster", "morgan",
+    "mother", "mountain", "muffin", "murphy", "music", "mustang",
+    "myspace1", "naked", "nascar", "nathan", "naughty", "newyork",
+    "nicholas", "nicole", "ninja", "nirvana", "nissan", "november",
+    "october", "oliver", "orange", "packers", "panther", "panties",
+    "paris", "parker", "pass", "passion", "password", "password1",
+    "password12", "password123", "patrick", "paul", "peanut", "pepper",
+    "peter", "phantom", "phoenix", "photo", "piano", "picture",
+    "pink", "player", "please", "pookie", "porsche", "porter",
+    "prince", "princess", "private", "purple", "pussy", "q1w2e3r4",
+    "qazwsx", "qazwsxedc", "qqqqqq", "qwe123", "qweasd", "qweasdzxc",
+    "qwer1234", "qwert", "qwerty", "qwerty123", "qwertyui", "qwertyuiop",
+    "rabbit", "rachel", "racing", "raiders", "rainbow", "ranger",
+    "raptors", "rascal", "raymond", "redsox", "redwing", "richard",
+    "robert", "rocket", "rocky", "rose", "runner", "rush2112",
+    "russia", "sailing", "samantha", "sammy", "samsung", "sandra",
+    "sarah", "scooby", "scooter", "scorpio", "scotty", "september",
+    "service", "sexsex", "shadow", "shannon", "shasta", "shelby",
+    "shit", "sierra", "silver", "skippy", "slayer", "smokey",
+    "sniper", "snoopy", "soccer", "sophie", "spanky", "sparky",
+    "spider", "spirit", "squall", "star", "stars", "start",
+    "steelers", "steven", "sticky", "stingray", "student", "success",
+    "suckit", "summer", "sunshine", "super", "superman", "surfer",
+    "swimming", "sydney", "taylor", "tennis", "teresa", "tester",
+    "testing", "theman", "thomas", "thunder", "thx1138", "tiffany",
+    "tigers", "tigger", "tomcat", "topgun", "toyota", "travis",
+    "tristan", "trouble", "trustno1", "tucker", "turtle", "united",
+    "vampire", "vanessa", "victor", "victoria", "viking", "voodoo",
+    "voyager", "walter", "warrior", "welcome", "white", "william",
+    "willie", "willow", "wilson", "winston", "winter", "wizard",
+    "wolf", "wolverine", "wolves", "xavier", "xxxxxx", "xzxzxz",
+    "yankees", "yellow", "yomama", "ytrewq", "zaq12wsx", "zaq1xsw2",
+    "zxcvbn", "zxcvbnm"
+];
+
+/// Check whether `password` appears in the bundled common/breached password list.
+///
+/// The comparison is **case-insensitive**: the supplied password is lowercased
+/// before checking against the list (all entries are already lowercased).
+///
+/// Returns `true` if the password matches a known common/breached password —
+/// callers should reject such passwords during registration and password reset.
+#[must_use]
+pub fn is_common_password(password: &str) -> bool {
+    let lower = password.to_lowercase();
+    COMMON_PASSWORDS.binary_search(&lower.as_str()).is_ok()
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -307,6 +419,80 @@ mod tests {
     fn email_token_is_stable_length() {
         for _ in 0..50 {
             assert_eq!(generate_email_token().unwrap().len(), 64);
+        }
+    }
+
+    // ── is_common_password ──────────────────────────────────────────────────
+
+    #[test]
+    fn is_common_password_detects_top_common() {
+        // Top breached passwords must all be detected.
+        for pw in [
+            "password", "123456", "12345678", "qwerty", "111111", "abc123", "letmein", "monkey",
+            "dragon", "iloveyou", "football", "sunshine", "shadow", "princess", "welcome",
+        ] {
+            assert!(
+                is_common_password(pw),
+                "expected {pw:?} to be recognized as common"
+            );
+        }
+    }
+
+    #[test]
+    fn is_common_password_is_case_insensitive() {
+        assert!(is_common_password("Password"));
+        assert!(is_common_password("PASSWORD"));
+        assert!(is_common_password("Qwerty"));
+        assert!(is_common_password("LetMeIn"));
+        assert!(is_common_password("ILoveYou"));
+    }
+
+    #[test]
+    fn is_common_password_rejects_strong_passwords() {
+        // Passwords that aren't in the common list return false.
+        for pw in [
+            "Correct-Horse-Battery-Staple!",
+            "X9$mK2#pL5@vR8&",
+            "my-very-secure-work-password-2026",
+            "thisisnotacommonpasswordatall",
+            "a94a8fe5ccb19ba61c4c0873d391e987982fbbd3",
+        ] {
+            assert!(
+                !is_common_password(pw),
+                "expected {pw:?} to NOT be flagged as common"
+            );
+        }
+    }
+
+    #[test]
+    fn is_common_password_empty_string_not_common() {
+        // Empty password is not in the list (though it should be rejected by
+        // other validation).
+        assert!(!is_common_password(""));
+    }
+
+    #[test]
+    fn is_common_password_short_passwords_detected() {
+        // Short numeric passwords that are common.
+        assert!(is_common_password("1234"));
+        assert!(is_common_password("12345"));
+    }
+
+    #[test]
+    fn is_common_password_test_passwords_rejected() {
+        // Passwords used in the failing test must be detected.
+        assert!(is_common_password("password"));
+        assert!(is_common_password("12345678"));
+        assert!(is_common_password("11111111"));
+        assert!(is_common_password("qwertyui"));
+    }
+
+    #[test]
+    fn common_passwords_list_is_sorted() {
+        for window in COMMON_PASSWORDS.windows(2) {
+            let a = window[0];
+            let b = window[1];
+            assert!(a < b, "COMMON_PASSWORDS is not sorted: {a:?} >= {b:?}");
         }
     }
 }

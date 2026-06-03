@@ -29,6 +29,24 @@ def base_url() -> str:
     return config.base_url()
 
 
+@pytest.fixture(scope="session")
+def browser_type_launch_args(browser_type_launch_args):
+    """Add ``--no-sandbox`` flags so Chromium can launch in container/CI environments.
+
+    The upstream ``pytest-playwright`` default does not include sandbox-disabling
+    flags. Without them, ``browser_type.launch()`` fails and the entire ``page``
+    fixture chain is unavailable, blocking every browser test.
+    """
+    return {
+        **browser_type_launch_args,
+        "args": browser_type_launch_args.get("args", []) + [
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-dev-shm-usage",
+        ],
+    }
+
+
 @pytest.fixture
 def browser_context_args(browser_context_args, base_url):
     """Default every browser context to the app's base URL and accept its local TLS cert."""

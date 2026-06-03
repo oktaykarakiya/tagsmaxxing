@@ -4,7 +4,7 @@
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = ["tests"]
-addopts = "-ra"
+addopts = "-ra --browser chromium"
 markers = [
   "smoke: fully-implemented end-to-end happy path (runs in the core suite)",
   "judge: uses the DeepSeek LLM-as-judge (network + API key; excluded from the core run)",

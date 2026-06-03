@@ -169,6 +169,20 @@ pub trait SessionStore: Send + Sync {
     ///
     /// Returns an error only when the underlying store is unavailable.
     async fn revoke_all_for_tenant(&self, tenant_id: i64) -> anyhow::Result<()>;
+
+    /// Revoke **all** sessions for a specific user within a tenant.
+    ///
+    /// Used by security-sensitive operations (password reset, role change) to ensure
+    /// no stale sessions survive a credential or privilege change. After this call,
+    /// all sessions for `(tenant_id, user_id)` return `None` from
+    /// [`validate`](Self::validate).
+    ///
+    /// This is a no-op if the user has no active sessions (no error).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only when the underlying store is unavailable.
+    async fn revoke_user_sessions(&self, tenant_id: i64, user_id: i64) -> anyhow::Result<()>;
 }
 
 // ── Token generation (pure) ────────────────────────────────────────────────────

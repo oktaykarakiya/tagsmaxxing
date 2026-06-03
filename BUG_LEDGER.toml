@@ -170,9 +170,9 @@ touches = ["test/conftest.py", "test/pyproject.toml"]
 conflict_group = "playwright"
 depends_on = []
 severity = "high"
-status = "todo"
+status = "done"
 acceptance = "page fixture works; at least test_login_page_renders executes (pass or fail, not error)"
-notes = "pytest-playwright may need install in venv or chromium browser in container. Check conftest.py browser_context_args and ensure headless mode with --no-sandbox."
+notes = "Added browser_type_launch_args fixture to conftest.py with --no-sandbox, --disable-setuid-sandbox, --disable-dev-shm-usage; added --browser chromium to pyproject.toml addopts."
 
 
 # ── Auth / Sessions ─────────────────────────────────────────────────────────
@@ -186,9 +186,9 @@ touches = ["crates/store/src/session_store.rs", "crates/api/src/web/handlers_aut
 conflict_group = "session_store"
 depends_on = []
 severity = "high"
-status = "todo"
+status = "done"
 acceptance = "test_password_reset_invalidates_existing_sessions passes"
-notes = "reset_password handler updates only the password hash; must also revoke all sessions for that user. Add a revoke_user_sessions method to PgSessionStore and call it from the reset handler."
+notes = "Added revoke_user_sessions to SessionStore trait + InMemory + Pg impls; called from reset_password_submit after successful password update."
 
 [[bug]]
 id = "BUG-AUTH-02"
@@ -199,9 +199,9 @@ touches = ["crates/core/src/auth.rs", "crates/api/src/web/handlers_auth_web.rs"]
 conflict_group = "auth_core"
 depends_on = []
 severity = "medium"
-status = "todo"
+status = "done"
 acceptance = "test_common_breached_password_rejected passes"
-notes = "Add a check against a bundled common-password list (top 1000) in the registration and password-reset handlers. The Argon2id hashing already exists in kb-core::auth."
+notes = "Added COMMON_PASSWORDS list (~400 entries) with binary_search; is_common_password called from register_post and reset_password_submit in handlers_auth_web.rs."
 
 [[bug]]
 id = "BUG-AUTH-03"
@@ -212,9 +212,9 @@ touches = ["crates/api/src/middleware.rs"]
 conflict_group = "middleware"
 depends_on = []
 severity = "high"
-status = "todo"
+status = "done"
 acceptance = "test_repeated_failed_logins_are_throttled passes"
-notes = "Add a failed-login rate limiter (e.g., token bucket per IP or per email) returning 429 + Retry-After after N failures in a window. The middleware.rs already has auth middleware; add a rate-limit layer or integrate into the login handler."
+notes = "Added LoginBruteForceLimiter (5 attempts per IP per 60s window) with login_rate_limit_middleware wired into router at lib.rs:349; extract_client_ip reads X-Forwarded-For/X-Real-IP; returns 429+Retry-After JSON."
 
 [[bug]]
 id = "BUG-AUTH-04"

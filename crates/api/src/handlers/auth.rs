@@ -177,10 +177,21 @@ pub async fn register(
         }
     };
 
-    // ── 2. Hash password ───────────────────────────────────────────────────
+    // ── 2. Reject common/breached passwords ─────────────────────────────────
+    if kb_core::auth::is_common_password(&req.password) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "weak_password".into(),
+                message: "This password is too common. Please choose a stronger password.".into(),
+            }),
+        ));
+    }
+
+    // ── 3. Hash password ───────────────────────────────────────────────────
     let password_hash = kb_core::auth::hash_password(&req.password).map_err(internal_error)?;
 
-    // ── 3. Create user (default role: Member) ──────────────────────────────
+    // ── 4. Create user (default role: Member) ──────────────────────────────
     let user_id = state
         .pg_store
         .create_user(tenant_id, &req.email, &password_hash, UserRole::Member)
@@ -196,7 +207,7 @@ pub async fn register(
             }
         })?;
 
-    // ── 4. Create session ──────────────────────────────────────────────────
+    // ── 5. Create session ──────────────────────────────────────────────────
     let token = state
         .session_store
         .create(
@@ -209,7 +220,7 @@ pub async fn register(
         .await
         .map_err(internal_error)?;
 
-    // ── 5. Build response ──────────────────────────────────────────────────
+    // ── 6. Build response ──────────────────────────────────────────────────
     let mut headers = HeaderMap::new();
     headers.insert(
         SET_COOKIE,

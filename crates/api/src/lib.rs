@@ -28,7 +28,7 @@ use axum::Json;
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::http::StatusCode;
-use axum::middleware::from_fn_with_state;
+use axum::middleware::{from_fn, from_fn_with_state};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use kb_core::api_token::ApiTokenStore;
@@ -43,7 +43,7 @@ use kb_scheduler::Pool;
 use kb_store::PgStore;
 
 use crate::backpressure::InflightLimiter;
-use crate::middleware::auth_middleware;
+use crate::middleware::{auth_middleware, login_rate_limit_middleware};
 use crate::stripe_client::StripeClient;
 
 /// Default presigned-URL TTL in seconds (1 hour, plan §20).
@@ -345,7 +345,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/billing/cancel", get(handlers::billing::get_cancel))
         .route("/stripe/webhook", post(handlers::webhook::post_webhook))
         .route("/metrics", get(metrics_handler))
-        .route("/health", get(health_handler));
+        .route("/health", get(health_handler))
+        .layer(from_fn(login_rate_limit_middleware));
 
     // Protected API routes (auth required, P6-T2+).
     let api = Router::new()

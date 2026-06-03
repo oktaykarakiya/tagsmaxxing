@@ -135,6 +135,19 @@ pub async fn signup_submit(
         return render_template(&page, StatusCode::BAD_REQUEST);
     }
 
+    // Reject common/breached passwords.
+    if kb_core::auth::is_common_password(&password) {
+        let page = SignupPage {
+            csrf_token: generate_fresh_csrf(),
+            tenant_name: form.tenant_name,
+            email,
+            error: "This password is too common and has appeared in data breaches. \
+                    Please choose a stronger password."
+                .into(),
+        };
+        return render_template(&page, StatusCode::BAD_REQUEST);
+    }
+
     // ── 2. Slugify + ensure uniqueness ──────────────────────────────────────
     let base_slug = slugify(&form.tenant_name);
     let tenant_slug = match make_unique_slug(&state, &base_slug).await {
@@ -630,6 +643,18 @@ pub async fn reset_password_submit(
         return render_template(&page, StatusCode::BAD_REQUEST);
     }
 
+    // Reject common/breached passwords.
+    if kb_core::auth::is_common_password(&password) {
+        let page = ResetPasswordPage {
+            csrf_token: generate_fresh_csrf(),
+            token,
+            error: "This password is too common and has appeared in data breaches. \
+                    Please choose a stronger password."
+                .into(),
+        };
+        return render_template(&page, StatusCode::BAD_REQUEST);
+    }
+
     // ── 2. Validate the reset token ─────────────────────────────────────────
     let user = match find_user_by_reset_token_global(&state, &token).await {
         Ok(Some(u)) => u,
@@ -673,7 +698,22 @@ pub async fn reset_password_submit(
         .reset_password(user.tenant_id, user.id, &new_hash)
         .await
     {
-        Ok(true) => Redirect::to("/login?reset_success=1").into_response(),
+        Ok(true) => {
+            // All pre-reset sessions are invalidated — the credential has changed.
+            if let Err(e) = state
+                .session_store
+                .revoke_user_sessions(user.tenant_id, user.id)
+                .await
+            {
+                tracing::error!(
+                    error = %e,
+                    tenant_id = user.tenant_id,
+                    user_id = user.id,
+                    "failed to revoke sessions after password reset"
+                );
+            }
+            Redirect::to("/login?reset_success=1").into_response()
+        }
         Ok(false) => {
             let page = ResetPasswordPage {
                 csrf_token: generate_fresh_csrf(),
