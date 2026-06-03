@@ -786,9 +786,9 @@ touches = ["crates/api/src/handlers/webhook.rs"]
 conflict_group = "billing_handlers"
 depends_on = []
 severity = "high"
-status = "todo"
+status = "done"
 acceptance = "test_webhook_invalid_signature_rejected passes"
-notes = "POST /stripe/webhook with an invalid signature does not return 400. The signature verification may not be implemented. Does NOT require a real Stripe key — only that forged signatures are rejected."
+notes = "Fixed: post_webhook now reads the stripe-signature header before resolving the secret; when no webhook secret is configured but a signature is present, the request is unverifiable (forged) and rejected 401 instead of 500 — never processed. No-secret + no-signature still returns 500 (pure misconfig). Added unit test webhook_no_secret_with_signature_returns_401 mirroring the e2e contract; e2e test_webhook_invalid_signature_rejected passes."
 
 
 # ── Observability ───────────────────────────────────────────────────────────

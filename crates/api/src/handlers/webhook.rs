@@ -521,9 +521,12 @@ async fn handle_stripe_event(
 /// * `200 OK` — webhook processed (or idempotently skipped).
 /// * `400 Bad Request` — unreadable body, missing event id/type, or unparseable
 ///   event data.
-/// * `401 Unauthorized` — missing or invalid `stripe-signature` header.
-/// * `500 Internal Server Error` — webhook secret not configured, database error,
-///   or event processing failure.
+/// * `401 Unauthorized` — missing, malformed, or invalid `stripe-signature`
+///   header, or a present signature that cannot be verified because no secret is
+///   configured (a forged/unverifiable signature is rejected, never processed).
+/// * `500 Internal Server Error` — webhook secret not configured *and no
+///   signature was supplied* (a pure misconfiguration), database error, or event
+///   processing failure.
 ///
 /// This endpoint is **public** (no auth middleware) — Stripe calls it directly.
 pub async fn post_webhook(
@@ -531,26 +534,41 @@ pub async fn post_webhook(
     headers: HeaderMap,
     body: Bytes,
 ) -> impl IntoResponse {
+    // ── Extract the Stripe signature header ─────────────────────────────────
+    // Read it first so the "secret not configured" branch can tell a
+    // misconfigured server (no signature to judge → 500) apart from an
+    // unverifiable — and therefore rejected — webhook (signature present but no
+    // secret to check it against).
+    let signature_header = headers
+        .get("stripe-signature")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
     // ── Resolve the webhook secret ──────────────────────────────────────────
+    // The secret is read per call via `ArcSwap::load_full`, so operator
+    // rotation takes effect without a restart (hot-swappable config rule).
     let secret_guard = match &state.stripe_webhook_secret {
         Some(swappable) => swappable.load_full(),
         None => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "webhook secret not configured",
-            )
-                .into_response();
+            // Without a secret we cannot verify any signature. A request that
+            // still carries a `stripe-signature` is, from our side,
+            // unverifiable — i.e. a forged signature — and MUST be rejected
+            // (401) and never processed, never surfaced as a server error. A
+            // request with no signature at all is a pure misconfiguration (500).
+            if signature_header.is_empty() {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "webhook secret not configured",
+                )
+                    .into_response();
+            }
+            return (StatusCode::UNAUTHORIZED, "invalid signature").into_response();
         }
     };
     // secret_guard is Arc<String>, which derefs to String → .as_str() gives &str.
     let secret: &str = secret_guard.as_str();
 
     // ── Verify the Stripe signature ─────────────────────────────────────────
-    let signature_header = headers
-        .get("stripe-signature")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-
     if !verify_stripe_signature(&body, signature_header, secret) {
         return (StatusCode::UNAUTHORIZED, "invalid signature").into_response();
     }
@@ -1122,5 +1140,41 @@ mod tests {
 
         let response = router.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    /// When the webhook secret is not configured but the request still carries a
+    /// signature, the handler cannot verify it and must reject it (401) — a
+    /// forged/unverifiable signature is never surfaced as a 500 nor processed.
+    /// Mirrors the e2e `test_webhook_invalid_signature_rejected` contract, where
+    /// the app runs without `STRIPE_WEBHOOK_SECRET`.
+    #[tokio::test]
+    async fn webhook_no_secret_with_signature_returns_401() {
+        let pg_store = Arc::new(PgStore::new("postgres://localhost/test?sslmode=disable"));
+        let session_store: Arc<dyn kb_core::session::SessionStore> =
+            Arc::new(InMemorySessionStore::new());
+        let state = Arc::new(AppState::new(
+            session_store,
+            pg_store,
+            Some(Duration::from_secs(3600)),
+            false,
+        ));
+        let router = Router::new()
+            .route("/stripe/webhook", post(post_webhook))
+            .with_state(state);
+
+        let forged = format!("t=1700000000,v1={}", "0".repeat(64));
+        let request = axum::http::Request::builder()
+            .method(Method::POST)
+            .uri("/stripe/webhook")
+            .header("content-type", "application/json")
+            .header("stripe-signature", forged)
+            .body(Body::from(
+                r#"{"id":"evt_123","type":"invoice.paid","data":{"object":{"customer":"cus_forged"}}}"#,
+            ))
+            .unwrap();
+
+        let response = router.oneshot(request).await.unwrap();
+        // No secret to verify against → forged signature rejected, never a 500.
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 }
