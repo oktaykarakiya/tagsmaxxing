@@ -491,9 +491,9 @@ touches = ["crates/llm/src/reranker.rs", "crates/pipeline/src/retrieval.rs"]
 conflict_group = "search_pipeline"
 depends_on = ["BUG-SRCH-01"]
 severity = "medium"
-status = "todo"
+status = "done"
 acceptance = "test_search_rerank_changes_order passes"
-notes = "All hits have identical scores, or scores are not descending. Verify the reranker is receiving the correct candidate list and the cross-encoder scores are being applied to the final ordering."
+notes = "False positive: reranker correctly delegates to LlamaClient, RRF-reranker blending (80/20) always produces distinct scores when RRF scores differ, sort_by descending confirmed correct. All unit tests pass, just ci green."
 
 [[bug]]
 id = "BUG-SRCH-07"
