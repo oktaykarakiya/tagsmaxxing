@@ -611,9 +611,9 @@ touches = ["crates/extract/src/tika.rs", "crates/extract/src/binary.rs"]
 conflict_group = "extract"
 depends_on = []
 severity = "medium"
-status = "todo"
+status = "blocked"
 acceptance = "test_office_formats_are_searchable passes"
-notes = ".docx and .xlsx content is not searchable. The Tika extraction path may not be invoked for these formats, or Tika may not be running/configured. Verify the Apache Tika integration extracts Office Open XML formats."
+notes = "BLOCKED: not fixable within the permitted files (crates/extract/src/tika.rs + binary.rs). Root cause is wiring, not the extractors: the test's minimal OOXML .docx/.xlsx are detected by tree_magic_mini 3.2.2 as application/zip -> infer_kind_from_mime -> DocKind::Archive. The production ExtractorRouter (serve.rs:213-214 and main.rs:139-140) registers ONLY DocKind::Document->TextExtractor and DocKind::Code->CodeExtractor; DocKind::Archive has NO registered extractor, so the pipeline falls back to Extracted::default() (empty text) -- the file uploads fine (202, application/zip is allow-listed) but its content is never extracted and stays unsearchable. Neither TikaExtractor nor BinaryExtractor is referenced by any production wiring (serve.rs/main.rs don't import them; there is no auto-registration), so edits confined to those two files have zero runtime effect. Real fix needs files outside the allowed set: register a Tika/OOXML-capable extractor for DocKind::Archive (and/or detect OOXML so it routes to DocKind::Document) in crates/api/src/commands/serve.rs and crates/api/src/main.rs, building TikaExtractor from the existing TIKA_URL config. Re-scope this bug's touches to include serve.rs + main.rs (and likely pipeline MIME routing) to fix."
 
 [[bug]]
 id = "BUG-INGEST-06"
