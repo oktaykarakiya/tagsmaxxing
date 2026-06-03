@@ -238,7 +238,7 @@ touches = ["crates/api/src/middleware.rs"]
 conflict_group = "middleware"
 depends_on = []
 severity = "medium"
-status = "todo"
+status = "done"
 acceptance = "test_email_verification_enforced_on_sensitive_action passes"
 notes = "Add middleware or per-handler checks that require email_verified=true before allowing ingest, team invite, and other sensitive actions. The column already exists and is plumbed through. Does not require SMTP — verification tokens can be read from DB."
 
@@ -251,7 +251,7 @@ touches = ["crates/api/src/web/handlers_account.rs"]
 conflict_group = "billing_handlers"
 depends_on = []
 severity = "high"
-status = "todo"
+status = "done"
 acceptance = "test_danger_zone_delete_requires_step_up_reauth passes"
 notes = "POST /account/danger/delete requires only CSRF token + slug confirmation. Add a password re-check (step-up auth) before allowing irreversible workspace deletion."
 
@@ -264,7 +264,7 @@ touches = ["crates/store/src/session_store.rs", "crates/api/src/web/handlers_acc
 conflict_group = "session_store"
 depends_on = ["BUG-AUTH-01"]
 severity = "high"
-status = "todo"
+status = "done"
 acceptance = "test_role_change_propagates_to_live_session passes"
 notes = "When an admin changes a user's role, the user's existing session cookie still carries the old role. The session validate function reads role from the cached session row. Fix: revoke sessions on role change, or re-read role from DB on each validation."
 
@@ -277,7 +277,7 @@ touches = ["crates/api/src/handlers/auth.rs"]
 conflict_group = "api_handlers"
 depends_on = []
 severity = "medium"
-status = "todo"
+status = "done"
 acceptance = "test_register_new_tenant_and_user passes"
 notes = "POST /auth/register with a new tenant slug should create the tenant + admin user and return 201 with a session cookie. Verify the handler supports tenant creation (may only add users to existing tenants currently)."
 
