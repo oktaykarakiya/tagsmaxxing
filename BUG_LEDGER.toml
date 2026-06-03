@@ -517,9 +517,9 @@ touches = ["crates/api/src/web/handlers.rs"]
 conflict_group = "api_handlers"
 depends_on = []
 severity = "medium"
-status = "todo"
+status = "done"
 acceptance = "test_file_download_redirects_presigned passes"
-notes = "GET /api/documents/{id}/file/{file_id} does not return 302 with Location + Content-Disposition. Fix the file download handler to generate a presigned URL and redirect."
+notes = "Already resolved by bac57bb (P8-T3): file_download handler in documents.rs generates presigned URL and returns 302 Found with Location + Content-Disposition. All 20 unit tests pass including redirect_response_is_302_found and redirect_response_has_location_header."
 
 [[bug]]
 id = "BUG-SRCH-09"
