@@ -105,7 +105,7 @@ echo "→ invoking Claude for $BUG_ID (model=${FIX_MODEL:-default}, perm=$perm_m
 
 if timeout "${BUG_TIMEOUT:-2400}" claude -p "$PROMPT" \
       "${model_arg[@]}" \
-      --permission-mode "$perm_mode" \
+      --dangerously-skip-permissions \
       >"$log" 2>&1; then
   claude_rc=0
 else
