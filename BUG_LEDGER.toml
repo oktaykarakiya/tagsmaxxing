@@ -760,9 +760,9 @@ touches = ["crates/api/src/web/handlers_account.rs"]
 conflict_group = "billing_handlers"
 depends_on = []
 severity = "high"
-status = "todo"
+status = "done"
 acceptance = "test_seat_limit_exceeded_shows_upgrade_not_500 passes"
-notes = "check_tenant_max_users is enforced but account_invite_user maps the error to a generic 500. Catch the seat-limit error and return a clear 4xx with upgrade/upsell messaging."
+notes = "account_invite_user now downcasts the create_user error to QuotaError::UserLimitExceeded and returns 403 with a seat-limit/upgrade message (new seat_limit_message helper + 2 unit tests) instead of a generic 500; other create_user errors still map to 500. just ci green (cov 80.32%)."
 
 [[bug]]
 id = "BUG-BILL-03"

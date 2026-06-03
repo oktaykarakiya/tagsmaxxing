@@ -22,6 +22,7 @@ use serde::Deserialize;
 
 use crate::AppState;
 use crate::AuthUser;
+use kb_core::quota::QuotaError;
 use kb_core::user::UserRole;
 use kb_store::TenantBilling;
 
@@ -476,6 +477,25 @@ pub async fn account_invite_user(
     {
         Ok(id) => id,
         Err(e) => {
+            // A plan seat-limit rejection is a client-correctable condition, not a
+            // server fault: surface it as a 403 with a clear upgrade prompt rather
+            // than an opaque 500 (BUG-BILL-02). `create_user` propagates the
+            // `QuotaError` from `check_tenant_max_users` unwrapped, so it downcasts.
+            if let Some(quota_err @ QuotaError::UserLimitExceeded { .. }) =
+                e.downcast_ref::<QuotaError>()
+            {
+                tracing::info!(
+                    tenant_id = auth_user.tenant_id,
+                    "invite refused: plan seat limit reached"
+                );
+                return render_team_error(
+                    &state,
+                    &auth_user,
+                    seat_limit_message(quota_err),
+                    StatusCode::FORBIDDEN,
+                )
+                .await;
+            }
             tracing::error!(error = %e, "failed to create invited user");
             return render_team_error(
                 &state,
@@ -1112,6 +1132,20 @@ fn price_display(cents: Option<i32>, _currency: Option<&str>) -> String {
     }
 }
 
+/// Build a clear, user-facing seat-limit refusal message from a quota error.
+///
+/// Inviting beyond the plan's `max_users` is a client-correctable condition, so
+/// the message always reads as a seat-limit / upgrade prompt (never an opaque
+/// server error). The plan-specific upsell suggestion is appended when the error
+/// carries plan context; otherwise a generic upgrade hint is used.
+fn seat_limit_message(err: &QuotaError) -> String {
+    let base = "Seat limit reached — your current plan does not allow more team members.";
+    match err.upsell_message() {
+        Some(upsell) => format!("{base} {upsell}"),
+        None => format!("{base} Upgrade your plan to invite more users."),
+    }
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1329,6 +1363,38 @@ mod tests {
     fn price_display_dollars() {
         assert_eq!(price_display(Some(900), Some("usd")), "$9/mo");
         assert_eq!(price_display(Some(2900), Some("usd")), "$29/mo");
+    }
+
+    // ── seat_limit_message ─────────────────────────────────────────────────
+
+    #[test]
+    fn seat_limit_message_with_upsell() {
+        let err = QuotaError::UserLimitExceeded {
+            current: 1,
+            limit: 1,
+            plan_code: Some("free".into()),
+            upsell_plan_code: Some("pro".into()),
+        };
+        let msg = seat_limit_message(&err).to_lowercase();
+        // Must read as a seat-limit / upgrade prompt, with the plan-specific upsell.
+        assert!(msg.contains("seat"));
+        assert!(msg.contains("upgrade"));
+        assert!(msg.contains("free"));
+        assert!(msg.contains("pro"));
+    }
+
+    #[test]
+    fn seat_limit_message_without_upsell() {
+        let err = QuotaError::UserLimitExceeded {
+            current: 1,
+            limit: 1,
+            plan_code: None,
+            upsell_plan_code: None,
+        };
+        let msg = seat_limit_message(&err).to_lowercase();
+        // Even with no plan context, the refusal stays a clear seat/upgrade prompt.
+        assert!(msg.contains("seat"));
+        assert!(msg.contains("upgrade"));
     }
 
     // ── quota_bar ──────────────────────────────────────────────────────────
