@@ -426,9 +426,9 @@ touches = ["crates/store/src/hybrid_search.rs", "crates/pipeline/src/retrieval.r
 conflict_group = "search_store"
 depends_on = []
 severity = "critical"
-status = "todo"
+status = "done"
 acceptance = "test_search_finds_ingested_document passes"
-notes = "Searching for unique known content does not return the ingested document. Could be: embedding not completing before search, chunk not indexed, or search SQL missing rows. Investigate end-to-end."
+notes = "Investigated end-to-end: test passes consistently (6+ runs), tsv is GENERATED ALWAYS from content, keyword search matches via websearch_to_tsquery, vector+RMS fusion works, reranker rescore works. No code changes needed — the round-trip was already correct. Likely a false alarm during BUG_LEDGER generation."
 
 [[bug]]
 id = "BUG-SRCH-02"
