@@ -731,9 +731,9 @@ touches = ["crates/scheduler/src/health.rs", "crates/scheduler/src/pool.rs"]
 conflict_group = "scheduler"
 depends_on = ["BUG-SCHED-01"]
 severity = "medium"
-status = "todo"
+status = "done"
 acceptance = "test_backends_stay_healthy_under_load passes"
-notes = "Under heavy-but-healthy load, backends are marked unhealthy or circuit breakers open. Normal load should not trip the breaker. Investigate health-check timeout or circuit-breaker threshold configuration."
+notes = "Health loop flipped a backend unhealthy on a SINGLE failed /health probe, so a transient blip under heavy-but-healthy load evicted a live host. Added a consecutive-failure debounce (next_health: only mark unhealthy after N consecutive failed probes; threshold hot-swappable via KB_HEALTH_FAILURE_THRESHOLD, default 3; any success resets+restores), matching the plan's rolling-error-window intent, plus a bounded hot-swappable per-probe timeout (KB_HEALTH_PROBE_TIMEOUT_SECS, default 10s). Edited only crates/scheduler/src/health.rs. just ci green."
 
 
 # ── Billing (non-Stripe) ────────────────────────────────────────────────────
