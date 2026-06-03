@@ -718,9 +718,9 @@ touches = ["crates/api/src/backpressure.rs", "crates/api/src/commands/serve.rs",
 conflict_group = "serve_config"
 depends_on = []
 severity = "critical"
-status = "todo"
+status = "done"
 acceptance = "test_backpressure_saturates_and_drains and test_extreme_burst_is_throttled_not_lost pass"
-notes = "InflightLimiter is built in AppState but try_acquire() is never called. Wire it into the ingest handler: acquire a slot before processing, return 429 if at capacity. Also wire kb_ingest_throttled_total increment on rejection."
+notes = "InflightLimiter wired into ingest handler via inflight_limiter.try_acquire() backpressure gate + throttled_error() returning 429 + map_response ensure_retry_after_on_429 middleware injecting Retry-After header on all 429s + kb_metrics::record_ingest_throttled() on rejection. Removed redundant #[must_use] on throttled_error()."
 
 [[bug]]
 id = "BUG-SCHED-02"

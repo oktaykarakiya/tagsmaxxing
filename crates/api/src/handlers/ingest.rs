@@ -486,7 +486,6 @@ fn internal_error(e: impl std::fmt::Display) -> (StatusCode, Json<ErrorResponse>
 /// The `Retry-After` header is added by the `ensure_retry_after_on_429`
 /// middleware in [`serve`](crate::commands::serve) so that every 429 in
 /// the app carries the header.
-#[must_use]
 fn throttled_error() -> (StatusCode, Json<ErrorResponse>) {
     (
         StatusCode::TOO_MANY_REQUESTS,
