@@ -523,8 +523,17 @@ async fn run_maybe_idempotent(
         None => return Ok(next.run(request).await),
     };
 
+    // Scope the idempotency key to the authenticated user to prevent
+    // cross-user response replay (IDOR). Without this, User A with
+    // Idempotency-Key "abc" would receive User B's cached response for
+    // the same key.
+    let scoped_key = match request.extensions().get::<AuthUser>() {
+        Some(u) => idempotency_key_for_user(u, &key),
+        None => return Ok(next.run(request).await),
+    };
+
     // Cache hit — return the original response without re-processing.
-    if let Some(cached) = IDEMPOTENCY_STORE.get(&key) {
+    if let Some(cached) = IDEMPOTENCY_STORE.get(&scoped_key) {
         let mut response = Response::new(axum::body::Body::from(cached.body));
         *response.status_mut() = cached.status;
         if let Some(ct) = &cached.content_type
@@ -558,12 +567,23 @@ async fn run_maybe_idempotent(
         .await
         .unwrap_or_default();
 
-    IDEMPOTENCY_STORE.store(key, status, content_type, body_bytes.to_vec());
+    IDEMPOTENCY_STORE.store(scoped_key, status, content_type, body_bytes.to_vec());
 
     Ok(Response::from_parts(
         parts,
         axum::body::Body::from(body_bytes),
     ))
+}
+
+/// Build a user-scoped idempotency key from the authenticated user and the
+/// caller-supplied `Idempotency-Key` header value.
+///
+/// This prevents cross-user response replay (IDOR): two different users
+/// submitting the same `Idempotency-Key` value will receive their own
+/// distinct cached responses because the keys are scoped to
+/// `tenant_id:user_id`.
+fn idempotency_key_for_user(user: &AuthUser, raw_key: &str) -> String {
+    format!("{}:{}:{}", user.tenant_id, user.user_id, raw_key)
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
@@ -1675,5 +1695,64 @@ mod tests {
         let mut headers = axum::http::HeaderMap::new();
         headers.insert("idempotency-key", axum::http::HeaderValue::from_static(""));
         assert_eq!(extract_idempotency_key(&headers), None);
+    }
+
+    // ── idempotency_key_for_user unit tests ─────────────────────────────────
+
+    use super::idempotency_key_for_user;
+
+    #[test]
+    fn user_scoped_key_includes_tenant_and_user() {
+        let user = AuthUser {
+            tenant_id: 1,
+            user_id: 42,
+            role: UserRole::Member,
+            email_verified: true,
+        };
+        let key = idempotency_key_for_user(&user, "abc-123");
+        assert_eq!(key, "1:42:abc-123");
+    }
+
+    #[test]
+    fn different_users_produce_different_keys_same_raw_key() {
+        let alice = AuthUser {
+            tenant_id: 1,
+            user_id: 1,
+            role: UserRole::Owner,
+            email_verified: true,
+        };
+        let bob = AuthUser {
+            tenant_id: 1,
+            user_id: 2,
+            role: UserRole::Member,
+            email_verified: true,
+        };
+        let raw = "same-key";
+        let key_a = idempotency_key_for_user(&alice, raw);
+        let key_b = idempotency_key_for_user(&bob, raw);
+        assert_ne!(key_a, key_b);
+        assert_eq!(key_a, "1:1:same-key");
+        assert_eq!(key_b, "1:2:same-key");
+    }
+
+    #[test]
+    fn cross_tenant_users_produce_different_keys() {
+        let t1 = AuthUser {
+            tenant_id: 1,
+            user_id: 1,
+            role: UserRole::Owner,
+            email_verified: true,
+        };
+        let t2 = AuthUser {
+            tenant_id: 2,
+            user_id: 1,
+            role: UserRole::Owner,
+            email_verified: true,
+        };
+        let key1 = idempotency_key_for_user(&t1, "x");
+        let key2 = idempotency_key_for_user(&t2, "x");
+        assert_ne!(key1, key2);
+        assert_eq!(key1, "1:1:x");
+        assert_eq!(key2, "2:1:x");
     }
 }
