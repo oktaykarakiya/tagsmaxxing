@@ -15,6 +15,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
+use axum::http::{StatusCode, header};
+use axum::response::Response;
 use kb_config::AppConfig;
 use kb_core::blob::Blob;
 use kb_core::degradation::DegradationState;
@@ -55,6 +57,27 @@ const CIRCUIT_THRESHOLD: u32 = 5;
 
 /// How long a tripped circuit breaker stays open.
 const COOLDOWN_SECS: u64 = 30;
+
+/// `map_response` middleware: inject a `Retry-After: 5` header on every 429
+/// response produced by the app.
+///
+/// This ensures backpressure rejections, rate-limiters, and any other 429
+/// site automatically carry actionable retry guidance without each handler
+/// having to construct a full `Response` with headers.
+async fn ensure_retry_after_on_429(response: Response) -> Response {
+    if response.status() == StatusCode::TOO_MANY_REQUESTS
+        && !response.headers().contains_key(header::RETRY_AFTER)
+    {
+        let (parts, body) = response.into_parts();
+        let mut response = Response::from_parts(parts, body);
+        response
+            .headers_mut()
+            .insert(header::RETRY_AFTER, header::HeaderValue::from_static("5"));
+        response
+    } else {
+        response
+    }
+}
 
 /// Run the `kb serve` command: load config, wire up all components, and start
 /// the HTTP server.
@@ -318,6 +341,13 @@ pub async fn run_serve(args: &ServeArgs) -> anyhow::Result<()> {
 
     // ── Build router ────────────────────────────────────────────────────────
     let router = kb_api::build_router(state);
+
+    // ── Layer: ensure every 429 in the app carries a Retry-After header ───────
+    // This is applied as a map_response layer so that any handler or
+    // middleware returning 429 (including the backpressure gate in the
+    // ingest handler) automatically gets the header without each site
+    // having to construct a full Response.
+    let router = router.layer(axum::middleware::map_response(ensure_retry_after_on_429));
 
     // ── Start metrics collector ─────────────────────────────────────────────
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);

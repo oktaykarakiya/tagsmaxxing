@@ -747,9 +747,9 @@ touches = ["crates/api/src/middleware.rs", "crates/store/src/plan_enforcement.rs
 conflict_group = "middleware"
 depends_on = ["BUG-AUTH-03"]
 severity = "high"
-status = "todo"
+status = "done"
 acceptance = "test_plan_rate_cap_enforced passes"
-notes = "rate_caps is seeded per plan but no middleware reads it. Bursting 120 requests past the free 5/min cap produces zero 429s. Add rate-limit middleware that reads the tenant's plan rate_caps and enforces them."
+notes = "rate_caps is seeded per plan but no middleware reads it. Bursting 120 requests past the free 5/min cap produces zero 429s. Added PlanRateLimiter + PLAN_RATE_LIMITER in middleware.rs, Plan::per_minute_rate_cap() + PgStore::resolve_rate_cap() in plan_enforcement.rs, and inline rate-limit checks in auth_middleware (both bearer and session cookie paths) with fail-open on DB errors."
 
 [[bug]]
 id = "BUG-BILL-02"

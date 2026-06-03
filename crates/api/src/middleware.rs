@@ -98,7 +98,27 @@ pub async fn auth_middleware(
                     if is_api_path(request.uri().path())
                         && let Err(retry_after) = TOKEN_RATE_LIMITER.check(&bearer_token)
                     {
-                        return Ok(token_rate_limit_response(retry_after));
+                        return Ok(rate_limit_response(retry_after));
+                    }
+                    // Plan per-minute rate limiting for API routes.
+                    {
+                        let is_api = is_api_path(request.uri().path());
+                        let tenant_id = request.extensions().get::<AuthUser>().map(|u| u.tenant_id);
+                        if is_api && let Some(tid) = tenant_id {
+                            match state.pg_store.resolve_rate_cap(tid).await {
+                                Ok(Some(cap)) if cap > 0 => {
+                                    if let Err(retry_after) =
+                                        PLAN_RATE_LIMITER.check(tid, cap as usize)
+                                    {
+                                        return Ok(rate_limit_response(retry_after));
+                                    }
+                                }
+                                Ok(_) => { /* no cap or zero — pass through */ }
+                                Err(e) => {
+                                    tracing::warn!(error = %e, tenant_id = tid, "failed to resolve plan rate cap (failing open)");
+                                }
+                            }
+                        }
                     }
                     return run_maybe_idempotent(request, next).await;
                 }
@@ -170,6 +190,25 @@ pub async fn auth_middleware(
             "email_not_verified",
             "Email verification required to access this resource",
         ));
+    }
+
+    // Plan per-minute rate limiting for API routes.
+    {
+        let is_api = is_api_path(request.uri().path());
+        let tenant_id = request.extensions().get::<AuthUser>().map(|u| u.tenant_id);
+        if is_api && let Some(tid) = tenant_id {
+            match state.pg_store.resolve_rate_cap(tid).await {
+                Ok(Some(cap)) if cap > 0 => {
+                    if let Err(retry_after) = PLAN_RATE_LIMITER.check(tid, cap as usize) {
+                        return Ok(rate_limit_response(retry_after));
+                    }
+                }
+                Ok(_) => { /* no cap or zero — pass through */ }
+                Err(e) => {
+                    tracing::warn!(error = %e, tenant_id = tid, "failed to resolve plan rate cap (failing open)");
+                }
+            }
+        }
     }
 
     run_maybe_idempotent(request, next).await
@@ -402,9 +441,68 @@ impl TokenRateLimiter {
 static TOKEN_RATE_LIMITER: LazyLock<TokenRateLimiter> =
     LazyLock::new(|| TokenRateLimiter::new(100, Duration::from_secs(60)));
 
+// ── Plan per-minute rate limiter ─────────────────────────────────────────────────
+
+/// In-memory fixed-window rate limiter for per-plan per-minute request throttling.
+///
+/// Tracks request counts per tenant within a configurable time window. Different
+/// tenants may have different caps (free = 5/min, pro = 30/min, team = 100/min),
+/// so `max_requests` is passed at check time rather than fixed at construction.
+struct PlanRateLimiter {
+    inner: Mutex<HashMap<i64, Vec<Instant>>>,
+    window: Duration,
+}
+
+impl PlanRateLimiter {
+    /// Create a new limiter with the given window.
+    fn new(window: Duration) -> Self {
+        Self {
+            inner: Mutex::new(HashMap::new()),
+            window,
+        }
+    }
+
+    /// Check whether `tenant_id` is allowed to make another request under the
+    /// given per-minute cap.
+    ///
+    /// Prunes expired entries for that tenant, then checks whether the remaining
+    /// count is below `max_requests`. If allowed, records the attempt and returns
+    /// `Ok(())`. If rate-limited, returns `Err(retry_after_secs)`.
+    fn check(&self, tenant_id: i64, max_requests: usize) -> Result<(), u64> {
+        let mut map = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let now = Instant::now();
+        let cutoff = now - self.window;
+        let attempts = map.entry(tenant_id).or_default();
+        attempts.retain(|t| *t > cutoff);
+        if attempts.len() >= max_requests {
+            let oldest = attempts.iter().min().copied().unwrap_or(now);
+            let elapsed = now.duration_since(oldest).as_secs();
+            let retry = self.window.as_secs().saturating_sub(elapsed).max(1);
+            Err(retry)
+        } else {
+            attempts.push(now);
+            Ok(())
+        }
+    }
+
+    /// Clear all tracked tenants (test-only).
+    #[cfg(test)]
+    fn reset(&self) {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    }
+}
+
+/// Global plan rate limiter: enforces per-minute caps per tenant from plan
+/// `features.rate_caps.per_minute`.
+static PLAN_RATE_LIMITER: LazyLock<PlanRateLimiter> =
+    LazyLock::new(|| PlanRateLimiter::new(Duration::from_secs(60)));
+
 /// Build a 429 rate-limit response with a `Retry-After` header and the canonical
 /// `{error, message}` JSON envelope.
-fn token_rate_limit_response(retry_after: u64) -> Response {
+///
+/// Used by per-token, per-plan, and login rate limiters — the response format is
+/// identical.
+fn rate_limit_response(retry_after: u64) -> Response {
     let body = axum::body::Body::from(
         serde_json::json!({
             "error": "rate_limited",
@@ -1327,6 +1425,75 @@ mod tests {
         // After reset, both tokens are allowed again.
         assert!(limiter.check("a").is_ok());
         assert!(limiter.check("b").is_ok());
+    }
+
+    // ── PlanRateLimiter unit tests ───────────────────────────────────────
+
+    #[test]
+    fn plan_limiter_allows_under_cap() {
+        let limiter = PlanRateLimiter::new(Duration::from_secs(60));
+        for _ in 0..3 {
+            assert!(limiter.check(1, 5).is_ok());
+        }
+    }
+
+    #[test]
+    fn plan_limiter_blocks_after_cap() {
+        let limiter = PlanRateLimiter::new(Duration::from_secs(60));
+        for _ in 0..5 {
+            assert!(limiter.check(2, 5).is_ok());
+        }
+        let err = limiter.check(2, 5).unwrap_err();
+        assert!(err > 0, "retry-after must be positive, got {err}");
+    }
+
+    #[test]
+    fn plan_limiter_tracks_tenants_independently() {
+        let limiter = PlanRateLimiter::new(Duration::from_secs(60));
+        // Exhaust tenant 1's cap (1/min).
+        assert!(limiter.check(1, 1).is_ok());
+        assert!(limiter.check(1, 1).is_err());
+        // Tenant 2 still has attempts at a higher cap.
+        for _ in 0..3 {
+            assert!(limiter.check(2, 5).is_ok());
+        }
+    }
+
+    #[test]
+    fn plan_limiter_window_expires() {
+        let limiter = PlanRateLimiter::new(Duration::from_millis(10));
+        for _ in 0..2 {
+            assert!(limiter.check(3, 2).is_ok());
+        }
+        assert!(limiter.check(3, 2).is_err());
+        std::thread::sleep(Duration::from_millis(15));
+        assert!(limiter.check(3, 2).is_ok());
+    }
+
+    #[test]
+    fn plan_limiter_returns_reasonable_retry_after() {
+        let limiter = PlanRateLimiter::new(Duration::from_secs(60));
+        assert!(limiter.check(4, 1).is_ok());
+        let err = limiter.check(4, 1).unwrap_err();
+        assert!(err >= 1, "retry-after too small: {err}");
+        assert!(err <= 60, "retry-after too large: {err}");
+    }
+
+    #[test]
+    fn plan_limiter_zero_cap_always_blocks() {
+        let limiter = PlanRateLimiter::new(Duration::from_secs(60));
+        // Zero cap means no requests allowed — first attempt is blocked.
+        assert!(limiter.check(5, 0).is_err());
+    }
+
+    #[test]
+    fn plan_limiter_reset_clears_all() {
+        let limiter = PlanRateLimiter::new(Duration::from_secs(60));
+        assert!(limiter.check(10, 1).is_ok());
+        assert!(limiter.check(20, 1).is_ok());
+        limiter.reset();
+        assert!(limiter.check(10, 1).is_ok());
+        assert!(limiter.check(20, 1).is_ok());
     }
 
     // ── extract_client_ip ────────────────────────────────────────────────

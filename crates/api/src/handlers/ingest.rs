@@ -86,6 +86,7 @@ pub(crate) fn quota_error_response(err: &kb_core::quota::QuotaError) -> String {
 /// * `400 Bad Request` — no files provided, unsupported MIME, or malformed body.
 /// * `401 Unauthorized` — rejected by middleware before this handler runs.
 /// * `413 Payload Too Large` — total upload exceeds [`MAX_PAYLOAD_BYTES`].
+/// * `429 Too Many Requests` — server at ingest capacity, retry after backoff.
 /// * `500 Internal Server Error` — pipeline or store failure.
 pub async fn ingest(
     State(state): State<Arc<AppState>>,
@@ -118,6 +119,21 @@ pub async fn ingest(
             }),
         ));
     }
+
+    // ── Backpressure: acquire an in-flight slot or return 429 (P8-T9) ──────────
+    // The permit (OwnedSemaphorePermit) is RAII-held for the entire handler;
+    // it is dropped at function exit, releasing the slot back to the pool.
+    let _permit = if let Some(limiter) = &state.inflight_limiter {
+        match limiter.try_acquire() {
+            Some(permit) => Some(permit),
+            None => {
+                kb_metrics::record_ingest_throttled();
+                return Err(throttled_error());
+            }
+        }
+    } else {
+        None
+    };
 
     // ── Parse multipart ──────────────────────────────────────────────────────
     let parsed = parse_multipart(multipart, MAX_PAYLOAD_BYTES)
@@ -461,6 +477,22 @@ fn internal_error(e: impl std::fmt::Display) -> (StatusCode, Json<ErrorResponse>
         Json(ErrorResponse {
             error: "internal_error".into(),
             message: "an unexpected error occurred".into(),
+        }),
+    )
+}
+
+/// Build a `429 Too Many Requests` error tuple without headers.
+///
+/// The `Retry-After` header is added by the `ensure_retry_after_on_429`
+/// middleware in [`serve`](crate::commands::serve) so that every 429 in
+/// the app carries the header.
+#[must_use]
+fn throttled_error() -> (StatusCode, Json<ErrorResponse>) {
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        Json(ErrorResponse {
+            error: "too_many_requests".into(),
+            message: "server is at capacity, please retry after a short delay".into(),
         }),
     )
 }
@@ -816,5 +848,20 @@ mod tests {
         let (status, body) = internal_error(anyhow::anyhow!("disk full"));
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(body.error, "internal_error");
+    }
+
+    // ── throttled_error tests ────────────────────────────────────────────────
+
+    #[test]
+    fn throttled_error_has_429_status() {
+        let (status, body) = throttled_error();
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(body.error, "too_many_requests");
+    }
+
+    #[test]
+    fn throttled_error_body_contains_message() {
+        let (_, body) = throttled_error();
+        assert!(body.message.contains("capacity"));
     }
 }

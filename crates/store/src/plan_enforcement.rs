@@ -318,6 +318,48 @@ impl PgStore {
             None => Ok(true),
         }
     }
+
+    // ── Plan per-minute request rate cap ──────────────────────────────────────────────
+
+    /// Resolve the tenant's plan per-minute request rate cap.
+    ///
+    /// Returns `Some(n)` where `n` is the maximum requests per minute allowed by
+    /// the plan's `features.rate_caps.per_minute`. Returns `None` when:
+    /// - The tenant has no plan (grandfathered → unlimited), OR
+    /// - The plan has no `rate_caps.per_minute` key (treated as unlimited).
+    ///
+    /// Uses the **admin pool** for plan resolution.
+    ///
+    /// # Errors
+    /// Returns an error if the database is not connected or the query fails.
+    pub async fn resolve_rate_cap(&self, tenant_id: i64) -> anyhow::Result<Option<i64>> {
+        let billing = match self.get_tenant_billing(tenant_id).await? {
+            Some(b) => b,
+            None => return Ok(None), // Tenant doesn't exist — unlimited.
+        };
+
+        match billing.plan {
+            Some(plan) => Ok(plan.per_minute_rate_cap()),
+            // Grandfathered tenant — no restrictions.
+            None => Ok(None),
+        }
+    }
+}
+
+// ── Plan feature extraction helpers (rate caps) ──────────────────────────────────
+
+impl Plan {
+    /// Per-minute request rate cap defined by this plan.
+    ///
+    /// Reads `features.rate_caps.per_minute` (JSONB integer). Returns `None` when
+    /// the key is missing or not an integer (interpreted as unlimited). An explicit
+    /// `0` means no requests are allowed (effectively a locked plan).
+    pub fn per_minute_rate_cap(&self) -> Option<i64> {
+        self.features
+            .get("rate_caps")
+            .and_then(|rc| rc.get("per_minute"))
+            .and_then(|v| v.as_i64())
+    }
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -584,6 +626,95 @@ mod tests {
     async fn is_remote_models_allowed_errors_before_connect() {
         let store = unconnected_store();
         let err = store.is_remote_models_allowed(1).await.unwrap_err();
+        assert!(
+            err.to_string().contains("not connected"),
+            "expected 'not connected', got: {err}"
+        );
+    }
+
+    // ── per_minute_rate_cap (Plan) ────────────────────────────────────────
+
+    #[test]
+    fn rate_cap_extracted_from_features() {
+        let plan = Plan {
+            id: 1,
+            code: "pro".into(),
+            stripe_price: "p".into(),
+            quota_bytes: 100,
+            token_budget: None,
+            features: json!({"rate_caps": {"per_minute": 30}, "remote_models": true}),
+            price_cents: Some(900),
+            currency: Some("usd".into()),
+        };
+        assert_eq!(plan.per_minute_rate_cap(), Some(30));
+    }
+
+    #[test]
+    fn rate_cap_missing_key_returns_none() {
+        let plan = Plan {
+            id: 2,
+            code: "custom".into(),
+            stripe_price: "p".into(),
+            quota_bytes: 100,
+            token_budget: None,
+            features: json!({"remote_models": true}),
+            price_cents: None,
+            currency: None,
+        };
+        assert_eq!(plan.per_minute_rate_cap(), None);
+    }
+
+    #[test]
+    fn rate_cap_non_int_returns_none() {
+        let plan = Plan {
+            id: 3,
+            code: "bad".into(),
+            stripe_price: "p".into(),
+            quota_bytes: 0,
+            token_budget: None,
+            features: json!({"rate_caps": {"per_minute": "fast"}}),
+            price_cents: None,
+            currency: None,
+        };
+        assert_eq!(plan.per_minute_rate_cap(), None);
+    }
+
+    #[test]
+    fn rate_cap_zero_is_valid() {
+        let plan = Plan {
+            id: 4,
+            code: "locked".into(),
+            stripe_price: "p".into(),
+            quota_bytes: 0,
+            token_budget: None,
+            features: json!({"rate_caps": {"per_minute": 0}}),
+            price_cents: None,
+            currency: None,
+        };
+        assert_eq!(plan.per_minute_rate_cap(), Some(0));
+    }
+
+    #[test]
+    fn rate_cap_missing_per_minute_subkey_returns_none() {
+        let plan = Plan {
+            id: 5,
+            code: "odd".into(),
+            stripe_price: "p".into(),
+            quota_bytes: 100,
+            token_budget: None,
+            features: json!({"rate_caps": {"per_hour": 1000}}),
+            price_cents: None,
+            currency: None,
+        };
+        assert_eq!(plan.per_minute_rate_cap(), None);
+    }
+
+    // ── resolve_rate_cap (PgStore, unconnected) ───────────────────────────
+
+    #[tokio::test]
+    async fn resolve_rate_cap_errors_before_connect() {
+        let store = unconnected_store();
+        let err = store.resolve_rate_cap(1).await.unwrap_err();
         assert!(
             err.to_string().contains("not connected"),
             "expected 'not connected', got: {err}"
