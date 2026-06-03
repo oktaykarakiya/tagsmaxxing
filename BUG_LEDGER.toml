@@ -637,9 +637,9 @@ touches = ["crates/extract/src/binary.rs"]
 conflict_group = "extract"
 depends_on = []
 severity = "low"
-status = "todo"
+status = "blocked"
 acceptance = "test_mime_magic_mismatch_rejected passes"
-notes = "A file named .txt whose magic bytes are ELF is not rejected. Add magic-byte validation in the binary extractor that compares declared MIME/extension against detected magic bytes."
+notes = "BLOCKED: not fixable within the only permitted file (crates/extract/src/binary.rs). The ELF-magic file IS already rejected — just with the wrong status (500, not 4xx) — and the binary extractor is never reached. Verified empirically: tree_magic_mini 3.2.2 detects the test bytes (\\x7fELF\\x02\\x01\\x01\\x00 + 56 NULs) as application/x-executable, which is in security.rs::DENIED_MIMES. Runtime path: POST /api/ingest -> handlers::ingest::ingest -> process_upload_inline, which calls security::validate_upload FIRST; validate_mime rejects application/x-executable (anyhow error) BEFORE IngestPipeline::ingest runs, so the extractor router never dispatches to BinaryExtractor. That error is then mapped via .map_err(internal_error) -> 500; only QuotaError is downcast to a 4xx. Two consequences: (a) any magic/MIME check added to binary.rs is dead code (the file never reaches that extractor); (b) even if it did and returned Err, the pipeline error still becomes 500, not the required 4xx. The rejection lives in crates/extract/src/security.rs and the 500-vs-400 decision in crates/api/src/handlers/ingest.rs — both OUTSIDE the permitted set. Same structural blocker called out in BUG-INGEST-06's note. Real fix: in crates/api/src/handlers/ingest.rs return bad_request (400) for upload-validation rejections (e.g. surface a typed UploadRejected error from validate_upload and downcast it, mirroring the QuotaError->413 pattern). Re-scope touches to include crates/api/src/handlers/ingest.rs (+ optionally crates/extract/src/security.rs)."
 
 [[bug]]
 id = "BUG-INGEST-08"
