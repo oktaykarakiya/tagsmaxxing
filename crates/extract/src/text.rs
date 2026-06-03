@@ -303,39 +303,36 @@ pub fn strip_html(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut in_tag = false;
     let mut tag_buf = String::new();
-    let s = input.as_bytes();
-    let mut i = 0usize;
+    // Iterate over `char`s (not raw bytes) so multi-byte UTF-8 — accented
+    // Latin, CJK, RTL scripts, emoji — survives intact. Byte-level iteration
+    // with `byte as char` would split each multi-byte sequence into separate
+    // Latin-1 code points, corrupting the text into mojibake.
+    let mut chars = input.chars().peekable();
 
-    while i < s.len() {
-        let b = s[i];
-        if b == b'<' {
+    while let Some(c) = chars.next() {
+        if c == '<' {
             in_tag = true;
             tag_buf.clear();
-            i += 1;
             continue;
         }
-        if b == b'>' {
+        if c == '>' {
             in_tag = false;
             if is_html_block_tag(&tag_buf) {
                 out.push('\n');
             }
-            i += 1;
             continue;
         }
         if in_tag {
-            tag_buf.push(b as char);
-            i += 1;
+            tag_buf.push(c);
             continue;
         }
-        if b == b'&'
-            && let Some((ch, skip)) = decode_html_entity(&s[i..])
+        if c == '&'
+            && let Some(decoded) = decode_html_entity(&mut chars)
         {
-            out.push(ch);
-            i += skip;
+            out.push(decoded);
             continue;
         }
-        out.push(b as char);
-        i += 1;
+        out.push(c);
     }
 
     collapse_newlines(&mut out);
@@ -359,25 +356,39 @@ fn is_html_block_tag(raw: &str) -> bool {
     )
 }
 
-/// Try to decode an HTML entity starting at `&`. Returns
-/// `Some((char, bytes_consumed))` or `None` if no recognised entity is found.
-fn decode_html_entity(s: &[u8]) -> Option<(char, usize)> {
-    if s.len() < 3 || s[0] != b'&' {
-        return None;
+/// Try to decode the HTML entity that begins immediately after an `&`.
+///
+/// `chars` must be positioned just past the `&`. The entity name is read up to
+/// its terminating `;`, accepting only ASCII alphanumerics and `#` (so a stray
+/// `&` in running text never triggers a long scan). On success the name and the
+/// `;` are consumed from the iterator and the decoded character is returned; on
+/// failure the iterator is left untouched (a clone is used to probe) so the
+/// caller emits the literal `&` and continues.
+///
+/// Recognises `&amp;`, `&lt;`, `&gt;`, `&quot;`, `&#39;`, `&apos;`, and
+/// `&nbsp;`. Operating on `char`s keeps the surrounding text UTF-8 clean.
+fn decode_html_entity(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Option<char> {
+    let mut probe = chars.clone();
+    let mut name = String::new();
+    loop {
+        match probe.next() {
+            Some(';') => break,
+            Some(c) if c.is_ascii_alphanumeric() || c == '#' => name.push(c),
+            _ => return None,
+        }
     }
-    let rest = &s[1..];
-    let semi_pos = rest.iter().position(|&b| b == b';')?;
-    let entity = &rest[..semi_pos];
-    let consumed = 2 + semi_pos; // & + entity + ;
-    match entity {
-        b"amp" => Some(('&', consumed)),
-        b"lt" => Some(('<', consumed)),
-        b"gt" => Some(('>', consumed)),
-        b"quot" => Some(('"', consumed)),
-        b"apos" | b"#39" => Some(('\'', consumed)),
-        b"nbsp" => Some((' ', consumed)),
-        _ => None,
-    }
+    let decoded = match name.as_str() {
+        "amp" => '&',
+        "lt" => '<',
+        "gt" => '>',
+        "quot" => '"',
+        "apos" | "#39" => '\'',
+        "nbsp" => ' ',
+        _ => return None,
+    };
+    // Commit: advance the real iterator past the entity name and the `;`.
+    *chars = probe;
+    Some(decoded)
 }
 
 /// Collapse runs of three or more consecutive newlines into two.
@@ -1248,6 +1259,36 @@ mod tests {
         );
     }
 
+    #[test]
+    fn strip_html_preserves_unicode_emoji_rtl() {
+        // Multi-byte UTF-8 must survive intact: accented Latin (2 bytes), CJK
+        // (3 bytes), RTL Arabic (2 bytes), and emoji (4 bytes). Byte-level
+        // iteration with `byte as char` would mangle every one of these.
+        let html = "<p>café résumé 日本語 العربية مرحبا Ωμέγα 😀🎉🚀</p>";
+        let text = strip_html(html);
+        for needle in ["café résumé", "日本語", "العربية مرحبا", "Ωμέγα", "😀🎉🚀"]
+        {
+            assert!(text.contains(needle), "lost {needle:?} in: {text:?}");
+        }
+        // No mojibake leaked through (the classic é → "Ã©" corruption).
+        assert!(!text.contains('Ã'), "mojibake in stripped text: {text:?}");
+    }
+
+    #[test]
+    fn strip_html_unicode_alongside_entities() {
+        // Entities decode correctly and the surrounding multi-byte text is
+        // preserved byte-for-byte.
+        let text = strip_html("日本語 &amp; café &lt;😀&gt;");
+        assert_eq!(text, "日本語 & café <😀>");
+    }
+
+    #[test]
+    fn strip_html_entity_then_multibyte() {
+        // Regression: after committing an entity the iterator must still be on a
+        // valid char boundary so the following multi-byte char is intact.
+        assert_eq!(strip_html("&amp;😀"), "&😀");
+    }
+
     // ── strip_markdown unit tests ──────────────────────────────────────────
 
     #[test]
@@ -1378,5 +1419,31 @@ mod tests {
         assert!(out.text.contains("Hello"));
         assert!(out.text.contains("World"));
         assert!(!out.text.contains('<'));
+    }
+
+    #[tokio::test]
+    async fn html_unicode_emoji_rtl_roundtrips_through_extractor() {
+        // Ingesting an HTML file with mixed scripts + emoji must yield clean,
+        // searchable UTF-8 — not mojibake (BUG-INGEST-09).
+        let ex = TextExtractor;
+        let raw = RawFile {
+            bytes: Bytes::from("<p>café 日本語 العربية مرحبا 😀🎉</p>"),
+            mime: Some("text/html".into()),
+            kind: DocKind::Document,
+            path: Some("note.html".into()),
+        };
+        let out = ex.extract(&raw).await.unwrap();
+        assert!(out.text.contains("café"), "stripped: {:?}", out.text);
+        assert!(out.text.contains("日本語"), "stripped: {:?}", out.text);
+        assert!(
+            out.text.contains("العربية مرحبا"),
+            "stripped: {:?}",
+            out.text
+        );
+        assert!(out.text.contains("😀🎉"), "stripped: {:?}", out.text);
+        assert!(
+            std::str::from_utf8(out.text.as_bytes()).is_ok(),
+            "extracted text must be valid UTF-8"
+        );
     }
 }
