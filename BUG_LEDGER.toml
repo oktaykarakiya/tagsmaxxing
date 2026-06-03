@@ -773,9 +773,9 @@ touches = ["crates/api/src/web/handlers_dashboard.rs", "crates/store/src/dashboa
 conflict_group = "billing_handlers"
 depends_on = []
 severity = "medium"
-status = "todo"
+status = "blocked"
 acceptance = "test_usage_metering_matches_actual_consumption passes"
-notes = "The displayed monthly token usage may diverge from actual usage_events total. Both come from the same query but the display path may use format_bytes rounding differently. Ensure consistency."
+notes = "BLOCKED: not a display bug. Verified against live e2e DB: dashboard shows 0 B and the recorded usage_events total IS 0 — display already matches (the format_bytes-rounding hypothesis is wrong; both queries are mathematically identical). Real failure is `recorded_after > recorded_before` (0>0): no production path writes usage_events. `insert_usage_event` has zero non-test callers, crates/pipeline/src/ingest.rs does no usage accounting, and LLM client/adapter parse Usage but never persist it. Fix must instrument the ingest/LLM call path (crates/pipeline/src/ingest.rs, crates/llm, or crates/scheduler) to call insert_usage_event — all outside the permitted display files (handlers_dashboard.rs, dashboard.rs are read-only)."
 
 [[bug]]
 id = "BUG-BILL-04"
