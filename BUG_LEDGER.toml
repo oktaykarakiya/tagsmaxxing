@@ -290,7 +290,7 @@ touches = ["crates/api/src/handlers/auth.rs"]
 conflict_group = "api_handlers"
 depends_on = []
 severity = "low"
-status = "todo"
+status = "done"
 acceptance = "test_register_duplicate_email_conflict passes"
 notes = "Re-registering an existing email in the same tenant should return 409 Conflict. Add a duplicate-email check in the registration handler."
 
@@ -306,7 +306,7 @@ touches = ["crates/api/src/middleware.rs", "crates/api/src/handlers/api_tokens.r
 conflict_group = "middleware"
 depends_on = []
 severity = "high"
-status = "todo"
+status = "done"
 acceptance = "test_api_token_scopes_enforced passes"
 notes = "API tokens have no scope column or enforcement. A token created with scopes=['search'] still grants full account access. Add a scopes column to api_tokens, validate on creation, and enforce in the auth middleware."
 
@@ -319,7 +319,7 @@ touches = ["crates/api/src/middleware.rs"]
 conflict_group = "middleware"
 depends_on = []
 severity = "low"
-status = "todo"
+status = "done"
 acceptance = "test_api_token_last_used_tracked passes"
 notes = "After a Bearer-authenticated request, the token's last_used_at remains NULL. Update it in the auth middleware when a token is successfully validated."
 
