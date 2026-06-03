@@ -99,7 +99,7 @@ EOF
 # ── Invoke Claude ───────────────────────────────────────────────────────────
 model_arg=()
 [[ -n "${FIX_MODEL:-}" ]] && model_arg=(--model "$FIX_MODEL")
-perm_mode="${PERM_MODE:-bypassPermissions}"
+perm_mode="${PERM_MODE:-acceptEdits}"
 
 echo "→ invoking Claude for $BUG_ID (model=${FIX_MODEL:-default}, perm=$perm_mode, log: ${log#"$REPO_ROOT"/})"
 
