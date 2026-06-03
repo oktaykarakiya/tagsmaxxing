@@ -410,9 +410,9 @@ touches = ["crates/api/src/middleware.rs"]
 conflict_group = "middleware"
 depends_on = []
 severity = "high"
-status = "todo"
+status = "done"
 acceptance = "test_bearer_auth_with_token passes"
-notes = "A valid Bearer token is rejected by /api/search. The auth middleware may not be extracting Bearer tokens for this route. Ensure all /api/* routes run the Bearer auth extractor."
+notes = "Already resolved by 1e49a6e (BUG-API-03): auth_middleware handles Bearer + cookie auth for all /api/* routes. E2E test_bearer_auth_with_token passes (6/6)."
 
 
 # ── Search ──────────────────────────────────────────────────────────────────
