@@ -195,6 +195,15 @@ impl IngestPipeline {
     ) -> anyhow::Result<IngestOutput> {
         anyhow::ensure!(!files.is_empty(), "at least one file is required");
 
+        // Sanitize filenames: neutralise path-traversal sequences in both
+        // `page_label` and `path` before they are persisted or surfaced in
+        // API responses (BUG-INGEST-08).
+        let mut files = files;
+        for f in &mut files {
+            f.page_label = f.page_label.as_deref().and_then(sanitize_filename);
+            f.path = f.path.as_deref().and_then(sanitize_filename);
+        }
+
         // 1. Build document + file records.
         let (document, file_records) = if files.len() == 1 {
             let f = &files[0];
@@ -527,6 +536,35 @@ pub async fn process_retag_job(
     Ok(all_ids)
 }
 
+// ── filename sanitization ──────────────────────────────────────────────────
+
+/// Sanitize a user-supplied filename by neutralising path-traversal sequences.
+///
+/// Strips directory components (keeping only the basename), removes `..`
+/// sequences, and returns `None` when the result is empty.
+///
+/// This is applied to both `page_label` and `path` on every ingested file
+/// before the filename is stored or surfaced in API responses — preventing
+/// path-traversal filenames like `../../etc/passwd` from being persisted.
+#[must_use]
+pub fn sanitize_filename(name: &str) -> Option<String> {
+    // 1. Take only the basename — drop any leading directory components.
+    let basename = name.rsplit(['/', '\\']).next().unwrap_or(name);
+
+    // 2. Remove any remaining `..` substrings (handles edge cases like
+    //    `..hidden` where the basename itself starts with dots).
+    let cleaned = basename.replace("..", "");
+
+    // 3. Trim whitespace that may have been left around removed components.
+    let trimmed = cleaned.trim();
+
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 // ── infer_kind_from_mime ────────────────────────────────────────────────────
 
 /// Map a MIME type to a [`DocKind`] for extractor routing.
@@ -543,6 +581,7 @@ fn infer_kind_from_mime(mime: Option<&str>) -> DocKind {
             if m == "text/plain"
                 || m == "text/html"
                 || m == "text/markdown"
+                || m == "text/csv"
                 || m.starts_with("application/pdf")
                 || m.starts_with("application/msword")
                 || m.starts_with("application/vnd.openxmlformats-officedocument")
@@ -720,6 +759,7 @@ mod tests {
     #[test]
     fn infer_kind_mappings() {
         assert_eq!(infer_kind_from_mime(Some("text/plain")), DocKind::Document);
+        assert_eq!(infer_kind_from_mime(Some("text/csv")), DocKind::Document);
         assert_eq!(infer_kind_from_mime(Some("image/png")), DocKind::Image);
         assert_eq!(infer_kind_from_mime(Some("audio/mpeg")), DocKind::Audio);
         assert_eq!(infer_kind_from_mime(Some("video/mp4")), DocKind::Video);
@@ -773,6 +813,70 @@ mod tests {
                 "mime '{mime}' should map to Document"
             );
         }
+    }
+
+    // ── sanitize_filename tests ────────────────────────────────────────────
+
+    #[test]
+    fn sanitize_traversal_path_to_basename() {
+        // Classic path-traversal attack — only basename survives.
+        assert_eq!(
+            sanitize_filename("../../../../etc/passwd"),
+            Some("passwd".into())
+        );
+    }
+
+    #[test]
+    fn sanitize_backslash_traversal() {
+        assert_eq!(
+            sanitize_filename("..\\..\\..\\windows\\system32\\config\\sam"),
+            Some("sam".into())
+        );
+    }
+
+    #[test]
+    fn sanitize_mixed_separators() {
+        assert_eq!(sanitize_filename("../..\\secret/.env"), Some(".env".into()));
+    }
+
+    #[test]
+    fn sanitize_plain_filename_unchanged() {
+        assert_eq!(sanitize_filename("report.txt"), Some("report.txt".into()));
+    }
+
+    #[test]
+    fn sanitize_single_dot_prefix() {
+        // A single `..` with no separators still gets stripped.
+        assert_eq!(sanitize_filename("..hidden"), Some("hidden".into()));
+    }
+
+    #[test]
+    fn sanitize_empty_string() {
+        assert_eq!(sanitize_filename(""), None);
+    }
+
+    #[test]
+    fn sanitize_only_separators() {
+        assert_eq!(sanitize_filename("///"), None);
+    }
+
+    #[test]
+    fn sanitize_only_dots() {
+        assert_eq!(sanitize_filename(".."), None);
+    }
+
+    #[test]
+    fn sanitize_root_path() {
+        // A rooted path keeps only the basename.
+        assert_eq!(sanitize_filename("/etc/shadow"), Some("shadow".into()));
+    }
+
+    #[test]
+    fn sanitize_relative_without_traversal() {
+        assert_eq!(
+            sanitize_filename("subdir/file.txt"),
+            Some("file.txt".into())
+        );
     }
 
     // ── Construction ───────────────────────────────────────────────────────
