@@ -896,9 +896,9 @@ touches = ["crates/llm/src/tagger.rs"]
 conflict_group = "tagger"
 depends_on = []
 severity = "medium"
-status = "todo"
+status = "done"
 acceptance = "test_tags_are_relevant passes (judge verdict)"
-notes = "LLM-generated tags don't match document content. Improve the tagger prompt with better instructions, examples, and constraints. This is a prompt engineering task."
+notes = "Rewrote SYSTEM_PROMPT to ground every tag in the document's actual content: explicit relevance rules (tag the real subject/type, omit unsupported/incidental tags), short-lowercase-noun constraints, and three worked few-shot examples (invoice→finance, tech-report→infra, recipe→cooking). Bumped TAGGER_CONTRACT_VERSION 1.1.0→1.1.1. kb-llm build/clippy/fmt/17 unit tests green."
 
 [[bug]]
 id = "BUG-TAG-02"
