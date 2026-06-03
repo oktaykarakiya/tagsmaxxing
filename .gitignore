@@ -33,3 +33,5 @@ config.toml
 # so deterministic builds (and meaningful `cargo audit`/`deny`) require it.
 models/
 .fix-loop/
+test/.run-up.log
+.llama-logs/
