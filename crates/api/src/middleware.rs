@@ -527,12 +527,12 @@ async fn run_maybe_idempotent(
     if let Some(cached) = IDEMPOTENCY_STORE.get(&key) {
         let mut response = Response::new(axum::body::Body::from(cached.body));
         *response.status_mut() = cached.status;
-        if let Some(ct) = &cached.content_type {
-            if let Ok(val) = axum::http::HeaderValue::from_str(ct) {
-                response
-                    .headers_mut()
-                    .insert(axum::http::header::CONTENT_TYPE, val);
-            }
+        if let Some(ct) = &cached.content_type
+            && let Ok(val) = axum::http::HeaderValue::from_str(ct)
+        {
+            response
+                .headers_mut()
+                .insert(axum::http::header::CONTENT_TYPE, val);
         }
         return Ok(response);
     }
@@ -560,7 +560,10 @@ async fn run_maybe_idempotent(
 
     IDEMPOTENCY_STORE.store(key, status, content_type, body_bytes.to_vec());
 
-    Ok(Response::from_parts(parts, axum::body::Body::from(body_bytes)))
+    Ok(Response::from_parts(
+        parts,
+        axum::body::Body::from(body_bytes),
+    ))
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
@@ -1606,12 +1609,7 @@ mod tests {
     fn idempotency_store_overwrites_existing_key() {
         let store = IdempotencyStore::new(Duration::from_secs(60));
         store.store("key".into(), StatusCode::OK, None, b"first".to_vec());
-        store.store(
-            "key".into(),
-            StatusCode::ACCEPTED,
-            None,
-            b"second".to_vec(),
-        );
+        store.store("key".into(), StatusCode::ACCEPTED, None, b"second".to_vec());
         let cached = store.get("key").unwrap();
         assert_eq!(cached.body, b"second".to_vec());
         assert_eq!(store.len(), 1);
@@ -1675,10 +1673,7 @@ mod tests {
     #[test]
     fn extract_idempotency_key_empty_value() {
         let mut headers = axum::http::HeaderMap::new();
-        headers.insert(
-            "idempotency-key",
-            axum::http::HeaderValue::from_static(""),
-        );
+        headers.insert("idempotency-key", axum::http::HeaderValue::from_static(""));
         assert_eq!(extract_idempotency_key(&headers), None);
     }
 }

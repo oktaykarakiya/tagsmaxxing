@@ -371,9 +371,9 @@ touches = ["crates/api/src/middleware.rs", "crates/pipeline/src/ingest.rs"]
 conflict_group = "ingest_pipeline"
 depends_on = []
 severity = "medium"
-status = "todo"
+status = "done"
 acceptance = "test_idempotency_key_dedupes_retry passes"
-notes = "Two identical POST /api/ingest with the same Idempotency-Key header create two documents. Implement idempotency-key tracking (store key → response mapping with TTL) and return the original response on replay."
+notes = "Added IdempotencyStore (in-memory, 24h TTL) and run_maybe_idempotent helper in auth_middleware. POST /api/ingest with Idempotency-Key header now caches 2xx responses and replays them on retry, preventing duplicate document creation."
 
 [[bug]]
 id = "BUG-API-07"
