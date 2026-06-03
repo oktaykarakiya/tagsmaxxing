@@ -26,6 +26,7 @@ use std::time::Duration;
 use arc_swap::ArcSwap;
 use axum::Json;
 use axum::Router;
+use axum::extract::DefaultBodyLimit;
 use axum::http::StatusCode;
 use axum::middleware::from_fn_with_state;
 use axum::response::IntoResponse;
@@ -373,6 +374,9 @@ pub fn build_router(state: AppState) -> Router {
             "/billing/portal",
             get(handlers::billing::get_portal).post(handlers::billing::post_portal),
         )
+        .layer(DefaultBodyLimit::max(
+            handlers::ingest::MAX_PAYLOAD_BYTES as usize,
+        ))
         .layer(from_fn_with_state(state.clone(), auth_middleware));
 
     // Web UI routes (P6-T4).

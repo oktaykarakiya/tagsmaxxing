@@ -135,6 +135,21 @@ status:
 loop *ARGS:
     bash scripts/build-loop.sh {{ARGS}}
 
+# ── bug-fix pipeline ──────────────────────────────────────────────────────────
+
+# Show bug-fix ledger status (BUG_LEDGER.toml).
+bugs:
+    @python3 scripts/bug_ledger.py status
+
+# Print the next eligible bug id (or ALL_DONE / BLOCKED).
+fix-next:
+    @python3 scripts/bug_ledger.py next
+
+# Run the autonomous bug-fix loop until done, blocked, or a regression is detected.
+# Pass `--yolo` for unattended: just fix-loop --yolo
+fix-loop *ARGS:
+    bash scripts/fix-loop.sh {{ARGS}}
+
 # Generate a CycloneDX SBOM (Software Bill of Materials). Requires `cargo-cyclonedx`
 # (`cargo install cargo-cyclonedx`). Produces sbom.cdx.json with every dependency version,
 # licence, and provenance metadata. Intended as a CI artifact for release pipelines.

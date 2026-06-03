@@ -352,6 +352,57 @@ The loop invokes Claude Code per task, then **independently re-runs the gates** 
 the task committed before advancing. It stops immediately on a red gate, a blocked task, or an
 unapproved checkpoint — so progress is always safe and resumable.
 
+## Bug-fix pipeline
+
+A separate autonomous loop fixes bugs surfaced by the E2E test suite, using conflict-aware
+parallel batching so multiple Claude Code instances fix independent bugs simultaneously
+without file conflicts:
+
+```bash
+./scripts/fix-loop.sh                 # full run (baseline → fix → compare)
+./scripts/fix-loop.sh --dry-run       # preview what would be fixed
+./scripts/fix-loop.sh --yolo          # unattended
+./scripts/fix-loop.sh --max-batches 3 # stop after 3 batches
+./scripts/fix-loop.sh --batch-size 4  # max 4 parallel fixes per batch
+
+python3 scripts/bug_ledger.py status  # summary of all tracked bugs
+```
+
+Bugs are tracked in [`BUG_LEDGER.toml`](./BUG_LEDGER.toml) (~72 entries, 17 conflict groups).
+Each batch picks one bug from each non-conflicting group, fixes them in parallel via
+`scripts/fix-bug.sh`, then independently verifies `just ci` + the full E2E suite against a
+pre-fix baseline. If a fix introduces a regression (a previously-passing test now fails),
+the loop halts. See [`scripts/fix-loop.sh`](./scripts/fix-loop.sh) for the full design.
+
+## E2E test suite
+
+A comprehensive black-box test harness lives in [`test/`](./test/). It drives the app over
+HTTPS at `https://localhost:9443` (TLS verification off, via Caddy) and encodes the intended
+contract: **tests assert correct behavior; failures are app bugs — never fix the test.**
+
+```bash
+./test/run.sh setup                  # create venv + install deps
+./test/run.sh up                     # build + start the full stack (podman compose)
+./test/run.sh run                    # functional suite (fast lane, no judge)
+./test/run.sh quality                # functional + DeepSeek LLM-as-judge (semantic quality)
+./test/run.sh perf                   # load / performance lane
+./test/run.sh down                   # tear down
+
+# Drive the implement.sh swarm to auto-build PENDING test stubs:
+./test/implement.sh run              # spawn agents (MAX_AGENTS=5), one per catalog file
+./test/implement.sh status           # count pending / blocked / done
+```
+
+Key fixtures (defined in [`test/conftest.py`](./test/conftest.py)): `api` (black-box HTTP
+client), `page` (Playwright browser), `judge` (DeepSeek LLM-as-judge for nondeterministic
+quality assertions). Results are recorded to `test/results/history.csv` when `E2E_RECORD=1`
+is set — the `run`, `quality`, and `perf` lanes set it automatically.
+
+The test catalog ([`test/CATALOG.md`](./test/CATALOG.md)) tracks ~324 tests across 35 files.
+Stubs with `@pytest.mark.skip(reason="step2: ...")` are PENDING (the swarm picks them up);
+stubs with `reason="blocked: ..."` require missing features (SSO, Stripe, B2) and stay
+catalogued as acceptance criteria.
+
 ## License
 
 Dual-licensed under [Apache-2.0](LICENSE) or [MIT](LICENSE) — you may use this software

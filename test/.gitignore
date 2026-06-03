@@ -1,0 +1,12 @@
+# Isolated e2e harness — self-contained ignore rules (no dependence on the repo root).
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.playwright/
+test-results/
+playwright-report/
+.implement-logs/
+
+# Secrets — the real DeepSeek key + local overrides live here, never committed.
+.env

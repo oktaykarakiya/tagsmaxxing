@@ -8,7 +8,8 @@
 //! # CSP policy
 //!
 //! The policy allows:
-//! - Scripts: CDN-hosted Tailwind (cdn.tailwindcss.com), self ('self')
+//! - Scripts: self ('self'), inline ('unsafe-inline'), CDN-hosted HTMX
+//!   (unpkg.com) and Tailwind (cdn.tailwindcss.com)
 //! - Styles: 'unsafe-inline' (Tailwind relies on runtime style injection)
 //! - Images: 'self' data: (for object URLs, drag-and-drop previews)
 //! - Connections: 'self' (HTMX-driven API calls)
@@ -32,11 +33,15 @@ use axum::response::Response;
 pub async fn security_headers_middleware(request: Request, next: Next) -> Response {
     let mut response = next.run(request).await;
 
-    // CSP: allow Tailwind CDN scripts and self-origin resources.
-    // 'unsafe-inline' for styles is required by Tailwind's runtime CSS engine.
+    // CSP: scripts may load from self, the HTMX (unpkg.com) and Tailwind
+    // (cdn.tailwindcss.com) CDNs, and inline ('unsafe-inline') — the templates load
+    // HTMX from unpkg and use inline <script> helpers plus inline event handlers
+    // (e.g. onsubmit) that the browser blocks without it. Omitting unpkg.com or
+    // 'unsafe-inline' here disables the entire HTMX-driven web UI. 'unsafe-inline'
+    // for styles is required by Tailwind's runtime CSS engine.
     let csp_value = concat!(
         "default-src 'self'; ",
-        "script-src 'self' cdn.tailwindcss.com; ",
+        "script-src 'self' 'unsafe-inline' https://unpkg.com cdn.tailwindcss.com; ",
         "style-src 'self' 'unsafe-inline'; ",
         "img-src 'self' data: blob:; ",
         "connect-src 'self'; ",
@@ -168,7 +173,9 @@ mod tests {
 
         // All required directives must be present.
         assert!(csp.contains("default-src 'self'"));
-        assert!(csp.contains("script-src 'self' cdn.tailwindcss.com"));
+        assert!(
+            csp.contains("script-src 'self' 'unsafe-inline' https://unpkg.com cdn.tailwindcss.com")
+        );
         assert!(csp.contains("img-src 'self' data: blob:"));
         assert!(csp.contains("form-action 'self'"));
         assert!(csp.contains("base-uri 'self'"));

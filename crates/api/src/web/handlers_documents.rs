@@ -387,9 +387,10 @@ pub async fn add_document_tag(
     {
         Ok(Some(id)) => id,
         Ok(None) => {
-            // Create a new tag with a minimal embedding vector.
-            // User-sourced tags don't need semantic embeddings.
-            let dummy_embed: Vec<f32> = vec![0.0; 2];
+            // Create a new tag with a zero embedding at the schema dimension (1024 =
+            // BGE-M3; must match pgvector(1024) or the DB rejects the INSERT). The
+            // embedding for a user-sourced tag is never used for semantic search.
+            let dummy_embed: Vec<f32> = vec![0.0; 1024];
             match state
                 .pg_store
                 .upsert_tag(auth_user.tenant_id, &tag_name, &dummy_embed)

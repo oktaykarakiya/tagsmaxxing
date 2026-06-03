@@ -1,0 +1,25 @@
+# test/compose.e2e.host.yaml — REUSE-HOST-LLAMA overlay (E2E_LLAMA=host).
+#
+# Layered on ../compose.yaml. Unlike compose.e2e.yaml (which adds containerized
+# llama-text/embed/rerank + whisper), this overlay adds NO inference containers
+# at all — the app talks to the operator's host-native llama.cpp servers through
+# the socat relays managed by test/scripts/host_relays.sh.
+#
+# Result: `podman compose -f compose.yaml -f test/compose.e2e.host.yaml up -d`
+# brings up exactly postgres + tika + app + caddy (the base gpu-profile
+# llama-server/whisper-server stay down because we never pass --profile gpu).
+#
+#   podman compose --env-file test/.env -f compose.yaml -f test/compose.e2e.host.yaml up -d
+#   (test/run.sh does this for you when E2E_LLAMA=host).
+#
+# The app reaches the relays at host.containers.internal:9080/9081/9082 — podman
+# injects host.containers.internal automatically on the compose (netavark) network.
+
+services:
+  app:
+    environment:
+      # Absolute links/redirects use the Caddy HTTPS entry point.
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://localhost:9443}
+      # No whisper container in host mode; audio tests will surface this (recorded
+      # as findings, never fixed). Point it somewhere inert so startup is unaffected.
+      WHISPER_URL: ${WHISPER_URL:-http://host.containers.internal:9093}

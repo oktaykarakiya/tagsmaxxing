@@ -1,0 +1,44 @@
+# App config for the e2e stack — mounted read-only into the app container at
+# /etc/kb/config.toml (via CONFIG_FILE in test/.env). It maps each scheduler
+# role to the dedicated llama-server instance defined in test/compose.e2e.yaml.
+
+[storage]
+# Privileged + app (RLS) connection strings; the compose env also sets these to
+# the same compose-internal `postgres` host, so they agree.
+postgres_url = "postgres://kb:kb@postgres:5432/kb"
+app_postgres_url = "postgres://kb_app:kb_app@postgres:5432/kb"
+
+[api]
+port = 9999
+# Emit Secure session cookies — required because the cookie is name-prefixed
+# `__Host-` and the suite drives the app over HTTPS (Caddy :9443).
+secure_cookies = true
+
+[scheduler]
+# Generous acquire timeout: a 30B model can be slow under load.
+acquire_timeout_secs = 300
+health_interval_secs = 10
+max_retries = 3
+
+# ── One backend per role, each its own llama-server (see test/compose.e2e.yaml) ──
+
+[[backend]]
+id = "llama-text"
+base_url = "http://llama-text:8090/v1"
+roles = ["text", "vision", "code"]
+slots = 2
+priority = 0
+
+[[backend]]
+id = "llama-embed"
+base_url = "http://llama-embed:8091/v1"
+roles = ["embed"]
+slots = 4
+priority = 0
+
+[[backend]]
+id = "llama-rerank"
+base_url = "http://llama-rerank:8092/v1"
+roles = ["rerank"]
+slots = 4
+priority = 0

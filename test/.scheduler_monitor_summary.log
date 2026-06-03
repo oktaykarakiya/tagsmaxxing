@@ -1,0 +1,11 @@
+[sched-monitor] polling https://localhost:9443/metrics every 3.0s for 600s → /home/oktaykarakiya/Documents/projects/files_organizer/test/scripts/../results/scheduler_monitor.csv
+
+[sched-monitor] 200 samples over ~600s
+  backend llama-embed: max in_flight=0 / total_slots=4
+  backend llama-rerank: max in_flight=0 / total_slots=4
+  backend llama-text: max in_flight=1 / total_slots=2
+  max queue_depth=0  final queue_depth=0
+  ingest_throttled delta=0
+  circuit-breaker-open seen: False
+
+[sched-monitor] VERDICT: PASS — scheduler respected slots and drained

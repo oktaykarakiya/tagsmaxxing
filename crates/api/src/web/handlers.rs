@@ -643,40 +643,43 @@ pub async fn upload_submit(
                 .into_response();
         }
     };
-    let job_queue = match state.job_queue.as_ref() {
-        Some(q) => q,
+    let pipeline = match state.ingest_pipeline.as_ref() {
+        Some(p) => p,
         None => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({
                     "error": "not_configured",
-                    "message": "job queue not configured"
+                    "message": "ingest pipeline not configured"
                 })),
             )
                 .into_response();
         }
     };
 
-    // ── 6. Process upload ────────────────────────────────────────────────────
-    match crate::handlers::ingest::process_upload_files(
+    // ── 6. Process upload inline (synchronous — no worker pool needed) ──────
+    // Uses the same path as POST /api/ingest: validate → store blobs → pipeline
+    // ingest → return document_id immediately. The job-queue worker pool is not
+    // yet wired (P6-T7), so enqueue-only would leave jobs stuck at "queued".
+    match crate::handlers::ingest::process_upload_inline(
         blob.as_ref(),
-        job_queue.as_ref(),
+        pipeline.as_ref(),
         auth_user.tenant_id,
         &parsed,
     )
     .await
     {
-        Ok((job_id, file_count)) => (
+        Ok(result) => (
             StatusCode::ACCEPTED,
             Json(serde_json::json!({
-                "job_id": job_id,
-                "document_id": null,
-                "message": format!("ingest job enqueued ({file_count} file(s))")
+                "job_id": result.job_id,
+                "document_id": result.document_id,
+                "message": format!("ingest processed ({} file(s))", result.file_count)
             })),
         )
             .into_response(),
         Err(e) => {
-            tracing::error!(error = %e, "upload_submit: process_upload_files failed");
+            tracing::error!(error = %e, "upload_submit: process_upload_inline failed");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({

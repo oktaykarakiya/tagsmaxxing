@@ -357,14 +357,26 @@
           }
 
           const data = await resp.json();
-          const jobId = data.job_id;
+          const docId = data.document_id;
 
+          if (docId) {
+              // Inline processing: document is already ready — redirect directly.
+              document.getElementById('progress-bar').style.width = '100%';
+              document.getElementById('progress-text').textContent = 'Done! Redirecting…';
+              document.getElementById('progress-detail').textContent = 'Document #' + docId;
+              setTimeout(() => {
+                  window.location.href = '/documents/' + docId;
+              }, 600);
+              return;
+          }
+
+          // Fallback: no document_id — poll job status (async worker path).
+          const jobId = data.job_id;
           document.getElementById('progress-text').textContent = 'Processing your files…';
           document.getElementById('progress-bar').style.width = '10%';
           document.getElementById('progress-detail').textContent =
               'Job #' + jobId + ' — this may take a moment.';
 
-          // Start polling job status
           pollJobStatus(jobId, Date.now());
 
       } catch (err) {

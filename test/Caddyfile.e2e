@@ -1,0 +1,43 @@
+# E2E test Caddyfile — serves both localhost (for automated tests) and
+# tagsmaxxing.com (for browser access) with self-signed certs (tls internal).
+# Mounted instead of compose/Caddyfile via CADDYFILE=./test/Caddyfile.e2e.
+
+# ── localhost — test suite entry point ───────────────────────────────────
+localhost {
+	tls internal
+
+	header {
+		Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+		X-Frame-Options "DENY"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	log {
+		output stdout
+		format json
+	}
+
+	reverse_proxy app:9999
+}
+
+# ── tagsmaxxing.com — browser / external access ─────────────────────────
+tagsmaxxing.com {
+	tls internal
+
+	header {
+		Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+		X-Frame-Options "DENY"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	log {
+		output stdout
+		format json
+	}
+
+	reverse_proxy app:9999
+}

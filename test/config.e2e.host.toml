@@ -1,0 +1,54 @@
+# App config for the e2e stack in REUSE-HOST-LLAMA mode (E2E_LLAMA=host).
+#
+# Unlike config.e2e.toml (which targets containerized llama-* services), this
+# variant points each scheduler role at the operator's *host-native*
+# llama.cpp servers, reached from inside the app container through the socat
+# relays started by test/scripts/host_relays.sh:
+#
+#   host 0.0.0.0:9080 -> 127.0.0.1:8080   text/vision/code (Qwen3VL-30B + mmproj)
+#   host 0.0.0.0:9081 -> 127.0.0.1:8081   embed            (bge-m3, 1024-dim)
+#   host 0.0.0.0:9082 -> 127.0.0.1:8082   rerank           (bge-reranker-v2-m3)
+#
+# The container resolves the host via `host.containers.internal` (podman injects
+# it automatically on netavark networks). Mounted read-only at /etc/kb/config.toml.
+
+[storage]
+# Privileged + app (RLS) connection strings; the compose env also sets these to
+# the same compose-internal `postgres` host, so they agree.
+postgres_url = "postgres://kb:kb@postgres:5432/kb"
+app_postgres_url = "postgres://kb_app:kb_app@postgres:5432/kb"
+
+[api]
+port = 9999
+# Emit Secure session cookies — required because the cookie is name-prefixed
+# `__Host-` and the suite drives the app over HTTPS (Caddy :9443).
+secure_cookies = true
+
+[scheduler]
+# Generous acquire timeout: a 30B model can be slow under load.
+acquire_timeout_secs = 300
+health_interval_secs = 10
+max_retries = 3
+
+# ── One backend per role, each a host-native llama-server via its relay port ──
+
+[[backend]]
+id = "llama-text"
+base_url = "http://host.containers.internal:9080/v1"
+roles = ["text", "vision", "code"]
+slots = 2
+priority = 0
+
+[[backend]]
+id = "llama-embed"
+base_url = "http://host.containers.internal:9081/v1"
+roles = ["embed"]
+slots = 4
+priority = 0
+
+[[backend]]
+id = "llama-rerank"
+base_url = "http://host.containers.internal:9082/v1"
+roles = ["rerank"]
+slots = 4
+priority = 0

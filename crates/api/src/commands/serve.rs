@@ -32,6 +32,7 @@ use kb_scheduler::HealthLoop;
 use kb_scheduler::Pool;
 use kb_scheduler::Reloader;
 use kb_store::ROUTING_CHANNEL;
+use kb_store::api_token_store::InMemoryApiTokenStore;
 use kb_store::{LocalBlob, PgRoutingNotifier, PgSessionStore, PgStore};
 use tracing::info;
 
@@ -308,7 +309,7 @@ pub async fn run_serve(args: &ServeArgs) -> anyhow::Result<()> {
         public_base_url,
         email_sender: Some(Arc::new(kb_core::email::LogEmail)),
         email_provider: Some(Arc::new(kb_core::email::LogEmail)),
-        api_token_store: None,
+        api_token_store: Some(Arc::new(InMemoryApiTokenStore::new())),
     };
     if let Some(ws) = webhook_secret {
         use std::sync::Arc;

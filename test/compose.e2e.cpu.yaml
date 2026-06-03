@@ -1,0 +1,22 @@
+# test/compose.e2e.cpu.yaml — CPU-only override for the e2e model stack.
+# Added automatically by test/run.sh when E2E_HW=cpu:
+#   podman compose -f compose.yaml -f test/compose.e2e.yaml -f test/compose.e2e.cpu.yaml up -d
+#
+# Drops the GPU device mount and offloads zero layers to the GPU (pure CPU).
+# Mirrors the repo's own compose.cpu.yaml pattern (devices: [] replaces the mount).
+
+services:
+  llama-text:
+    devices: []
+    environment:
+      LLAMA_ARG_N_GPU_LAYERS: "0"
+  llama-embed:
+    devices: []
+    environment:
+      LLAMA_ARG_N_GPU_LAYERS: "0"
+  llama-rerank:
+    devices: []
+    environment:
+      LLAMA_ARG_N_GPU_LAYERS: "0"
+  whisper:
+    devices: []

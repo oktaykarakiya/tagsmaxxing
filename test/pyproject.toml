@@ -1,0 +1,32 @@
+# Pytest configuration for the isolated e2e harness.
+# (Dependencies live in requirements.txt; this file only configures pytest.)
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+  "smoke: fully-implemented end-to-end happy path (runs in the core suite)",
+  "judge: uses the DeepSeek LLM-as-judge (network + API key; excluded from the core run)",
+  "auth: authentication, sessions, login/logout/registration",
+  "ingest: upload + extraction pipeline (text/code/tika/image/audio/video/binary)",
+  "search: retrieval, hybrid search, RRF fusion, rerank, deep-links",
+  "tagging: LLM tagging + summaries (nondeterministic; usually judged)",
+  "isolation: multi-tenant isolation / RLS / cross-tenant negative tests",
+  "quotas: plan quotas, cost budgets, rate limits",
+  "billing: Stripe checkout, webhooks, subscription lifecycle, dunning",
+  "encryption: encryption at rest, key hierarchy, crypto-shredding, decrypt audit",
+  "admin: admin panel (tenants/users/jobs/tags/audit/backends)",
+  "providers: provider / model / route management + failover + cost",
+  "email: signup, email verification, password reset, transactional email",
+  "account: account, team, plan, danger-zone, dashboard",
+  "tokens: API token create/list/revoke + Bearer auth",
+  "degradation: graceful degradation (B2/Tika/LLM unavailable)",
+  "observability: health, readiness, Prometheus metrics",
+  "perf: performance / load tests (concurrent uploads, searches, throughput); separate lane",
+  "ui: browser user-journey + accessibility tests (Playwright; deterministic core lane)",
+  "security: web security hardening — headers, cookies, CSRF, input validation, injection",
+  "api: JSON API contract — error shapes, status codes, methods, content negotiation",
+  "sso: SSO / identity federation — SAML, OIDC, SCIM provisioning (enterprise)",
+  "governance: data governance & compliance — residency, retention, legal hold, export, erasure, key rotation",
+]

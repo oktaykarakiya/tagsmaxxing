@@ -1,0 +1,41 @@
+# Alternate build-context ignore for the e2e app-image build. run.sh's
+# build_image() passes this via `podman build --ignorefile`, so it REPLACES the
+# repo's .containerignore (hence it must list everything that one does, too).
+#
+# CRITICAL: it excludes the ~21GB models/ directory. The app image never needs
+# the GGUF/whisper models (they are runtime volume mounts), and pulling them into
+# the build context makes podman assemble a >20GB layer blob in the RAM-backed
+# /tmp tmpfs (TMPDIR), which exhausts memory and crashes the host. The Containerfile
+# only needs the Cargo manifests + crates/ + rust-toolchain.toml.
+
+# ── mirror of the repo .containerignore ──
+target/
+.git/
+.gitignore
+.gitattributes
+.containerignore
+.dockerignore
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+.env
+.env.local
+docs/analysis/
+node_modules/
+*.tar
+*.tar.gz
+*.bak
+
+# ── e2e additions: large / build-irrelevant paths the app image must not pull in ──
+models/
+test/
+docs/
+*.gguf
+*.bin
+*.onnx
+*.safetensors
+*.pdf

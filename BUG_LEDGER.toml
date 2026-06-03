@@ -1,0 +1,1134 @@
+# BUG_LEDGER.toml — autonomous bug-fix pipeline ledger
+#
+# Each [[bug]] encodes one fixable defect surfaced by the E2E test suite.
+# Bugs in DIFFERENT conflict groups touch disjoint sets of source files and can be
+# fixed in parallel by dedicated Claude Code instances. Bugs in the SAME group
+# serialize.
+#
+# Generated: 2026-06-03
+# Baseline:   to be captured (run ./test/run.sh first)
+# Excludes:   Stripe-dependent, SMTP-dependent, Backblaze B2-dependent bugs
+
+[meta]
+generated = "2026-06-03"
+gate_command = "just ci"
+e2e_command = "./test/run.sh pytest"
+
+# ── Conflict groups ─────────────────────────────────────────────────────────
+# Each group lists the source files its bugs may edit. Two groups that share a
+# file cannot run in the same batch.
+
+[[conflict_group]]
+name = "playwright"
+description = "Test infrastructure only — zero Rust file overlap"
+files = ["test/conftest.py", "test/pyproject.toml"]
+
+[[conflict_group]]
+name = "session_store"
+description = "Session lifecycle: create, validate, revoke, propagate"
+files = ["crates/store/src/session_store.rs"]
+
+[[conflict_group]]
+name = "auth_core"
+description = "Password hashing, validation, registration flow"
+files = ["crates/core/src/auth.rs", "crates/api/src/web/handlers_auth_web.rs"]
+
+[[conflict_group]]
+name = "middleware"
+description = "Axum middleware: auth, rate-limiting, CORS, headers, caching"
+files = ["crates/api/src/middleware.rs"]
+
+[[conflict_group]]
+name = "api_handlers"
+description = "JSON API handlers: tokens, errors, jobs, documents"
+files = [
+    "crates/api/src/handlers/auth.rs",
+    "crates/api/src/handlers/api_tokens.rs",
+    "crates/api/src/handlers/search.rs",
+    "crates/api/src/web/handlers.rs",
+]
+
+[[conflict_group]]
+name = "search_store"
+description = "Hybrid search SQL, vector + keyword, RRF fusion, filtering"
+files = ["crates/store/src/hybrid_search.rs"]
+
+[[conflict_group]]
+name = "search_pipeline"
+description = "Retrieval orchestration, reranker integration, embedder"
+files = [
+    "crates/pipeline/src/retrieval.rs",
+    "crates/llm/src/reranker.rs",
+    "crates/pipeline/src/embedder.rs",
+    "crates/core/src/query.rs",
+]
+
+[[conflict_group]]
+name = "ingest_pipeline"
+description = "IngestPipeline: extract → tag → embed → store orchestration"
+files = [
+    "crates/pipeline/src/ingest.rs",
+    "crates/pipeline/src/chunker.rs",
+    "crates/pipeline/src/document_builder.rs",
+]
+
+[[conflict_group]]
+name = "extract"
+description = "File extractors: text, code, Tika, binary, security"
+files = [
+    "crates/extract/src/text.rs",
+    "crates/extract/src/binary.rs",
+    "crates/extract/src/tika.rs",
+    "crates/extract/src/code.rs",
+    "crates/extract/src/security.rs",
+]
+
+[[conflict_group]]
+name = "scheduler"
+description = "Scheduler slots, health loop, backpressure, capacity"
+files = [
+    "crates/scheduler/src/pool.rs",
+    "crates/scheduler/src/health.rs",
+    "crates/scheduler/src/capacity.rs",
+    "crates/api/src/backpressure.rs",
+]
+
+[[conflict_group]]
+name = "serve_config"
+description = "AppState construction, router wiring, server startup"
+files = [
+    "crates/api/src/commands/serve.rs",
+    "crates/api/src/lib.rs",
+]
+
+[[conflict_group]]
+name = "metrics_defs"
+description = "Prometheus metric definitions and collection"
+files = [
+    "crates/metrics/src/lib.rs",
+    "crates/api/src/metrics_collector.rs",
+    "crates/api/src/degradation_middleware.rs",
+    "crates/core/src/degradation.rs",
+]
+
+[[conflict_group]]
+name = "billing_handlers"
+description = "Billing, account, dashboard handlers + plan enforcement"
+files = [
+    "crates/api/src/web/handlers_account.rs",
+    "crates/api/src/web/handlers_dashboard.rs",
+    "crates/api/src/handlers/billing.rs",
+    "crates/store/src/plan_enforcement.rs",
+]
+
+[[conflict_group]]
+name = "tagger"
+description = "LLM tagger prompt, canonicalization, quality"
+files = [
+    "crates/llm/src/tagger.rs",
+    "crates/pipeline/src/tag_canonicalizer.rs",
+]
+
+[[conflict_group]]
+name = "admin_handlers"
+description = "Admin panel: tenants, users, providers, models, routes"
+files = [
+    "crates/api/src/web/admin_handlers.rs",
+    "crates/api/src/web/admin_routing_handlers.rs",
+]
+
+[[conflict_group]]
+name = "encryption"
+description = "Envelope encryption, blob wrapping, KEK"
+files = [
+    "crates/store/src/blob.rs",
+    "crates/store/src/encrypted_blob.rs",
+]
+
+[[conflict_group]]
+name = "pg_store"
+description = "PgStore — the large DB access layer (serializes all users)"
+files = [
+    "crates/store/src/pg_store.rs",
+    "crates/store/src/admin_queries.rs",
+    "crates/store/src/db_routing.rs",
+]
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BUG ENTRIES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ── Phase 0: Infrastructure (batch 0, parallel with everything) ────────────
+
+[[bug]]
+id = "BUG-INFRA-01"
+description = "Playwright page fixture unavailable — blocks 112 browser tests"
+test_names = ["test_login_page_renders"]
+test_file = "tests/catalog/test_ui_journeys.py"
+touches = ["test/conftest.py", "test/pyproject.toml"]
+conflict_group = "playwright"
+depends_on = []
+severity = "high"
+status = "todo"
+acceptance = "page fixture works; at least test_login_page_renders executes (pass or fail, not error)"
+notes = "pytest-playwright may need install in venv or chromium browser in container. Check conftest.py browser_context_args and ensure headless mode with --no-sandbox."
+
+
+# ── Auth / Sessions ─────────────────────────────────────────────────────────
+
+[[bug]]
+id = "BUG-AUTH-01"
+description = "Password reset does not invalidate existing sessions"
+test_names = ["test_password_reset_invalidates_existing_sessions"]
+test_file = "tests/catalog/test_account_security.py"
+touches = ["crates/store/src/session_store.rs", "crates/api/src/web/handlers_auth_web.rs"]
+conflict_group = "session_store"
+depends_on = []
+severity = "high"
+status = "todo"
+acceptance = "test_password_reset_invalidates_existing_sessions passes"
+notes = "reset_password handler updates only the password hash; must also revoke all sessions for that user. Add a revoke_user_sessions method to PgSessionStore and call it from the reset handler."
+
+[[bug]]
+id = "BUG-AUTH-02"
+description = "No breached/common password check on registration"
+test_names = ["test_common_breached_password_rejected"]
+test_file = "tests/catalog/test_account_security.py"
+touches = ["crates/core/src/auth.rs", "crates/api/src/web/handlers_auth_web.rs"]
+conflict_group = "auth_core"
+depends_on = []
+severity = "medium"
+status = "todo"
+acceptance = "test_common_breached_password_rejected passes"
+notes = "Add a check against a bundled common-password list (top 1000) in the registration and password-reset handlers. The Argon2id hashing already exists in kb-core::auth."
+
+[[bug]]
+id = "BUG-AUTH-03"
+description = "Login brute-force not throttled — no rate limiting on /auth/login"
+test_names = ["test_repeated_failed_logins_are_throttled"]
+test_file = "tests/catalog/test_session_security.py"
+touches = ["crates/api/src/middleware.rs"]
+conflict_group = "middleware"
+depends_on = []
+severity = "high"
+status = "todo"
+acceptance = "test_repeated_failed_logins_are_throttled passes"
+notes = "Add a failed-login rate limiter (e.g., token bucket per IP or per email) returning 429 + Retry-After after N failures in a window. The middleware.rs already has auth middleware; add a rate-limit layer or integrate into the login handler."
+
+[[bug]]
+id = "BUG-AUTH-04"
+description = "Weak password accepted on JSON /auth/register endpoint"
+test_names = ["test_weak_password_rejected_on_register"]
+test_file = "tests/catalog/test_session_security.py"
+touches = ["crates/api/src/handlers/auth.rs", "crates/core/src/auth.rs"]
+conflict_group = "auth_core"
+depends_on = []
+severity = "medium"
+status = "todo"
+acceptance = "test_weak_password_rejected_on_register passes"
+notes = "The web signup form enforces >= 8 chars but the JSON /auth/register handler skips validation. Add password strength check (>= 8 chars, mixed case, digit) to the JSON handler, reusing the logic from the web handler."
+
+[[bug]]
+id = "BUG-AUTH-05"
+description = "email_verified column exists but no handler gates on it"
+test_names = ["test_email_verification_enforced_on_sensitive_action"]
+test_file = "tests/catalog/test_account_security.py"
+touches = ["crates/api/src/middleware.rs"]
+conflict_group = "middleware"
+depends_on = []
+severity = "medium"
+status = "todo"
+acceptance = "test_email_verification_enforced_on_sensitive_action passes"
+notes = "Add middleware or per-handler checks that require email_verified=true before allowing ingest, team invite, and other sensitive actions. The column already exists and is plumbed through. Does not require SMTP — verification tokens can be read from DB."
+
+[[bug]]
+id = "BUG-AUTH-06"
+description = "Danger-zone workspace delete lacks step-up reauthentication"
+test_names = ["test_danger_zone_delete_requires_step_up_reauth"]
+test_file = "tests/catalog/test_account_security.py"
+touches = ["crates/api/src/web/handlers_account.rs"]
+conflict_group = "billing_handlers"
+depends_on = []
+severity = "high"
+status = "todo"
+acceptance = "test_danger_zone_delete_requires_step_up_reauth passes"
+notes = "POST /account/danger/delete requires only CSRF token + slug confirmation. Add a password re-check (step-up auth) before allowing irreversible workspace deletion."
+
+[[bug]]
+id = "BUG-AUTH-07"
+description = "Role change does not propagate to live sessions"
+test_names = ["test_role_change_propagates_to_live_session"]
+test_file = "tests/catalog/test_account_security.py"
+touches = ["crates/store/src/session_store.rs", "crates/api/src/web/handlers_account.rs"]
+conflict_group = "session_store"
+depends_on = ["BUG-AUTH-01"]
+severity = "high"
+status = "todo"
+acceptance = "test_role_change_propagates_to_live_session passes"
+notes = "When an admin changes a user's role, the user's existing session cookie still carries the old role. The session validate function reads role from the cached session row. Fix: revoke sessions on role change, or re-read role from DB on each validation."
+
+[[bug]]
+id = "BUG-AUTH-08"
+description = "/auth/register JSON endpoint may not create new tenants"
+test_names = ["test_register_new_tenant_and_user"]
+test_file = "tests/catalog/test_auth.py"
+touches = ["crates/api/src/handlers/auth.rs"]
+conflict_group = "api_handlers"
+depends_on = []
+severity = "medium"
+status = "todo"
+acceptance = "test_register_new_tenant_and_user passes"
+notes = "POST /auth/register with a new tenant slug should create the tenant + admin user and return 201 with a session cookie. Verify the handler supports tenant creation (may only add users to existing tenants currently)."
+
+[[bug]]
+id = "BUG-AUTH-09"
+description = "Duplicate email registration does not return 409 Conflict"
+test_names = ["test_register_duplicate_email_conflict"]
+test_file = "tests/catalog/test_auth.py"
+touches = ["crates/api/src/handlers/auth.rs"]
+conflict_group = "api_handlers"
+depends_on = []
+severity = "low"
+status = "todo"
+acceptance = "test_register_duplicate_email_conflict passes"
+notes = "Re-registering an existing email in the same tenant should return 409 Conflict. Add a duplicate-email check in the registration handler."
+
+
+# ── API Platform ────────────────────────────────────────────────────────────
+
+[[bug]]
+id = "BUG-API-01"
+description = "API token scopes not enforced — any token grants full access"
+test_names = ["test_api_token_scopes_enforced"]
+test_file = "tests/catalog/test_api_platform.py"
+touches = ["crates/api/src/middleware.rs", "crates/api/src/handlers/api_tokens.rs"]
+conflict_group = "middleware"
+depends_on = []
+severity = "high"
+status = "todo"
+acceptance = "test_api_token_scopes_enforced passes"
+notes = "API tokens have no scope column or enforcement. A token created with scopes=['search'] still grants full account access. Add a scopes column to api_tokens, validate on creation, and enforce in the auth middleware."
+
+[[bug]]
+id = "BUG-API-02"
+description = "API token last_used_at never updated"
+test_names = ["test_api_token_last_used_tracked"]
+test_file = "tests/catalog/test_api_platform.py"
+touches = ["crates/api/src/middleware.rs"]
+conflict_group = "middleware"
+depends_on = []
+severity = "low"
+status = "todo"
+acceptance = "test_api_token_last_used_tracked passes"
+notes = "After a Bearer-authenticated request, the token's last_used_at remains NULL. Update it in the auth middleware when a token is successfully validated."
+
+[[bug]]
+id = "BUG-API-03"
+description = "Bearer token auth not at parity with cookie auth across all /api/* routes"
+test_names = ["test_bearer_token_parity_across_api"]
+test_file = "tests/catalog/test_api_platform.py"
+touches = ["crates/api/src/middleware.rs"]
+conflict_group = "middleware"
+depends_on = []
+severity = "medium"
+status = "todo"
+acceptance = "test_bearer_token_parity_across_api passes"
+notes = "Some /api/* routes accept only cookie auth, rejecting Bearer tokens. Ensure all /api/* routes accept both authentication methods consistently."
+
+[[bug]]
+id = "BUG-API-04"
+description = "No per-token rate limiting"
+test_names = ["test_per_token_rate_limit"]
+test_file = "tests/catalog/test_api_platform.py"
+touches = ["crates/api/src/middleware.rs"]
+conflict_group = "middleware"
+depends_on = ["BUG-AUTH-03"]
+severity = "medium"
+status = "todo"
+acceptance = "test_per_token_rate_limit passes"
+notes = "Rapid requests on a single token never produce 429. Implement per-token rate limiting reading from the token's or plan's rate configuration."
+
+[[bug]]
+id = "BUG-API-05"
+description = "Error response envelope inconsistent across route families"
+test_names = ["test_error_envelope_consistent"]
+test_file = "tests/catalog/test_api_platform.py"
+touches = ["crates/api/src/middleware.rs", "crates/api/src/web/handlers.rs"]
+conflict_group = "api_handlers"
+depends_on = []
+severity = "medium"
+status = "todo"
+acceptance = "test_error_envelope_consistent passes"
+notes = "Error responses use different shapes: some {error, message}, some plain text, some empty. Standardize on {error: string, message: string} for all /api/* error responses, including auth middleware rejections."
+
+[[bug]]
+id = "BUG-API-06"
+description = "No idempotency-key deduplication on ingest"
+test_names = ["test_idempotency_key_dedupes_retry"]
+test_file = "tests/catalog/test_api_platform.py"
+touches = ["crates/api/src/middleware.rs", "crates/pipeline/src/ingest.rs"]
+conflict_group = "ingest_pipeline"
+depends_on = []
+severity = "medium"
+status = "todo"
+acceptance = "test_idempotency_key_dedupes_retry passes"
+notes = "Two identical POST /api/ingest with the same Idempotency-Key header create two documents. Implement idempotency-key tracking (store key → response mapping with TTL) and return the original response on replay."
+
+[[bug]]
+id = "BUG-API-07"
+description = "No CORS policy — preflight returns no Access-Control-Allow-Origin"
+test_names = ["test_api_cors_policy"]
+test_file = "tests/catalog/test_api_platform.py"
+touches = ["crates/api/src/middleware.rs", "crates/api/src/lib.rs"]
+conflict_group = "middleware"
+depends_on = []
+severity = "medium"
+status = "todo"
+acceptance = "test_api_cors_policy passes"
+notes = "OPTIONS preflight to /api/search returns no CORS headers. Add a CORS layer (tower-http::cors) with an explicit allowlist for browser-based API consumers."
+
+[[bug]]
+id = "BUG-API-08"
+description = "Job status response missing document_id link"
+test_names = ["test_job_status_exposes_document_link"]
+test_file = "tests/catalog/test_api_platform.py"
+touches = ["crates/api/src/web/handlers.rs"]
+conflict_group = "api_handlers"
+depends_on = []
+severity = "low"
+status = "todo"
+acceptance = "test_job_status_exposes_document_link passes"
+notes = "GET /api/jobs/{id} returns job status but no document_id. Add document_id to the job status response so clients can link a completed job to its produced document."
+
+[[bug]]
+id = "BUG-API-09"
+description = "Bearer token cannot authenticate /api/search"
+test_names = ["test_bearer_auth_with_token"]
+test_file = "tests/catalog/test_api_tokens.py"
+touches = ["crates/api/src/middleware.rs"]
+conflict_group = "middleware"
+depends_on = []
+severity = "high"
+status = "todo"
+acceptance = "test_bearer_auth_with_token passes"
+notes = "A valid Bearer token is rejected by /api/search. The auth middleware may not be extracting Bearer tokens for this route. Ensure all /api/* routes run the Bearer auth extractor."
+
+
+# ── Search ──────────────────────────────────────────────────────────────────
+
+[[bug]]
+id = "BUG-SRCH-01"
+description = "Basic search round-trip fails — ingested document not found"
+test_names = ["test_search_finds_ingested_document"]
+test_file = "tests/catalog/test_search.py"
+touches = ["crates/store/src/hybrid_search.rs", "crates/pipeline/src/retrieval.rs"]
+conflict_group = "search_store"
+depends_on = []
+severity = "critical"
+status = "todo"
+acceptance = "test_search_finds_ingested_document passes"
+notes = "Searching for unique known content does not return the ingested document. Could be: embedding not completing before search, chunk not indexed, or search SQL missing rows. Investigate end-to-end."
+
+[[bug]]
+id = "BUG-SRCH-02"
+description = "Search ranking wrong — relevant doc not ranked above off-topic doc"
+test_names = ["test_search_ranks_relevant_higher", "test_exact_match_outranks_semantic_only", "test_multiterm_all_terms_doc_ranks_first"]
+test_file = "tests/catalog/test_search.py"
+touches = ["crates/store/src/hybrid_search.rs", "crates/pipeline/src/retrieval.rs", "crates/core/src/query.rs"]
+conflict_group = "search_pipeline"
+depends_on = ["BUG-SRCH-01"]
+severity = "high"
+status = "todo"
+acceptance = "test_search_ranks_relevant_higher, test_exact_match_outranks_semantic_only, and test_multiterm_all_terms_doc_ranks_first pass"
+notes = "Multiple ranking failures: exact phrase match does not outrank semantic-only, all-terms doc doesn't rank above subset doc, and topic relevance doesn't drive ordering. Fix RRF fusion weights, keyword scoring, or reranker integration."
+
+[[bug]]
+id = "BUG-SRCH-03"
+description = "Search kind/tag/limit filter parameters not enforced"
+test_names = ["test_search_kind_filter", "test_search_tag_filter", "test_search_limit_param"]
+test_file = "tests/catalog/test_search.py"
+touches = ["crates/store/src/hybrid_search.rs"]
+conflict_group = "search_store"
+depends_on = ["BUG-SRCH-01"]
+severity = "medium"
+status = "todo"
+acceptance = "test_search_kind_filter, test_search_tag_filter, and test_search_limit_param pass"
+notes = "The kind, tag, and limit query parameters are parsed but not correctly applied in the SQL query or post-processing. Fix the filtering/limiting logic in hybrid_search.rs."
+
+[[bug]]
+id = "BUG-SRCH-04"
+description = "Empty search query returns 400 instead of empty results"
+test_names = ["test_search_empty_query"]
+test_file = "tests/catalog/test_search.py"
+touches = ["crates/api/src/handlers/search.rs"]
+conflict_group = "api_handlers"
+depends_on = []
+severity = "low"
+status = "todo"
+acceptance = "test_search_empty_query passes"
+notes = "An empty q= parameter returns 400. Should return 200 with empty results for usability. Fix the search handler to treat empty query as a no-match rather than a client error."
+
+[[bug]]
+id = "BUG-SRCH-05"
+description = "Search hits missing file_id/page_no for deep-link provenance"
+test_names = ["test_search_deeplink_page_provenance"]
+test_file = "tests/catalog/test_search.py"
+touches = ["crates/store/src/hybrid_search.rs", "crates/core/src/query.rs"]
+conflict_group = "search_store"
+depends_on = ["BUG-SRCH-01"]
+severity = "medium"
+status = "todo"
+acceptance = "test_search_deeplink_page_provenance passes"
+notes = "Hit schema is missing file_id and page_no fields. Add these to the Hit/ChunkHit types and populate them from the hybrid search SQL row."
+
+[[bug]]
+id = "BUG-SRCH-06"
+description = "Reranker not producing distinct scores or wrong ordering"
+test_names = ["test_search_rerank_changes_order"]
+test_file = "tests/catalog/test_search.py"
+touches = ["crates/llm/src/reranker.rs", "crates/pipeline/src/retrieval.rs"]
+conflict_group = "search_pipeline"
+depends_on = ["BUG-SRCH-01"]
+severity = "medium"
+status = "todo"
+acceptance = "test_search_rerank_changes_order passes"
+notes = "All hits have identical scores, or scores are not descending. Verify the reranker is receiving the correct candidate list and the cross-encoder scores are being applied to the final ordering."
+
+[[bug]]
+id = "BUG-SRCH-07"
+description = "Document detail endpoint missing required fields"
+test_names = ["test_document_detail_returns_files_and_tags"]
+test_file = "tests/catalog/test_search.py"
+touches = ["crates/api/src/web/handlers.rs", "crates/store/src/pg_store.rs"]
+conflict_group = "pg_store"
+depends_on = []
+severity = "medium"
+status = "todo"
+acceptance = "test_document_detail_returns_files_and_tags passes"
+notes = "GET /api/documents/{id} is missing title, summary, kind, files, tags, meta, page_count, status, or created_at. Ensure the handler returns all documented fields with correct nested structures."
+
+[[bug]]
+id = "BUG-SRCH-08"
+description = "File download does not return 302 redirect to presigned URL"
+test_names = ["test_file_download_redirects_presigned"]
+test_file = "tests/catalog/test_search.py"
+touches = ["crates/api/src/web/handlers.rs"]
+conflict_group = "api_handlers"
+depends_on = []
+severity = "medium"
+status = "todo"
+acceptance = "test_file_download_redirects_presigned passes"
+notes = "GET /api/documents/{id}/file/{file_id} does not return 302 with Location + Content-Disposition. Fix the file download handler to generate a presigned URL and redirect."
+
+[[bug]]
+id = "BUG-SRCH-09"
+description = "Paraphrased query fails to retrieve relevant document"
+test_names = ["test_paraphrased_query_retrieves_relevant_doc"]
+test_file = "tests/catalog/test_search_quality.py"
+touches = ["crates/pipeline/src/embedder.rs", "crates/pipeline/src/retrieval.rs"]
+conflict_group = "search_pipeline"
+depends_on = ["BUG-SRCH-01"]
+severity = "high"
+status = "todo"
+acceptance = "test_paraphrased_query_retrieves_relevant_doc passes"
+notes = "A semantically-paraphrased query with zero keyword overlap fails to retrieve the target document. Embedding model may not be running, or the vector search may not be correctly weighted in RRF fusion."
+
+[[bug]]
+id = "BUG-SRCH-10"
+description = "Cross-lingual retrieval fails — English query doesn't find French doc"
+test_names = ["test_multilingual_query_retrieves_same_topic_doc"]
+test_file = "tests/catalog/test_search_quality.py"
+touches = ["crates/pipeline/src/embedder.rs"]
+conflict_group = "search_pipeline"
+depends_on = ["BUG-SRCH-09"]
+severity = "medium"
+status = "todo"
+acceptance = "test_multilingual_query_retrieves_same_topic_doc passes"
+notes = "The bge-m3 embedding model supports multilingual retrieval. Verify the embedder is using the correct model and that the vector index is correctly configured for cross-lingual search."
+
+
+# ── Ingest / Extraction ─────────────────────────────────────────────────────
+
+[[bug]]
+id = "BUG-INGEST-01"
+description = "Provenance points at wrong source page for multi-page documents"
+test_names = ["test_provenance_cited_location_contains_match"]
+test_file = "tests/catalog/test_kb_correctness.py"
+touches = ["crates/pipeline/src/chunker.rs", "crates/pipeline/src/ingest.rs"]
+conflict_group = "ingest_pipeline"
+depends_on = []
+severity = "medium"
+status = "todo"
+acceptance = "test_provenance_cited_location_contains_match passes"
+notes = "For multi-page docs, the winning hit's file_id/page_no doesn't point at the correct page. Fix chunk metadata to track original page/position and propagate through retrieval."
+
+[[bug]]
+id = "BUG-INGEST-02"
+description = "Dedup collision orphans documents — same bytes, different name"
+test_names = ["test_dedup_collision_does_not_orphan_document"]
+test_file = "tests/catalog/test_kb_correctness.py"
+touches = ["crates/pipeline/src/ingest.rs", "crates/store/src/pg_store.rs"]
+conflict_group = "pg_store"
+depends_on = []
+severity = "high"
+status = "todo"
+acceptance = "test_dedup_collision_does_not_orphan_document passes"
+notes = "Uploading identical bytes under a new filename repoints the (tenant, sha256) file row to the new document, orphaning the first. Fix the ON CONFLICT handler to not reassign — either copy the row or include document_id in the unique constraint."
+
+[[bug]]
+id = "BUG-INGEST-03"
+description = "CSV file content not extracted or searchable"
+test_names = ["test_csv_content_is_searchable"]
+test_file = "tests/catalog/test_kb_correctness.py"
+touches = ["crates/extract/src/text.rs"]
+conflict_group = "extract"
+depends_on = []
+severity = "medium"
+status = "todo"
+acceptance = "test_csv_content_is_searchable passes"
+notes = "CSV cell text is not extracted. The text extractor may not handle text/csv MIME type. Add CSV parsing to the text extraction module."
+
+[[bug]]
+id = "BUG-INGEST-04"
+description = "Markdown and HTML content not extracted or searchable"
+test_names = ["test_markdown_html_content_is_searchable"]
+test_file = "tests/catalog/test_kb_correctness.py"
+touches = ["crates/extract/src/text.rs"]
+conflict_group = "extract"
+depends_on = []
+severity = "medium"
+status = "todo"
+acceptance = "test_markdown_html_content_is_searchable passes"
+notes = "Markdown (.md) and HTML (.html) uploads don't have text extracted. The text extractor should strip markdown/html markup and extract plain text. text/markdown and text/html MIME types may not be recognized."
+
+[[bug]]
+id = "BUG-INGEST-05"
+description = "Office formats (.docx, .xlsx) not searchable — Tika extraction gap"
+test_names = ["test_office_formats_are_searchable"]
+test_file = "tests/catalog/test_kb_correctness.py"
+touches = ["crates/extract/src/tika.rs", "crates/extract/src/binary.rs"]
+conflict_group = "extract"
+depends_on = []
+severity = "medium"
+status = "todo"
+acceptance = "test_office_formats_are_searchable passes"
+notes = ".docx and .xlsx content is not searchable. The Tika extraction path may not be invoked for these formats, or Tika may not be running/configured. Verify the Apache Tika integration extracts Office Open XML formats."
+
+[[bug]]
+id = "BUG-INGEST-06"
+description = "Zero-byte file upload not cleanly rejected with 400"
+test_names = ["test_zero_byte_file_rejected"]
+test_file = "tests/catalog/test_kb_correctness.py"
+touches = ["crates/extract/src/binary.rs", "crates/pipeline/src/ingest.rs"]
+conflict_group = "extract"
+depends_on = []
+severity = "low"
+status = "todo"
+acceptance = "test_zero_byte_file_rejected passes"
+notes = "Uploading a 0-byte file doesn't return a clean 400. Add a zero-byte check early in the ingest pipeline with a clear error message."
+
+[[bug]]
+id = "BUG-INGEST-07"
+description = "MIME/magic byte mismatch not rejected"
+test_names = ["test_mime_magic_mismatch_rejected"]
+test_file = "tests/catalog/test_kb_correctness.py"
+touches = ["crates/extract/src/binary.rs"]
+conflict_group = "extract"
+depends_on = []
+severity = "low"
+status = "todo"
+acceptance = "test_mime_magic_mismatch_rejected passes"
+notes = "A file named .txt whose magic bytes are ELF is not rejected. Add magic-byte validation in the binary extractor that compares declared MIME/extension against detected magic bytes."
+
+[[bug]]
+id = "BUG-INGEST-08"
+description = "Path-traversal filenames not sanitized (e.g. ../../etc/passwd)"
+test_names = ["test_path_traversal_filename_neutralized"]
+test_file = "tests/catalog/test_input_validation.py"
+touches = ["crates/pipeline/src/ingest.rs"]
+conflict_group = "ingest_pipeline"
+depends_on = []
+severity = "high"
+status = "todo"
+acceptance = "test_path_traversal_filename_neutralized passes"
+notes = "A filename like ../../../../etc/passwd causes a server error or stores the traversal path. Sanitize filenames on ingest: strip leading ../, remove path separators, keep only the basename."
+
+[[bug]]
+id = "BUG-INGEST-09"
+description = "Unicode, emoji, and RTL content corrupted in round-trip"
+test_names = ["test_unicode_and_emoji_content_roundtrips"]
+test_file = "tests/catalog/test_input_validation.py"
+touches = ["crates/extract/src/text.rs"]
+conflict_group = "extract"
+depends_on = []
+severity = "medium"
+status = "todo"
+acceptance = "test_unicode_and_emoji_content_roundtrips passes"
+notes = "Unicode, emoji, and RTL content does not survive ingest→search intact. Check encoding handling in the text extraction and storage pipeline. Ensure UTF-8 is used throughout."
+
+[[bug]]
+id = "BUG-INGEST-10"
+description = "Oversized user_note field causes 500 instead of clean 4xx"
+test_names = ["test_oversized_note_field_bounded"]
+test_file = "tests/catalog/test_input_validation.py"
+touches = ["crates/pipeline/src/ingest.rs", "crates/api/src/web/handlers.rs"]
+conflict_group = "ingest_pipeline"
+depends_on = []
+severity = "high"
+status = "todo"
+acceptance = "test_oversized_note_field_bounded passes"
+notes = "A ~5 MB user_note causes a 500 (likely forwarded to the LLM tagger which crashes). Add a size limit on the user_note field (e.g., 10 KB) and return 400 if exceeded, before it reaches the tagger."
+
+[[bug]]
+id = "BUG-INGEST-11"
+description = "NUL bytes and control characters in content cause 500"
+test_names = ["test_null_bytes_and_control_chars_handled"]
+test_file = "tests/catalog/test_input_validation.py"
+touches = ["crates/extract/src/text.rs", "crates/pipeline/src/ingest.rs"]
+conflict_group = "extract"
+depends_on = []
+severity = "high"
+status = "todo"
+acceptance = "test_null_bytes_and_control_chars_handled passes"
+notes = "Content with NUL (\\x00) and C0 control characters causes a 500. Sanitize or reject content with null bytes; strip or replace control characters before processing."
+
+[[bug]]
+id = "BUG-INGEST-12"
+description = "SQL-injection-like search payloads cause non-200 responses"
+test_names = ["test_sql_injection_like_search_is_safe"]
+test_file = "tests/catalog/test_input_validation.py"
+touches = ["crates/store/src/hybrid_search.rs"]
+conflict_group = "search_store"
+depends_on = []
+severity = "high"
+status = "todo"
+acceptance = "test_sql_injection_like_search_is_safe passes"
+notes = "Search payloads like ' OR '1'='1 or '; DROP TABLE documents;-- cause non-200 responses. Ensure all user input in search queries is treated as literal text via parameterized queries ($1, $2, etc.)."
+
+
+# ── Scheduler / Backpressure ────────────────────────────────────────────────
+
+[[bug]]
+id = "BUG-SCHED-01"
+description = "Ingest backpressure not enforced — InflightLimiter has zero call sites"
+test_names = ["test_backpressure_saturates_and_drains", "test_extreme_burst_is_throttled_not_lost"]
+test_file = "tests/catalog/test_scheduler_load.py"
+touches = ["crates/api/src/backpressure.rs", "crates/api/src/commands/serve.rs", "crates/pipeline/src/ingest.rs"]
+conflict_group = "serve_config"
+depends_on = []
+severity = "critical"
+status = "todo"
+acceptance = "test_backpressure_saturates_and_drains and test_extreme_burst_is_throttled_not_lost pass"
+notes = "InflightLimiter is built in AppState but try_acquire() is never called. Wire it into the ingest handler: acquire a slot before processing, return 429 if at capacity. Also wire kb_ingest_throttled_total increment on rejection."
+
+[[bug]]
+id = "BUG-SCHED-02"
+description = "Backends marked unhealthy under normal load"
+test_names = ["test_backends_stay_healthy_under_load"]
+test_file = "tests/catalog/test_scheduler_load.py"
+touches = ["crates/scheduler/src/health.rs", "crates/scheduler/src/pool.rs"]
+conflict_group = "scheduler"
+depends_on = ["BUG-SCHED-01"]
+severity = "medium"
+status = "todo"
+acceptance = "test_backends_stay_healthy_under_load passes"
+notes = "Under heavy-but-healthy load, backends are marked unhealthy or circuit breakers open. Normal load should not trip the breaker. Investigate health-check timeout or circuit-breaker threshold configuration."
+
+
+# ── Billing (non-Stripe) ────────────────────────────────────────────────────
+
+[[bug]]
+id = "BUG-BILL-01"
+description = "Plan per-minute rate caps not enforced — no middleware reads rate_caps"
+test_names = ["test_plan_rate_cap_enforced"]
+test_file = "tests/catalog/test_billing_enterprise.py"
+touches = ["crates/api/src/middleware.rs", "crates/store/src/plan_enforcement.rs"]
+conflict_group = "middleware"
+depends_on = ["BUG-AUTH-03"]
+severity = "high"
+status = "todo"
+acceptance = "test_plan_rate_cap_enforced passes"
+notes = "rate_caps is seeded per plan but no middleware reads it. Bursting 120 requests past the free 5/min cap produces zero 429s. Add rate-limit middleware that reads the tenant's plan rate_caps and enforces them."
+
+[[bug]]
+id = "BUG-BILL-02"
+description = "Seat limit exceeded shows opaque 500 instead of 4xx upgrade prompt"
+test_names = ["test_seat_limit_exceeded_shows_upgrade_not_500"]
+test_file = "tests/catalog/test_billing_enterprise.py"
+touches = ["crates/api/src/web/handlers_account.rs"]
+conflict_group = "billing_handlers"
+depends_on = []
+severity = "high"
+status = "todo"
+acceptance = "test_seat_limit_exceeded_shows_upgrade_not_500 passes"
+notes = "check_tenant_max_users is enforced but account_invite_user maps the error to a generic 500. Catch the seat-limit error and return a clear 4xx with upgrade/upsell messaging."
+
+[[bug]]
+id = "BUG-BILL-03"
+description = "Dashboard token usage display may not match recorded usage_events"
+test_names = ["test_usage_metering_matches_actual_consumption"]
+test_file = "tests/catalog/test_billing_enterprise.py"
+touches = ["crates/api/src/web/handlers_dashboard.rs", "crates/store/src/dashboard.rs"]
+conflict_group = "billing_handlers"
+depends_on = []
+severity = "medium"
+status = "todo"
+acceptance = "test_usage_metering_matches_actual_consumption passes"
+notes = "The displayed monthly token usage may diverge from actual usage_events total. Both come from the same query but the display path may use format_bytes rounding differently. Ensure consistency."
+
+[[bug]]
+id = "BUG-BILL-04"
+description = "Stripe webhook with forged signature not rejected"
+test_names = ["test_webhook_invalid_signature_rejected"]
+test_file = "tests/catalog/test_billing.py"
+touches = ["crates/api/src/handlers/webhook.rs"]
+conflict_group = "billing_handlers"
+depends_on = []
+severity = "high"
+status = "todo"
+acceptance = "test_webhook_invalid_signature_rejected passes"
+notes = "POST /stripe/webhook with an invalid signature does not return 400. The signature verification may not be implemented. Does NOT require a real Stripe key — only that forged signatures are rejected."
+
+
+# ── Observability ───────────────────────────────────────────────────────────
+
+[[bug]]
+id = "BUG-OBS-01"
+description = "/health endpoint missing required fields and degradation block"
+test_names = ["test_health_ok_when_ready", "test_health_reports_degradation", "test_health_503_when_no_backend"]
+test_file = "tests/catalog/test_observability.py"
+touches = ["crates/api/src/degradation_middleware.rs", "crates/core/src/degradation.rs"]
+conflict_group = "metrics_defs"
+depends_on = []
+severity = "medium"
+status = "todo"
+acceptance = "test_health_ok_when_ready and test_health_reports_degradation pass"
+notes = "/health is missing status, database, migrations, backends, and degradation fields. Add the full health contract with degradation.ok and degradation.subsystems to the response."
+
+[[bug]]
+id = "BUG-OBS-02"
+description = "No separate liveness probe — /health conflates liveness and readiness"
+test_names = ["test_liveness_independent_of_readiness"]
+test_file = "tests/catalog/test_reliability_ops.py"
+touches = ["crates/api/src/lib.rs", "crates/api/src/commands/serve.rs"]
+conflict_group = "serve_config"
+depends_on = []
+severity = "medium"
+status = "todo"
+acceptance = "test_liveness_independent_of_readiness passes"
+notes = "/health returns 503 when backends are degraded. k8s liveness probe on it would restart-loop during a transient backend outage. Add a separate /live endpoint that only checks process-alive, no dependency checks."
+
+[[bug]]
+id = "BUG-OBS-03"
+description = "Backup/DR metric families absent from /metrics"
+test_names = ["test_backup_and_dr_metrics_exposed"]
+test_file = "tests/catalog/test_reliability_ops.py"
+touches = ["crates/metrics/src/lib.rs"]
+conflict_group = "metrics_defs"
+depends_on = []
+severity = "low"
+status = "todo"
+acceptance = "test_backup_and_dr_metrics_exposed passes"
+notes = "kb_backup_stale, kb_backup_age_hours, kb_restore_test_success, etc. are absent. Either emit these metrics from the backup/DR components or register them at startup so they appear (even if zero)."
+
+[[bug]]
+id = "BUG-OBS-04"
+description = "Circuit breaker metric has HELP/TYPE but zero data lines"
+test_names = ["test_circuit_breaker_metric_wired"]
+test_file = "tests/catalog/test_reliability_ops.py"
+touches = ["crates/metrics/src/lib.rs", "crates/llm/src/client.rs"]
+conflict_group = "metrics_defs"
+depends_on = []
+severity = "medium"
+status = "todo"
+acceptance = "test_circuit_breaker_metric_wired passes"
+notes = "kb_circuit_breaker_open gauge is defined but record_circuit_breaker has no production callers. Wire the metric recording into the actual circuit-breaker state transitions in the LLM client."
+
+[[bug]]
+id = "BUG-OBS-05"
+description = "No HTTP RED metrics (rate/error/duration) per route"
+test_names = ["test_http_red_metrics_present"]
+test_file = "tests/catalog/test_reliability_ops.py"
+touches = ["crates/metrics/src/lib.rs", "crates/api/src/middleware.rs"]
+conflict_group = "metrics_defs"
+depends_on = []
+severity = "medium"
+status = "todo"
+acceptance = "test_http_red_metrics_present passes"
+notes = "No per-route HTTP request count, error count, or latency metrics on /metrics. Add an HTTP metrics middleware that records these with route, method, and status labels."
+
+[[bug]]
+id = "BUG-OBS-06"
+description = "Required Prometheus metric families absent from /metrics"
+test_names = ["test_metrics_families_present"]
+test_file = "tests/catalog/test_observability.py"
+touches = ["crates/metrics/src/lib.rs", "crates/api/src/metrics_collector.rs"]
+conflict_group = "metrics_defs"
+depends_on = ["BUG-OBS-03", "BUG-OBS-04", "BUG-OBS-05"]
+severity = "medium"
+status = "todo"
+acceptance = "test_metrics_families_present passes"
+notes = "kb_backend_healthy, kb_backend_free_slots, kb_backend_total_slots, kb_backend_in_flight, kb_requests_total, kb_storage_bytes_used, kb_queue_depth are absent. Ensure the metrics collector registers and emits these families."
+
+[[bug]]
+id = "BUG-OBS-07"
+description = "No Cache-Control on authenticated HTML pages — shared-cache leak risk"
+test_names = ["test_authenticated_html_not_shared_cacheable"]
+test_file = "tests/catalog/test_security_headers.py"
+touches = ["crates/api/src/middleware.rs"]
+conflict_group = "middleware"
+depends_on = []
+severity = "high"
+status = "todo"
+acceptance = "test_authenticated_html_not_shared_cacheable passes"
+notes = "Authenticated pages (/account, /dashboard) have no Cache-Control header. A shared proxy could cache private tenant data. Add Cache-Control: private, no-store to all authenticated HTML responses."
+
+
+# ── Tagging Quality ─────────────────────────────────────────────────────────
+
+[[bug]]
+id = "BUG-TAG-01"
+description = "Generated tags not relevant to document content"
+test_names = ["test_tags_are_relevant"]
+test_file = "tests/catalog/test_tagging.py"
+touches = ["crates/llm/src/tagger.rs"]
+conflict_group = "tagger"
+depends_on = []
+severity = "medium"
+status = "todo"
+acceptance = "test_tags_are_relevant passes (judge verdict)"
+notes = "LLM-generated tags don't match document content. Improve the tagger prompt with better instructions, examples, and constraints. This is a prompt engineering task."
+
+[[bug]]
+id = "BUG-TAG-02"
+description = "Generated summary not faithful to document"
+test_names = ["test_summary_is_faithful"]
+test_file = "tests/catalog/test_tagging.py"
+touches = ["crates/llm/src/tagger.rs"]
+conflict_group = "tagger"
+depends_on = ["BUG-TAG-01"]
+severity = "medium"
+status = "todo"
+acceptance = "test_summary_is_faithful passes (judge verdict)"
+notes = "The summary doesn't faithfully represent the document. Adjust the tagger prompt to generate more accurate, grounded summaries."
+
+[[bug]]
+id = "BUG-TAG-03"
+description = "Generated title not descriptive"
+test_names = ["test_title_is_descriptive"]
+test_file = "tests/catalog/test_tagging.py"
+touches = ["crates/llm/src/tagger.rs"]
+conflict_group = "tagger"
+depends_on = ["BUG-TAG-01"]
+severity = "low"
+status = "todo"
+acceptance = "test_title_is_descriptive passes (judge verdict)"
+notes = "The title is not descriptive of the document content. Improve the title generation in the tagger prompt."
+
+[[bug]]
+id = "BUG-TAG-04"
+description = "Tags contain near-duplicates that should be canonicalized"
+test_names = ["test_tags_canonicalized_no_near_duplicates"]
+test_file = "tests/catalog/test_tagging.py"
+touches = ["crates/pipeline/src/tag_canonicalizer.rs"]
+conflict_group = "tagger"
+depends_on = []
+severity = "medium"
+status = "todo"
+acceptance = "test_tags_canonicalized_no_near_duplicates passes"
+notes = "Tags contain near-duplicates (e.g. 'machine-learning' and 'machine learning'). The canonicalizer should merge variants using lowercase, whitespace normalization, and stemming."
+
+[[bug]]
+id = "BUG-TAG-05"
+description = "Prompt injection in user_note not contained by tagger"
+test_names = ["test_prompt_injection_in_note_is_contained"]
+test_file = "tests/catalog/test_tagging.py"
+touches = ["crates/llm/src/tagger.rs"]
+conflict_group = "tagger"
+depends_on = ["BUG-TAG-01"]
+severity = "high"
+status = "todo"
+acceptance = "test_prompt_injection_in_note_is_contained passes"
+notes = "Prompt injection attempts in user_note (e.g. 'Ignore previous instructions') influence tagger output. Add input sanitization, clear instruction boundaries, and output validation."
+
+[[bug]]
+id = "BUG-TAG-06"
+description = "Tag count outside expected bounds (too many or too few)"
+test_names = ["test_tag_count_within_bounds"]
+test_file = "tests/catalog/test_tagging.py"
+touches = ["crates/llm/src/tagger.rs"]
+conflict_group = "tagger"
+depends_on = ["BUG-TAG-01"]
+severity = "low"
+status = "todo"
+acceptance = "test_tag_count_within_bounds passes"
+notes = "Too many or too few tags generated. The tagger schema should enforce minItems=0, maxItems=20 with a steering prompt to produce a reasonable count."
+
+
+# ── Cross-Tenant Isolation ──────────────────────────────────────────────────
+
+[[bug]]
+id = "BUG-ISOL-01"
+description = "Tenant Owner treated as platform super-admin — sees all tenants"
+test_names = ["test_owner_is_not_platform_super_admin"]
+test_file = "tests/catalog/test_tenant_isolation_deep.py"
+touches = ["crates/api/src/web/admin_handlers.rs", "crates/store/src/admin_queries.rs"]
+conflict_group = "admin_handlers"
+depends_on = []
+severity = "critical"
+status = "todo"
+acceptance = "test_owner_is_not_platform_super_admin passes"
+notes = "An Owner role is matched as super-admin (is_super = matches!(role, Owner)), granting access to /admin/tenants listing all tenants. Fix: restrict /admin/tenants to a true platform-admin role, or scope the query to the user's own tenant."
+
+[[bug]]
+id = "BUG-ISOL-02"
+description = "Provider/model/route infra globally editable by any tenant admin"
+test_names = ["test_cross_tenant_provider_mutation_forbidden"]
+test_file = "tests/catalog/test_tenant_isolation_deep.py"
+touches = ["crates/api/src/web/admin_routing_handlers.rs", "crates/store/src/pg_store.rs"]
+conflict_group = "pg_store"
+depends_on = ["BUG-ISOL-01"]
+severity = "critical"
+status = "todo"
+acceptance = "test_cross_tenant_provider_mutation_forbidden passes"
+notes = "providers/models tables have no tenant_id column — global infra. Any tenant admin can toggle/edit any provider. Fix: either add tenant_id scoping or restrict provider CRUD to platform-admin only."
+
+[[bug]]
+id = "BUG-ISOL-03"
+description = "Routes forgeable with cross-tenant tenant_id"
+test_names = ["test_cross_tenant_route_creation_forbidden"]
+test_file = "tests/catalog/test_tenant_isolation_deep.py"
+touches = ["crates/api/src/web/admin_routing_handlers.rs"]
+conflict_group = "admin_handlers"
+depends_on = ["BUG-ISOL-01"]
+severity = "critical"
+status = "todo"
+acceptance = "test_cross_tenant_route_creation_forbidden passes"
+notes = "POST /admin/routes accepts a tenant_id field that can be forged to another tenant's slug. Fix: ignore the client-supplied tenant_id and force it to the authenticated user's tenant."
+
+
+# ── Encryption ──────────────────────────────────────────────────────────────
+
+[[bug]]
+id = "BUG-ENCR-01"
+description = "Blobs not encrypted at rest — envelope encryption not active"
+test_names = ["test_blob_encrypted_at_rest"]
+test_file = "tests/catalog/test_encryption.py"
+touches = ["crates/store/src/blob.rs", "crates/store/src/encrypted_blob.rs"]
+conflict_group = "encryption"
+depends_on = []
+severity = "high"
+status = "todo"
+acceptance = "test_blob_encrypted_at_rest passes"
+notes = "File download returns a presigned URL directly, meaning blobs are stored in plaintext. Enable the EncryptedBlob wrapper so blobs are encrypted with a data key before storage, and decrypted on read."
+
+
+# ── RBAC Enforcement ────────────────────────────────────────────────────────
+
+[[bug]]
+id = "BUG-RBAC-01"
+description = "Last owner can be demoted — no guard prevents zero-owner tenant"
+test_names = ["test_admin_role_endpoint_cannot_demote_last_owner"]
+test_file = "tests/catalog/test_rbac.py"
+touches = ["crates/api/src/web/admin_handlers.rs"]
+conflict_group = "admin_handlers"
+depends_on = []
+severity = "high"
+status = "todo"
+acceptance = "test_admin_role_endpoint_cannot_demote_last_owner passes"
+notes = "/admin/users/role lacks the last-owner guard. An admin could demote the sole Owner, leaving the tenant with zero owners (lockout). Add a check: before demotion, verify at least one other Owner exists."
+
+[[bug]]
+id = "BUG-RBAC-02"
+description = "Owner can self-demote via admin endpoint — self-lockout"
+test_names = ["test_admin_role_endpoint_cannot_self_demote"]
+test_file = "tests/catalog/test_rbac.py"
+touches = ["crates/api/src/web/admin_handlers.rs"]
+conflict_group = "admin_handlers"
+depends_on = ["BUG-RBAC-01"]
+severity = "high"
+status = "todo"
+acceptance = "test_admin_role_endpoint_cannot_self_demote passes"
+notes = "An Owner can demote themselves via /admin/users/role. Add a self-demotion guard: reject if the target user_id equals the authenticated user's id."
+
+[[bug]]
+id = "BUG-RBAC-03"
+description = "Admin-role user can grant Owner role — privilege escalation"
+test_names = ["test_admin_cannot_grant_owner_role"]
+test_file = "tests/catalog/test_rbac.py"
+touches = ["crates/api/src/web/admin_handlers.rs", "crates/api/src/web/handlers_account.rs"]
+conflict_group = "admin_handlers"
+depends_on = ["BUG-RBAC-01"]
+severity = "high"
+status = "todo"
+acceptance = "test_admin_cannot_grant_owner_role passes"
+notes = "An admin-role user can create a new Owner via invite or role change. Cap the grantable role to the acting user's role: admin cannot grant Owner."
+
+[[bug]]
+id = "BUG-RBAC-04"
+description = "Member can self-promote via forged POST to team endpoints"
+test_names = ["test_member_cannot_self_promote_via_team_endpoint", "test_member_cannot_self_promote_via_admin_endpoint"]
+test_file = "tests/catalog/test_rbac.py"
+touches = ["crates/api/src/web/handlers_account.rs", "crates/api/src/web/admin_handlers.rs"]
+conflict_group = "admin_handlers"
+depends_on = ["BUG-RBAC-01"]
+severity = "high"
+status = "todo"
+acceptance = "test_member_cannot_self_promote_via_team_endpoint and test_member_cannot_self_promote_via_admin_endpoint pass"
+notes = "A member can self-promote to admin by forging a POST to /account/team/role or /admin/users/role. Add server-side role validation: only Owner/Admin can change roles, and cannot promote beyond their own role."
+
+[[bug]]
+id = "BUG-RBAC-05"
+description = "Admin-role users can access owner-only pages (/admin/tenants)"
+test_names = ["test_owner_only_pages_deny_admin_role"]
+test_file = "tests/catalog/test_rbac.py"
+touches = ["crates/api/src/web/admin_handlers.rs"]
+conflict_group = "admin_handlers"
+depends_on = ["BUG-ISOL-01"]
+severity = "medium"
+status = "todo"
+acceptance = "test_owner_only_pages_deny_admin_role passes"
+notes = "Admin-role users can access /admin/tenants (should be owner-only). Add proper role-based authorization checks on admin routes."
+
+[[bug]]
+id = "BUG-RBAC-06"
+description = "Team mutations not enforced server-side for member role"
+test_names = ["test_team_mutations_enforced_server_side_for_member"]
+test_file = "tests/catalog/test_rbac.py"
+touches = ["crates/api/src/web/handlers_account.rs"]
+conflict_group = "billing_handlers"
+depends_on = []
+severity = "medium"
+status = "todo"
+acceptance = "test_team_mutations_enforced_server_side_for_member passes"
+notes = "Members can forge team management POSTs (invite, remove). Add server-side role checks: only Owner/Admin can manage team members."
+
+[[bug]]
+id = "BUG-RBAC-07"
+description = "Admin/team actions not writing audit events"
+test_names = ["test_privileged_action_writes_audit_event", "test_team_self_service_actions_are_audited"]
+test_file = "tests/catalog/test_rbac.py"
+touches = ["crates/api/src/web/admin_handlers.rs", "crates/api/src/web/handlers_account.rs"]
+conflict_group = "admin_handlers"
+depends_on = ["BUG-RBAC-01"]
+severity = "medium"
+status = "todo"
+acceptance = "test_privileged_action_writes_audit_event and test_team_self_service_actions_are_audited pass"
+notes = "Role changes, invites, and other admin/team actions don't write audit events. Add audit logging (decrypt_audit store) to these handlers."
+
+
+# ── Upgrade Journey ─────────────────────────────────────────────────────────
+
+[[bug]]
+id = "BUG-UPGR-01"
+description = "Upgrade CTA is a dead GET link — /billing/checkout is POST-only (405)"
+test_names = ["test_upgrade_cta_starts_checkout_not_405"]
+test_file = "tests/catalog/test_upgrade_journey.py"
+touches = ["crates/api/src/web/handlers_account.rs", "crates/api/src/handlers/billing.rs"]
+conflict_group = "billing_handlers"
+depends_on = []
+severity = "critical"
+status = "todo"
+acceptance = "test_upgrade_cta_starts_checkout_not_405 passes"
+notes = "The Upgrade button is <a href='/billing/checkout?plan=pro'> but the route is POST-only → GET returns 405. Fix: accept GET on /billing/checkout?plan=... and redirect to Stripe Checkout, or change the CTA to a form/POST button. Does NOT require Stripe to be configured — the routing fix alone makes the button not-405."

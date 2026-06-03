@@ -1,0 +1,121 @@
+# test/compose.e2e.yaml — E2E model-stack overlay, layered on ../compose.yaml.
+#
+# The repo's compose.yaml ships a single placeholder `llama-server` (profile gpu)
+# that pretends one process serves every role. A real run of ./models needs one
+# llama.cpp server per role, so this overlay adds dedicated instances — each on
+# its OWN distinct port (internal bind + host mapping) — and wires the app to
+# them through ./test/config.e2e.toml. The base gpu-profile services stay down
+# (we never pass --profile gpu); these new services have no profile, so they
+# always start when the overlay is included.
+#
+#   Service        internal+host port   role(s)
+#   llama-text     8090                 text, vision, code  (Qwen3-VL + mmproj)
+#   llama-embed    8091                 embed               (bge-m3, 1024-dim)
+#   llama-rerank   8092                 rerank              (bge-reranker-v2-m3)
+#   whisper        8080 (host 8093)     audio               (whisper.cpp .bin)
+#
+# Always run compose from the repo root (paths below are root-relative):
+#   podman compose --env-file test/.env -f compose.yaml -f test/compose.e2e.yaml up -d
+#   (+ -f test/compose.e2e.cpu.yaml for CPU-only). test/run.sh does this for you.
+
+services:
+  # Inject the public base URL so absolute links/redirects use the Caddy HTTPS entry.
+  app:
+    environment:
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://localhost:9443}
+
+  # ── Text / vision / code — Qwen3-VL (+ mmproj for vision) — port 8090 ──────────
+  llama-text:
+    image: ${LLAMA_SERVER_IMAGE:-docker.io/ghcr.io/ggerganov/llama.cpp:server}
+    volumes:
+      - ./models:/models:ro
+    ports:
+      - "127.0.0.1:${LLAMA_TEXT_PORT:-8090}:8090"
+    environment:
+      LLAMA_ARG_MODEL: /models/${LLAMA_TEXT_MODEL_FILE:-Qwen3VL-30B-A3B-Instruct-Q4_K_M.gguf}
+      LLAMA_ARG_MMPROJ: /models/${LLAMA_MMPROJ_FILE:-mmproj-Qwen3VL-30B-A3B-Instruct-F16.gguf}
+      LLAMA_ARG_HOST: "0.0.0.0"
+      LLAMA_ARG_PORT: "8090"
+      LLAMA_ARG_N_GPU_LAYERS: ${LLAMA_N_GPU_LAYERS:-99}
+      LLAMA_ARG_CTX_SIZE: ${LLAMA_CTX_SIZE:-8192}
+    devices:
+      - ${GPU_DEVICE:-nvidia.com/gpu=all}
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8090/health"]
+      interval: 15s
+      timeout: 5s
+      start_period: 600s
+      retries: 60
+    restart: unless-stopped
+
+  # ── Embeddings — bge-m3 (1024-dim, matches the app's vector size) — port 8091 ──
+  llama-embed:
+    image: ${LLAMA_SERVER_IMAGE:-docker.io/ghcr.io/ggerganov/llama.cpp:server}
+    volumes:
+      - ./models:/models:ro
+    ports:
+      - "127.0.0.1:${LLAMA_EMBED_PORT:-8091}:8091"
+    environment:
+      LLAMA_ARG_MODEL: /models/${LLAMA_EMBED_MODEL_FILE:-bge-m3-q8_0.gguf}
+      LLAMA_ARG_EMBEDDINGS: "1"
+      LLAMA_ARG_HOST: "0.0.0.0"
+      LLAMA_ARG_PORT: "8091"
+      LLAMA_ARG_N_GPU_LAYERS: ${LLAMA_N_GPU_LAYERS:-99}
+      LLAMA_ARG_CTX_SIZE: ${LLAMA_EMBED_CTX_SIZE:-8192}
+    devices:
+      - ${GPU_DEVICE:-nvidia.com/gpu=all}
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8091/health"]
+      interval: 15s
+      timeout: 5s
+      start_period: 180s
+      retries: 40
+    restart: unless-stopped
+
+  # ── Reranking — bge-reranker-v2-m3 — port 8092. LLAMA_ARG_RERANKING enables
+  #    /rerank + pooling rank. If this server fails to start on your llama.cpp
+  #    build, add LLAMA_ARG_POOLING: rank here (see README troubleshooting). ──────
+  llama-rerank:
+    image: ${LLAMA_SERVER_IMAGE:-docker.io/ghcr.io/ggerganov/llama.cpp:server}
+    volumes:
+      - ./models:/models:ro
+    ports:
+      - "127.0.0.1:${LLAMA_RERANK_PORT:-8092}:8092"
+    environment:
+      LLAMA_ARG_MODEL: /models/${LLAMA_RERANK_MODEL_FILE:-bge-reranker-v2-m3-q8_0.gguf}
+      LLAMA_ARG_RERANKING: "1"
+      LLAMA_ARG_HOST: "0.0.0.0"
+      LLAMA_ARG_PORT: "8092"
+      LLAMA_ARG_N_GPU_LAYERS: ${LLAMA_N_GPU_LAYERS:-99}
+      LLAMA_ARG_CTX_SIZE: ${LLAMA_RERANK_CTX_SIZE:-8192}
+    devices:
+      - ${GPU_DEVICE:-nvidia.com/gpu=all}
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8092/health"]
+      interval: 15s
+      timeout: 5s
+      start_period: 180s
+      retries: 40
+    restart: unless-stopped
+
+  # ── Audio transcription — whisper.cpp (ggml .bin). Its own container; the
+  #    image binds 8080 internally, published on host ${WHISPER_PORT:-8093}. The
+  #    app reaches it via WHISPER_URL=http://whisper:8080 (set in test/.env).
+  #    Not required for the text-only smoke test. ────────────────────────────────
+  whisper:
+    image: ${WHISPER_SERVER_IMAGE:-docker.io/ghcr.io/ggerganov/whisper.cpp:server}
+    volumes:
+      - ./models:/models:ro
+    ports:
+      - "127.0.0.1:${WHISPER_PORT:-8093}:8080"
+    environment:
+      WHISPER_MODEL: /models/${WHISPER_MODEL_FILE:-ggml-large-v3-turbo.bin}
+    devices:
+      - ${GPU_DEVICE:-nvidia.com/gpu=all}
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      start_period: 120s
+      retries: 40
+    restart: unless-stopped
