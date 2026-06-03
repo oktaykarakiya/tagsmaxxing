@@ -148,32 +148,53 @@ pub async fn login(
 /// `POST /auth/register` — create a new user and start a session.
 ///
 /// On success returns `201 Created` with [`AuthResponse`] and a `Set-Cookie`
-/// header carrying the `__Host-session` token. New users always get the `Member`
-/// role; the first user of a tenant created via the bootstrap path gets `Owner`.
+/// header carrying the `__Host-session` token.
+///
+/// If the tenant slug already exists the new user is assigned the `Member`
+/// role.  If the tenant slug does **not** exist, this handler auto-creates
+/// the tenant (using the slug as its display name) and assigns the new user
+/// the `Owner` role so the tenant has at least one administrator.
 ///
 /// This handler is intended for open-registration tenants. For invite-only or
 /// admin-created users, a future admin endpoint (P6) will provide that path.
 ///
 /// # Errors
 /// * `409` — a user with this email already exists in the tenant.
-/// * `404` — the tenant slug does not exist.
+/// * `400` — generic registration failure (prevents tenant/user enumeration).
 /// * `500` — database or session store failure.
 pub async fn register(
     State(state): State<Arc<AppState>>,
     Json(req): Json<RegisterRequest>,
 ) -> Result<(StatusCode, HeaderMap, Json<AuthResponse>), (StatusCode, Json<ErrorResponse>)> {
-    // ── 1. Resolve tenant ──────────────────────────────────────────────────
-    let tenant_id = match state
+    // ── 1. Resolve or create tenant ────────────────────────────────────────
+    let (tenant_id, role) = match state
         .pg_store
         .find_tenant_by_slug(&req.tenant_slug)
         .await
         .map_err(internal_error)?
     {
-        Some(id) => id,
+        Some(id) => {
+            // Tenant exists — new users get the Member role.
+            (id, UserRole::Member)
+        }
         None => {
-            // Do NOT distinguish tenant-not-found from other failures —
-            // a generic message prevents tenant enumeration.
-            return Err(registration_failed());
+            // Tenant does not exist — create it and make the first user Owner.
+            let id = state
+                .pg_store
+                .create_tenant(&req.tenant_slug, &req.tenant_slug)
+                .await
+                .map_err(|e| {
+                    // Conceal the exact failure reason (e.g. race with a
+                    // concurrent creation) behind a generic message so an
+                    // attacker cannot probe for existing tenant slugs.
+                    tracing::warn!(
+                        error = %e,
+                        slug = %req.tenant_slug,
+                        "failed to create tenant during registration"
+                    );
+                    registration_failed()
+                })?;
+            (id, UserRole::Owner)
         }
     };
 
@@ -202,10 +223,10 @@ pub async fn register(
     // ── 4. Hash password ───────────────────────────────────────────────────
     let password_hash = kb_core::auth::hash_password(&req.password).map_err(internal_error)?;
 
-    // ── 5. Create user (default role: Member) ──────────────────────────────
+    // ── 5. Create user ─────────────────────────────────────────────────────
     let user_id = state
         .pg_store
-        .create_user(tenant_id, &req.email, &password_hash, UserRole::Member)
+        .create_user(tenant_id, &req.email, &password_hash, role)
         .await
         .map_err(|e| {
             if e.to_string().contains("already exists") {
@@ -221,13 +242,7 @@ pub async fn register(
     // ── 6. Create session ──────────────────────────────────────────────────
     let token = state
         .session_store
-        .create(
-            tenant_id,
-            user_id,
-            UserRole::Member,
-            false,
-            state.session_ttl,
-        )
+        .create(tenant_id, user_id, role, false, state.session_ttl)
         .await
         .map_err(internal_error)?;
 
@@ -241,7 +256,7 @@ pub async fn register(
     let body = AuthResponse {
         user_id,
         tenant_id,
-        role: UserRole::Member.as_str().to_owned(),
+        role: role.as_str().to_owned(),
         message: "registration successful".into(),
     };
 
