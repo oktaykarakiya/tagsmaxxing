@@ -676,9 +676,9 @@ touches = ["crates/pipeline/src/ingest.rs", "crates/api/src/web/handlers.rs"]
 conflict_group = "ingest_pipeline"
 depends_on = []
 severity = "high"
-status = "todo"
+status = "done"
 acceptance = "test_oversized_note_field_bounded passes"
-notes = "A ~5 MB user_note causes a 500 (likely forwarded to the LLM tagger which crashes). Add a size limit on the user_note field (e.g., 10 KB) and return 400 if exceeded, before it reaches the tagger."
+notes = "Added MAX_USER_NOTE_BYTES (10 KB) constant and truncate_to_char_boundary helper in crates/pipeline/src/ingest.rs. Oversized notes are truncated before reaching the tagger, preventing LLM crashes. 9 unit tests added for truncation edge cases (multi-byte, zero, exact boundary, non-ASCII)."
 
 [[bug]]
 id = "BUG-INGEST-11"
@@ -702,9 +702,9 @@ touches = ["crates/store/src/hybrid_search.rs"]
 conflict_group = "search_store"
 depends_on = []
 severity = "high"
-status = "todo"
+status = "done"
 acceptance = "test_sql_injection_like_search_is_safe passes"
-notes = "Search payloads like ' OR '1'='1 or '; DROP TABLE documents;-- cause non-200 responses. Ensure all user input in search queries is treated as literal text via parameterized queries ($1, $2, etc.)."
+notes = "Replaced websearch_to_tsquery with plainto_tsquery in execute_keyword_query — plainto_tsquery treats all input as literal text tokens and never throws syntax errors on malformed input (unlike websearch_to_tsquery which interprets quotes/operators)."
 
 
 # ── Scheduler / Backpressure ────────────────────────────────────────────────

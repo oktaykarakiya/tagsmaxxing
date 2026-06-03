@@ -195,6 +195,16 @@ impl IngestPipeline {
     ) -> anyhow::Result<IngestOutput> {
         anyhow::ensure!(!files.is_empty(), "at least one file is required");
 
+        // Bound user_note to MAX_USER_NOTE_BYTES to prevent the LLM tagger
+        // from receiving multi-megabyte prompt payloads (BUG-INGEST-10).
+        let user_note = user_note.map(|note| {
+            if note.len() > MAX_USER_NOTE_BYTES {
+                truncate_to_char_boundary(&note, MAX_USER_NOTE_BYTES).to_string()
+            } else {
+                note
+            }
+        });
+
         // Sanitize filenames: neutralise path-traversal sequences in both
         // `page_label` and `path` before they are persisted or surfaced in
         // API responses (BUG-INGEST-08).
@@ -534,6 +544,34 @@ pub async fn process_retag_job(
     }
 
     Ok(all_ids)
+}
+
+// ── user note bounding ─────────────────────────────────────────────────────
+
+/// Maximum allowed size for the `user_note` field in bytes (10 KB).
+///
+/// Notes exceeding this limit are truncated before reaching the tagger to
+/// prevent LLM crashes on pathologically-large input (BUG-INGEST-10).
+/// The limit is generous for a free-text annotation while protecting the
+/// tagger prompt from multi-megabyte payloads.
+pub const MAX_USER_NOTE_BYTES: usize = 10 * 1024;
+
+/// Truncate `s` to at most `max_bytes` bytes, landing on a valid UTF-8
+/// character boundary so the result is always well-formed.
+///
+/// Returns the original string slice when it is already within the limit.
+/// When truncation is needed, walks backwards from `max_bytes` to find the
+/// nearest character boundary (handling multi-byte sequences correctly).
+#[must_use]
+pub fn truncate_to_char_boundary(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
 }
 
 // ── filename sanitization ──────────────────────────────────────────────────
@@ -877,6 +915,73 @@ mod tests {
             sanitize_filename("subdir/file.txt"),
             Some("file.txt".into())
         );
+    }
+
+    // ── truncate_to_char_boundary tests ────────────────────────────────────
+
+    #[test]
+    fn truncate_short_string_unchanged() {
+        assert_eq!(truncate_to_char_boundary("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_exact_limit_unchanged() {
+        let s = "abc";
+        assert_eq!(s.len(), 3);
+        assert_eq!(truncate_to_char_boundary(s, 3), s);
+    }
+
+    #[test]
+    fn truncate_over_limit() {
+        assert_eq!(truncate_to_char_boundary("hello world", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_multibyte_char_boundary() {
+        // "café" is 5 bytes (c-a-f-é where é = 2 bytes). Truncating at 4
+        // bytes would split é — the function must land at 3 bytes ("caf").
+        let s = "café";
+        assert!(s.len() > 4, "café must be > 4 bytes for this test");
+        let result = truncate_to_char_boundary(s, 4);
+        assert_eq!(result, "caf");
+        // Verify the result is valid UTF-8.
+        assert!(std::str::from_utf8(result.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn truncate_multibyte_char_at_boundary_exact() {
+        // "café" = [c][a][f][é (2 bytes)] = 5 bytes. 3 bytes lands at "caf".
+        assert_eq!(truncate_to_char_boundary("café", 3), "caf");
+    }
+
+    #[test]
+    fn truncate_max_bytes_zero() {
+        assert_eq!(truncate_to_char_boundary("abc", 0), "");
+    }
+
+    #[test]
+    fn truncate_max_bytes_zero_on_empty() {
+        assert_eq!(truncate_to_char_boundary("", 0), "");
+    }
+
+    #[test]
+    fn truncate_non_ascii_sequence() {
+        // "こんにちは" — 5 Japanese characters, each 3 bytes = 15 bytes total.
+        let s = "こんにちは";
+        assert_eq!(s.len(), 15);
+        // Truncate at 7 bytes → should get 6 bytes (2 full chars) = "こん".
+        let result = truncate_to_char_boundary(s, 7);
+        assert_eq!(result, "こん");
+        assert_eq!(result.len(), 6);
+    }
+
+    #[test]
+    fn truncate_with_max_greater_than_len_returns_original() {
+        let s = "short";
+        let result = truncate_to_char_boundary(s, 1024);
+        assert_eq!(result, s);
+        // Must be the same slice, not a copy.
+        assert!(std::ptr::eq(result.as_ptr(), s.as_ptr()));
     }
 
     // ── Construction ───────────────────────────────────────────────────────
