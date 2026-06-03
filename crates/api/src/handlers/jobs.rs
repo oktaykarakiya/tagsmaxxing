@@ -31,6 +31,8 @@ pub struct JobStatusResponse {
     pub run_after: String,
     /// Job creation time.
     pub created_at: String,
+    /// Document this job produced or affected, if any.
+    pub document_id: Option<i64>,
 }
 
 /// Error response.
@@ -75,6 +77,7 @@ pub async fn job_status(
             last_error: job.last_error,
             run_after: job.run_after.to_rfc3339(),
             created_at: job.created_at.to_rfc3339(),
+            document_id: job.document_id,
         }),
     ))
 }
@@ -200,5 +203,39 @@ mod tests {
         let (status, body) = internal_error(anyhow::anyhow!("db error"));
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(body.error, "internal_error");
+    }
+
+    // ── Serialization tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn job_status_response_includes_document_id() {
+        let resp = JobStatusResponse {
+            id: 42,
+            status: "done".into(),
+            attempts: 1,
+            last_error: None,
+            run_after: "2026-01-01T00:00:00Z".into(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+            document_id: Some(99),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["id"], 42);
+        assert_eq!(json["status"], "done");
+        assert_eq!(json["document_id"], 99);
+    }
+
+    #[test]
+    fn job_status_response_document_id_null_when_absent() {
+        let resp = JobStatusResponse {
+            id: 1,
+            status: "queued".into(),
+            attempts: 0,
+            last_error: None,
+            run_after: "2026-01-01T00:00:00Z".into(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+            document_id: None,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert!(json["document_id"].is_null());
     }
 }

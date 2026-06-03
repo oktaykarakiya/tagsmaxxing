@@ -393,13 +393,13 @@ id = "BUG-API-08"
 description = "Job status response missing document_id link"
 test_names = ["test_job_status_exposes_document_link"]
 test_file = "tests/catalog/test_api_platform.py"
-touches = ["crates/api/src/web/handlers.rs"]
+touches = ["crates/api/src/handlers/jobs.rs"]
 conflict_group = "api_handlers"
 depends_on = []
 severity = "low"
-status = "todo"
+status = "done"
 acceptance = "test_job_status_exposes_document_link passes"
-notes = "GET /api/jobs/{id} returns job status but no document_id. Add document_id to the job status response so clients can link a completed job to its produced document."
+notes = "Added document_id: Option<i64> field to JobStatusResponse and populated it from job.document_id in the handler. Added unit tests for serialization with Some/None document_id."
 
 [[bug]]
 id = "BUG-API-09"
