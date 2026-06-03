@@ -10,3 +10,4 @@ playwright-report/
 
 # Secrets — the real DeepSeek key + local overrides live here, never committed.
 .env
+.llama-logs/
