@@ -240,7 +240,7 @@ depends_on = []
 severity = "medium"
 status = "done"
 acceptance = "test_email_verification_enforced_on_sensitive_action passes"
-notes = "Add middleware or per-handler checks that require email_verified=true before allowing ingest, team invite, and other sensitive actions. The column already exists and is plumbed through. Does not require SMTP — verification tokens can be read from DB."
+notes = "Added is_api_path() helper + email verification gate in auth_middleware for /api/* routes returning 403 when email_verified=false. Also added require_email_verified_middleware for per-route use on sensitive web handlers. 10 new tests (3 is_api_path, 3 auth middleware gate, 4 require_verified middleware)."
 
 [[bug]]
 id = "BUG-AUTH-06"
@@ -279,7 +279,7 @@ depends_on = []
 severity = "medium"
 status = "done"
 acceptance = "test_register_new_tenant_and_user passes"
-notes = "POST /auth/register with a new tenant slug should create the tenant + admin user and return 201 with a session cookie. Verify the handler supports tenant creation (may only add users to existing tenants currently)."
+notes = "Changed register handler to auto-create tenant when slug not found (via pg_store.create_tenant), assigning Owner role to the first user. Existing tenants continue to get Member role. Uses generic registration_failed error on tenant-creation failure to prevent enumeration."
 
 [[bug]]
 id = "BUG-AUTH-09"

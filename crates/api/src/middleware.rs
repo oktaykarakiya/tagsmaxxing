@@ -15,6 +15,14 @@
 //!
 //! If neither credential is present or valid, the middleware returns `401 Unauthorized`.
 //!
+//! # Email verification gate
+//!
+//! After authentication, [`auth_middleware`] checks whether the user's email has been
+//! verified. Requests to API paths (`/api/*`) are blocked with `403 Forbidden` when
+//! `email_verified` is `false`. Web UI routes (HTML pages) are **not** blocked here
+//! so the user can still see the "verify your email" prompt; individual sensitive web
+//! handlers can opt in by layering [`require_email_verified_middleware`].
+//!
 //! # Login rate limiter
 //!
 //! [`login_rate_limit_middleware`] protects `POST /auth/login` against brute-force
@@ -63,12 +71,17 @@ pub async fn auth_middleware(
         if let Some(store) = &state.api_token_store {
             match store.validate_token(&bearer_token).await {
                 Ok(Some(info)) => {
+                    let email_verified = info.email_verified;
                     request.extensions_mut().insert(AuthUser {
                         tenant_id: info.tenant_id,
                         user_id: info.user_id,
                         role: info.user_role,
-                        email_verified: info.email_verified,
+                        email_verified,
                     });
+                    // Gate API routes on email verification.
+                    if !email_verified && is_api_path(request.uri().path()) {
+                        return Err(StatusCode::FORBIDDEN);
+                    }
                     return Ok(next.run(request).await);
                 }
                 Ok(None) => {}
@@ -99,16 +112,22 @@ pub async fn auth_middleware(
     };
 
     // Inject the authenticated user into request extensions.
+    let email_verified = info.email_verified;
     request.extensions_mut().insert(AuthUser {
         tenant_id: info.tenant_id,
         user_id: info.user_id,
         role: info.user_role,
-        email_verified: info.email_verified,
+        email_verified,
     });
 
     // Slide the session expiry (best-effort — failure does not reject the request).
     if let Err(e) = state.session_store.extend(&token, state.session_ttl).await {
         tracing::warn!(error = %e, "failed to extend session (sliding expiration)");
+    }
+
+    // Gate API routes on email verification.
+    if !email_verified && is_api_path(request.uri().path()) {
+        return Err(StatusCode::FORBIDDEN);
     }
 
     Ok(next.run(request).await)
@@ -162,6 +181,48 @@ pub(crate) fn extract_session_cookie(headers: &axum::http::HeaderMap) -> Option<
     }
 
     None
+}
+
+/// Returns `true` when `path` targets a JSON API endpoint that requires email
+/// verification.
+///
+/// Paths starting with `/api/` are the programmatic (non-browser) surface —
+/// ingest, search, tokens, etc. Web UI pages (HTML) are excluded so that
+/// unverified users can still see verification prompts.
+fn is_api_path(path: &str) -> bool {
+    path.starts_with("/api/")
+}
+
+// ── Email verification middleware ────────────────────────────────────────────────
+
+/// Axum middleware: require that the authenticated user's email has been verified.
+///
+/// Reads [`AuthUser`](crate::AuthUser) from request extensions (injected by
+/// [`auth_middleware`]). Returns `403 Forbidden` when `email_verified` is `false`.
+/// This middleware is intended to be layered **after** [`auth_middleware`] on
+/// individual sensitive web routes (e.g. team invite, workspace deletion) that
+/// need per-route email-verification gating.
+///
+/// # Extension requirement
+///
+/// This middleware **must** run after [`auth_middleware`] — if no `AuthUser` is
+/// present in extensions, it returns `401 Unauthorized` (the caller is not
+/// authenticated at all).
+pub async fn require_email_verified_middleware(
+    request: Request<axum::body::Body>,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    let verified = request
+        .extensions()
+        .get::<AuthUser>()
+        .map(|u| u.email_verified)
+        .unwrap_or(false);
+
+    if !verified {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    Ok(next.run(request).await)
 }
 
 // ── Login brute-force rate limiter ───────────────────────────────────────────────
@@ -435,6 +496,7 @@ mod tests {
     fn test_router(state: Arc<AppState>) -> Router {
         Router::new()
             .route("/protected", get(protected_handler))
+            .route("/api/ingest", get(protected_handler))
             .layer(axum::middleware::from_fn_with_state(
                 state.clone(),
                 auth_middleware,
@@ -995,6 +1057,204 @@ mod tests {
             statuses.contains(&StatusCode::TOO_MANY_REQUESTS),
             "should contain at least one 429, got: {statuses:?}",
         );
+    }
+
+    // ── is_api_path unit tests ────────────────────────────────────────────
+
+    #[test]
+    fn is_api_path_matches_api_prefix() {
+        assert!(is_api_path("/api/ingest"));
+        assert!(is_api_path("/api/search"));
+        assert!(is_api_path("/api/tokens"));
+        assert!(is_api_path("/api/documents/42"));
+        assert!(is_api_path("/api/jobs/abc-123"));
+    }
+
+    #[test]
+    fn is_api_path_rejects_non_api_paths() {
+        assert!(!is_api_path("/login"));
+        assert!(!is_api_path("/search"));
+        assert!(!is_api_path("/upload"));
+        assert!(!is_api_path("/auth/login"));
+        assert!(!is_api_path("/account/team/invite"));
+        assert!(!is_api_path("/admin"));
+        assert!(!is_api_path("/"));
+    }
+
+    // ── Email verification gate in auth_middleware ────────────────────────
+
+    /// Build a request to an API path with the session cookie set.
+    fn api_request_with_cookie(token: &str) -> Request<Body> {
+        Request::builder()
+            .uri("/api/ingest")
+            .header("Cookie", format!("__Host-session={token}"))
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn unverified_user_blocked_on_api_route() {
+        let state = test_state();
+        // Create a session with email_verified = false.
+        let token = state
+            .session_store
+            .create(1, 42, UserRole::Member, false, Duration::from_secs(3600))
+            .await
+            .unwrap();
+
+        let router = test_router(state);
+        let response = router
+            .oneshot(api_request_with_cookie(&token))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::FORBIDDEN,
+            "unverified user must be 403 Forbidden on /api/* routes"
+        );
+    }
+
+    #[tokio::test]
+    async fn verified_user_passes_api_route() {
+        let state = test_state();
+        // Create a session with email_verified = true.
+        let token = state
+            .session_store
+            .create(1, 42, UserRole::Member, true, Duration::from_secs(3600))
+            .await
+            .unwrap();
+
+        let router = test_router(state);
+        let response = router
+            .oneshot(api_request_with_cookie(&token))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn unverified_user_passes_non_api_web_route() {
+        let state = test_state();
+        // Create a session with email_verified = false targeting a non-API path.
+        let token = state
+            .session_store
+            .create(1, 42, UserRole::Member, false, Duration::from_secs(3600))
+            .await
+            .unwrap();
+
+        let router = test_router(state);
+        // Use the default /protected path (NOT /api/*).
+        let response = router.oneshot(request_with_cookie(&token)).await.unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "unverified user must still be able to access non-API routes (web UI)"
+        );
+    }
+
+    // ── require_email_verified_middleware tests ───────────────────────────
+
+    /// Handler for the require-email-verified middleware tests.
+    async fn require_verified_handler(axum::Extension(user): axum::Extension<AuthUser>) -> String {
+        format!("verified:{}", user.email_verified)
+    }
+
+    #[tokio::test]
+    async fn require_verified_allows_verified_user() {
+        let state = test_state();
+        let user = AuthUser {
+            tenant_id: 1,
+            user_id: 42,
+            role: UserRole::Member,
+            email_verified: true,
+        };
+        let router = Router::new()
+            .route("/sensitive", get(require_verified_handler))
+            .layer(axum::middleware::from_fn(require_email_verified_middleware))
+            .layer(axum::middleware::from_fn(
+                move |mut req: Request<Body>, next: Next| {
+                    let u = user;
+                    async move {
+                        req.extensions_mut().insert(u);
+                        let resp: Response = next.run(req).await;
+                        Ok::<_, StatusCode>(resp)
+                    }
+                },
+            ))
+            .with_state(state);
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/sensitive")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
+        assert_eq!(std::str::from_utf8(&body).unwrap(), "verified:true");
+    }
+
+    #[tokio::test]
+    async fn require_verified_blocks_unverified_user() {
+        let state = test_state();
+        let user = AuthUser {
+            tenant_id: 1,
+            user_id: 42,
+            role: UserRole::Member,
+            email_verified: false,
+        };
+        let router = Router::new()
+            .route("/sensitive", get(require_verified_handler))
+            .layer(axum::middleware::from_fn(require_email_verified_middleware))
+            .layer(axum::middleware::from_fn(
+                move |mut req: Request<Body>, next: Next| {
+                    let u = user;
+                    async move {
+                        req.extensions_mut().insert(u);
+                        let resp: Response = next.run(req).await;
+                        Ok::<_, StatusCode>(resp)
+                    }
+                },
+            ))
+            .with_state(state);
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/sensitive")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn require_verified_no_authuser_returns_403() {
+        let state = test_state();
+        // No auth-user-injecting middleware — AuthUser is absent from extensions.
+        let router = Router::new()
+            .route("/sensitive", get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn(require_email_verified_middleware))
+            .with_state(state);
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/sensitive")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // When no AuthUser is present, email_verified defaults to false → 403.
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
