@@ -36,6 +36,7 @@ use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::extract::State;
+use axum::http::Method;
 use axum::http::Request;
 use axum::http::StatusCode;
 use axum::middleware::Next;
@@ -51,7 +52,7 @@ use crate::AuthUser;
 ///
 /// Parses the `Cookie` header, looking for `__Host-session=<token>`.
 /// If the cookie is missing, malformed, or the token is unknown/expired/revoked,
-/// the middleware returns `401 Unauthorized`.
+/// the middleware returns `401 Unauthorized` with a JSON `{error, message}` body.
 ///
 /// # Sliding expiration
 ///
@@ -59,6 +60,11 @@ use crate::AuthUser;
 /// [`SessionStore::extend`](kb_core::session::SessionStore::extend) to slide the
 /// session expiry forward. Failures to extend are logged but do **not** reject the
 /// request — a session that can't be extended is still valid for the current request.
+///
+/// # Error envelope
+///
+/// All error responses from this middleware use the canonical `{error, message}`
+/// JSON envelope, matching the rest of the `/api/*` surface.
 pub async fn auth_middleware(
     State(state): State<Arc<AppState>>,
     mut request: Request<axum::body::Body>,
@@ -80,9 +86,13 @@ pub async fn auth_middleware(
                     });
                     // Gate API routes on email verification.
                     if !email_verified && is_api_path(request.uri().path()) {
-                        return Err(StatusCode::FORBIDDEN);
+                        return Ok(auth_error_response(
+                            StatusCode::FORBIDDEN,
+                            "email_not_verified",
+                            "Email verification required to access this resource",
+                        ));
                     }
-                    return Ok(next.run(request).await);
+                    return run_maybe_idempotent(request, next).await;
                 }
                 Ok(None) => {}
                 Err(e) => {
@@ -91,7 +101,11 @@ pub async fn auth_middleware(
             }
         }
         // Bearer token present but invalid → 401.
-        return Err(StatusCode::UNAUTHORIZED);
+        return Ok(auth_error_response(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "Invalid or expired API token",
+        ));
     }
 
     // ── 2. Fall back to session cookie ──────────────────────────────────────
@@ -99,15 +113,31 @@ pub async fn auth_middleware(
 
     let token = match token {
         Some(t) => t,
-        None => return Err(StatusCode::UNAUTHORIZED),
+        None => {
+            return Ok(auth_error_response(
+                StatusCode::UNAUTHORIZED,
+                "unauthorized",
+                "Authentication required",
+            ));
+        }
     };
 
     let info = match state.session_store.validate(&token).await {
         Ok(Some(info)) => info,
-        Ok(None) => return Err(StatusCode::UNAUTHORIZED),
+        Ok(None) => {
+            return Ok(auth_error_response(
+                StatusCode::UNAUTHORIZED,
+                "unauthorized",
+                "Invalid or expired session",
+            ));
+        }
         Err(e) => {
             tracing::warn!(error = %e, "session store error during validation");
-            return Err(StatusCode::UNAUTHORIZED);
+            return Ok(auth_error_response(
+                StatusCode::UNAUTHORIZED,
+                "unauthorized",
+                "Authentication required",
+            ));
         }
     };
 
@@ -127,10 +157,35 @@ pub async fn auth_middleware(
 
     // Gate API routes on email verification.
     if !email_verified && is_api_path(request.uri().path()) {
-        return Err(StatusCode::FORBIDDEN);
+        return Ok(auth_error_response(
+            StatusCode::FORBIDDEN,
+            "email_not_verified",
+            "Email verification required to access this resource",
+        ));
     }
 
-    Ok(next.run(request).await)
+    run_maybe_idempotent(request, next).await
+}
+
+/// Build a JSON error response with the canonical `{error, message}` envelope
+/// used by all `/api/*` routes.
+///
+/// Sets the response status code and `Content-Type: application/json`.
+fn auth_error_response(status: StatusCode, error: &str, message: &str) -> Response {
+    let body = axum::body::Body::from(
+        serde_json::json!({
+            "error": error,
+            "message": message
+        })
+        .to_string(),
+    );
+    let mut response = Response::new(body);
+    *response.status_mut() = status;
+    response.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/json"),
+    );
+    response
 }
 
 // ── Bearer token parsing ───────────────────────────────────────────────────────
@@ -350,6 +405,162 @@ fn extract_client_ip(request: &Request<axum::body::Body>) -> IpAddr {
         return ip;
     }
     IpAddr::from([127, 0, 0, 1])
+}
+
+// ── Idempotency-key deduplication ────────────────────────────────────────────────
+
+/// Idempotency-key response cache TTL: 24 hours.
+const IDEMPOTENCY_TTL: Duration = Duration::from_secs(86400);
+
+/// A cached response for an idempotency key.
+#[derive(Clone)]
+struct CachedIdempotentResponse {
+    status: StatusCode,
+    content_type: Option<String>,
+    body: Vec<u8>,
+    created_at: Instant,
+}
+
+/// In-memory idempotency-key store.
+///
+/// Maps `Idempotency-Key` header values to previously-seen responses so that
+/// retrying the same ingest request returns the original result instead of
+/// creating a duplicate document.
+///
+/// Entries expire after [`IDEMPOTENCY_TTL`] and are pruned on each access.
+struct IdempotencyStore {
+    inner: Mutex<HashMap<String, CachedIdempotentResponse>>,
+    ttl: Duration,
+}
+
+impl IdempotencyStore {
+    /// Create a new store with the given entry TTL.
+    fn new(ttl: Duration) -> Self {
+        Self {
+            inner: Mutex::new(HashMap::new()),
+            ttl,
+        }
+    }
+
+    /// Look up a cached response by idempotency key.
+    ///
+    /// Prunes expired entries before the lookup. Returns `None` when the
+    /// key is unknown or its entry has expired.
+    fn get(&self, key: &str) -> Option<CachedIdempotentResponse> {
+        let mut map = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let cutoff = Instant::now() - self.ttl;
+        map.retain(|_, v| v.created_at > cutoff);
+        map.get(key).cloned()
+    }
+
+    /// Store a response for an idempotency key.
+    fn store(&self, key: String, status: StatusCode, content_type: Option<String>, body: Vec<u8>) {
+        let mut map = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        map.insert(
+            key,
+            CachedIdempotentResponse {
+                status,
+                content_type,
+                body,
+                created_at: Instant::now(),
+            },
+        );
+    }
+
+    /// Number of entries currently in the store (test-only).
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).len()
+    }
+
+    /// Clear all entries (test-only).
+    #[cfg(test)]
+    fn reset(&self) {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    }
+}
+
+/// Global idempotency-key store with a [`IDEMPOTENCY_TTL`] entry lifetime.
+static IDEMPOTENCY_STORE: LazyLock<IdempotencyStore> =
+    LazyLock::new(|| IdempotencyStore::new(IDEMPOTENCY_TTL));
+
+/// Extract the `Idempotency-Key` request header, returning `None` if absent
+/// or empty.
+///
+/// Header name comparison is case-insensitive per HTTP/1.1.
+fn extract_idempotency_key(headers: &axum::http::HeaderMap) -> Option<String> {
+    headers
+        .get("idempotency-key")
+        .and_then(|v| v.to_str().ok())
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+}
+
+/// Run the inner handler with idempotency-key deduplication for
+/// `POST /api/ingest`.
+///
+/// On the first request with a given `Idempotency-Key`, the handler runs
+/// normally and a successful (2xx) response is cached. On subsequent requests
+/// with the same key, the cached response is returned without re-executing
+/// the handler, preventing duplicate document creation.
+///
+/// Non-successful responses (4xx, 5xx) are **not** cached — the caller can
+/// correct the request and retry with the same key.
+///
+/// Requests without an `Idempotency-Key` header or to paths other than
+/// `POST /api/ingest` pass through unchanged.
+async fn run_maybe_idempotent(
+    request: Request<axum::body::Body>,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    // Only apply idempotency to POST /api/ingest.
+    if request.method() != Method::POST || request.uri().path() != "/api/ingest" {
+        return Ok(next.run(request).await);
+    }
+
+    let key = match extract_idempotency_key(request.headers()) {
+        Some(k) => k,
+        None => return Ok(next.run(request).await),
+    };
+
+    // Cache hit — return the original response without re-processing.
+    if let Some(cached) = IDEMPOTENCY_STORE.get(&key) {
+        let mut response = Response::new(axum::body::Body::from(cached.body));
+        *response.status_mut() = cached.status;
+        if let Some(ct) = &cached.content_type {
+            if let Ok(val) = axum::http::HeaderValue::from_str(ct) {
+                response
+                    .headers_mut()
+                    .insert(axum::http::header::CONTENT_TYPE, val);
+            }
+        }
+        return Ok(response);
+    }
+
+    // Cache miss — run the handler.
+    let response = next.run(request).await;
+
+    // Only cache successful responses (2xx). Errors are not deduplicated so
+    // the caller can fix the request and retry with the same key.
+    if !response.status().is_success() {
+        return Ok(response);
+    }
+
+    // Decompose the response for caching.
+    let status = response.status();
+    let content_type = response
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(String::from);
+    let (parts, body) = response.into_parts();
+    let body_bytes = axum::body::to_bytes(body, 1024 * 1024)
+        .await
+        .unwrap_or_default();
+
+    IDEMPOTENCY_STORE.store(key, status, content_type, body_bytes.to_vec());
+
+    Ok(Response::from_parts(parts, axum::body::Body::from(body_bytes)))
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
@@ -1293,5 +1504,181 @@ mod tests {
             response.headers().get("retry-after").is_some(),
             "429 response must include Retry-After header"
         );
+    }
+
+    // ── auth_error_response unit tests ─────────────────────────────────
+
+    #[tokio::test]
+    async fn auth_error_response_has_correct_status_and_content_type() {
+        let resp = auth_error_response(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "Authentication required",
+        );
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            resp.headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "application/json"
+        );
+    }
+
+    #[tokio::test]
+    async fn auth_error_response_body_has_error_and_message_keys() {
+        let resp = auth_error_response(
+            StatusCode::FORBIDDEN,
+            "email_not_verified",
+            "Email verification required",
+        );
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+        let body_bytes = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(json["error"], "email_not_verified");
+        assert_eq!(json["message"], "Email verification required");
+        // Only the two canonical keys are present.
+        assert_eq!(json.as_object().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn auth_error_response_custom_status_has_correct_body() {
+        let resp = auth_error_response(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "Invalid or expired API token",
+        );
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let body_bytes = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(json["error"], "unauthorized");
+        assert_eq!(json["message"], "Invalid or expired API token");
+    }
+
+    /// Integration: the middleware 401 response has a JSON {error, message} body,
+    /// not an empty body — the /api/* error envelope contract.
+    #[tokio::test]
+    async fn middleware_401_has_json_error_envelope() {
+        let state = test_state();
+        let router = test_router(state);
+
+        let response = router.oneshot(request_without_cookie()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "unauthorized");
+        assert_eq!(json["message"], "Authentication required");
+        assert!(
+            json.as_object().unwrap().len() == 2,
+            "error envelope must only contain 'error' and 'message' keys"
+        );
+    }
+
+    // ── IdempotencyStore unit tests ────────────────────────────────────────
+
+    #[test]
+    fn idempotency_store_get_unknown_key() {
+        let store = IdempotencyStore::new(Duration::from_secs(60));
+        assert!(store.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn idempotency_store_store_and_get() {
+        let store = IdempotencyStore::new(Duration::from_secs(60));
+        store.store(
+            "key-1".into(),
+            StatusCode::ACCEPTED,
+            Some("application/json".into()),
+            br#"{"document_id":42}"#.to_vec(),
+        );
+        let cached = store.get("key-1").unwrap();
+        assert_eq!(cached.status, StatusCode::ACCEPTED);
+        assert_eq!(cached.content_type.as_deref(), Some("application/json"));
+        assert_eq!(cached.body, br#"{"document_id":42}"#);
+    }
+
+    #[test]
+    fn idempotency_store_overwrites_existing_key() {
+        let store = IdempotencyStore::new(Duration::from_secs(60));
+        store.store("key".into(), StatusCode::OK, None, b"first".to_vec());
+        store.store(
+            "key".into(),
+            StatusCode::ACCEPTED,
+            None,
+            b"second".to_vec(),
+        );
+        let cached = store.get("key").unwrap();
+        assert_eq!(cached.body, b"second".to_vec());
+        assert_eq!(store.len(), 1);
+    }
+
+    #[test]
+    fn idempotency_store_entry_expires() {
+        let store = IdempotencyStore::new(Duration::from_millis(10));
+        store.store("ephemeral".into(), StatusCode::OK, None, b"data".to_vec());
+        assert!(store.get("ephemeral").is_some());
+        // Wait past TTL.
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(store.get("ephemeral").is_none());
+    }
+
+    #[test]
+    fn idempotency_store_reset_clears_all() {
+        let store = IdempotencyStore::new(Duration::from_secs(60));
+        store.store("a".into(), StatusCode::OK, None, vec![]);
+        store.store("b".into(), StatusCode::OK, None, vec![]);
+        assert_eq!(store.len(), 2);
+        store.reset();
+        assert_eq!(store.len(), 0);
+    }
+
+    #[test]
+    fn idempotency_store_get_prunes_expired() {
+        let store = IdempotencyStore::new(Duration::from_millis(10));
+        store.store("old".into(), StatusCode::OK, None, b"old".to_vec());
+        std::thread::sleep(Duration::from_millis(20));
+        store.store("new".into(), StatusCode::OK, None, b"new".to_vec());
+        // get() prunes expired entries.
+        let result = store.get("new").unwrap();
+        assert_eq!(result.body, b"new".to_vec());
+        // The expired entry should be gone.
+        assert_eq!(store.len(), 1);
+        assert!(store.get("old").is_none());
+    }
+
+    // ── extract_idempotency_key unit tests ─────────────────────────────────
+
+    #[test]
+    fn extract_idempotency_key_present() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            "idempotency-key",
+            axum::http::HeaderValue::from_static("abc-123-def"),
+        );
+        assert_eq!(
+            extract_idempotency_key(&headers).as_deref(),
+            Some("abc-123-def")
+        );
+    }
+
+    #[test]
+    fn extract_idempotency_key_missing() {
+        let headers = axum::http::HeaderMap::new();
+        assert_eq!(extract_idempotency_key(&headers), None);
+    }
+
+    #[test]
+    fn extract_idempotency_key_empty_value() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            "idempotency-key",
+            axum::http::HeaderValue::from_static(""),
+        );
+        assert_eq!(extract_idempotency_key(&headers), None);
     }
 }

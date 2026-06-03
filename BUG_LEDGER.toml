@@ -358,9 +358,9 @@ touches = ["crates/api/src/middleware.rs", "crates/api/src/web/handlers.rs"]
 conflict_group = "api_handlers"
 depends_on = []
 severity = "medium"
-status = "todo"
+status = "done"
 acceptance = "test_error_envelope_consistent passes"
-notes = "Error responses use different shapes: some {error, message}, some plain text, some empty. Standardize on {error: string, message: string} for all /api/* error responses, including auth middleware rejections."
+notes = "Added auth_error_response() helper returning {error,message} JSON envelope with Content-Type: application/json. Changed all Err(StatusCode) returns in auth_middleware to Ok(auth_error_response()) so 401/403 rejections now carry JSON bodies matching the /api/* contract. Added 4 unit tests for the helper + integration test verifying middleware 401 JSON body."
 
 [[bug]]
 id = "BUG-API-06"
