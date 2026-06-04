@@ -316,6 +316,7 @@ impl AppState {
 /// | GET    | `/api/documents/:id`           | yes   | Document detail + files + tags       |
 /// | GET    | `/api/documents/:id/file/:file_id` | yes | Redirect to presigned download URL  |
 /// | GET    | `/api/jobs/:id`                | yes   | Job status                           |
+/// | GET    | `/billing/checkout`            | yes   | Stripe Checkout via query param (BUG-UPGR-01) |
 /// | POST   | `/billing/checkout`            | yes   | Stripe Checkout Session (P11-T2)     |
 /// | GET    | `/billing/success`             | no    | Post-Checkout interstitial (P11-T2)  |
 /// | GET    | `/billing/cancel`              | no    | Checkout-cancel redirect (P11-T2)    |
@@ -373,7 +374,11 @@ pub fn build_router(state: AppState) -> Router {
             axum::routing::delete(handlers::api_tokens::revoke_token),
         )
         .route("/auth/logout", post(handlers::auth::logout))
-        .route("/billing/checkout", post(handlers::billing::post_checkout))
+        .route(
+            "/billing/checkout",
+            axum::routing::get(handlers::billing::get_checkout)
+                .post(handlers::billing::post_checkout),
+        )
         .route(
             "/billing/portal",
             get(handlers::billing::get_portal).post(handlers::billing::post_portal),

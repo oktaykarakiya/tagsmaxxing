@@ -1,6 +1,10 @@
 //! Billing handlers: Stripe Checkout + Customer Portal (plan §29, P11-T2 & P11-T6).
 //!
-//! * `POST /billing/checkout` — create a Stripe Checkout Session for a plan.
+//! * `GET  /billing/checkout` — start a Stripe Checkout Session via query param
+//!   (`?plan=pro`). This is the plain-link entry point used by the Upgrade CTA on
+//!   `/account/plan`.
+//! * `POST /billing/checkout` — create a Stripe Checkout Session for a plan (JSON
+//!   body variant, still valid for programmatic/HTMX callers).
 //! * `GET  /billing/success` — interstitial shown after Stripe redirects back.
 //! * `GET  /billing/cancel` — redirect when the user cancels at Checkout.
 //! * `GET  /billing/portal`  — create a Stripe Customer Portal session (P11-T6).
@@ -13,7 +17,7 @@
 use std::sync::Arc;
 
 use axum::Extension;
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Redirect};
 use serde::{Deserialize, Serialize};
@@ -41,6 +45,16 @@ pub struct CheckoutResponse {
     pub url: String,
 }
 
+/// Query parameters for `GET /billing/checkout`.
+///
+/// Used by the plain-link Upgrade CTA on `/account/plan` so the browser can
+/// navigate to `/billing/checkout?plan=pro` without a form/POST.
+#[derive(Debug, Deserialize)]
+pub struct CheckoutQueryParams {
+    /// Machine-readable plan code: `free`, `pro`, `team`, …
+    pub plan: String,
+}
+
 /// Successful portal session response body (P11-T6).
 #[derive(Debug, Serialize)]
 pub struct PortalResponse {
@@ -59,7 +73,37 @@ pub struct ErrorResponse {
 
 // ── Handlers ────────────────────────────────────────────────────────────────────
 
-/// `POST /billing/checkout` — create a Stripe Checkout Session for a plan.
+/// `GET /billing/checkout?plan=pro` — start a Stripe Checkout Session via a
+/// plain link.
+///
+/// This is the Upgrade CTA entry point on `/account/plan`. The browser
+/// navigates to `/billing/checkout?plan=<code>` and the handler creates a
+/// Stripe Checkout Session, returning the redirect URL.
+///
+/// # Query parameters
+///
+/// * `plan` (required) — machine-readable plan code: `pro`, `team`, …
+///
+/// # Response
+///
+/// * `200 OK` — [`CheckoutResponse`] with the Stripe Checkout URL.
+///
+/// # Errors
+///
+/// * `400 Bad Request` — missing or invalid `plan` query parameter.
+/// * `401 Unauthorized` — rejected by auth middleware.
+/// * `500 Internal Server Error` — Stripe client not configured, database
+///   failure, or Stripe API error.
+pub async fn get_checkout(
+    State(state): State<Arc<AppState>>,
+    Extension(auth_user): Extension<AuthUser>,
+    Query(params): Query<CheckoutQueryParams>,
+) -> Result<(StatusCode, Json<CheckoutResponse>), (StatusCode, Json<ErrorResponse>)> {
+    checkout_handler(&state, auth_user, &params.plan).await
+}
+
+/// `POST /billing/checkout` — create a Stripe Checkout Session for a plan
+/// (JSON body).
 ///
 /// Looks up the plan's `stripe_price` from the `plans` table, constructs
 /// success and cancel URLs from the configured [`AppState::public_base_url`],
@@ -86,8 +130,18 @@ pub async fn post_checkout(
     Extension(auth_user): Extension<AuthUser>,
     Json(req): Json<CheckoutRequest>,
 ) -> Result<(StatusCode, Json<CheckoutResponse>), (StatusCode, Json<ErrorResponse>)> {
+    checkout_handler(&state, auth_user, &req.plan_code).await
+}
+
+/// Shared checkout implementation: validate the plan code, look up the plan,
+/// resolve the Stripe client, and create a Checkout Session.
+async fn checkout_handler(
+    state: &AppState,
+    auth_user: AuthUser,
+    plan_code: &str,
+) -> Result<(StatusCode, Json<CheckoutResponse>), (StatusCode, Json<ErrorResponse>)> {
     // ── Validate plan_code ───────────────────────────────────────────────────
-    let plan_code = req.plan_code.trim();
+    let plan_code = plan_code.trim();
     if plan_code.is_empty() {
         return Err(bad_request("missing_plan_code", "plan_code is required"));
     }
@@ -359,7 +413,7 @@ mod tests {
     use axum::Router;
     use axum::body::Body;
     use axum::http::{Method, StatusCode};
-    use axum::routing::{get, post};
+    use axum::routing::get;
     use kb_core::user::UserRole;
     use kb_store::PgStore;
     use kb_store::session_store::InMemorySessionStore;
@@ -398,7 +452,7 @@ mod tests {
             .route("/billing/cancel", get(get_cancel));
 
         let protected = Router::new()
-            .route("/billing/checkout", post(post_checkout))
+            .route("/billing/checkout", get(get_checkout).post(post_checkout))
             .route("/billing/portal", get(get_portal).post(post_portal))
             .layer(axum::middleware::from_fn_with_state(
                 state.clone(),
@@ -532,6 +586,101 @@ mod tests {
 
         let response = router.oneshot(request).await.unwrap();
         // The PgStore is disconnected → get_plan_by_code returns an error → 500.
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    // ── GET /billing/checkout?plan=… tests ──────────────────────────────────
+
+    /// Unauthenticated GET to /billing/checkout returns 401.
+    #[tokio::test]
+    async fn get_checkout_unauthenticated_returns_401() {
+        let state = test_state(Arc::new(MockStripeClient::new()));
+        let router = billing_router(state);
+
+        let request = axum::http::Request::builder()
+            .method(Method::GET)
+            .uri("/billing/checkout?plan=pro")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// An authenticated GET with an empty `plan` query parameter returns 400
+    /// before the database is touched.
+    #[tokio::test]
+    async fn get_checkout_empty_plan_returns_400() {
+        let state = test_state(Arc::new(MockStripeClient::new()));
+        let token = create_session(&state).await;
+        let router = billing_router(state);
+
+        let request = axum::http::Request::builder()
+            .method(Method::GET)
+            .uri("/billing/checkout?plan=%20%20")
+            .header("Cookie", format!("__Host-session={token}"))
+            .body(Body::empty())
+            .unwrap();
+
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// An authenticated GET missing the `plan` query parameter returns a client
+    /// error (axum rejects the missing required field).
+    #[tokio::test]
+    async fn get_checkout_missing_plan_returns_error() {
+        let state = test_state(Arc::new(MockStripeClient::new()));
+        let token = create_session(&state).await;
+        let router = billing_router(state);
+
+        let request = axum::http::Request::builder()
+            .method(Method::GET)
+            .uri("/billing/checkout")
+            .header("Cookie", format!("__Host-session={token}"))
+            .body(Body::empty())
+            .unwrap();
+
+        let response = router.oneshot(request).await.unwrap();
+        // axum returns a client error for missing required query parameter.
+        assert!(response.status().is_client_error());
+    }
+
+    /// With a valid GET request and a mock StripeClient, but an unreachable DB,
+    /// the handler returns 500 (same as POST when DB is down).
+    #[tokio::test]
+    async fn get_checkout_db_unreachable_returns_500() {
+        let state = test_state(Arc::new(MockStripeClient::new()));
+        let token = create_session(&state).await;
+        let router = billing_router(state);
+
+        let request = axum::http::Request::builder()
+            .method(Method::GET)
+            .uri("/billing/checkout?plan=pro")
+            .header("Cookie", format!("__Host-session={token}"))
+            .body(Body::empty())
+            .unwrap();
+
+        let response = router.oneshot(request).await.unwrap();
+        // PgStore is disconnected → get_plan_by_code returns an error → 500.
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    /// When the Stripe client is not configured, GET checkout returns 500.
+    #[tokio::test]
+    async fn get_checkout_missing_stripe_client_returns_500() {
+        let state = test_state_no_stripe();
+        let token = create_session(&state).await;
+        let router = billing_router(state);
+
+        let request = axum::http::Request::builder()
+            .method(Method::GET)
+            .uri("/billing/checkout?plan=pro")
+            .header("Cookie", format!("__Host-session={token}"))
+            .body(Body::empty())
+            .unwrap();
+
+        let response = router.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 

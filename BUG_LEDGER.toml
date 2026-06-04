@@ -1130,6 +1130,6 @@ touches = ["crates/api/src/web/handlers_account.rs", "crates/api/src/handlers/bi
 conflict_group = "billing_handlers"
 depends_on = []
 severity = "critical"
-status = "todo"
+status = "done"
 acceptance = "test_upgrade_cta_starts_checkout_not_405 passes"
-notes = "The Upgrade button is <a href='/billing/checkout?plan=pro'> but the route is POST-only → GET returns 405. Fix: accept GET on /billing/checkout?plan=... and redirect to Stripe Checkout, or change the CTA to a form/POST button. Does NOT require Stripe to be configured — the routing fix alone makes the button not-405."
+notes = "Added GET /billing/checkout?plan=... handler (get_checkout) that delegates to shared checkout_handler alongside existing post_checkout. Registered GET route in both app router (lib.rs) and test router. Added 5 unit tests covering unauthenticated, empty plan, missing plan, DB unreachable, and missing Stripe client."
