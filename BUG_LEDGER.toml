@@ -922,9 +922,9 @@ touches = ["crates/llm/src/tagger.rs"]
 conflict_group = "tagger"
 depends_on = ["BUG-TAG-01"]
 severity = "low"
-status = "todo"
+status = "done"
 acceptance = "test_title_is_descriptive passes (judge verdict)"
-notes = "The title is not descriptive of the document content. Improve the title generation in the tagger prompt."
+notes = "Added a dedicated 'Rules for the title' section to the tagger SYSTEM_PROMPT (specific, content-derived headline naming the main entity/topic + doc type; no generic placeholders); bumped TAGGER_CONTRACT_VERSION 1.1.2->1.1.3 and updated the colocated test. just ci green; judge test passes."
 
 [[bug]]
 id = "BUG-TAG-04"

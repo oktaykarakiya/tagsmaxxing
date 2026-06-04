@@ -25,7 +25,7 @@ use crate::client::LlamaClient;
 ///
 /// Bump when the prompt template or JSON Schema changes so that downstream
 /// consumers can detect a breaking output shape change.
-pub const TAGGER_CONTRACT_VERSION: &str = "1.1.2";
+pub const TAGGER_CONTRACT_VERSION: &str = "1.1.3";
 
 /// The system prompt — pure instruction, no user data (defence layer 1).
 const SYSTEM_PROMPT: &str = "\
@@ -41,6 +41,19 @@ matter, domain, and document type as evidenced by the text in front of you. \
 Derive each tag directly from the content; never invent tags for topics the \
 document does not discuss, and never tag incidental details (a single line item, \
 a passing mention) as if they were the document's subject.\n\
+\n\
+Rules for the title:\n\
+- The title MUST concisely and specifically describe what THIS document is \
+about, naming its real subject. Derive it directly from the content.\n\
+- Lead with the document's main named entity or specific topic — the project, \
+system, organization, or subject the document centers on — and, where helpful, \
+its document type (e.g. \"Aurora Distributed-Cache Quarterly Technical Review\" \
+or \"Acme Consulting Invoice #2026-0342\").\n\
+- Be specific: NEVER use a bare generic placeholder such as \"Untitled\", \
+\"Document\", \"Report\", \"Summary\", or \"Notes\". A title that does not \
+identify the document's actual subject is wrong.\n\
+- Keep it short (a headline of roughly 3–10 words), never a full sentence, and \
+never invent details that are not in the document.\n\
 \n\
 Rules for the summary:\n\
 - The summary MUST be a faithful, grounded précis of THIS document: every \
@@ -336,7 +349,7 @@ mod tests {
 
     #[test]
     fn contract_version_is_stable() {
-        assert_eq!(JsonSchemaTagger::contract_version(), "1.1.2");
+        assert_eq!(JsonSchemaTagger::contract_version(), "1.1.3");
     }
 
     #[test]
