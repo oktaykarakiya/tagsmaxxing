@@ -935,9 +935,9 @@ touches = ["crates/pipeline/src/tag_canonicalizer.rs"]
 conflict_group = "tagger"
 depends_on = []
 severity = "medium"
-status = "todo"
+status = "done"
 acceptance = "test_tags_canonicalized_no_near_duplicates passes"
-notes = "Tags contain near-duplicates (e.g. 'machine-learning' and 'machine learning'). The canonicalizer should merge variants using lowercase, whitespace normalization, and stemming."
+notes = "Added normalize_tag_name() with lowercase, separator-to-space, whitespace collapse, and simple suffix stripping (ing/ed/ly/er/ness/ment/plural-s) + undouble_final(). canonicalize() now normalizes before alias lookup, uses normalized name for upsert_tag, and registers raw form as alias. 11 new unit tests + 2 integration tests."
 
 [[bug]]
 id = "BUG-TAG-05"

@@ -3,11 +3,17 @@
 //!
 //! # Algorithm
 //!
-//! 1. **Exact alias lookup** in `tag_aliases` → if found, use that canonical `tag_id`.
-//! 2. Else **embed the raw tag name**, cosine-match against existing `tags.embedding`
-//!    for the tenant: if best match ≥ `TAG_MERGE_THRESHOLD` (0.85), reuse the
-//!    canonical tag and insert an alias row.
-//! 3. Else **insert a new canonical tag** with its name embedding and return the new id.
+//! 0. **Normalize** the raw tag name (lowercase, whitespace normalization, simple
+//!    suffix stripping) so that variants like `"machine-learning"` and
+//!    `"Machine Learning"` collapse to the same form.
+//! 1. **Exact alias lookup** for the raw name in `tag_aliases` → if found, use that
+//!    canonical `tag_id`.
+//! 2. Else **embed the normalized tag name**, cosine-match against existing
+//!    `tags.embedding` for the tenant: if best match ≥ `TAG_MERGE_THRESHOLD` (0.85),
+//!    reuse the canonical tag and insert an alias row.
+//! 3. Else **insert a new canonical tag** with the normalized name + embedding and
+//!    return the new id. The raw form is also registered as an alias for future
+//!    lookups.
 //!
 //! On return the caller receives `Vec<i64>` — one canonical tag id per raw input,
 //! order-aligned with the input slice.
@@ -90,6 +96,121 @@ pub fn find_best_match(
     best
 }
 
+// ── Tag-name normalization (pure, no I/O) ────────────────────────────────────
+
+/// Normalize a raw tag name for deduplication: lowercase, replace separators
+/// (hyphens, underscores, slashes, dots) with spaces, collapse whitespace, and
+/// apply simple English suffix stripping to each word.
+///
+/// This ensures variants like `"machine-learning"`, `"Machine Learning"`, and
+/// `"machine  learning"` all collapse to the same normalized form.
+///
+/// # Examples
+///
+/// ```
+/// # use kb_pipeline::tag_canonicalizer::normalize_tag_name;
+/// assert_eq!(normalize_tag_name("machine-learning"), "machine learn");
+/// assert_eq!(normalize_tag_name("Machine Learning"), "machine learn");
+/// assert_eq!(normalize_tag_name("  Invoices  "), "invoice");
+/// assert_eq!(normalize_tag_name("billing"), "bill");
+/// ```
+#[must_use]
+pub fn normalize_tag_name(raw: &str) -> String {
+    // Step 1: lowercase
+    let lower = raw.to_lowercase();
+
+    // Step 2: replace separators with spaces
+    let with_spaces: String = lower
+        .chars()
+        .map(|c| {
+            if c == '-' || c == '_' || c == '/' || c == '.' {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect();
+
+    // Step 3: split on whitespace, apply stemming, rejoin
+    let stemmed: Vec<String> = with_spaces
+        .split_whitespace()
+        .map(simple_stem)
+        .filter(|w| !w.is_empty())
+        .collect();
+
+    stemmed.join(" ")
+}
+
+/// Apply simple English suffix stripping to a single word.
+///
+/// This is a minimal stemmer (not a full Porter stemmer) that removes common
+/// suffixes to help merge near-duplicate tag variants. It is intentionally
+/// conservative: words shorter than 4 characters pass through unchanged.
+fn simple_stem(word: &str) -> String {
+    const MIN_LEN: usize = 4;
+    const MIN_STEM: usize = 3;
+
+    if word.len() < MIN_LEN {
+        return word.to_string();
+    }
+
+    // Try suffix rules from longest to shortest.
+    let rules: &[(&str, usize)] = &[
+        ("ness", 4), // happiness → happi
+        ("ment", 4), // management → manag
+        ("ing", 3),  // learning → learn
+        ("ed", 2),   // processed → process
+        ("ly", 2),   // quickly → quick
+        ("er", 2),   // reader → read
+    ];
+
+    for (suffix, _) in rules {
+        if word.ends_with(suffix) && word.len() > suffix.len() + 1 {
+            let stem = &word[..word.len() - suffix.len()];
+            if stem.len() >= MIN_STEM {
+                // Undo doubled final consonant (e.g. "running" → "runn" → "run").
+                if let Some(deduped) = undouble_final(stem) {
+                    return deduped;
+                }
+                return stem.to_string();
+            }
+        }
+    }
+
+    // Plural -s: strip trailing 's' when not part of 'ss', 'us', or 'is'.
+    if word.ends_with('s')
+        && !word.ends_with("ss")
+        && !word.ends_with("us")
+        && !word.ends_with("is")
+        && word.len() >= MIN_LEN
+    {
+        let stem = &word[..word.len() - 1];
+        if stem.len() >= MIN_STEM {
+            return stem.to_string();
+        }
+    }
+
+    word.to_string()
+}
+
+/// If the final two characters of `stem` are the same consonant (not 's' or 'l'),
+/// remove one of them. Returns `None` when no deduplication is needed.
+fn undouble_final(stem: &str) -> Option<String> {
+    let chars: Vec<char> = stem.chars().collect();
+    if chars.len() >= 3 {
+        let n = chars.len();
+        let last = chars[n - 1];
+        let prev = chars[n - 2];
+        if last == prev && last != 's' && last != 'l' {
+            let dedup = &stem[..stem.len() - 1];
+            if dedup.len() >= 3 {
+                return Some(dedup.to_string());
+            }
+        }
+    }
+    None
+}
+
 // ── TagCanonicalizer ─────────────────────────────────────────────────────────
 
 /// Canonicalizes raw LLM-proposed tags against a tenant's existing tag set using
@@ -142,9 +263,12 @@ impl TagCanonicalizer {
     /// Canonicalize a batch of raw tag names, returning one canonical `tag_id` per
     /// input, order-aligned.
     ///
-    /// Tags newly inserted during this call are appended to the local working set so
-    /// that subsequent raw tags in the same batch can match against them — e.g.
-    /// `["invoice", "bill"]` results in a single canonical tag for both.
+    /// Each raw tag is first **normalized** ([`normalize_tag_name`]) so that
+    /// surface variants (hyphens vs spaces, case, simple suffixes) converge to the
+    /// same canonical tag. Tags newly inserted during this call are appended to the
+    /// local working set so that subsequent raw tags in the same batch can match
+    /// against them — e.g. `["invoice", "bill"]` results in a single canonical tag
+    /// for both.
     ///
     /// # Errors
     /// Returns an error if a database or embedding call fails.
@@ -160,14 +284,17 @@ impl TagCanonicalizer {
         let mut existing_tags = self.store.find_similar_tags(tenant_id).await?;
 
         for raw_tag in raw_tags {
-            // 1. Exact alias lookup.
+            // 0. Normalize the raw tag name for deduplication.
+            let normalized = normalize_tag_name(raw_tag);
+
+            // 1. Exact alias lookup for the raw form.
             if let Some(tag_id) = self.store.lookup_alias(tenant_id, raw_tag).await? {
                 tag_ids.push(tag_id);
                 continue;
             }
 
-            // 2. Embed the raw tag name.
-            let embedding = self.embed_tag_name(raw_tag, local_only).await?;
+            // 2. Embed the normalized tag name.
+            let embedding = self.embed_tag_name(&normalized, local_only).await?;
 
             // 3. Cosine-match against existing tags (including those just inserted).
             if let Some((best_id, _score)) =
@@ -179,13 +306,19 @@ impl TagCanonicalizer {
                     .await?;
                 tag_ids.push(best_id);
             } else {
-                // 4. No match — create a new canonical tag.
+                // 4. No match — upsert with the normalized name (idempotent).
                 let new_id = self
                     .store
-                    .upsert_tag(tenant_id, raw_tag, &embedding)
+                    .upsert_tag(tenant_id, &normalized, &embedding)
+                    .await?;
+                // Register the raw form as an alias for future lookups.
+                self.store
+                    .insert_tag_alias(tenant_id, raw_tag, new_id)
                     .await?;
                 // Append to the local working set so subsequent raw tags can match.
-                existing_tags.push((new_id, embedding));
+                if !existing_tags.iter().any(|(id, _)| *id == new_id) {
+                    existing_tags.push((new_id, embedding));
+                }
                 tag_ids.push(new_id);
             }
         }
@@ -762,6 +895,191 @@ mod tests {
             err.to_string().contains("zero vectors"),
             "expected zero vectors error, got: {err}"
         );
+        mock.shutdown().await;
+    }
+
+    // ── normalize_tag_name ─────────────────────────────────────────────────
+
+    #[test]
+    fn normalize_lowercases() {
+        assert_eq!(normalize_tag_name("Hello"), "hello");
+        assert_eq!(normalize_tag_name("WORLD"), "world");
+    }
+
+    #[test]
+    fn normalize_replaces_hyphens_with_spaces() {
+        assert_eq!(normalize_tag_name("machine-learning"), "machine learn");
+    }
+
+    #[test]
+    fn normalize_replaces_underscores_with_spaces() {
+        assert_eq!(normalize_tag_name("deep_learning"), "deep learn");
+    }
+
+    #[test]
+    fn normalize_replaces_slashes_and_dots_with_spaces() {
+        assert_eq!(normalize_tag_name("ai/ml.tools"), "ai ml tool");
+    }
+
+    #[test]
+    fn normalize_collapses_multiple_spaces() {
+        assert_eq!(normalize_tag_name("hello   world"), "hello world");
+    }
+
+    #[test]
+    fn normalize_trims_leading_trailing_whitespace() {
+        assert_eq!(normalize_tag_name("  hello world  "), "hello world");
+    }
+
+    #[test]
+    fn normalize_handles_mixed_separators() {
+        let result = normalize_tag_name("Machine-Learning_101/v2.final");
+        assert_eq!(result, "machine learn 101 v2 final");
+    }
+
+    #[test]
+    fn normalize_strips_ing_suffix() {
+        assert_eq!(normalize_tag_name("learning"), "learn");
+        assert_eq!(normalize_tag_name("billing"), "bill");
+    }
+
+    #[test]
+    fn normalize_handles_doubled_consonant_in_ing_form() {
+        // "running" → strip "ing" → "runn" → undouble → "run"
+        assert_eq!(normalize_tag_name("running"), "run");
+        // "stopping" → strip "ing" → "stopp" → undouble → "stop"
+        assert_eq!(normalize_tag_name("stopping"), "stop");
+    }
+
+    #[test]
+    fn normalize_strips_ed_suffix() {
+        assert_eq!(normalize_tag_name("processed"), "process");
+    }
+
+    #[test]
+    fn normalize_strips_plural_s() {
+        assert_eq!(normalize_tag_name("invoices"), "invoice");
+        assert_eq!(normalize_tag_name("tags"), "tag");
+        assert_eq!(normalize_tag_name("files"), "file");
+    }
+
+    #[test]
+    fn normalize_preserves_ss_ending() {
+        // "process" and "progress" should not lose their trailing 's'.
+        assert_eq!(normalize_tag_name("process"), "process");
+        assert_eq!(normalize_tag_name("progress"), "progress");
+    }
+
+    #[test]
+    fn normalize_preserves_short_words() {
+        assert_eq!(normalize_tag_name("ai"), "ai");
+        assert_eq!(normalize_tag_name("ml"), "ml");
+        assert_eq!(normalize_tag_name("dog"), "dog");
+    }
+
+    #[test]
+    fn normalize_strips_ness_suffix() {
+        assert_eq!(normalize_tag_name("happiness"), "happi");
+    }
+
+    #[test]
+    fn normalize_strips_ment_suffix() {
+        assert_eq!(normalize_tag_name("management"), "manage");
+    }
+
+    #[test]
+    fn normalize_variants_converge() {
+        // Different surface forms of the same concept must normalize identically.
+        let a = normalize_tag_name("Machine Learning");
+        let b = normalize_tag_name("machine-learning");
+        let c = normalize_tag_name("MACHINE_LEARNING");
+        assert_eq!(a, b);
+        assert_eq!(b, c);
+        assert_eq!(a, "machine learn");
+    }
+
+    #[test]
+    fn normalize_empty_string() {
+        assert_eq!(normalize_tag_name(""), "");
+    }
+
+    #[test]
+    fn normalize_only_separators() {
+        assert_eq!(normalize_tag_name("---___"), "");
+    }
+
+    // ── simple_stem edge cases ─────────────────────────────────────────────
+
+    #[test]
+    fn stem_strips_ly_suffix() {
+        assert_eq!(simple_stem("quickly"), "quick");
+    }
+
+    #[test]
+    fn stem_strips_er_suffix() {
+        assert_eq!(simple_stem("reader"), "read");
+    }
+
+    #[test]
+    fn stem_preserves_very_short_words() {
+        assert_eq!(simple_stem("us"), "us");
+        assert_eq!(simple_stem("is"), "is");
+    }
+
+    #[test]
+    fn stem_preserves_numbers() {
+        assert_eq!(simple_stem("101"), "101");
+        assert_eq!(simple_stem("v2"), "v2");
+    }
+
+    // ── canonicalize() with normalization ──────────────────────────────────
+
+    /// Variants like "machine-learning" and "machine learning" must converge to
+    /// the same canonical tag via normalization + alias lookup.
+    #[tokio::test]
+    async fn canonicalize_normalized_variants_converge() {
+        let store = Arc::new(MockTagStore::new());
+        let (canon, mock) = canonicalizer_with_mock(store.clone()).await;
+        // Same embedding for both calls — but the key fix is that normalization
+        // makes both forms identical before embedding, so upsert is idempotent.
+        mock.scenario().lock().await.embed_content = Some(vec![vec![0.5, 0.5]]);
+
+        let ids = canon
+            .canonicalize(
+                1,
+                &["machine-learning".into(), "machine learning".into()],
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(ids.len(), 2);
+        assert_eq!(
+            ids[0], ids[1],
+            "normalized variants must converge to the same canonical tag"
+        );
+        mock.shutdown().await;
+    }
+
+    /// The raw form is registered as an alias so future exact lookups succeed.
+    #[tokio::test]
+    async fn canonicalize_raw_form_registered_as_alias() {
+        let store = Arc::new(MockTagStore::new());
+        let (canon, mock) = canonicalizer_with_mock(store.clone()).await;
+        mock.scenario().lock().await.embed_content = Some(vec![vec![0.5, 0.5], vec![0.5, 0.5]]);
+
+        // First batch: create tag from "machine-learning".
+        let ids = canon
+            .canonicalize(1, &["machine-learning".into()], false)
+            .await
+            .unwrap();
+        let tag_id = ids[0];
+
+        // Second batch: raw alias lookup should find it immediately (no embed).
+        let ids2 = canon
+            .canonicalize(1, &["machine-learning".into()], false)
+            .await
+            .unwrap();
+        assert_eq!(ids2[0], tag_id, "raw form alias must resolve immediately");
         mock.shutdown().await;
     }
 }
