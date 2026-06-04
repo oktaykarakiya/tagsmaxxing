@@ -1088,9 +1088,9 @@ touches = ["crates/api/src/web/admin_handlers.rs"]
 conflict_group = "admin_handlers"
 depends_on = ["BUG-ISOL-01"]
 severity = "medium"
-status = "todo"
+status = "done"
 acceptance = "test_owner_only_pages_deny_admin_role passes"
-notes = "Admin-role users can access /admin/tenants (should be owner-only). Add proper role-based authorization checks on admin routes."
+notes = "Already fixed: require_owner gate (line 249) guards admin_tenants_page since initial P6-T8 commit (862dfaa). Unit test admin_tenants_redirects_admin_role confirms Admin-role users get 403 for GET /admin/tenants. BUG-ISOL-01 kept the gate when scoping the page to the caller's own tenant. No code change needed."
 
 [[bug]]
 id = "BUG-RBAC-06"
