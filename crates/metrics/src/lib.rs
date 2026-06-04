@@ -59,6 +59,7 @@ pub fn init_metrics() -> &'static PrometheusHandle {
         };
         describe_all();
         seed_backup_dr_metrics();
+        seed_runtime_metrics();
         handle
     })
 }
@@ -356,6 +357,20 @@ fn seed_backup_dr_metrics() {
         metrics::gauge!("kb_maintenance_last_success", "kind" => kind).set(0.0);
         metrics::gauge!("kb_maintenance_last_failure", "kind" => kind).set(0.0);
     }
+}
+
+/// Seed the runtime gauges published by the periodic metrics collector so they
+/// are present on `/metrics` from process start — before the collector's first
+/// poll (BUG-OBS-06).
+///
+/// Only the global, label-free `kb_queue_depth` is seeded, to `0` (the neutral
+/// "nothing queued yet" baseline). The per-tenant `kb_storage_bytes_used` and
+/// per-backend `kb_backend_*` families cannot be seeded without inventing
+/// synthetic label values, so they are left to the collector — whose first tick
+/// runs immediately at startup. The collector overwrites the seeded value with
+/// the live queue depth on that first tick.
+fn seed_runtime_metrics() {
+    metrics::gauge!("kb_queue_depth").set(0.0);
 }
 
 // ── Request-level recording helpers ──────────────────────────────────────────────
@@ -763,6 +778,19 @@ mod tests {
 
         let text = render();
         assert!(text.contains("kb_active_users{tenant_id=\"1\"} 5"));
+    }
+
+    #[test]
+    fn queue_depth_seeded_present_after_init() {
+        // BUG-OBS-06: kb_queue_depth is seeded at init so the family is present
+        // on /metrics before the collector's first poll.
+        let _h = ensure_init();
+        let text = render();
+        assert!(
+            text.lines()
+                .any(|l| l.trim_start().starts_with("kb_queue_depth ")),
+            "kb_queue_depth must be present after init (seeded): {text}"
+        );
     }
 
     #[test]

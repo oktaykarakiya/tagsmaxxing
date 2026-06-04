@@ -299,6 +299,10 @@ pub async fn run_serve(args: &ServeArgs) -> anyhow::Result<()> {
 
     // ── Assemble app state ──────────────────────────────────────────────────
     let backend_pool = Arc::new(pool);
+    // Clone the store for the metrics collector before `pg_store` is moved into
+    // `AppState` below (BUG-OBS-06: the collector reads global queue depth and
+    // per-tenant storage usage each tick).
+    let collector_pg_store = Arc::clone(&pg_store);
 
     // Stripe client (P11-T2): optional, gated on STRIPE_SECRET_KEY env var.
     let stripe_client: Option<Arc<dyn stripe_client::StripeClient>> =
@@ -353,8 +357,13 @@ pub async fn run_serve(args: &ServeArgs) -> anyhow::Result<()> {
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let collector_pool = backend_pool.clone();
     tokio::spawn(async move {
-        metrics_collector::start_collector(collector_pool, Duration::from_secs(30), shutdown_rx)
-            .await;
+        metrics_collector::start_collector(
+            collector_pool,
+            collector_pg_store,
+            Duration::from_secs(30),
+            shutdown_rx,
+        )
+        .await;
     });
 
     // ── Bind and serve ──────────────────────────────────────────────────────

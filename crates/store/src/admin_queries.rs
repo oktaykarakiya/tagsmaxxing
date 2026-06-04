@@ -94,6 +94,27 @@ impl PgStore {
             .collect())
     }
 
+    /// Count jobs currently **queued or waiting for retry** across all tenants.
+    ///
+    /// This is the global `kb_queue_depth` gauge source (BUG-OBS-06): the periodic
+    /// metrics collector calls it each tick and publishes the result. Only work
+    /// still waiting to be picked up is counted — `running` (already claimed),
+    /// `done`, and dead-lettered jobs are excluded, matching `claim()`'s selection
+    /// of `'queued'`/`'failed'` rows. Uses the admin pool (`jobs` is counted
+    /// cross-tenant for this platform-wide gauge).
+    ///
+    /// # Errors
+    /// Returns an error if the database is not connected or the query fails.
+    pub async fn count_pending_jobs(&self) -> anyhow::Result<i64> {
+        let pool = self.pool()?;
+        let count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM jobs WHERE status IN ('queued', 'failed')")
+                .fetch_one(&pool)
+                .await
+                .context("failed to count pending jobs for queue-depth metric")?;
+        Ok(count)
+    }
+
     /// Fetch a single tenant by id — the caller's **own** tenant.
     ///
     /// A tenant `Owner` is the administrator of their own workspace, **not** a

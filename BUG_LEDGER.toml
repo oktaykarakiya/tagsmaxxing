@@ -863,13 +863,13 @@ id = "BUG-OBS-06"
 description = "Required Prometheus metric families absent from /metrics"
 test_names = ["test_metrics_families_present"]
 test_file = "tests/catalog/test_observability.py"
-touches = ["crates/metrics/src/lib.rs", "crates/api/src/metrics_collector.rs"]
+touches = ["crates/metrics/src/lib.rs", "crates/api/src/metrics_collector.rs", "crates/llm/src/client.rs", "crates/store/src/admin_queries.rs", "crates/api/src/commands/serve.rs"]
 conflict_group = "metrics_defs"
 depends_on = ["BUG-OBS-03", "BUG-OBS-04", "BUG-OBS-05"]
 severity = "medium"
-status = "todo"
+status = "done"
 acceptance = "test_metrics_families_present passes"
-notes = "kb_backend_healthy, kb_backend_free_slots, kb_backend_total_slots, kb_backend_in_flight, kb_requests_total, kb_storage_bytes_used, kb_queue_depth are absent. Ensure the metrics collector registers and emits these families."
+notes = "DONE: root cause was that the named families were described but never emitted in production. (1) kb_requests_total: record_request had ZERO callers — wired it into LlamaClient::call_with_failover (per backend-call, success+error), adding a model param to the 3 callers. (2) kb_queue_depth + kb_storage_bytes_used: the collector only did collect_backends — added collect_runtime(pg_store) emitting record_queue_depth from new PgStore::count_pending_jobs (count jobs in 'queued'/'failed') and per-tenant record_storage_bytes from admin_list_tenants + get_storage_usage; passed a cloned pg_store into start_collector from serve.rs (cloned before the AppState move). (3) seeded kb_queue_depth=0 at init so the family is present before the collector's first poll. kb_backend_* were already emitted by collect_backends. Re-scoped touches to llm/client.rs + store/admin_queries.rs + api/commands/serve.rs. just ci green."
 
 [[bug]]
 id = "BUG-OBS-07"

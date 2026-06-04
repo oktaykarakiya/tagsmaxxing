@@ -256,7 +256,14 @@ impl LlamaClient {
         };
 
         let raw: OpenAiChatResp = self
-            .call_with_failover(role, "/chat/completions", &body, local_only, priority)
+            .call_with_failover(
+                role,
+                model,
+                "/chat/completions",
+                &body,
+                local_only,
+                priority,
+            )
             .await?;
 
         Ok(ChatResp {
@@ -296,7 +303,14 @@ impl LlamaClient {
         };
 
         let raw: OpenAiEmbedResp = self
-            .call_with_failover(Role::Embed, "/embeddings", &body, local_only, priority)
+            .call_with_failover(
+                Role::Embed,
+                model,
+                "/embeddings",
+                &body,
+                local_only,
+                priority,
+            )
             .await?;
 
         Ok(EmbedResp {
@@ -340,7 +354,7 @@ impl LlamaClient {
         };
 
         let raw: OpenAiRerankResp = self
-            .call_with_failover(Role::Rerank, "/rerank", &body, local_only, priority)
+            .call_with_failover(Role::Rerank, model, "/rerank", &body, local_only, priority)
             .await?;
 
         let n_docs = documents.len();
@@ -375,6 +389,7 @@ impl LlamaClient {
     async fn call_with_failover<Req: Serialize + std::fmt::Debug, Resp: DeserializeOwned>(
         &self,
         role: Role,
+        model: &str,
         endpoint: &str,
         body: &Req,
         local_only: bool,
@@ -382,6 +397,9 @@ impl LlamaClient {
     ) -> Result<Resp, LlmError> {
         let mut last_error: Option<String> = None;
         let total_attempts = self.max_retries.saturating_add(1);
+        // Label reused across attempts for the kb_requests_total / *_errors_total
+        // / *_duration_seconds families (BUG-OBS-06).
+        let role_label = role.to_string();
 
         for attempt in 0..total_attempts {
             // 1. Acquire a slot (fast path or wait path; plan §6.3).
@@ -428,7 +446,9 @@ impl LlamaClient {
             let url = format!("{}{endpoint}", lease.endpoint);
 
             // 3. POST to the backend.
+            let attempt_start = Instant::now();
             let result = self.http.post(&url).json(body).send().await;
+            let elapsed = attempt_start.elapsed().as_secs_f64();
 
             match result {
                 Ok(resp) if resp.status().is_success() => {
@@ -440,6 +460,13 @@ impl LlamaClient {
                         ))
                     })?;
                     self.record_success(&lease.backend_id);
+                    // Per-backend-call RED metrics (kb_requests_total etc., BUG-OBS-06).
+                    kb_metrics::record_request(
+                        kb_metrics::RequestOutcome::Success,
+                        elapsed,
+                        &role_label,
+                        model,
+                    );
                     return Ok(parsed);
                 }
                 Ok(resp) => {
@@ -448,6 +475,12 @@ impl LlamaClient {
                     let body_text = resp.text().await.unwrap_or_default();
                     self.mark_unhealthy(&lease.backend_id);
                     self.record_failure(&lease.backend_id);
+                    kb_metrics::record_request(
+                        kb_metrics::RequestOutcome::Error,
+                        elapsed,
+                        &role_label,
+                        model,
+                    );
                     let msg = format!("HTTP {status} from {}: {body_text}", lease.backend_id);
                     last_error = Some(msg);
                 }
@@ -455,6 +488,12 @@ impl LlamaClient {
                     // Transport error (connection refused, timeout, DNS, …).
                     self.mark_unhealthy(&lease.backend_id);
                     self.record_failure(&lease.backend_id);
+                    kb_metrics::record_request(
+                        kb_metrics::RequestOutcome::Error,
+                        elapsed,
+                        &role_label,
+                        model,
+                    );
                     let msg = format!("transport error to {}: {e}", lease.backend_id);
                     last_error = Some(msg);
                 }

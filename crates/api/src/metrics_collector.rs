@@ -12,34 +12,42 @@ use std::sync::Arc;
 
 use kb_metrics as metrics;
 use kb_scheduler::Pool;
-use tracing::info;
+use kb_store::PgStore;
+use tracing::{info, warn};
 
 /// Run a metrics collection loop that polls state every `interval` and updates
 /// Prometheus gauges.
 ///
-/// The collector stops when `shutdown` signals. It polls:
-/// - Backend health, free slots, total slots (from `pool`)
-/// - Queue depth (from `pg_store`, when available)
+/// The collector stops when `shutdown` signals. Each tick polls:
+/// - Backend health, free/total slots, in-flight (from `pool`)
+/// - Global queue depth and per-tenant storage usage (from `pg_store`)
+///
+/// The first tick runs immediately (before the first sleep) so the
+/// `kb_backend_*`, `kb_queue_depth`, and `kb_storage_bytes_used` families appear
+/// on `/metrics` from startup rather than only after `interval` has elapsed.
 ///
 /// # Panics
 ///
 /// Does not panic. Collection errors are logged and the loop continues.
 pub async fn start_collector(
     pool: Arc<Pool>,
+    pg_store: Arc<PgStore>,
     interval: std::time::Duration,
     shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
-    run_collector_loop(pool, interval, shutdown).await;
+    run_collector_loop(pool, pg_store, interval, shutdown).await;
 }
 
 /// Internal loop: poll → sleep → repeat until shutdown.
 async fn run_collector_loop(
     pool: Arc<Pool>,
+    pg_store: Arc<PgStore>,
     interval: std::time::Duration,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
     loop {
         collect_backends(&pool);
+        collect_runtime(&pg_store).await;
 
         tokio::select! {
             _ = shutdown.changed() => break,
@@ -48,6 +56,36 @@ async fn run_collector_loop(
     }
 
     info!("metrics collector shut down");
+}
+
+/// Update the DB-derived runtime gauges from `pg_store` (BUG-OBS-06).
+///
+/// Publishes the global `kb_queue_depth` gauge from
+/// [`PgStore::count_pending_jobs`] and one `kb_storage_bytes_used` gauge per
+/// tenant from [`PgStore::get_storage_usage`]. Each query is best-effort: a
+/// failure (e.g. transient DB error) is logged and skipped so the collector
+/// loop keeps running and the other gauges still update.
+async fn collect_runtime(pg_store: &PgStore) {
+    match pg_store.count_pending_jobs().await {
+        Ok(depth) => metrics::record_queue_depth(depth.max(0) as u64),
+        Err(e) => warn!(error = %e, "metrics collector: failed to read queue depth"),
+    }
+
+    match pg_store.admin_list_tenants().await {
+        Ok(tenants) => {
+            for tenant in tenants {
+                match pg_store.get_storage_usage(tenant.id).await {
+                    Ok(bytes) => metrics::record_storage_bytes(tenant.id, bytes.max(0) as u64),
+                    Err(e) => warn!(
+                        error = %e,
+                        tenant_id = tenant.id,
+                        "metrics collector: failed to read storage usage"
+                    ),
+                }
+            }
+        }
+        Err(e) => warn!(error = %e, "metrics collector: failed to list tenants"),
+    }
 }
 
 /// Update backend-level gauges from the current pool state.
@@ -174,11 +212,14 @@ mod tests {
         ));
 
         let pool = Arc::new(Pool::new(vec![backend], Duration::from_secs(5)));
+        // PgStore at a closed port → its queries error fast; the collector logs
+        // and keeps running, so shutdown still works.
+        let pg_store = Arc::new(PgStore::new("postgres://127.0.0.1:1/none?sslmode=disable"));
         let (tx, rx) = tokio::sync::watch::channel(false);
 
         // Spawn the collector, then immediately shut down.
         let handle = tokio::spawn(async move {
-            start_collector(pool, Duration::from_secs(60), rx).await;
+            start_collector(pool, pg_store, Duration::from_secs(60), rx).await;
         });
 
         // Small sleep to let the collector start.
@@ -188,5 +229,15 @@ mod tests {
         let _ = tx.send(true);
         let result = tokio::time::timeout(Duration::from_secs(5), handle).await;
         assert!(result.is_ok(), "collector should shut down when signalled");
+    }
+
+    #[tokio::test]
+    async fn collect_runtime_swallows_db_errors() {
+        // PgStore pointed at a closed port: count_pending_jobs and
+        // admin_list_tenants both error. collect_runtime must log and skip each,
+        // returning normally (never panicking) so the loop keeps running.
+        let pg_store = PgStore::new("postgres://127.0.0.1:1/none?sslmode=disable");
+        // Completes without panic — exercises the error branches.
+        collect_runtime(&pg_store).await;
     }
 }
