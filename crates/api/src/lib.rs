@@ -43,7 +43,9 @@ use kb_scheduler::Pool;
 use kb_store::PgStore;
 
 use crate::backpressure::InflightLimiter;
-use crate::middleware::{auth_middleware, cors_layer, login_rate_limit_middleware};
+use crate::middleware::{
+    auth_middleware, cors_layer, http_metrics_middleware, login_rate_limit_middleware,
+};
 use crate::stripe_client::StripeClient;
 
 /// Default presigned-URL TTL in seconds (1 hour, plan §20).
@@ -399,6 +401,9 @@ pub fn build_router(state: AppState) -> Router {
     public
         .merge(api)
         .merge(web)
+        // Innermost added layer → runs closest to routing, so the `MatchedPath`
+        // extension is populated and HTTP RED metrics get per-route labels.
+        .layer(from_fn(http_metrics_middleware))
         .layer(from_fn_with_state(
             state.clone(),
             degradation_middleware::degradation_middleware,

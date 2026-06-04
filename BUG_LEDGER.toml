@@ -850,13 +850,13 @@ id = "BUG-OBS-05"
 description = "No HTTP RED metrics (rate/error/duration) per route"
 test_names = ["test_http_red_metrics_present"]
 test_file = "tests/catalog/test_reliability_ops.py"
-touches = ["crates/metrics/src/lib.rs", "crates/api/src/middleware.rs"]
+touches = ["crates/metrics/src/lib.rs", "crates/api/src/middleware.rs", "crates/api/src/lib.rs", "crates/api/tests/p6_integration.rs"]
 conflict_group = "metrics_defs"
 depends_on = []
 severity = "medium"
-status = "blocked"
+status = "done"
 acceptance = "test_http_red_metrics_present passes"
-notes = "BLOCKED: RED metrics middleware implemented but breaks existing integration test crates/api/tests/p6_integration.rs::metrics_endpoint_returns_valid_prometheus_output (snapshot of exact /metrics output — the new middleware adds kb_http_* metrics AND counts the /metrics call itself, so the hardcoded expected output is stale). Fix needs to ALSO update p6_integration.rs (outside the bug's touches=middleware.rs+metrics/lib.rs). Re-scope touches to include crates/api/tests/p6_integration.rs. First agent also hung on a dropped API socket mid-fix."
+notes = "DONE: added kb_metrics::record_http_request emitting kb_http_requests_total (rate), kb_http_request_duration_seconds (duration), and kb_http_errors_total (5xx only), all labelled method/path/status. New http_metrics_middleware (middleware.rs) reads MatchedPath for low-cardinality route labels (unmatched->\"unmatched\"), excludes /metrics,/health,/live to avoid scrape self-counting, and is layered in build_router (lib.rs) closest to routing so MatchedPath resolves (verified: RED line carries path=\"/api/search\"). Fixed the self-counting race in p6_integration::metrics_endpoint_returns_valid_prometheus_output: replaced the exact body==render() snapshot (racy now that RED fires on every request across concurrent tests sharing the global recorder) with race-free structural checks; added integration test http_red_metrics_recorded_per_route. Re-scoped touches to include lib.rs + p6_integration.rs per the original block note. just ci green."
 
 [[bug]]
 id = "BUG-OBS-06"

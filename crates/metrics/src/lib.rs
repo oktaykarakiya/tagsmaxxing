@@ -194,6 +194,21 @@ fn describe_all() {
         "Total number of failed LLM requests"
     );
 
+    // HTTP RED metrics — per-route rate/errors/duration (plan §15, BUG-OBS-05).
+    // Labels: method, path (matched route template), status.
+    metrics::describe_counter!(
+        "kb_http_requests_total",
+        "Total HTTP requests handled, labelled by method, matched-route path, and status"
+    );
+    metrics::describe_histogram!(
+        "kb_http_request_duration_seconds",
+        "HTTP request handling duration in seconds, labelled by method, matched-route path, and status"
+    );
+    metrics::describe_counter!(
+        "kb_http_errors_total",
+        "Total HTTP responses with a 5xx status, labelled by method, matched-route path, and status"
+    );
+
     // Storage (per-tenant, label = tenant_id)
     metrics::describe_gauge!(
         "kb_storage_bytes_used",
@@ -373,6 +388,47 @@ pub fn record_request(outcome: RequestOutcome, duration_secs: f64, role: &str, m
             "kb_request_errors_total",
             "role" => role.to_owned(),
             "model" => model.to_owned()
+        )
+        .increment(1);
+    }
+}
+
+/// Record one completed HTTP request for the RED (rate / errors / duration)
+/// metrics (plan §15, BUG-OBS-05).
+///
+/// Emits, all labelled by `method`, matched-route `path`, and `status`:
+/// - `kb_http_requests_total` — request **rate** counter;
+/// - `kb_http_request_duration_seconds` — request **duration** histogram;
+/// - `kb_http_errors_total` — server-**error** counter, incremented only for
+///   `5xx` responses (client `4xx` errors are not service errors and are
+///   excluded so error-budget alerting tracks server faults).
+///
+/// `path` must be the *matched route template* (e.g. `/api/documents/{id}`),
+/// not the raw URI, so that dynamic path segments do not explode label
+/// cardinality. Called from the API's HTTP-metrics middleware after the
+/// response status is known.
+pub fn record_http_request(method: &str, path: &str, status: u16, duration_secs: f64) {
+    let status_label = status.to_string();
+    metrics::counter!(
+        "kb_http_requests_total",
+        "method" => method.to_owned(),
+        "path" => path.to_owned(),
+        "status" => status_label.clone()
+    )
+    .increment(1);
+    metrics::histogram!(
+        "kb_http_request_duration_seconds",
+        "method" => method.to_owned(),
+        "path" => path.to_owned(),
+        "status" => status_label.clone()
+    )
+    .record(duration_secs);
+    if status >= 500 {
+        metrics::counter!(
+            "kb_http_errors_total",
+            "method" => method.to_owned(),
+            "path" => path.to_owned(),
+            "status" => status_label
         )
         .increment(1);
     }
@@ -632,6 +688,60 @@ mod tests {
         );
         assert!(
             text.contains("kb_request_duration_seconds_sum{role=\"embed\",model=\"bge-m3\"} 1.23")
+        );
+    }
+
+    #[test]
+    fn http_red_metrics_emit_families_with_status_label() {
+        let _h = ensure_init();
+        // A successful request and a server error on distinct routes.
+        record_http_request("GET", "/api/red-ok", 200, 0.012);
+        record_http_request("POST", "/api/red-fail", 503, 0.5);
+
+        let text = render();
+        // Rate counter — present with method/path/status labels.
+        assert!(
+            text.contains("kb_http_requests_total")
+                && text.lines().any(|l| l.contains("kb_http_requests_total")
+                    && l.contains("path=\"/api/red-ok\"")
+                    && l.contains("status=\"200\"")),
+            "kb_http_requests_total missing status-labelled line in: {text}"
+        );
+        // Duration histogram — also carries the status label.
+        assert!(
+            text.lines()
+                .any(|l| l.contains("kb_http_request_duration_seconds")
+                    && l.contains("status=\"200\"")),
+            "kb_http_request_duration_seconds missing status label in: {text}"
+        );
+        // Error counter — only the 5xx response is counted, not any 2xx.
+        assert!(
+            text.lines().any(|l| l.contains("kb_http_errors_total")
+                && l.contains("path=\"/api/red-fail\"")
+                && l.contains("status=\"503\"")),
+            "kb_http_errors_total missing 5xx line in: {text}"
+        );
+        assert!(
+            !text
+                .lines()
+                .any(|l| l.contains("kb_http_errors_total") && l.contains("path=\"/api/red-ok\"")),
+            "2xx request must not increment kb_http_errors_total: {text}"
+        );
+    }
+
+    #[test]
+    fn http_red_error_counter_skips_4xx() {
+        let _h = ensure_init();
+        record_http_request("GET", "/api/red-clienterr", 404, 0.001);
+        let text = render();
+        // A 4xx is a client error, not a server fault — kb_http_errors_total
+        // must not gain a line for it.
+        assert!(
+            !text
+                .lines()
+                .any(|l| l.contains("kb_http_errors_total")
+                    && l.contains("path=\"/api/red-clienterr\"")),
+            "4xx must not increment kb_http_errors_total: {text}"
         );
     }
 

@@ -35,6 +35,7 @@ use std::sync::Arc;
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
+use axum::extract::MatchedPath;
 use axum::extract::State;
 use axum::http::Method;
 use axum::http::Request;
@@ -804,6 +805,51 @@ async fn run_maybe_idempotent(
 /// `tenant_id:user_id`.
 fn idempotency_key_for_user(user: &AuthUser, raw_key: &str) -> String {
     format!("{}:{}:{}", user.tenant_id, user.user_id, raw_key)
+}
+
+// ── HTTP RED metrics middleware (BUG-OBS-05) ─────────────────────────────────────
+
+/// Returns `true` for endpoints excluded from HTTP RED-metric instrumentation.
+///
+/// The Prometheus scrape endpoint (`/metrics`) is excluded so a scrape never
+/// counts itself — self-counting would also make `/metrics` output depend on how
+/// many times it had been scraped, breaking byte-stable snapshots. The liveness
+/// (`/live`) and readiness (`/health`) probes are excluded as high-frequency,
+/// low-signal noise that would dominate the per-route series.
+fn is_metrics_excluded_path(path: &str) -> bool {
+    matches!(path, "/metrics" | "/health" | "/live")
+}
+
+/// Axum middleware: record per-route HTTP RED metrics (rate, errors, duration).
+///
+/// Times the inner stack, then records [`kb_metrics::record_http_request`]
+/// labelled by method, matched-route path, and response status. The route label
+/// is taken from the [`MatchedPath`] request extension so dynamic segments
+/// (e.g. document ids) collapse to their template (`/api/documents/{id}`) and do
+/// not explode label cardinality; requests that match no route (404s) are
+/// bucketed under `path="unmatched"`. Scrape and probe endpoints are excluded
+/// via [`is_metrics_excluded_path`].
+pub async fn http_metrics_middleware(request: Request<axum::body::Body>, next: Next) -> Response {
+    let method = request.method().as_str().to_owned();
+    let matched = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map(|m| m.as_str().to_owned());
+    let raw_path = request.uri().path().to_owned();
+
+    let start = Instant::now();
+    let response = next.run(request).await;
+    let elapsed = start.elapsed().as_secs_f64();
+
+    // Exclude scrape/probe endpoints — match on the route template when known,
+    // otherwise the raw path (so `/metrics` is excluded even if unmatched).
+    let excluded_key = matched.as_deref().unwrap_or(raw_path.as_str());
+    if !is_metrics_excluded_path(excluded_key) {
+        let label_path = matched.as_deref().unwrap_or("unmatched");
+        kb_metrics::record_http_request(&method, label_path, response.status().as_u16(), elapsed);
+    }
+
+    response
 }
 
 // ── CORS layer ─────────────────────────────────────────────────────────────────

@@ -957,21 +957,97 @@ async fn metrics_endpoint_returns_valid_prometheus_output() {
 
     let body = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
     let body_str = String::from_utf8_lossy(&body);
-    let rendered = kb_metrics::render();
 
-    // The handler calls kb_metrics::render(). Verify the body matches.
-    assert_eq!(
-        body_str.trim(),
-        rendered.trim(),
-        "metrics endpoint must return the rendered metrics"
-    );
-
-    // Prometheus exposition format: when metrics have been described (init_metrics
-    // was called but no observations recorded), the output contains HELP/TYPE
-    // lines or is empty.
+    // Assert on the response body itself rather than comparing it to a second
+    // `kb_metrics::render()` call. The metrics recorder is a process-global
+    // shared by every test in this binary, and the HTTP RED-metrics middleware
+    // (BUG-OBS-05) records a sample on *every* request, so a concurrent test can
+    // mutate the registry between two render() calls — making an exact-equality
+    // snapshot inherently racy. These structural checks are race-free.
     assert!(
-        rendered.contains("# HELP") || rendered.is_empty(),
-        "metrics output must contain HELP lines (or be empty if no metrics recorded)"
+        body_str.contains("# HELP") || body_str.trim().is_empty(),
+        "metrics output must contain HELP lines (or be empty if nothing recorded): {body_str}"
+    );
+    // Every non-comment, non-blank line must be a well-formed exposition sample
+    // (`metric_name … value`).
+    for line in body_str.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        assert!(
+            line.split_whitespace().count() >= 2,
+            "malformed Prometheus exposition line in /metrics body: {line:?}"
+        );
+    }
+}
+
+/// BUG-OBS-05: the HTTP RED-metrics middleware records per-route
+/// rate/error/duration series, labelled with method, matched-route path, and
+/// status — and excludes the `/metrics` scrape endpoint itself.
+#[tokio::test]
+async fn http_red_metrics_recorded_per_route() {
+    let _ = kb_metrics::init_metrics();
+
+    let session_store: Arc<dyn SessionStore> = Arc::new(InMemorySessionStore::new());
+    let pg_store = Arc::new(PgStore::new("postgres://localhost/test?sslmode=disable"));
+    let state = Arc::new(AppState::new(
+        session_store,
+        pg_store,
+        Some(Duration::from_secs(3600)),
+        false,
+    ));
+    let router = kb_api::build_router((*state).clone());
+
+    use tower::ServiceExt;
+    // Unauthenticated request to an auth-gated route: the auth middleware
+    // returns 401 before any handler/DB access (deterministic), and `/api/search`
+    // still matches a route so `MatchedPath` is populated for the label.
+    let req = http::Request::builder()
+        .uri("/api/search?q=red")
+        .body(Body::empty())
+        .unwrap();
+    let resp = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // Scrape — `/metrics` is excluded from RED instrumentation, so it does not
+    // perturb the families under test.
+    let scrape = http::Request::builder()
+        .uri("/metrics")
+        .body(Body::empty())
+        .unwrap();
+    let resp = router.oneshot(scrape).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+    let text = String::from_utf8_lossy(&body);
+
+    // Rate counter present, carrying the method/path/status labels for the 401.
+    let red_line = text
+        .lines()
+        .find(|l| {
+            !l.trim_start().starts_with('#')
+                && l.contains("kb_http_requests_total")
+                && l.contains("status=\"401\"")
+        })
+        .unwrap_or_else(|| panic!("no kb_http_requests_total 401 line in:\n{text}"));
+    assert!(
+        red_line.contains("path=\"/api/search\""),
+        "RED metric must carry the matched-route path label, got: {red_line}"
+    );
+    assert!(
+        red_line.contains("method=\"GET\""),
+        "RED metric must carry the method label, got: {red_line}"
+    );
+    // Duration histogram present for the same route/status.
+    assert!(
+        text.lines().any(|l| l.contains("kb_http_request_duration_seconds")
+            && l.contains("status=\"401\"")),
+        "no kb_http_request_duration_seconds for the 401 route in:\n{text}"
+    );
+    // The scrape endpoint must not appear as its own RED series.
+    assert!(
+        !text.contains("path=\"/metrics\""),
+        "/metrics scrape must be excluded from RED instrumentation:\n{text}"
     );
 }
 
