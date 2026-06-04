@@ -209,7 +209,9 @@ fn detect_mime(bytes: &[u8]) -> &'static str {
         return "application/x-empty";
     }
     let detected = tree_magic_mini::from_u8(bytes);
-    if detected == "application/octet-stream" {
+    // Also recover application/x-riff (tree_magic_mini's result for WAV) so the
+    // file routes to DocKind::Audio, matching the upload-edge allow-list.
+    if matches!(detected, "application/octet-stream" | "application/x-riff") {
         return normalize_octet_stream_magic(bytes);
     }
     detected

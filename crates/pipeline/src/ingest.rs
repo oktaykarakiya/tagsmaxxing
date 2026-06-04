@@ -266,13 +266,33 @@ impl IngestPipeline {
                     kind,
                     path: file.path.clone(),
                 };
-                extractor.extract(&raw).await.with_context(|| {
-                    format!(
-                        "extraction failed for page {} ({})",
-                        file.page_no,
-                        file.path.as_deref().unwrap_or("?")
-                    )
-                })?
+                match extractor.extract(&raw).await {
+                    Ok(extracted) => extracted,
+                    // Media (audio/video/image) extraction is best-effort: a file
+                    // with no decodable streams, or a transcode/transcription
+                    // failure, still ingests as a metadata-only document rather
+                    // than failing the whole upload. The blob is already stored,
+                    // so it stays searchable by name/metadata. Non-media
+                    // extraction errors (text/code/office) still propagate.
+                    Err(e) if matches!(kind, DocKind::Audio | DocKind::Video | DocKind::Image) => {
+                        tracing::warn!(
+                            error = %e,
+                            kind = ?kind,
+                            path = file.path.as_deref().unwrap_or("?"),
+                            "media extraction failed; ingesting metadata-only"
+                        );
+                        Extracted::default()
+                    }
+                    Err(e) => {
+                        return Err(e).with_context(|| {
+                            format!(
+                                "extraction failed for page {} ({})",
+                                file.page_no,
+                                file.path.as_deref().unwrap_or("?")
+                            )
+                        });
+                    }
+                }
             } else {
                 Extracted::default()
             };

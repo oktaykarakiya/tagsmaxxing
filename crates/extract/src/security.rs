@@ -487,7 +487,10 @@ fn detect_upload_mime(bytes: &[u8]) -> &'static str {
         return "application/x-empty";
     }
     let detected = tree_magic_mini::from_u8(bytes);
-    if detected == "application/octet-stream" {
+    // Recover from the two "couldn't classify" results: octet-stream and the
+    // generic application/x-riff (tree_magic_mini reports the latter for WAV — it
+    // sees the RIFF container but not the WAVE form type).
+    if matches!(detected, "application/octet-stream" | "application/x-riff") {
         return normalize_octet_stream_magic(bytes);
     }
     detected
