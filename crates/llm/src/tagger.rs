@@ -25,7 +25,7 @@ use crate::client::LlamaClient;
 ///
 /// Bump when the prompt template or JSON Schema changes so that downstream
 /// consumers can detect a breaking output shape change.
-pub const TAGGER_CONTRACT_VERSION: &str = "1.1.4";
+pub const TAGGER_CONTRACT_VERSION: &str = "1.1.5";
 
 /// The system prompt — pure instruction, no user data (defence layer 1).
 const SYSTEM_PROMPT: &str = "\
@@ -85,12 +85,12 @@ marketing, cooking).\n\
 - Use short, lowercase noun keywords (1–3 words); never full sentences.\n\
 - Use singular forms only (e.g. \"invoice\" not \"invoices\", \"report\" not \"reports\").\n\
 - If two tags mean the same thing, keep only the shorter one.\n\
-- The output schema enforces a strict bound: you MUST produce at most 20 tags
-and at least 0 tags. This is a hard limit — never exceed 20 tags under any
-circumstance. Stay well within this bound: most documents need only 3–10
-well-chosen tags. Produce fewer for short or single-topic documents. A
-document with genuinely no discernible subject may legitimately receive 0 tags.
-- Always prefer a few high-quality, on-topic tags over many generic or
+- The output schema enforces a strict bound: you MUST produce at most 20 tags \
+and at least 0 tags. This is a hard limit — never exceed 20 tags under any \
+circumstance. Stay well within this bound: most documents need only 3–10 \
+well-chosen tags. Produce fewer for short or single-topic documents. A \
+document with genuinely no discernible subject may legitimately receive 0 tags.\n\
+- Always prefer a few high-quality, on-topic tags over many generic or \
 overlapping ones. Do not pad to reach a specific count — quality over quantity.\n\
 \n\
 Worked examples (illustrative — always tag the ACTUAL document you are given, \
@@ -201,12 +201,19 @@ impl JsonSchemaTagger {
 
     /// Parse the model's text response into [`TagOutput`].
     ///
-    /// Returns `Ok` if the JSON matches the schema; `Err` with a descriptive
-    /// message otherwise.
+    /// Returns `Ok` if the JSON parses as [`TagOutput`]; `Err` with a descriptive
+    /// message otherwise. As a defence-in-depth safety net, tags are truncated to
+    /// the schema's `maxItems` (20) so that the application-level output never
+    /// exceeds the bound even if the model's grammar-constrained generation
+    /// does not perfectly respect it.
     fn parse_response(text: &str) -> anyhow::Result<TagOutput> {
-        let output: TagOutput = serde_json::from_str(text).map_err(|e| {
+        let mut output: TagOutput = serde_json::from_str(text).map_err(|e| {
             anyhow::anyhow!("failed to parse tagger response as TagOutput: {e}; got: {text}")
         })?;
+        // Defence-in-depth: enforce schema maxItems at the application level.
+        // The json_schema response_format constrains generation, but this
+        // ensures the bound is never exceeded regardless of model behaviour.
+        output.tags.truncate(20);
         Ok(output)
     }
 
@@ -462,7 +469,7 @@ mod tests {
 
     #[test]
     fn contract_version_is_stable() {
-        assert_eq!(JsonSchemaTagger::contract_version(), "1.1.4");
+        assert_eq!(JsonSchemaTagger::contract_version(), "1.1.5");
     }
 
     #[test]
@@ -607,6 +614,40 @@ mod tests {
         let err = JsonSchemaTagger::parse_response(json).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("failed to parse"), "{msg}");
+    }
+
+    #[test]
+    fn parse_response_truncates_tags_exceeding_max_items() {
+        // Defence-in-depth: even if the model outputs >20 tags, parse_response
+        // truncates to the schema's maxItems=20 bound.
+        let tags: Vec<String> = (0..50).map(|i| format!("tag-{i}")).collect();
+        let json = serde_json::json!({
+            "title": "Test",
+            "summary": "x",
+            "tags": tags
+        })
+        .to_string();
+        let output = JsonSchemaTagger::parse_response(&json).unwrap();
+        assert_eq!(
+            output.tags.len(),
+            20,
+            "tags must be truncated to maxItems=20"
+        );
+        assert_eq!(output.tags[0], "tag-0");
+        assert_eq!(output.tags[19], "tag-19");
+    }
+
+    #[test]
+    fn parse_response_tags_within_bound_untouched() {
+        // A valid tag count within the bound must not be altered.
+        let json = serde_json::json!({
+            "title": "Test",
+            "summary": "x",
+            "tags": ["rust", "programming", "tutorial"]
+        })
+        .to_string();
+        let output = JsonSchemaTagger::parse_response(&json).unwrap();
+        assert_eq!(output.tags, vec!["rust", "programming", "tutorial"]);
     }
 
     // ── sanitiser & output-validation tests ───────────────────────────────

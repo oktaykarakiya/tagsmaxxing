@@ -961,9 +961,9 @@ touches = ["crates/llm/src/tagger.rs"]
 conflict_group = "tagger"
 depends_on = ["BUG-TAG-01"]
 severity = "low"
-status = "todo"
+status = "done"
 acceptance = "test_tag_count_within_bounds passes"
-notes = "Too many or too few tags generated. The tagger schema should enforce minItems=0, maxItems=20 with a steering prompt to produce a reasonable count."
+notes = "Added explicit hard-bounds steering prompt (at most 20, at least 0) and defence-in-depth truncate(20) in parse_response; bumped TAGGER_CONTRACT_VERSION 1.1.4→1.1.5. E2E test passes."
 
 
 # ── Cross-Tenant Isolation ──────────────────────────────────────────────────
