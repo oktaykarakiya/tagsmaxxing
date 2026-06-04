@@ -12,6 +12,27 @@ Full design: [`local-kb-plan.md`](./local-kb-plan.md). Architecture:
 [`CLAUDE.md`](./CLAUDE.md). Contributing:
 [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
+## Use cases
+
+TagsMaxxing is built to be a **searchable knowledge base and AI memory** for teams drowning in
+information — everything stays on your own infrastructure (your llama.cpp servers, your Postgres),
+with per-tenant RLS isolation and at-rest encryption.
+
+- **Company documentation that's actually findable.** Ingest every doc, PDF, spec, wiki export,
+  spreadsheet, code file, image, and audio/video recording. Each is auto-titled, summarised, and
+  tagged by the LLM (plus your own notes), then indexed for **hybrid (vector + keyword) search with
+  reranking** — so you find the right passage even when you don't remember the exact wording or
+  filename, with provenance deep-links back to the source. It solves the common failure mode where
+  *"the documentation exists, but nobody can find anything in it."*
+- **An AI memory for work.** Use it as a persistent, queryable context store for your team's AI
+  workflows: drop in notes, transcripts, decisions, runbooks, and reference material, then retrieve
+  exactly the relevant context on demand. Instead of re-pasting or re-deriving knowledge every
+  session, your tooling reads from *your* curated memory — a more efficient way to put AI to work on
+  real company knowledge.
+- **A private, local alternative to cloud "chat-with-your-docs" tools.** No documents leave your
+  network; embedding, tagging, reranking, and (optional) audio/video transcription all run on local
+  models.
+
 ## Quickstart
 
 ```bash
