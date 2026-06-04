@@ -426,9 +426,8 @@ catalogued as acceptance criteria.
 
 ## License
 
-Dual-licensed under [Apache-2.0](LICENSE) or [MIT](LICENSE) — you may use this software
-under the terms of either license, at your option. See the [`LICENSE`](./LICENSE) file for
-the full text.
+Licensed under the [GNU General Public License v3.0 or later](LICENSE) — see the
+[`LICENSE`](./LICENSE) file for the full text.
 
 **Model weights are NOT covered by this license.** The LLM models (llama.cpp GGUF files,
 whisper models, etc.) are separately licensed by their respective providers. This project
