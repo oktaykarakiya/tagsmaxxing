@@ -29,6 +29,7 @@ use kb_config::AppConfig;
 use kb_core::kind::DocKind;
 use kb_extract::code::CodeExtractor;
 use kb_extract::text::TextExtractor;
+use kb_extract::tika::{TikaConfig, TikaExtractor};
 use kb_llm::{JsonSchemaTagger, LlamaClient, LlamaReranker};
 use kb_pipeline::embedder::ChunkEmbedder;
 use kb_pipeline::ingest::{ExtractorRouter, IngestPipeline};
@@ -138,7 +139,16 @@ async fn run() -> anyhow::Result<()> {
     let mut extractors: ExtractorRouter = std::collections::HashMap::new();
     extractors.insert(DocKind::Document, Arc::new(TextExtractor));
     extractors.insert(DocKind::Code, Arc::new(CodeExtractor));
-    // Other kinds (Image, Audio, Video, Archive, Binary) fall back to
+    // OOXML office formats (.docx/.xlsx) are detected as application/zip and
+    // routed to DocKind::Archive; wire Apache Tika so their content is extracted
+    // and searchable (BUG-INGEST-05). TIKA_URL is hot-swappable via TikaConfig.
+    let tika_url =
+        std::env::var("TIKA_URL").unwrap_or_else(|_| "http://localhost:9998".to_string());
+    extractors.insert(
+        DocKind::Archive,
+        Arc::new(TikaExtractor::new(http.clone(), TikaConfig::new(tika_url))),
+    );
+    // Other kinds (Image, Audio, Video, Binary) fall back to
     // Extracted::default() — no extraction, just deterministic metadata.
 
     match cli.command {

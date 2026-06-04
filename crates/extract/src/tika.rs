@@ -416,6 +416,42 @@ mod tests {
         mock.shutdown().await;
     }
 
+    /// BUG-INGEST-05: an OOXML office document (.docx/.xlsx) is detected as
+    /// `application/zip` and routed to [`DocKind::Archive`]. Once Archive is
+    /// wired to this Tika extractor (in the API's extractor router), the
+    /// document body is extracted and becomes searchable. Verified here against
+    /// a representative Tika response for an office file arriving as a zip.
+    #[tokio::test]
+    async fn extracts_office_ooxml_as_searchable_text() {
+        let mock = MockTika::start().await;
+        mock.set_scenario(tika_json_response(
+            "Quarterly revenue grew 12% across all regions.",
+            json!({
+                "Content-Type":
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            }),
+        ))
+        .await;
+
+        let ex = extractor_with_mock(&mock).await;
+        // A .docx arrives mime-typed as application/zip with kind Archive.
+        let docx = RawFile {
+            bytes: Bytes::from_static(b"PK\x03\x04fake-ooxml-zip"),
+            mime: Some("application/zip".into()),
+            kind: DocKind::Archive,
+            path: Some("q3-report.docx".into()),
+        };
+        let out = ex.extract(&docx).await.unwrap();
+
+        assert_eq!(out.text, "Quarterly revenue grew 12% across all regions.");
+        assert!(
+            !out.text.is_empty(),
+            "office document must yield searchable text"
+        );
+
+        mock.shutdown().await;
+    }
+
     /// JSON response with no metadata beyond the content.
     #[tokio::test]
     async fn extracts_text_only_from_json() {
