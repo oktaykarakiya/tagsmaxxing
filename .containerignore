@@ -2,6 +2,9 @@
 # from source, so target/ and other generated files must stay out.
 target/
 
+# Model weights (GGUF files) — large, not shipped in the container image.
+models/
+
 # Git metadata is not needed inside the container build context.
 .git/
 .gitignore
