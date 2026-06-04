@@ -401,7 +401,7 @@ mod tests {
             "landing must contain value proposition"
         );
         assert!(
-            html.contains("How it works"),
+            html.contains("How it will work"),
             "landing must contain how-it-works section"
         );
         assert!(
@@ -417,7 +417,7 @@ mod tests {
             "landing must contain step 3"
         );
         assert!(
-            html.contains("Get started free"),
+            html.contains("Try the preview"),
             "landing must contain CTA button"
         );
         // Meta description for SEO.

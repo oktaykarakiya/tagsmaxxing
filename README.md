@@ -2,6 +2,10 @@
 
 **https://tagsmaxxing.com**
 
+> ⚠️ **This project is experimental software in active development. It is not yet ready
+> for production use — features, APIs, and data formats may change without notice.
+> Do not rely on it for real data. Contributions and feedback are welcome.**
+
 A self-hosted, modular tool that ingests files of **any** type, enriches them with an
 LLM-generated title/summary/tags plus your notes and extracted metadata, stores everything in
 Postgres, and retrieves it via **hybrid (vector + keyword) search with reranking** — all
