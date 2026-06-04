@@ -734,14 +734,8 @@ pub async fn add_page(
                 None => "Failed to process uploaded files.".to_string(),
             };
             let csrf = generate_fresh_csrf();
-            let mut resp = build_document_detail_page(
-                &state,
-                auth_user.tenant_id,
-                doc_id,
-                &csrf,
-                &msg,
-            )
-            .await;
+            let mut resp =
+                build_document_detail_page(&state, auth_user.tenant_id, doc_id, &csrf, &msg).await;
             resp.headers_mut().insert(
                 axum::http::header::SET_COOKIE,
                 csrf::csrf_cookie_value(&csrf, state.session_ttl, state.secure_cookies),

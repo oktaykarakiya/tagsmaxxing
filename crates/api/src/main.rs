@@ -207,7 +207,9 @@ async fn run() -> anyhow::Result<()> {
                     DEFAULT_EMBED_MODEL.into(),
                     TAG_MERGE_THRESHOLD,
                 )
-                .with_usage_recorder(Arc::clone(&pg_store) as Arc<dyn kb_core::usage::UsageRecorder>),
+                .with_usage_recorder(
+                    Arc::clone(&pg_store) as Arc<dyn kb_core::usage::UsageRecorder>
+                ),
             );
 
             let blob: Arc<dyn kb_core::blob::Blob> = Arc::new(kb_store::LocalBlob::new(

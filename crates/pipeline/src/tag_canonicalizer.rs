@@ -771,12 +771,18 @@ mod tests {
             .canonicalize(7, &["freshtopic".into()], false)
             .await
             .unwrap();
+        mock.shutdown().await;
 
+        // Lock acquired only after all awaits so the guard never crosses an
+        // await point (clippy::await_holding_lock); events are already captured.
         let events = recorder.events.lock().unwrap();
-        assert_eq!(events.len(), 1, "tag-name embed must record one usage event");
+        assert_eq!(
+            events.len(),
+            1,
+            "tag-name embed must record one usage event"
+        );
         assert_eq!(events[0].role, Role::Embed);
         assert_eq!(events[0].tenant_id, 7);
-        mock.shutdown().await;
     }
 
     #[tokio::test]

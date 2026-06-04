@@ -992,7 +992,10 @@ mod tests {
         };
 
         // QuickTime .mov → video/quicktime (allow-listed → same ffmpeg path, right label).
-        assert_eq!(normalize_octet_stream_magic(&ftyp(b"qt  ")), "video/quicktime");
+        assert_eq!(
+            normalize_octet_stream_magic(&ftyp(b"qt  ")),
+            "video/quicktime"
+        );
         assert!(is_allowed_mime("video/quicktime", ALLOWED_MIMES));
 
         // MP4 brands stay video/mp4.
