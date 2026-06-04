@@ -145,19 +145,42 @@ while :; do
     pids+=($!)
   done
 
-  # Wait for all fixes in this batch
+  # Wait for all fixes in this batch.
+  #
+  # Self-healing reap: a `claude -p` process sometimes keeps running after it has
+  # already committed its fix and flipped the ledger to a terminal status (a known
+  # headless-CLI quirk). A bare `wait` would then block until BUG_TIMEOUT (~40min).
+  # Instead we poll: as soon as a bug's ledger status is done/blocked, its real
+  # work is finished, so we kill the lingering process tree and move on.
   say "  waiting for ${#pids[@]} fix agents to complete…"
   failed_pids=()
-  for i in "${!pids[@]}"; do
-    pid="${pids[$i]}"
-    bid="${BUG_IDS[$i]}"
-    if wait "$pid"; then
-      ok "  $bid agent completed successfully"
-    else
-      warn "  $bid agent exited non-zero (see ${bug_logs[$i]})"
-      failed_pids+=("$bid")
-    fi
+  remaining=$(( ${#pids[@]} ))
+  declare -A reaped=()
+  while (( remaining > 0 )); do
+    for i in "${!pids[@]}"; do
+      [[ -n "${reaped[$i]:-}" ]] && continue
+      pid="${pids[$i]}"
+      bid="${BUG_IDS[$i]}"
+      # (a) process already exited naturally?
+      if ! kill -0 "$pid" 2>/dev/null; then
+        wait "$pid" && ok "  $bid agent completed successfully" \
+                    || { warn "  $bid agent exited non-zero (see ${bug_logs[$i]})"; failed_pids+=("$bid"); }
+        reaped[$i]=1; remaining=$((remaining-1)); continue
+      fi
+      # (b) work is committed (ledger terminal) but the process lingers → reap it.
+      st="$(ledger field "$bid" status 2>/dev/null || echo unknown)"
+      if [[ "$st" == "done" || "$st" == "blocked" ]]; then
+        # kill the whole process group for this agent (timeout + claude + children)
+        pkill -P "$pid" 2>/dev/null || true
+        kill "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+        ok "  $bid agent reaped (status=$st; process lingered after committing)"
+        reaped[$i]=1; remaining=$((remaining-1)); continue
+      fi
+    done
+    (( remaining > 0 )) && sleep 5
   done
+  unset reaped
 
   # ── Independent verification per bug ────────────────────────────────────
   say "verifying batch $batch_num fixes"
