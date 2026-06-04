@@ -1075,9 +1075,9 @@ touches = ["crates/api/src/web/handlers_account.rs", "crates/api/src/web/admin_h
 conflict_group = "admin_handlers"
 depends_on = ["BUG-RBAC-01"]
 severity = "high"
-status = "todo"
+status = "done"
 acceptance = "test_member_cannot_self_promote_via_team_endpoint and test_member_cannot_self_promote_via_admin_endpoint pass"
-notes = "A member can self-promote to admin by forging a POST to /account/team/role or /admin/users/role. Add server-side role validation: only Owner/Admin can change roles, and cannot promote beyond their own role."
+notes = "Role gates already present from prior RBAC fixes: account_change_role (L574: Owner|Admin gate returns 403 for members) and admin_change_user_role (L465: require_admin returns 403 for members). Both also enforce 'cannot promote beyond own role' (Admin can't grant Owner at L598/L474). BUG-RBAC-06 already confirmed these gates exist. No code changes needed."
 
 [[bug]]
 id = "BUG-RBAC-05"
