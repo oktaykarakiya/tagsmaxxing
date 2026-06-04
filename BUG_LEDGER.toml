@@ -977,9 +977,9 @@ touches = ["crates/api/src/web/admin_handlers.rs", "crates/store/src/admin_queri
 conflict_group = "admin_handlers"
 depends_on = []
 severity = "critical"
-status = "todo"
+status = "done"
 acceptance = "test_owner_is_not_platform_super_admin passes"
-notes = "An Owner role is matched as super-admin (is_super = matches!(role, Owner)), granting access to /admin/tenants listing all tenants. Fix: restrict /admin/tenants to a true platform-admin role, or scope the query to the user's own tenant."
+notes = "An Owner role is matched as super-admin (is_super = matches!(role, Owner)), granting access to /admin/tenants listing all tenants. Fix: restrict /admin/tenants to a true platform-admin role, or scope the query to the user's own tenant. FIXED: /admin/tenants now scopes to the caller's own tenant via new PgStore::admin_get_tenant(tid) (no platform-admin role exists); require_owner gate kept; admin_list_tenants left as a documented cross-tenant-only method with no production caller."
 
 [[bug]]
 id = "BUG-ISOL-02"

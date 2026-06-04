@@ -49,7 +49,13 @@ pub struct TenantInfo {
 impl PgStore {
     // ── Tenant admin methods ─────────────────────────────────────────────────
 
-    /// List all tenants (super-admin only — callers enforce the Owner-role gate).
+    /// List **all** tenants across the platform (genuinely cross-tenant).
+    ///
+    /// This bypasses tenant scoping entirely and must only ever be called from a
+    /// true platform-admin context. A tenant `Owner` is **not** a platform
+    /// super-admin — the per-tenant management page uses [`admin_get_tenant`]
+    /// instead (cf. BUG-ISOL-01). There is currently no platform-admin role, so
+    /// this method has no production caller.
     ///
     /// Uses the admin pool (`tenants` is outside RLS).
     ///
@@ -86,6 +92,50 @@ impl PgStore {
                 created_at: r.created_at,
             })
             .collect())
+    }
+
+    /// Fetch a single tenant by id — the caller's **own** tenant.
+    ///
+    /// A tenant `Owner` is the administrator of their own workspace, **not** a
+    /// platform super-admin, so the tenant-management page must be scoped to the
+    /// caller's tenant and must never enumerate other tenants (cf.
+    /// [`admin_list_tenants`], which is genuinely cross-tenant). Returns `None`
+    /// if no tenant with that id exists.
+    ///
+    /// Uses the admin pool (`tenants` is outside RLS); the explicit `id` filter
+    /// is the scoping gate.
+    ///
+    /// # Errors
+    /// Returns an error if the database is not connected or the query fails.
+    pub async fn admin_get_tenant(&self, tenant_id: i64) -> anyhow::Result<Option<Tenant>> {
+        let pool = self.pool()?;
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            id: i64,
+            slug: String,
+            name: String,
+            quota_bytes: Option<i64>,
+            quota_tokens: Option<i64>,
+            budget_monthly_cents: Option<i64>,
+            created_at: chrono::DateTime<chrono::Utc>,
+        }
+        let row: Option<Row> = sqlx::query_as(
+            "SELECT id, slug, name, quota_bytes, quota_tokens, budget_monthly_cents, created_at \
+             FROM tenants WHERE id = $1",
+        )
+        .bind(tenant_id)
+        .fetch_optional(&pool)
+        .await
+        .context("failed to fetch tenant for admin panel")?;
+        Ok(row.map(|r| Tenant {
+            id: r.id,
+            slug: r.slug,
+            name: r.name,
+            quota_bytes: r.quota_bytes,
+            quota_tokens: r.quota_tokens,
+            budget_monthly_cents: r.budget_monthly_cents,
+            created_at: r.created_at,
+        }))
     }
 
     /// Update a tenant's name, quota_bytes, and quota_tokens.
@@ -741,6 +791,16 @@ mod tests {
     async fn admin_list_tenants_errors_before_connect() {
         let store = test_store();
         let err = store.admin_list_tenants().await.unwrap_err();
+        assert!(
+            err.to_string().contains("not connected"),
+            "expected 'not connected' error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn admin_get_tenant_errors_before_connect() {
+        let store = test_store();
+        let err = store.admin_get_tenant(1).await.unwrap_err();
         assert!(
             err.to_string().contains("not connected"),
             "expected 'not connected' error, got: {err}"

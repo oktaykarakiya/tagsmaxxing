@@ -236,36 +236,40 @@ pub async fn admin_dashboard(
 
 // ── GET /admin/tenants ────────────────────────────────────────────────────────
 
-/// `GET /admin/tenants` — list all tenants (Owner only).
+/// `GET /admin/tenants` — manage the caller's **own** tenant (tenant Owner only).
+///
+/// A tenant `Owner` is the administrator of their own workspace, not a platform
+/// super-admin. This system has no platform-admin role, so the page is scoped to
+/// the caller's tenant and must never enumerate other tenants — otherwise any
+/// customer's owner could list every tenant (BUG-ISOL-01).
 pub async fn admin_tenants_page(
     State(state): State<Arc<AppState>>,
     Extension(auth_user): Extension<AuthUser>,
 ) -> Result<Response, StatusCode> {
     require_owner(&auth_user)?;
     let pg = &state.pg_store;
+    let tid = auth_user.tenant_id;
 
-    let tenants = match pg.admin_list_tenants().await {
-        Ok(list) => list
-            .into_iter()
-            .map(|t| {
-                let budget = match t.budget_monthly_cents {
-                    None => "unlimited".to_string(),
-                    Some(c) if c <= 0 => "unlimited".to_string(),
-                    Some(c) => format!("${:.2}", c as f64 / 100.0),
-                };
-                AdminTenantRow {
-                    id: t.id,
-                    slug: t.slug,
-                    name: t.name,
-                    quota_bytes_display: quota_display(t.quota_bytes),
-                    quota_tokens_display: quota_display(t.quota_tokens),
-                    budget_display: budget,
-                    created_at: t.created_at.to_rfc3339(),
-                }
-            })
-            .collect(),
+    let tenants = match pg.admin_get_tenant(tid).await {
+        Ok(Some(t)) => {
+            let budget = match t.budget_monthly_cents {
+                None => "unlimited".to_string(),
+                Some(c) if c <= 0 => "unlimited".to_string(),
+                Some(c) => format!("${:.2}", c as f64 / 100.0),
+            };
+            vec![AdminTenantRow {
+                id: t.id,
+                slug: t.slug,
+                name: t.name,
+                quota_bytes_display: quota_display(t.quota_bytes),
+                quota_tokens_display: quota_display(t.quota_tokens),
+                budget_display: budget,
+                created_at: t.created_at.to_rfc3339(),
+            }]
+        }
+        Ok(None) => vec![],
         Err(e) => {
-            tracing::error!(error = %e, "failed to list tenants for admin");
+            tracing::error!(error = %e, "failed to load tenant for admin");
             vec![]
         }
     };
