@@ -12,6 +12,7 @@ use anyhow::Context;
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use bytes::Bytes;
+use kb_core::kek::KeyEncryptionKey;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 /// Local-disk blob store. Stores each object as a regular file under
@@ -22,16 +23,39 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 pub struct LocalBlob {
     root: ArcSwap<PathBuf>,
     prefix: String,
+    /// Optional Key Encryption Key for envelope encryption.
+    /// When set, blobs are encrypted on `put` and decrypted on `get` using
+    /// the EncryptedBlob envelope format. When `None`, blobs are stored as
+    /// plaintext (dev/test mode, or before a KEK is provisioned).
+    kek: Option<Arc<dyn KeyEncryptionKey>>,
 }
 
 impl LocalBlob {
     /// Create a new local blob store rooted at `root` with the given namespace
     /// `prefix` (typically the tenant id).
+    ///
+    /// If a KEK is provisioned via the `BLOB_KEK_B64` or `BLOB_KEK_FILE`
+    /// environment variable, envelope encryption is automatically enabled:
+    /// every `put` encrypts with a fresh DEK and every `get` decrypts
+    /// transparently. When no KEK is set, blobs are stored as plaintext
+    /// (backward-compatible dev/test mode).
     pub fn new(root: PathBuf, prefix: String) -> Self {
+        let kek = kb_core::kek::FileKek::from_env()
+            .ok()
+            .map(|k| Arc::new(k) as Arc<dyn KeyEncryptionKey>);
         Self {
             root: ArcSwap::new(Arc::new(root)),
             prefix,
+            kek,
         }
+    }
+
+    /// Replace the KEK used for envelope encryption (hot-swappable).
+    ///
+    /// Pass `None` to disable encryption. This is useful in tests that need
+    /// to control encryption state after construction.
+    pub fn set_kek(&mut self, kek: Option<Arc<dyn KeyEncryptionKey>>) {
+        self.kek = kek;
     }
 
     /// Update the root directory live, without a restart (hot-swappable).
@@ -154,6 +178,9 @@ impl kb_core::blob::Blob for LocalBlob {
     /// Store `data` under `key`. Idempotent: if the file already exists at the
     /// content-addressed path, the write is skipped.
     ///
+    /// When a KEK is configured, `data` is envelope-encrypted before storage
+    /// (fresh random DEK per call + KEK-wrapped DEK in an `EBl` header).
+    ///
     /// # Errors
     /// Returns an error if parent directories cannot be created or the write fails.
     async fn put(&self, key: &str, data: Bytes) -> anyhow::Result<()> {
@@ -164,13 +191,28 @@ impl kb_core::blob::Blob for LocalBlob {
             return Ok(());
         }
 
+        // Encrypt if a KEK is provisioned.
+        let to_store: Bytes = match &self.kek {
+            Some(kek) => {
+                let (wrapped_dek, encrypted_payload) =
+                    crate::encrypted_blob::seal(kek.as_ref(), &data)
+                        .await
+                        .with_context(|| format!("envelope encryption failed for key `{key}`"))?;
+                Bytes::from(crate::encrypted_blob::assemble(
+                    &wrapped_dek,
+                    &encrypted_payload,
+                ))
+            }
+            None => data,
+        };
+
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await.with_context(|| {
                 format!("failed to create parent directories for blob at key `{key}`")
             })?;
         }
 
-        tokio::fs::write(&path, &data)
+        tokio::fs::write(&path, &to_store)
             .await
             .with_context(|| format!("failed to write blob at key `{key}`"))?;
 
@@ -179,6 +221,9 @@ impl kb_core::blob::Blob for LocalBlob {
 
     /// Fetch the full blob at `key`.
     ///
+    /// When a KEK is configured and the stored bytes carry an `EBl` envelope
+    /// header, the blob is transparently decrypted before returning.
+    ///
     /// # Errors
     /// Returns an error if the file does not exist or cannot be read.
     async fn get(&self, key: &str) -> anyhow::Result<Bytes> {
@@ -186,7 +231,16 @@ impl kb_core::blob::Blob for LocalBlob {
         let data = tokio::fs::read(&path)
             .await
             .with_context(|| format!("failed to read blob at key `{key}`"))?;
-        Ok(Bytes::from(data))
+
+        // Decrypt if we have a KEK and the blob looks like an envelope.
+        match &self.kek {
+            Some(kek) if crate::encrypted_blob::is_envelope(&data) => {
+                crate::encrypted_blob::open(kek.as_ref(), &data)
+                    .await
+                    .with_context(|| format!("envelope decryption failed for key `{key}`"))
+            }
+            _ => Ok(Bytes::from(data)),
+        }
     }
 
     /// Fetch a byte range `[start, end)` of the blob at `key`.
@@ -194,9 +248,23 @@ impl kb_core::blob::Blob for LocalBlob {
     /// If `start` is beyond the file length, an empty `Bytes` is returned.
     /// If `end` exceeds the file length it is clamped to the actual length.
     ///
+    /// When encryption is active this decrypts the full blob (AES-256-GCM is
+    /// not seekable) and then slices the requested range.
+    ///
     /// # Errors
     /// Returns an error if the file does not exist or cannot be read.
     async fn get_range(&self, key: &str, start: u64, end: u64) -> anyhow::Result<Bytes> {
+        // When encryption is active, decrypt the whole blob then slice.
+        if self.kek.is_some() {
+            let plaintext = self.get(key).await?;
+            let s = start as usize;
+            let e = (end as usize).min(plaintext.len());
+            if s >= e {
+                return Ok(Bytes::new());
+            }
+            return Ok(plaintext.slice(s..e));
+        }
+
         let path = self.blob_path(key)?;
 
         let mut file = tokio::fs::File::open(&path)
@@ -258,9 +326,21 @@ impl kb_core::blob::Blob for LocalBlob {
     /// presigned B2 URLs — plan §20). The `expires_in` parameter is ignored for local
     /// storage since there is no expiry mechanism.
     ///
+    /// When envelope encryption is active, this returns an error because the stored
+    /// bytes are ciphertext and a direct `file://` URL would be useless to a client
+    /// that does not hold the KEK. Callers should use server-side `get` instead.
+    ///
     /// # Errors
-    /// Returns an error if a URL cannot be constructed.
+    /// Returns an error if encryption is active or a URL cannot be constructed.
     async fn presigned_get_url(&self, key: &str, _expires_in: Duration) -> anyhow::Result<String> {
+        if self.kek.is_some() {
+            anyhow::bail!(
+                "presigned_get_url is not supported for encrypted blobs: \
+                 the stored bytes are ciphertext and the client cannot decrypt them; \
+                 use server-side get() instead"
+            );
+        }
+
         let path = self.blob_path(key)?;
         // `blob_path` already returns a canonicalized path, but verify the file exists.
         if !path.exists() {
@@ -548,6 +628,182 @@ mod tests {
         let expected_path = dir.path().join("test-prefix").join(key);
         assert!(expected_path.exists());
         assert_eq!(blob.get(key).await.unwrap(), data);
+    }
+
+    // ── Encryption (envelope) ─────────────────────────────────────────────
+
+    /// Create a `LocalBlob` with a test KEK so encryption is active.
+    fn encrypted_test_blob() -> (LocalBlob, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut blob = LocalBlob::new(dir.path().to_path_buf(), "enc-test".into());
+        blob.set_kek(Some(Arc::new(kb_core::kek::FileKek::from_key(
+            [0xABu8; 32],
+        ))));
+        (blob, dir)
+    }
+
+    #[tokio::test]
+    async fn put_get_roundtrip_with_encryption() {
+        let (blob, _dir) = encrypted_test_blob();
+        let key = "enc-abc";
+        let data = Bytes::from_static(b"secret data under envelope encryption");
+
+        blob.put(key, data.clone()).await.unwrap();
+        let got = blob.get(key).await.unwrap();
+
+        assert_eq!(got, data);
+    }
+
+    #[tokio::test]
+    async fn encrypted_put_stores_ciphertext_not_plaintext() {
+        let (blob, dir) = encrypted_test_blob();
+        let key = "enc-check-disk";
+        let data = Bytes::from_static(b"plaintext that must not appear on disk");
+
+        blob.put(key, data.clone()).await.unwrap();
+
+        // Read the raw file bytes directly — must NOT contain the plaintext.
+        let path = dir.path().join("enc-test").join(key);
+        let raw = std::fs::read(&path).unwrap();
+        assert!(
+            !raw.windows(data.len()).any(|w| w == data.as_ref()),
+            "plaintext must not appear in stored bytes"
+        );
+        // Should have the EBl magic header.
+        assert_eq!(
+            &raw[..3],
+            b"EBl",
+            "encrypted blob must start with EBl magic"
+        );
+    }
+
+    #[tokio::test]
+    async fn presigned_url_errors_when_encryption_active() {
+        let (blob, _dir) = encrypted_test_blob();
+        let key = "enc-no-presign";
+
+        blob.put(key, Bytes::from_static(b"x")).await.unwrap();
+
+        let err = blob
+            .presigned_get_url(key, Duration::from_secs(3600))
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("presigned_get_url is not supported"),
+            "expected presigned-get-url error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn encryption_preserves_get_range() {
+        let (blob, _dir) = encrypted_test_blob();
+        let key = "enc-range";
+        let data = Bytes::from_static(b"0123456789-encrypted");
+
+        blob.put(key, data.clone()).await.unwrap();
+
+        let slice = blob.get_range(key, 3, 7).await.unwrap();
+        assert_eq!(slice, Bytes::from_static(b"3456"));
+    }
+
+    #[tokio::test]
+    async fn same_plaintext_different_ciphertext_with_encryption() {
+        let (blob, dir) = encrypted_test_blob();
+        let data = Bytes::from_static(b"deterministic content, non-deterministic ciphertext");
+
+        blob.put("enc-a", data.clone()).await.unwrap();
+        blob.put("enc-b", data.clone()).await.unwrap();
+
+        let path_a = dir.path().join("enc-test").join("enc-a");
+        let path_b = dir.path().join("enc-test").join("enc-b");
+        let raw_a = std::fs::read(&path_a).unwrap();
+        let raw_b = std::fs::read(&path_b).unwrap();
+
+        // Different DEKs + different nonces → different ciphertexts on disk.
+        assert_ne!(
+            raw_a, raw_b,
+            "identical plaintext must produce different ciphertext"
+        );
+
+        // Both decrypt to the same plaintext.
+        assert_eq!(blob.get("enc-a").await.unwrap(), data);
+        assert_eq!(blob.get("enc-b").await.unwrap(), data);
+    }
+
+    #[tokio::test]
+    async fn encrypted_blob_wrong_kek_errors_on_get() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut blob_a = LocalBlob::new(dir.path().to_path_buf(), "enc-wrong".into());
+        blob_a.set_kek(Some(Arc::new(kb_core::kek::FileKek::from_key(
+            [0xAAu8; 32],
+        ))));
+
+        let key = "key-wrong-kek";
+        blob_a
+            .put(key, Bytes::from_static(b"data under key A"))
+            .await
+            .unwrap();
+
+        // Create a second blob store with a different KEK.
+        let mut blob_b = LocalBlob::new(dir.path().to_path_buf(), "enc-wrong".into());
+        blob_b.set_kek(Some(Arc::new(kb_core::kek::FileKek::from_key(
+            [0xBBu8; 32],
+        ))));
+
+        let err = blob_b.get(key).await.unwrap_err();
+        let full_chain = format!("{err:#}");
+        assert!(
+            full_chain.contains("KEK unwrap failed"),
+            "expected KEK unwrap error, got: {full_chain}"
+        );
+    }
+
+    #[tokio::test]
+    async fn encrypted_blob_exists_and_delete_work() {
+        let (blob, _dir) = encrypted_test_blob();
+        let key = "enc-exists";
+
+        assert!(!blob.exists(key).await.unwrap());
+        blob.put(key, Bytes::from_static(b"data")).await.unwrap();
+        assert!(blob.exists(key).await.unwrap());
+        blob.delete(key).await.unwrap();
+        assert!(!blob.exists(key).await.unwrap());
+        // Delete is idempotent.
+        blob.delete(key).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn plaintext_blobs_readable_even_with_kek_set() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let prefix = "mixed-mode";
+
+        // First, write a plaintext blob (no KEK).
+        {
+            let blob = LocalBlob::new(dir.path().to_path_buf(), prefix.into());
+            blob.put("plain-key", Bytes::from_static(b"legacy plaintext data"))
+                .await
+                .unwrap();
+            // Verify it's plaintext on disk.
+            let path = dir.path().join(prefix).join("plain-key");
+            let raw = std::fs::read(&path).unwrap();
+            assert_ne!(
+                &raw[..3],
+                b"EBl",
+                "plaintext blob should not have EBl magic"
+            );
+        }
+
+        // Now create a blob store WITH a KEK and try to read the legacy blob.
+        let mut blob = LocalBlob::new(dir.path().to_path_buf(), prefix.into());
+        blob.set_kek(Some(Arc::new(kb_core::kek::FileKek::from_key(
+            [0xABu8; 32],
+        ))));
+
+        // The legacy plaintext blob should still be readable — the get() path
+        // only decrypts when is_envelope() is true.
+        let got = blob.get("plain-key").await.unwrap();
+        assert_eq!(got, Bytes::from_static(b"legacy plaintext data"));
     }
 
     // ── path traversal rejection ────────────────────────────────────────

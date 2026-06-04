@@ -1019,9 +1019,10 @@ touches = ["crates/store/src/blob.rs", "crates/store/src/encrypted_blob.rs"]
 conflict_group = "encryption"
 depends_on = []
 severity = "high"
-status = "todo"
+status = "done"
 acceptance = "test_blob_encrypted_at_rest passes"
-notes = "File download returns a presigned URL directly, meaning blobs are stored in plaintext. Enable the EncryptedBlob wrapper so blobs are encrypted with a data key before storage, and decrypted on read."
+notes = """File download returns a presigned URL directly, meaning blobs are stored in plaintext. Enable the EncryptedBlob wrapper so blobs are encrypted with a data key before storage, and decrypted on read.
+FIXED: Extracted seal/open/assemble/is_envelope pub(crate) free fns from EncryptedBlob; LocalBlob now auto-loads KEK from BLOB_KEK_B64/BLOB_KEK_FILE env vars in new() and applies envelope encryption on put/get/get_range when KEK is present; presigned_get_url errors when encryption is active; plaintext blobs (no EBl magic) remain readable even with KEK set. Added 8 encryption-path tests."""
 
 
 # ── RBAC Enforcement ────────────────────────────────────────────────────────

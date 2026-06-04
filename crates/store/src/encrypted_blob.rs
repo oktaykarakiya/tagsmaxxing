@@ -81,6 +81,130 @@ const OFF_WRAPPED_DEK: usize = 4;
 /// The payload nonce starts after the wrapped DEK block.
 const OFF_PAYLOAD_NONCE: usize = OFF_WRAPPED_DEK + WRAPPED_DEK_BLOCK; // 64
 
+// ── Free crypto helpers (shared with LocalBlob for optional encryption) ──────
+
+/// Returns `true` if `raw` starts with the encrypted blob magic bytes (`EBl`).
+#[must_use]
+pub(crate) fn is_envelope(raw: &[u8]) -> bool {
+    raw.len() >= 3 && raw[..3] == MAGIC
+}
+
+/// Encrypt `plaintext` with a fresh random DEK, wrap the DEK with `kek`.
+///
+/// Returns `(wrapped_dek_blob, encrypted_payload)` where:
+/// - `wrapped_dek_blob` is `nonce(12) || ciphertext(32) || tag(16)` = 60 bytes.
+/// - `encrypted_payload` is `nonce(12) || ciphertext || tag`.
+pub(crate) async fn seal(
+    kek: &dyn KeyEncryptionKey,
+    plaintext: &[u8],
+) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
+    // 1. Generate random 256-bit DEK.
+    let mut dek = [0u8; KEY_SIZE];
+    SysRng
+        .try_fill_bytes(&mut dek)
+        .map_err(|e| anyhow::anyhow!("failed to generate DEK: {e}"))?;
+
+    // 2. Encrypt plaintext with the DEK (AES-256-GCM).
+    let dek_cipher = Aes256Gcm::new_from_slice(&dek)
+        .map_err(|e| anyhow::anyhow!("failed to initialise AES-256-GCM for DEK: {e}"))?;
+
+    let mut payload_nonce = [0u8; NONCE_SIZE];
+    SysRng
+        .try_fill_bytes(&mut payload_nonce)
+        .map_err(|e| anyhow::anyhow!("failed to generate payload nonce: {e}"))?;
+    let pnonce = aes_gcm::Nonce::from_slice(&payload_nonce);
+
+    let payload_ct = dek_cipher
+        .encrypt(pnonce, plaintext)
+        .map_err(|e| anyhow::anyhow!("DEK encryption failed: {e}"))?;
+
+    // Payload block: nonce || ciphertext+tag
+    let mut payload = Vec::with_capacity(NONCE_SIZE + payload_ct.len());
+    payload.extend_from_slice(&payload_nonce);
+    payload.extend_from_slice(&payload_ct);
+
+    // 3. Wrap the DEK with the KEK.
+    let wrapped = kek.wrap(&dek).await.context("KEK wrap failed")?;
+    // wrapped = nonce(12) || ciphertext(32) || tag(16) = 60 bytes
+    debug_assert_eq!(
+        wrapped.len(),
+        NONCE_SIZE + KEY_SIZE + TAG_SIZE,
+        "wrapped DEK must be 60 bytes"
+    );
+
+    Ok((wrapped, payload))
+}
+
+/// Decrypt a sealed envelope (header + ciphertext) using `kek`.
+///
+/// Returns the plaintext on success.
+pub(crate) async fn open(kek: &dyn KeyEncryptionKey, raw: &[u8]) -> anyhow::Result<Bytes> {
+    anyhow::ensure!(
+        raw.len() >= HEADER_SIZE,
+        "encrypted blob too short: {} bytes (need at least {HEADER_SIZE})",
+        raw.len()
+    );
+
+    // Validate magic + version.
+    anyhow::ensure!(
+        raw[..3] == MAGIC,
+        "not an encrypted blob (bad magic bytes: {:02x?})",
+        &raw[..3]
+    );
+    let version = raw[OFF_VERSION];
+    anyhow::ensure!(
+        version == VERSION,
+        "unsupported encrypted blob version {version} (expected {VERSION})"
+    );
+
+    // Extract header fields.
+    let wrapped_dek = &raw[OFF_WRAPPED_DEK..OFF_PAYLOAD_NONCE];
+    let payload_nonce = &raw[OFF_PAYLOAD_NONCE..HEADER_SIZE];
+    let payload_ct_and_tag = &raw[HEADER_SIZE..];
+
+    // 1. Unwrap the DEK with the KEK.
+    let dek = kek
+        .unwrap(wrapped_dek)
+        .await
+        .context("KEK unwrap failed (wrong key or corrupted data)")?;
+
+    anyhow::ensure!(
+        dek.len() == KEY_SIZE,
+        "unwrapped DEK has wrong size: {} (expected {KEY_SIZE})",
+        dek.len()
+    );
+
+    // 2. Decrypt payload with the DEK.
+    let mut dek_arr = [0u8; KEY_SIZE];
+    dek_arr.copy_from_slice(&dek);
+
+    let dek_cipher = Aes256Gcm::new_from_slice(&dek_arr)
+        .map_err(|e| anyhow::anyhow!("failed to initialise AES-256-GCM for DEK decrypt: {e}"))?;
+
+    let pnonce = aes_gcm::Nonce::from_slice(payload_nonce);
+    let plaintext = dek_cipher
+        .decrypt(pnonce, payload_ct_and_tag)
+        .map_err(|e| anyhow::anyhow!("DEK decryption failed (corrupted data): {e}"))?;
+
+    Ok(Bytes::from(plaintext))
+}
+
+/// Assemble the full binary envelope: header + encrypted payload.
+#[must_use]
+pub(crate) fn assemble(wrapped_dek: &[u8], encrypted_payload: &[u8]) -> Vec<u8> {
+    // wrapped_dek: nonce(12) || ciphertext(32) || tag(16) = 60 bytes total
+    debug_assert_eq!(wrapped_dek.len(), WRAPPED_DEK_BLOCK);
+
+    let mut blob = Vec::with_capacity(HEADER_SIZE + encrypted_payload.len());
+    blob.extend_from_slice(&MAGIC);
+    blob.push(VERSION);
+    // The wrapped_dek already includes its own nonce prefix.
+    blob.extend_from_slice(wrapped_dek);
+    // encrypted_payload already includes its nonce prefix.
+    blob.extend_from_slice(encrypted_payload);
+    blob
+}
+
 // ── EncryptedBlob ──────────────────────────────────────────────────────────────
 
 /// An envelope-encrypting wrapper around any [`Blob`] implementation.
@@ -140,114 +264,19 @@ impl<B: ?Sized + Blob> EncryptedBlob<B> {
     ///   (60 bytes total).
     /// - `encrypted_payload` is `payload_nonce || ciphertext+tag`.
     async fn encrypt(&self, plaintext: &[u8]) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
-        // 1. Generate random 256-bit DEK.
-        let mut dek = [0u8; KEY_SIZE];
-        SysRng
-            .try_fill_bytes(&mut dek)
-            .map_err(|e| anyhow::anyhow!("failed to generate DEK: {e}"))?;
-
-        // 2. Encrypt plaintext with the DEK (AES-256-GCM).
-        let dek_cipher = Aes256Gcm::new_from_slice(&dek)
-            .map_err(|e| anyhow::anyhow!("failed to initialise AES-256-GCM for DEK: {e}"))?;
-
-        let mut payload_nonce = [0u8; NONCE_SIZE];
-        SysRng
-            .try_fill_bytes(&mut payload_nonce)
-            .map_err(|e| anyhow::anyhow!("failed to generate payload nonce: {e}"))?;
-        let pnonce = aes_gcm::Nonce::from_slice(&payload_nonce);
-
-        let payload_ct = dek_cipher
-            .encrypt(pnonce, plaintext)
-            .map_err(|e| anyhow::anyhow!("DEK encryption failed: {e}"))?;
-
-        // Payload block: nonce || ciphertext+tag
-        let mut payload = Vec::with_capacity(NONCE_SIZE + payload_ct.len());
-        payload.extend_from_slice(&payload_nonce);
-        payload.extend_from_slice(&payload_ct);
-
-        // 3. Wrap the DEK with the KEK.
-        let wrapped = self.kek.wrap(&dek).await.context("KEK wrap failed")?;
-        // wrapped = nonce(12) || ciphertext(32) || tag(16) = 60 bytes
-        debug_assert_eq!(
-            wrapped.len(),
-            NONCE_SIZE + KEY_SIZE + TAG_SIZE,
-            "wrapped DEK must be 60 bytes"
-        );
-
-        Ok((wrapped, payload))
+        seal(self.kek.as_ref(), plaintext).await
     }
 
     /// Parse the binary header and decrypt the payload.
     ///
     /// Returns the plaintext bytes on success.
     async fn decrypt(&self, raw: &[u8]) -> anyhow::Result<Bytes> {
-        anyhow::ensure!(
-            raw.len() >= HEADER_SIZE,
-            "encrypted blob too short: {} bytes (need at least {HEADER_SIZE})",
-            raw.len()
-        );
-
-        // Validate magic + version.
-        anyhow::ensure!(
-            raw[..3] == MAGIC,
-            "not an encrypted blob (bad magic bytes: {:02x?})",
-            &raw[..3]
-        );
-        let version = raw[OFF_VERSION];
-        anyhow::ensure!(
-            version == VERSION,
-            "unsupported encrypted blob version {version} (expected {VERSION})"
-        );
-
-        // Extract header fields.
-        // The wrapped DEK is the full 60-byte blob as produced by kek.wrap():
-        // nonce(12) || ciphertext(32) || tag(16).
-        let wrapped_dek = &raw[OFF_WRAPPED_DEK..OFF_PAYLOAD_NONCE];
-        let payload_nonce = &raw[OFF_PAYLOAD_NONCE..HEADER_SIZE];
-        let payload_ct_and_tag = &raw[HEADER_SIZE..];
-
-        // 1. Unwrap the DEK with the KEK.
-        let dek = self
-            .kek
-            .unwrap(wrapped_dek)
-            .await
-            .context("KEK unwrap failed (wrong key or corrupted data)")?;
-
-        anyhow::ensure!(
-            dek.len() == KEY_SIZE,
-            "unwrapped DEK has wrong size: {} (expected {KEY_SIZE})",
-            dek.len()
-        );
-
-        // 2. Decrypt payload with the DEK.
-        let mut dek_arr = [0u8; KEY_SIZE];
-        dek_arr.copy_from_slice(&dek);
-
-        let dek_cipher = Aes256Gcm::new_from_slice(&dek_arr).map_err(|e| {
-            anyhow::anyhow!("failed to initialise AES-256-GCM for DEK decrypt: {e}")
-        })?;
-
-        let pnonce = aes_gcm::Nonce::from_slice(payload_nonce);
-        let plaintext = dek_cipher
-            .decrypt(pnonce, payload_ct_and_tag)
-            .map_err(|e| anyhow::anyhow!("DEK decryption failed (corrupted data): {e}"))?;
-
-        Ok(Bytes::from(plaintext))
+        open(self.kek.as_ref(), raw).await
     }
 
     /// Assemble the full binary blob: header + encrypted payload.
     fn assemble_blob(wrapped_dek: &[u8], encrypted_payload: &[u8]) -> Vec<u8> {
-        // wrapped_dek: nonce(12) || ciphertext(32) || tag(16) = 60 bytes total
-        debug_assert_eq!(wrapped_dek.len(), WRAPPED_DEK_BLOCK);
-
-        let mut blob = Vec::with_capacity(HEADER_SIZE + encrypted_payload.len());
-        blob.extend_from_slice(&MAGIC);
-        blob.push(VERSION);
-        // The wrapped_dek already includes its own nonce prefix.
-        blob.extend_from_slice(wrapped_dek);
-        // encrypted_payload already includes its nonce prefix.
-        blob.extend_from_slice(encrypted_payload);
-        blob
+        assemble(wrapped_dek, encrypted_payload)
     }
 }
 
