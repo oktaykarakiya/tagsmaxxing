@@ -425,6 +425,17 @@ pub async fn account_invite_user(
         }
     };
 
+    // ── Admin can't create an Owner (privilege-escalation guard) ─────
+    if auth_user.role == UserRole::Admin && role == UserRole::Owner {
+        return render_team_error(
+            &state,
+            &auth_user,
+            "Only owners can invite users as Owner".into(),
+            StatusCode::FORBIDDEN,
+        )
+        .await;
+    }
+
     // ── Check for duplicate ───────────────────────────────────────────
     if let Ok(Some(_existing)) = state
         .pg_store

@@ -1062,9 +1062,9 @@ touches = ["crates/api/src/web/admin_handlers.rs", "crates/api/src/web/handlers_
 conflict_group = "admin_handlers"
 depends_on = ["BUG-RBAC-01"]
 severity = "high"
-status = "todo"
+status = "done"
 acceptance = "test_admin_cannot_grant_owner_role passes"
-notes = "An admin-role user can create a new Owner via invite or role change. Cap the grantable role to the acting user's role: admin cannot grant Owner."
+notes = "Added privilege-escalation guard to account_invite_user: Admin cannot create a user with Owner role (403 FORBIDDEN), mirroring the existing guard in account_change_role. admin_invite_user and admin_change_user_role already had this guard."
 
 [[bug]]
 id = "BUG-RBAC-04"

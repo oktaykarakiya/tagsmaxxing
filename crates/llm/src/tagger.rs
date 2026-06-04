@@ -85,10 +85,13 @@ marketing, cooking).\n\
 - Use short, lowercase noun keywords (1–3 words); never full sentences.\n\
 - Use singular forms only (e.g. \"invoice\" not \"invoices\", \"report\" not \"reports\").\n\
 - If two tags mean the same thing, keep only the shorter one.\n\
-- Generate specific, non-redundant tags for the document's main themes — typically \
-5–10 for a substantial document, fewer for short or single-topic ones. Prefer a \
-few high-quality, on-topic tags over many generic or overlapping ones. Do not pad \
-to reach a count.\n\
+- The output schema enforces a strict bound: you MUST produce at most 20 tags
+and at least 0 tags. This is a hard limit — never exceed 20 tags under any
+circumstance. Stay well within this bound: most documents need only 3–10
+well-chosen tags. Produce fewer for short or single-topic documents. A
+document with genuinely no discernible subject may legitimately receive 0 tags.
+- Always prefer a few high-quality, on-topic tags over many generic or
+overlapping ones. Do not pad to reach a specific count — quality over quantity.\n\
 \n\
 Worked examples (illustrative — always tag the ACTUAL document you are given, \
 never copy these):\n\
