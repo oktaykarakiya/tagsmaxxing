@@ -51,6 +51,10 @@ services:
       WHISPER_URL: ${WHISPER_URL:-http://whisper-server:8080}
       # Auth — MUST be overridden in production (≥32 bytes, random).
       SESSION_SECRET: ${SESSION_SECRET:-change-me-to-a-long-random-value}
+      # Per-IP login attempt cap per 60s (brute-force guard). Default 5; raise in
+      # trusted environments where many logins share one source IP (CI/e2e behind
+      # a proxy, office NAT). Read per request — see login_rate_max_attempts.
+      KB_LOGIN_RATE_MAX_ATTEMPTS: ${KB_LOGIN_RATE_MAX_ATTEMPTS:-5}
       # Bootstrap — creates the initial tenant + admin on first run.
       # Omit to skip auto-seeding (create the first tenant manually).
       BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-admin@local.kb}

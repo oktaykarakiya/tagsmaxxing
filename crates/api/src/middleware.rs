@@ -365,38 +365,38 @@ pub async fn require_email_verified_middleware(
 
 /// In-memory fixed-window rate limiter for login brute-force protection.
 ///
-/// Tracks login attempts per client IP within a configurable time window.
-/// When an IP exceeds `max_attempts` within `window`, further attempts receive
-/// `429 Too Many Requests` with a `Retry-After` header.
+/// Tracks login attempts per client IP within a fixed time window. The attempt
+/// cap is supplied at [`check`](Self::check) time (not stored) so it can be read
+/// from configuration on every request — mirroring [`PlanRateLimiter`] and
+/// honouring the hot-swappable-config rule.
 struct LoginBruteForceLimiter {
     inner: Mutex<HashMap<IpAddr, Vec<Instant>>>,
-    max_attempts: usize,
     window: Duration,
 }
 
 impl LoginBruteForceLimiter {
-    /// Create a new limiter with the given attempt cap and time window.
-    fn new(max_attempts: usize, window: Duration) -> Self {
+    /// Create a new limiter with the given time window.
+    fn new(window: Duration) -> Self {
         Self {
             inner: Mutex::new(HashMap::new()),
-            max_attempts,
             window,
         }
     }
 
-    /// Check whether `ip` is allowed to make another login attempt.
+    /// Check whether `ip` is allowed to make another login attempt under
+    /// `max_attempts` per window.
     ///
     /// Prunes expired entries for the IP, then checks whether the remaining
     /// count is below `max_attempts`. If allowed, records the attempt and
     /// returns `Ok(())`. If rate-limited, returns `Err(retry_after_secs)`
     /// where `retry_after_secs` is the suggested `Retry-After` header value.
-    fn check(&self, ip: IpAddr) -> Result<(), u64> {
+    fn check(&self, ip: IpAddr, max_attempts: usize) -> Result<(), u64> {
         let mut map = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
         let cutoff = now - self.window;
         let attempts = map.entry(ip).or_default();
         attempts.retain(|t| *t > cutoff);
-        if attempts.len() >= self.max_attempts {
+        if attempts.len() >= max_attempts {
             let oldest = attempts.iter().min().copied().unwrap_or(now);
             let elapsed = now.duration_since(oldest).as_secs();
             let retry = self.window.as_secs().saturating_sub(elapsed).max(1);
@@ -414,9 +414,27 @@ impl LoginBruteForceLimiter {
     }
 }
 
-/// Global login brute-force limiter: 5 attempts per IP per 60-second window.
+/// Resolve the per-IP login attempt cap **at call time** (hot-swappable, plan
+/// CLAUDE.md): reads `KB_LOGIN_RATE_MAX_ATTEMPTS` fresh on every request,
+/// defaulting to `5`. Trusted environments where many logins legitimately share
+/// one source IP (CI/e2e behind a reverse proxy, an office NAT) raise it via env
+/// without a rebuild; production keeps the strict default.
+fn login_rate_max_attempts() -> usize {
+    parse_login_rate_max_attempts(std::env::var("KB_LOGIN_RATE_MAX_ATTEMPTS").ok())
+}
+
+/// Pure parser for [`login_rate_max_attempts`]: a positive integer, else the
+/// default of `5` (covers unset, non-numeric, and zero).
+fn parse_login_rate_max_attempts(raw: Option<String>) -> usize {
+    raw.and_then(|s| s.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(5)
+}
+
+/// Global login brute-force limiter (60-second window). The attempt cap is read
+/// per request via [`login_rate_max_attempts`].
 static LOGIN_BRUTE_FORCE_LIMITER: LazyLock<LoginBruteForceLimiter> =
-    LazyLock::new(|| LoginBruteForceLimiter::new(5, Duration::from_secs(60)));
+    LazyLock::new(|| LoginBruteForceLimiter::new(Duration::from_secs(60)));
 
 // ── Per-token rate limiter ─────────────────────────────────────────────────────
 
@@ -561,7 +579,8 @@ fn rate_limit_response(retry_after: u64) -> Response {
 /// Axum middleware: rate-limit `POST /auth/login` requests to prevent brute-force.
 ///
 /// Tracks attempts per client IP (read from `X-Forwarded-For`, `X-Real-IP`, or
-/// defaulting to `127.0.0.1`). After 5 attempts within 60 seconds, returns
+/// defaulting to `127.0.0.1`). After [`login_rate_max_attempts`] attempts (env
+/// `KB_LOGIN_RATE_MAX_ATTEMPTS`, default 5) within 60 seconds, returns
 /// `429 Too Many Requests` with a `Retry-After` header and a JSON error body.
 ///
 /// Requests to paths other than `POST /auth/login` pass through unchanged.
@@ -574,7 +593,7 @@ pub async fn login_rate_limit_middleware(
     }
 
     let ip = extract_client_ip(&request);
-    match LOGIN_BRUTE_FORCE_LIMITER.check(ip) {
+    match LOGIN_BRUTE_FORCE_LIMITER.check(ip, login_rate_max_attempts()) {
         Ok(()) => Ok(next.run(request).await),
         Err(retry_after) => {
             let body = axum::body::Body::from(format!(
@@ -1395,57 +1414,71 @@ mod tests {
 
     #[test]
     fn limiter_allows_under_max_attempts() {
-        let limiter = LoginBruteForceLimiter::new(3, Duration::from_secs(60));
+        let limiter = LoginBruteForceLimiter::new(Duration::from_secs(60));
         let ip = IpAddr::from([10, 0, 0, 1]);
         for _ in 0..3 {
-            assert!(limiter.check(ip).is_ok());
+            assert!(limiter.check(ip, 3).is_ok());
         }
     }
 
     #[test]
     fn limiter_blocks_after_max_attempts() {
-        let limiter = LoginBruteForceLimiter::new(2, Duration::from_secs(60));
+        let limiter = LoginBruteForceLimiter::new(Duration::from_secs(60));
         let ip = IpAddr::from([10, 0, 0, 2]);
-        assert!(limiter.check(ip).is_ok());
-        assert!(limiter.check(ip).is_ok());
+        assert!(limiter.check(ip, 2).is_ok());
+        assert!(limiter.check(ip, 2).is_ok());
         // Third attempt — rate-limited.
-        let err = limiter.check(ip).unwrap_err();
+        let err = limiter.check(ip, 2).unwrap_err();
         assert!(err > 0, "retry-after must be positive, got {err}");
     }
 
     #[test]
     fn limiter_tracks_different_ips_independently() {
-        let limiter = LoginBruteForceLimiter::new(1, Duration::from_secs(60));
+        let limiter = LoginBruteForceLimiter::new(Duration::from_secs(60));
         let ip_a = IpAddr::from([10, 0, 0, 1]);
         let ip_b = IpAddr::from([10, 0, 0, 2]);
         // Exhaust ip_a.
-        assert!(limiter.check(ip_a).is_ok());
-        assert!(limiter.check(ip_a).is_err());
+        assert!(limiter.check(ip_a, 1).is_ok());
+        assert!(limiter.check(ip_a, 1).is_err());
         // ip_b still has attempts.
-        assert!(limiter.check(ip_b).is_ok());
+        assert!(limiter.check(ip_b, 1).is_ok());
     }
 
     #[test]
     fn limiter_window_expires() {
-        let limiter = LoginBruteForceLimiter::new(2, Duration::from_millis(10));
+        let limiter = LoginBruteForceLimiter::new(Duration::from_millis(10));
         let ip = IpAddr::from([10, 0, 0, 3]);
-        assert!(limiter.check(ip).is_ok());
-        assert!(limiter.check(ip).is_ok());
-        assert!(limiter.check(ip).is_err());
+        assert!(limiter.check(ip, 2).is_ok());
+        assert!(limiter.check(ip, 2).is_ok());
+        assert!(limiter.check(ip, 2).is_err());
         // Wait for the window to expire.
         std::thread::sleep(Duration::from_millis(15));
-        assert!(limiter.check(ip).is_ok());
+        assert!(limiter.check(ip, 2).is_ok());
     }
 
     #[test]
     fn limiter_returns_reasonable_retry_after() {
-        let limiter = LoginBruteForceLimiter::new(1, Duration::from_secs(60));
+        let limiter = LoginBruteForceLimiter::new(Duration::from_secs(60));
         let ip = IpAddr::from([10, 0, 0, 4]);
-        assert!(limiter.check(ip).is_ok());
-        let err = limiter.check(ip).unwrap_err();
+        assert!(limiter.check(ip, 1).is_ok());
+        let err = limiter.check(ip, 1).unwrap_err();
         // Retry-After must be in [1, 60] range.
         assert!(err >= 1, "retry-after too small: {err}");
         assert!(err <= 60, "retry-after too large: {err}");
+    }
+
+    #[test]
+    fn parse_login_rate_max_attempts_values() {
+        // Unset / non-numeric / zero all fall back to the strict default of 5.
+        assert_eq!(parse_login_rate_max_attempts(None), 5);
+        assert_eq!(parse_login_rate_max_attempts(Some("abc".into())), 5);
+        assert_eq!(parse_login_rate_max_attempts(Some("0".into())), 5);
+        // A positive override is honoured (e.g. e2e / trusted-proxy environments).
+        assert_eq!(
+            parse_login_rate_max_attempts(Some("100000".into())),
+            100_000
+        );
+        assert_eq!(parse_login_rate_max_attempts(Some("5".into())), 5);
     }
 
     // ── TokenRateLimiter unit tests ──────────────────────────────────────
@@ -1679,7 +1712,10 @@ mod tests {
 
     #[tokio::test]
     async fn middleware_rate_limits_login_route() {
-        LOGIN_BRUTE_FORCE_LIMITER.reset();
+        // Unique source IP isolates this test from other login-route tests that
+        // share the process-global limiter (the default 127.0.0.1 key collides
+        // under parallel execution); a never-before-seen IP starts fresh, so no
+        // global reset() — which would clear other tests' state — is needed.
         let router = rate_limit_test_router();
         let mut statuses = Vec::new();
 
@@ -1690,6 +1726,7 @@ mod tests {
                     Request::builder()
                         .method("POST")
                         .uri("/auth/login")
+                        .header("x-forwarded-for", "198.51.100.10")
                         .body(axum::body::Body::empty())
                         .unwrap(),
                 )
@@ -1914,10 +1951,11 @@ mod tests {
 
     #[tokio::test]
     async fn middleware_includes_retry_after_header() {
-        LOGIN_BRUTE_FORCE_LIMITER.reset();
+        // Distinct source IP (see middleware_rate_limits_login_route) so this
+        // test's attempts don't collide with other login-route tests.
         let router = rate_limit_test_router();
 
-        // Exhaust the limit.
+        // Exhaust the limit (default cap 5).
         for _ in 0..5 {
             let _ = router
                 .clone()
@@ -1925,6 +1963,7 @@ mod tests {
                     Request::builder()
                         .method("POST")
                         .uri("/auth/login")
+                        .header("x-forwarded-for", "198.51.100.20")
                         .body(axum::body::Body::empty())
                         .unwrap(),
                 )
@@ -1937,6 +1976,7 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/auth/login")
+                    .header("x-forwarded-for", "198.51.100.20")
                     .body(axum::body::Body::empty())
                     .unwrap(),
             )
