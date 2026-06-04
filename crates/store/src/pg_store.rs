@@ -1567,6 +1567,37 @@ impl PgStore {
         Ok(id)
     }
 
+    /// Returns `true` iff `tenant_id` is the **platform operator's** tenant — the
+    /// first-seeded (lowest-`id`) tenant created by [`bootstrap_seed`](crate#bootstrap).
+    ///
+    /// Inference infrastructure (`providers` / `models` / `routes`, migration
+    /// `0011`) is **global**: the `providers` and `models` tables carry no
+    /// `tenant_id` column and are shared by every tenant. A customer tenant's own
+    /// `Owner`/`Admin` administers only their own workspace, **not** the platform's
+    /// shared infrastructure (this system has no platform-admin *role*, cf.
+    /// BUG-ISOL-01). So only the operator's tenant may mutate that infrastructure;
+    /// any other tenant's admin must be denied, otherwise one tenant could
+    /// toggle/edit/delete the providers every other tenant depends on
+    /// (BUG-ISOL-02). Read-only viewing is unaffected.
+    ///
+    /// The operator's tenant is identified as `MIN(id)` over `tenants`: `BIGSERIAL`
+    /// starts at 1 and bootstrap seeds into an empty table, so the operator's
+    /// tenant is always the lowest id. Returns `false` when the table is empty.
+    ///
+    /// Uses the admin pool (`tenants` is outside RLS); the comparison itself is the
+    /// scoping gate, so no `tenant_id` filter is needed.
+    ///
+    /// # Errors
+    /// Returns an error if the database is not connected or the query fails.
+    pub async fn is_platform_admin_tenant(&self, tenant_id: i64) -> anyhow::Result<bool> {
+        let pool = self.pool()?;
+        let min_id: Option<i64> = sqlx::query_scalar("SELECT MIN(id) FROM tenants")
+            .fetch_one(&pool)
+            .await
+            .context("failed to resolve platform-admin tenant id")?;
+        Ok(min_id == Some(tenant_id))
+    }
+
     // ── Email verification (P12-T2) ────────────────────────────────────────────
 
     /// Set the email verification token for a user.
@@ -3567,6 +3598,15 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn is_platform_admin_tenant_errors_before_connect() {
+        // Fails closed: callers (provider/model/route mutation gates) treat the
+        // error as a denial, so a disconnected DB never grants access.
+        let store = PgStore::new("postgres://localhost/db");
+        let err = store.is_platform_admin_tenant(1).await.unwrap_err();
+        assert!(err.to_string().contains("not connected"));
+    }
+
+    #[tokio::test]
     async fn create_user_is_tenant_scoped() {
         // create_user is a tenant-scoped method: it acquires the app pool and opens a tenant
         // transaction. Without a connected store it fails fast on the pool lookup (we can't
@@ -3648,6 +3688,33 @@ mod tests {
                     err.to_string().contains("already exists"),
                     "expected duplicate error, got: {err}"
                 );
+
+                Ok(())
+            })
+            .await
+            .unwrap();
+        }
+
+        #[ignore]
+        #[tokio::test]
+        async fn is_platform_admin_tenant_only_matches_first_tenant() {
+            with_connected_store(|store| async move {
+                // The helper seeded the first tenant (id 1 — the operator's tenant).
+                assert!(
+                    store.is_platform_admin_tenant(1).await?,
+                    "the first-seeded tenant must be the platform-admin tenant"
+                );
+
+                // A later customer tenant is NOT the platform-admin tenant.
+                let other = store.create_tenant("customer", "Customer").await?;
+                assert!(other > 1);
+                assert!(
+                    !store.is_platform_admin_tenant(other).await?,
+                    "a later-created tenant must NOT be the platform-admin tenant"
+                );
+
+                // An unknown id is not the platform-admin tenant either.
+                assert!(!store.is_platform_admin_tenant(9_999).await?);
 
                 Ok(())
             })

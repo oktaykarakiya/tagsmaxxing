@@ -35,6 +35,35 @@ fn require_admin(auth_user: &AuthUser) -> Result<(), StatusCode> {
     }
 }
 
+/// Return 403 unless the user is an Owner/Admin **of the platform operator's
+/// tenant** — the only principal allowed to *mutate* global routing infra.
+///
+/// Providers, models, and routes are global infrastructure shared by every
+/// tenant (the `providers`/`models` tables have no `tenant_id`; migration
+/// `0011`). A customer tenant's own Owner/Admin administers only their own
+/// workspace, not the platform's shared inference infra — letting any tenant
+/// admin toggle/edit/delete a provider lets one tenant break the providers every
+/// other tenant depends on (BUG-ISOL-02). So mutating handlers require the
+/// platform tenant (the bootstrap / first-seeded tenant, resolved at call time
+/// via `PgStore::is_platform_admin_tenant`). Read-only list/detail pages stay
+/// open to any tenant admin (they only gate on [`require_admin`]).
+///
+/// Fails **closed**: a DB error resolving the platform tenant yields 403.
+async fn require_platform_admin(
+    pg: &kb_store::PgStore,
+    auth_user: &AuthUser,
+) -> Result<(), StatusCode> {
+    require_admin(auth_user)?;
+    match pg.is_platform_admin_tenant(auth_user.tenant_id).await {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(StatusCode::FORBIDDEN),
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to resolve platform-admin tenant; denying");
+            Err(StatusCode::FORBIDDEN)
+        }
+    }
+}
+
 // ── Form types ────────────────────────────────────────────────────────────────
 
 /// Form: create or update a provider.
@@ -300,7 +329,7 @@ pub async fn admin_provider_create(
     headers: axum::http::HeaderMap,
     Form(form): Form<ProviderForm>,
 ) -> Result<Response, StatusCode> {
-    require_admin(&auth_user)?;
+    require_platform_admin(&state.pg_store, &auth_user).await?;
     csrf::validate_csrf(&headers, &form.csrf_token).map_err(|_| StatusCode::FORBIDDEN)?;
 
     let kind = match ProviderKind::from_str(&form.kind) {
@@ -433,7 +462,7 @@ pub async fn admin_provider_update(
     headers: axum::http::HeaderMap,
     Form(form): Form<ProviderForm>,
 ) -> Result<Response, StatusCode> {
-    require_admin(&auth_user)?;
+    require_platform_admin(&state.pg_store, &auth_user).await?;
     csrf::validate_csrf(&headers, &form.csrf_token).map_err(|_| StatusCode::FORBIDDEN)?;
 
     let pg = &state.pg_store;
@@ -500,7 +529,7 @@ pub async fn admin_provider_toggle(
     headers: axum::http::HeaderMap,
     Form(form): Form<CsrfForm>,
 ) -> Result<Response, StatusCode> {
-    require_admin(&auth_user)?;
+    require_platform_admin(&state.pg_store, &auth_user).await?;
     csrf::validate_csrf(&headers, &form.csrf_token).map_err(|_| StatusCode::FORBIDDEN)?;
 
     let pg = &state.pg_store;
@@ -537,7 +566,7 @@ pub async fn admin_provider_test(
     headers: axum::http::HeaderMap,
     Form(form): Form<CsrfForm>,
 ) -> Result<Response, StatusCode> {
-    require_admin(&auth_user)?;
+    require_platform_admin(&state.pg_store, &auth_user).await?;
     csrf::validate_csrf(&headers, &form.csrf_token).map_err(|_| StatusCode::FORBIDDEN)?;
 
     let pg = &state.pg_store;
@@ -641,7 +670,7 @@ pub async fn admin_model_create(
     headers: axum::http::HeaderMap,
     Form(form): Form<ModelForm>,
 ) -> Result<Response, StatusCode> {
-    require_admin(&auth_user)?;
+    require_platform_admin(&state.pg_store, &auth_user).await?;
     csrf::validate_csrf(&headers, &form.csrf_token).map_err(|_| StatusCode::FORBIDDEN)?;
 
     let pg = &state.pg_store;
@@ -762,7 +791,7 @@ pub async fn admin_model_update(
     headers: axum::http::HeaderMap,
     Form(form): Form<ModelForm>,
 ) -> Result<Response, StatusCode> {
-    require_admin(&auth_user)?;
+    require_platform_admin(&state.pg_store, &auth_user).await?;
     csrf::validate_csrf(&headers, &form.csrf_token).map_err(|_| StatusCode::FORBIDDEN)?;
 
     let pg = &state.pg_store;
@@ -826,7 +855,7 @@ pub async fn admin_model_toggle(
     headers: axum::http::HeaderMap,
     Form(form): Form<CsrfForm>,
 ) -> Result<Response, StatusCode> {
-    require_admin(&auth_user)?;
+    require_platform_admin(&state.pg_store, &auth_user).await?;
     csrf::validate_csrf(&headers, &form.csrf_token).map_err(|_| StatusCode::FORBIDDEN)?;
 
     let pg = &state.pg_store;
@@ -912,7 +941,7 @@ pub async fn admin_route_create(
     headers: axum::http::HeaderMap,
     Form(form): Form<RouteForm>,
 ) -> Result<Response, StatusCode> {
-    require_admin(&auth_user)?;
+    require_platform_admin(&state.pg_store, &auth_user).await?;
     csrf::validate_csrf(&headers, &form.csrf_token).map_err(|_| StatusCode::FORBIDDEN)?;
 
     let pg = &state.pg_store;
@@ -1027,7 +1056,7 @@ pub async fn admin_route_update(
     headers: axum::http::HeaderMap,
     Form(form): Form<RouteForm>,
 ) -> Result<Response, StatusCode> {
-    require_admin(&auth_user)?;
+    require_platform_admin(&state.pg_store, &auth_user).await?;
     csrf::validate_csrf(&headers, &form.csrf_token).map_err(|_| StatusCode::FORBIDDEN)?;
 
     let pg = &state.pg_store;
@@ -1074,7 +1103,7 @@ pub async fn admin_route_delete(
     headers: axum::http::HeaderMap,
     Form(form): Form<CsrfForm>,
 ) -> Result<Response, StatusCode> {
-    require_admin(&auth_user)?;
+    require_platform_admin(&state.pg_store, &auth_user).await?;
     csrf::validate_csrf(&headers, &form.csrf_token).map_err(|_| StatusCode::FORBIDDEN)?;
 
     let pg = &state.pg_store;
@@ -1885,6 +1914,42 @@ mod tests {
             .unwrap();
         let response = router.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // ── require_platform_admin gate (BUG-ISOL-02) ─────────────────────────
+
+    #[tokio::test]
+    async fn require_platform_admin_denies_non_admin_role() {
+        // A non-admin never reaches the platform-tenant check.
+        let state = test_app_state();
+        let auth = AuthUser {
+            tenant_id: 1,
+            user_id: 1,
+            role: UserRole::Member,
+            email_verified: true,
+        };
+        let err = require_platform_admin(&state.pg_store, &auth)
+            .await
+            .unwrap_err();
+        assert_eq!(err, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn require_platform_admin_fails_closed_when_db_unavailable() {
+        // Owner passes the role gate, but the disconnected test store cannot
+        // resolve the platform tenant → the gate must fail closed (403), never
+        // grant global-infra mutation by default.
+        let state = test_app_state();
+        let auth = AuthUser {
+            tenant_id: 1,
+            user_id: 1,
+            role: UserRole::Owner,
+            email_verified: true,
+        };
+        let err = require_platform_admin(&state.pg_store, &auth)
+            .await
+            .unwrap_err();
+        assert_eq!(err, StatusCode::FORBIDDEN);
     }
 
     // ── Audit action strings ──────────────────────────────────────────────

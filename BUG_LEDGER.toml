@@ -990,9 +990,9 @@ touches = ["crates/api/src/web/admin_routing_handlers.rs", "crates/store/src/pg_
 conflict_group = "pg_store"
 depends_on = ["BUG-ISOL-01"]
 severity = "critical"
-status = "todo"
+status = "done"
 acceptance = "test_cross_tenant_provider_mutation_forbidden passes"
-notes = "providers/models tables have no tenant_id column — global infra. Any tenant admin can toggle/edit any provider. Fix: either add tenant_id scoping or restrict provider CRUD to platform-admin only."
+notes = "providers/models tables have no tenant_id column — global infra. Any tenant admin can toggle/edit any provider. Fix: either add tenant_id scoping or restrict provider CRUD to platform-admin only. DONE: providers/models are global (no tenant_id, store methods in db_routing.rs) so mutation is now gated to the platform operator's tenant. Added PgStore::is_platform_admin_tenant (MIN(id) = bootstrap/first tenant) + require_platform_admin() applied to all 10 provider/model/route mutating handlers (create/update/toggle/test/delete); read-only list/form pages stay open to any tenant admin. Fails closed on DB error. Bootstrap admin (tenant 1) keeps full CRUD (test_providers_routing.py); other tenants get 403."
 
 [[bug]]
 id = "BUG-ISOL-03"
