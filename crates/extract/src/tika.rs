@@ -1,9 +1,10 @@
 //! Tika-sidecar extractor for rich documents (PDF, DOCX, PPTX, XLSX, ODT, RTF,
 //! and any other format Apache Tika supports).
 //!
-//! Sends raw bytes via HTTP PUT to the Tika `/tika` endpoint, receives extracted
-//! text and metadata, and maps them into [`Extracted`]. The Tika base URL is
-//! hot-swappable via [`arc_swap::ArcSwap`] (plan §6, CLAUDE.md hot-swappable rule).
+//! Sends raw bytes via HTTP PUT to the Tika `/rmeta/text` endpoint, receives the
+//! extracted plain text and metadata, and maps them into [`Extracted`]. The Tika
+//! base URL is hot-swappable via [`arc_swap::ArcSwap`] (plan §6, CLAUDE.md
+//! hot-swappable rule).
 
 use std::sync::Arc;
 
@@ -61,13 +62,13 @@ impl TikaConfig {
 /// Extracts text and metadata from rich documents by delegating to an Apache Tika
 /// server.
 ///
-/// Sends the file bytes to `{base_url}/tika` via HTTP PUT with
-/// `Accept: text/plain`, so Tika returns the document's **plain body text**
-/// rather than its default XHTML rendering (which would pollute search with tag
-/// tokens and overflow the reranker). The response body becomes
-/// [`Extracted::text`]. If a Tika deployment instead returns a JSON object (with
-/// an `"X-TIKA:content"` field), that is parsed too and its remaining fields
-/// become [`Extracted::meta`].
+/// Sends the file bytes to `{base_url}/rmeta/text` via HTTP PUT with
+/// `Accept: application/json`. Tika returns a JSON array of resources; the
+/// top-level document's `"X-TIKA:content"` (its **plain body text**, not Tika's
+/// default XHTML — which would pollute search with tag tokens and overflow the
+/// reranker) becomes [`Extracted::text`], and its remaining fields become
+/// [`Extracted::meta`]. A bare-object response is also accepted (top-level
+/// document directly); a non-JSON body falls back to plain UTF-8 text.
 ///
 /// # Document formats
 ///
@@ -148,33 +149,37 @@ fn office_mime_for_path(path: Option<&str>) -> Option<&'static str> {
 impl Extractor for TikaExtractor {
     async fn extract(&self, file: &RawFile) -> anyhow::Result<Extracted> {
         let base = self.config.base_url.load();
-        let url = format!("{}/tika", base.as_str());
+        // Use the recursive-metadata *text* endpoint. It returns a JSON array of
+        // resources, each carrying the document's **plain** body text in
+        // `X-TIKA:content` (NOT Tika's default XHTML) *and* its metadata. Two
+        // reasons over a bare `/tika` request:
+        //   * Plain text avoids polluting search with XHTML tag tokens and avoids
+        //     the token-dense ~700-char XHTML chunk that overflows the rerank
+        //     model's 512-token window (which 500s the reranker and trips its
+        //     circuit breaker for all later searches).
+        //   * The JSON envelope preserves the metadata sidecar (Content-Type,
+        //     dc:title, page-count, …) that a bare `/tika` + `Accept: text/plain`
+        //     body would silently drop, and guarantees the content is read from
+        //     `X-TIKA:content` even when the extracted body is itself a
+        //     JSON-shaped literal (e.g. a receipt OCR-ing to `2026`).
+        let url = format!("{}/rmeta/text", base.as_str());
         // Drop the guard so we don't hold it across the await point.
         drop(base);
 
-        // Send a Content-Type so Tika selects a parser: its PUT /tika does not
-        // sniff the body, so with no/octet-stream type it returns empty text
+        // Send a Content-Type so Tika selects a parser: it does not sniff the
+        // body, so with no/octet-stream type it returns empty text
         // (BUG-INGEST-05). Prefer the office MIME implied by the filename
         // extension over the detected one: OOXML files arrive detected as
         // application/zip, and sent as such Tika does *verbose archive
-        // recursion* (dumping every package part) — a single huge chunk that
-        // later overflows the reranker. The office MIME makes Tika extract just
-        // the document body text.
+        // recursion* (dumping every package part). The office MIME makes Tika
+        // extract just the document body text.
         let content_type = office_mime_for_path(file.path.as_deref())
             .or(file.mime.as_deref())
             .unwrap_or("application/octet-stream");
-        // Ask Tika for *plain text*, not its default XHTML. With `Accept:
-        // text/html`/`application/xml` (Tika's default), `X-TIKA:content` is a
-        // full XHTML document (`<html xmlns=…><head><meta …>…`); embedding and
-        // reranking that markup pollutes search with tag tokens and produces a
-        // token-dense chunk that overflows the rerank model's window (a single
-        // ~700-char XHTML chunk tokenises past 512, 500-ing the reranker). The
-        // `text/plain` handler returns just the document's body text, which the
-        // body parsing below reads via the plain-text path.
         let resp = self
             .http
             .put(&url)
-            .header("Accept", "text/plain")
+            .header("Accept", "application/json")
             .header("Content-Type", content_type)
             .body(file.bytes.clone())
             .send()
@@ -201,21 +206,34 @@ impl Extractor for TikaExtractor {
             .await
             .map_err(|e| anyhow::anyhow!("TikaExtractor: failed to read response body: {e}"))?;
 
-        // Try to parse as JSON (the normal path — we requested application/json).
-        // Fall back to treating the body as plain text (older Tika versions or
-        // misconfigured Accept headers).
+        // The normal path: `/rmeta/text` returns a JSON array — one object per
+        // (recursively embedded) resource, the first being the top-level
+        // document. Older/alternate endpoints may return a bare object; accept
+        // both. Only fall back to plain-text if the body is not JSON at all.
         if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&body_bytes) {
-            let text = json
+            // Select the top-level document object from the array (or the bare
+            // object). An empty array → an empty object (no text, no metadata).
+            let mut doc = match json {
+                serde_json::Value::Array(mut arr) if !arr.is_empty() => arr.swap_remove(0),
+                serde_json::Value::Array(_) => serde_json::Value::Object(Default::default()),
+                other => other,
+            };
+
+            let text = doc
                 .get("X-TIKA:content")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
 
-            // Remove the content key so metadata doesn't duplicate the text.
-            let mut meta = json;
-            if let Some(obj) = meta.as_object_mut() {
-                obj.remove("X-TIKA:content");
-            }
+            // Remove the content key so metadata doesn't duplicate the text; a
+            // non-object response (shouldn't happen via rmeta) → empty metadata.
+            let meta = match doc.as_object_mut() {
+                Some(obj) => {
+                    obj.remove("X-TIKA:content");
+                    doc
+                }
+                None => serde_json::Value::Object(Default::default()),
+            };
 
             Ok(Extracted {
                 text,
@@ -279,7 +297,7 @@ mod tests {
     }
 
     /// Shared mock state: the canned response plus the last request's `Accept`
-    /// header, so tests can assert the extractor negotiates `text/plain`.
+    /// header, so tests can assert the extractor negotiates `application/json`.
     #[derive(Default)]
     struct MockState {
         scenario: Mutex<MockScenario>,
@@ -340,7 +358,7 @@ mod tests {
             let app_state = Arc::clone(&state);
 
             let app = Router::new()
-                .route("/tika", put(handle_tika))
+                .route("/rmeta/text", put(handle_tika))
                 .with_state(app_state);
 
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -537,11 +555,11 @@ mod tests {
         mock.shutdown().await;
     }
 
-    /// The extractor must negotiate `Accept: text/plain` so Tika returns clean
-    /// body text rather than its default XHTML — which would store tag markup as
-    /// content and produce token-dense chunks that overflow the reranker.
+    /// The extractor hits `/rmeta/text` with `Accept: application/json` (the mock
+    /// only routes `/rmeta/text`, so reaching it proves the endpoint) — that
+    /// endpoint yields plain `X-TIKA:content` (no XHTML) plus metadata.
     #[tokio::test]
-    async fn requests_plain_text_not_xhtml() {
+    async fn requests_json_from_rmeta_text() {
         let mock = MockTika::start().await;
         mock.set_scenario(tika_text_response("clean body text"))
             .await;
@@ -552,9 +570,80 @@ mod tests {
         assert_eq!(out.text, "clean body text");
         assert_eq!(
             mock.last_accept().await.as_deref(),
-            Some("text/plain"),
-            "extractor must request text/plain so Tika strips XHTML markup"
+            Some("application/json"),
+            "extractor must request application/json from /rmeta/text"
         );
+
+        mock.shutdown().await;
+    }
+
+    /// `/rmeta/text` returns a JSON *array*; the extractor reads the top-level
+    /// document's plain `X-TIKA:content` AND preserves its metadata. (Regression
+    /// guard: requesting `text/plain` from `/tika` returned clean text but
+    /// dropped every metadata field.)
+    #[tokio::test]
+    async fn parses_rmeta_array_with_text_and_metadata() {
+        let mock = MockTika::start().await;
+        mock.set_scenario(MockScenario {
+            status: StatusCode::OK,
+            content_type: "application/json".into(),
+            body: serde_json::to_vec(&json!([{
+                "X-TIKA:content": "Quarterly revenue grew 12%.",
+                "Content-Type": "application/pdf",
+                "dc:title": "Q3",
+                "meta:page-count": "4",
+            }]))
+            .unwrap(),
+        })
+        .await;
+
+        let ex = extractor_with_mock(&mock).await;
+        let out = ex.extract(&pdf_raw()).await.unwrap();
+
+        assert_eq!(out.text, "Quarterly revenue grew 12%.");
+        assert_eq!(out.meta["Content-Type"], "application/pdf");
+        assert_eq!(out.meta["dc:title"], "Q3");
+        assert_eq!(out.meta["meta:page-count"], "4");
+        assert!(out.meta.get("X-TIKA:content").is_none());
+
+        mock.shutdown().await;
+    }
+
+    /// A document whose extracted body is itself a JSON literal (e.g. a receipt
+    /// OCR-ing to `2026`) must still be captured as content, not dropped — the
+    /// `/rmeta/text` envelope always carries it in `X-TIKA:content`.
+    #[tokio::test]
+    async fn json_shaped_content_is_not_dropped() {
+        let mock = MockTika::start().await;
+        mock.set_scenario(MockScenario {
+            status: StatusCode::OK,
+            content_type: "application/json".into(),
+            body: serde_json::to_vec(&json!([{"X-TIKA:content": "2026"}])).unwrap(),
+        })
+        .await;
+
+        let ex = extractor_with_mock(&mock).await;
+        let out = ex.extract(&pdf_raw()).await.unwrap();
+        assert_eq!(out.text, "2026");
+
+        mock.shutdown().await;
+    }
+
+    /// An empty `/rmeta/text` array yields empty text + empty metadata, no panic.
+    #[tokio::test]
+    async fn empty_rmeta_array_is_safe() {
+        let mock = MockTika::start().await;
+        mock.set_scenario(MockScenario {
+            status: StatusCode::OK,
+            content_type: "application/json".into(),
+            body: b"[]".to_vec(),
+        })
+        .await;
+
+        let ex = extractor_with_mock(&mock).await;
+        let out = ex.extract(&pdf_raw()).await.unwrap();
+        assert_eq!(out.text, "");
+        assert_eq!(out.meta, json!({}));
 
         mock.shutdown().await;
     }

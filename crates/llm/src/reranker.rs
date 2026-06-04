@@ -44,12 +44,20 @@ pub struct LlamaReranker {
 /// within a fixed token window (512 for bge). If a chunk pushes the pair over
 /// that window the backend returns HTTP 500 ("input is too large to process"),
 /// which then trips the per-backend circuit breaker and disables reranking for
-/// **every** subsequent search. We cap the document (and query) length
-/// conservatively so a long chunk can never overflow the model — reranking only
-/// needs the leading, already-vector-matched portion of a chunk to score it.
-const MAX_RERANK_DOC_CHARS: usize = 700;
+/// **every** subsequent search. We cap the document (and query) length so a long
+/// chunk does not overflow the model — reranking only needs the leading,
+/// already-vector-matched portion of a chunk to score it.
+///
+/// The cap is in **characters** but the budget is **tokens**, and the ratio is
+/// script-dependent: Latin text is ~0.3 tok/char, but CJK with bge-M3's
+/// (multilingual) tokeniser is ~1–1.5 tok/char. The values below keep
+/// `query`+`document` within 512 tokens for typical text including CJK; they are
+/// not a hard guarantee for pathologically dense input (the robust fix would cap
+/// by tokens via the backend's `/tokenize`). The primary defense against
+/// overflow is upstream — extractors emit plain text, not token-dense markup.
+const MAX_RERANK_DOC_CHARS: usize = 250;
 /// Max characters of the query sent to the reranker (see [`MAX_RERANK_DOC_CHARS`]).
-const MAX_RERANK_QUERY_CHARS: usize = 150;
+const MAX_RERANK_QUERY_CHARS: usize = 50;
 
 /// Truncate `s` to at most `max_chars` characters, on a UTF-8 char boundary.
 fn truncate_chars(s: &str, max_chars: usize) -> &str {
@@ -188,7 +196,10 @@ mod tests {
     fn truncate_chars_caps_long_input() {
         let long = "x".repeat(1000);
         assert_eq!(truncate_chars(&long, 700).chars().count(), 700);
-        assert_eq!(truncate_chars(&long, MAX_RERANK_DOC_CHARS).len(), 700);
+        assert_eq!(
+            truncate_chars(&long, MAX_RERANK_DOC_CHARS).chars().count(),
+            MAX_RERANK_DOC_CHARS
+        );
     }
 
     /// Truncation lands on a UTF-8 char boundary (never splits a code point).

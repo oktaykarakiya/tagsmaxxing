@@ -234,8 +234,18 @@ fn normalize_octet_stream_magic(bytes: &[u8]) -> &'static str {
     if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WAVE" {
         return "audio/wav";
     }
-    if bytes.len() >= 8 && &bytes[4..8] == b"ftyp" {
-        return "video/mp4";
+    // `ftyp` (offset 4) is shared across the ISO base-media family; the major
+    // brand at offset 8 disambiguates MP4 / QuickTime / 3GP / HEIC / AVIF. Kept
+    // in step with `kb_extract::security::normalize_octet_stream_magic`.
+    if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" {
+        let brand = [bytes[8], bytes[9], bytes[10], bytes[11]];
+        return match &brand {
+            b"qt  " => "video/quicktime",
+            b"heic" | b"heix" | b"heim" | b"heis" | b"heif" => "image/heic",
+            b"mif1" | b"msf1" | b"avif" => "image/avif",
+            b if b.starts_with(b"3gp") => "video/3gpp",
+            _ => "video/mp4",
+        };
     }
     "application/octet-stream"
 }

@@ -515,9 +515,20 @@ fn normalize_octet_stream_magic(bytes: &[u8]) -> &'static str {
     if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WAVE" {
         return "audio/wav";
     }
-    // ISO base media (MP4 / QuickTime): the `ftyp` box type at offset 4 → ffmpeg.
-    if bytes.len() >= 8 && &bytes[4..8] == b"ftyp" {
-        return "video/mp4";
+    // ISO base media family: the `ftyp` box type at offset 4 is shared by MP4,
+    // QuickTime, 3GP, HEIC/HEIF and AVIF — the *major brand* at offset 8
+    // disambiguates. MOV→quicktime keeps the ffmpeg path with the right label;
+    // still-image brands (HEIC/AVIF) return their image MIME, which is NOT
+    // allow-listed, so they get a clean 400 instead of a silently-broken "video".
+    if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" {
+        let brand = [bytes[8], bytes[9], bytes[10], bytes[11]];
+        return match &brand {
+            b"qt  " => "video/quicktime",
+            b"heic" | b"heix" | b"heim" | b"heis" | b"heif" => "image/heic",
+            b"mif1" | b"msf1" | b"avif" => "image/avif",
+            b if b.starts_with(b"3gp") => "video/3gpp",
+            _ => "video/mp4",
+        };
     }
     "application/octet-stream"
 }
@@ -965,6 +976,49 @@ mod tests {
         assert!(is_allowed_mime("application/zip", ALLOWED_MIMES));
         assert!(is_allowed_mime("audio/wav", ALLOWED_MIMES));
         assert!(is_allowed_mime("video/mp4", ALLOWED_MIMES));
+    }
+
+    #[test]
+    fn ftyp_brand_disambiguates_iso_base_media() {
+        // The `ftyp` box marker is shared across the ISO base-media family; the
+        // major brand at offset 8 is what tells MP4 / MOV / 3GP / HEIC / AVIF
+        // apart. Building `\0\0\0\x14ftyp<brand>` + padding for each.
+        let ftyp = |brand: &[u8]| {
+            let mut v = vec![0u8, 0, 0, 0x14];
+            v.extend_from_slice(b"ftyp");
+            v.extend_from_slice(brand);
+            v.extend_from_slice(&[0u8; 8]);
+            v
+        };
+
+        // QuickTime .mov → video/quicktime (allow-listed → same ffmpeg path, right label).
+        assert_eq!(normalize_octet_stream_magic(&ftyp(b"qt  ")), "video/quicktime");
+        assert!(is_allowed_mime("video/quicktime", ALLOWED_MIMES));
+
+        // MP4 brands stay video/mp4.
+        assert_eq!(normalize_octet_stream_magic(&ftyp(b"mp42")), "video/mp4");
+        assert_eq!(normalize_octet_stream_magic(&ftyp(b"isom")), "video/mp4");
+
+        // Still-image brands → image MIME, which is NOT allow-listed, so they get
+        // a clean 400 rather than being mislabelled as a broken "video".
+        assert_eq!(normalize_octet_stream_magic(&ftyp(b"heic")), "image/heic");
+        assert_eq!(normalize_octet_stream_magic(&ftyp(b"heif")), "image/heic");
+        assert_eq!(normalize_octet_stream_magic(&ftyp(b"avif")), "image/avif");
+        assert_eq!(normalize_octet_stream_magic(&ftyp(b"mif1")), "image/avif");
+        assert!(!is_allowed_mime("image/heic", ALLOWED_MIMES));
+        assert!(!is_allowed_mime("image/avif", ALLOWED_MIMES));
+
+        // 3GP video → video/3gpp (also not allow-listed → clean 400).
+        assert_eq!(normalize_octet_stream_magic(&ftyp(b"3gp4")), "video/3gpp");
+        assert!(!is_allowed_mime("video/3gpp", ALLOWED_MIMES));
+
+        // A truncated ftyp box (no full brand) can't be classified → octet-stream.
+        let mut truncated = vec![0u8, 0, 0, 0x14];
+        truncated.extend_from_slice(b"ftyp");
+        assert_eq!(
+            normalize_octet_stream_magic(&truncated),
+            "application/octet-stream"
+        );
     }
 
     #[test]
