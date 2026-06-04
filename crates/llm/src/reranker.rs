@@ -40,24 +40,23 @@ pub struct LlamaReranker {
 
 /// Max characters of each document sent to the cross-encoder reranker.
 ///
-/// The rerank model (e.g. bge-reranker-v2-m3) scores the `query`+`document` pair
-/// within a fixed token window (512 for bge). If a chunk pushes the pair over
-/// that window the backend returns HTTP 500 ("input is too large to process"),
-/// which then trips the per-backend circuit breaker and disables reranking for
-/// **every** subsequent search. We cap the document (and query) length so a long
-/// chunk does not overflow the model — reranking only needs the leading,
-/// already-vector-matched portion of a chunk to score it.
+/// The rerank model scores the `query`+`document` pair within a fixed token
+/// window. If a chunk pushes the pair over that window the backend returns HTTP
+/// 500 ("input is too large to process"), which trips the per-backend circuit
+/// breaker and disables reranking for **every** subsequent search. This is a
+/// **generous safety ceiling** that guards against pathological, non-chunk inputs
+/// without ever truncating a real chunk.
 ///
-/// The cap is in **characters** but the budget is **tokens**, and the ratio is
-/// script-dependent: Latin text is ~0.3 tok/char, but CJK with bge-M3's
-/// (multilingual) tokeniser is ~1–1.5 tok/char. The values below keep
-/// `query`+`document` within 512 tokens for typical text including CJK; they are
-/// not a hard guarantee for pathologically dense input (the robust fix would cap
-/// by tokens via the backend's `/tokenize`). The primary defense against
-/// overflow is upstream — extractors emit plain text, not token-dense markup.
-const MAX_RERANK_DOC_CHARS: usize = 250;
+/// The active reranker (ettin-reranker-400m-v1) has an **8192-token** window, and
+/// ingested chunks are at most 2048 chars (`DEFAULT_CHUNK_SIZE_CHARS` in
+/// kb-pipeline), so this 4096-char ceiling never bites a real chunk — the reranker
+/// scores the full chunk. The cap is in **characters** but the budget is **tokens**
+/// (script-dependent: Latin ~0.3 tok/char, CJK ~1–1.5 tok/char); 4096 chars stays
+/// well under 8192 tokens even for dense CJK (≈6144 tok), leaving room for the
+/// query. It only bounds pathological inputs that are not normal chunks.
+const MAX_RERANK_DOC_CHARS: usize = 4096;
 /// Max characters of the query sent to the reranker (see [`MAX_RERANK_DOC_CHARS`]).
-const MAX_RERANK_QUERY_CHARS: usize = 50;
+const MAX_RERANK_QUERY_CHARS: usize = 512;
 
 /// Truncate `s` to at most `max_chars` characters, on a UTF-8 char boundary.
 fn truncate_chars(s: &str, max_chars: usize) -> &str {
@@ -96,10 +95,10 @@ impl Reranker for LlamaReranker {
         local_only: bool,
         priority: i32,
     ) -> anyhow::Result<Vec<f32>> {
-        // Cap each query+document pair below the rerank model's token window so a
-        // long chunk can never 500 the backend (which would trip its circuit
-        // breaker and disable reranking for all later searches). See
-        // [`MAX_RERANK_DOC_CHARS`].
+        // Guard against pathological, non-chunk inputs overflowing the reranker's
+        // token window (which would 500 the backend and trip its circuit breaker,
+        // disabling reranking for all later searches). The ceiling is generous —
+        // real chunks (≤2048 chars) pass through in full. See [`MAX_RERANK_DOC_CHARS`].
         let query = truncate_chars(query, MAX_RERANK_QUERY_CHARS);
         let docs: Vec<String> = docs
             .iter()
@@ -194,12 +193,20 @@ mod tests {
     /// A string over the limit is cut to exactly `max_chars` characters.
     #[test]
     fn truncate_chars_caps_long_input() {
-        let long = "x".repeat(1000);
+        let long = "x".repeat(MAX_RERANK_DOC_CHARS + 1000);
         assert_eq!(truncate_chars(&long, 700).chars().count(), 700);
         assert_eq!(
             truncate_chars(&long, MAX_RERANK_DOC_CHARS).chars().count(),
             MAX_RERANK_DOC_CHARS
         );
+    }
+
+    /// A full-size chunk (≤ DEFAULT_CHUNK_SIZE_CHARS = 2048) is NOT truncated —
+    /// the long-context reranker (ettin, 8192-token) scores the whole chunk.
+    #[test]
+    fn full_chunk_reaches_reranker_untruncated() {
+        let chunk = "a".repeat(2048);
+        assert_eq!(truncate_chars(&chunk, MAX_RERANK_DOC_CHARS), chunk.as_str());
     }
 
     /// Truncation lands on a UTF-8 char boundary (never splits a code point).
