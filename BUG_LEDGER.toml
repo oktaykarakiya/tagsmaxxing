@@ -1049,7 +1049,7 @@ touches = ["crates/api/src/web/admin_handlers.rs"]
 conflict_group = "admin_handlers"
 depends_on = ["BUG-RBAC-01"]
 severity = "high"
-status = "todo"
+status = "done"
 acceptance = "test_admin_role_endpoint_cannot_self_demote passes"
 notes = "An Owner can demote themselves via /admin/users/role. Add a self-demotion guard: reject if the target user_id equals the authenticated user's id."
 

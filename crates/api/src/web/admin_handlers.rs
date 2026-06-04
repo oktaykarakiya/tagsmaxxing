@@ -475,6 +475,11 @@ pub async fn admin_change_user_role(
         return Err(StatusCode::FORBIDDEN);
     }
 
+    // ── Self-demotion guard — reject if the caller targets themselves ──────────
+    if form.user_id == auth_user.user_id {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
     // ── Don't demote the last Owner (zero-owner lockout guard) ─────────────────
     if new_role != UserRole::Owner {
         match pg.admin_list_users(tid).await {
