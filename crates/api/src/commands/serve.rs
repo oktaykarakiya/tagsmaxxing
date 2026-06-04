@@ -40,7 +40,7 @@ use kb_scheduler::Reloader;
 use kb_store::ROUTING_CHANNEL;
 use kb_store::api_token_store::InMemoryApiTokenStore;
 use kb_store::{LocalBlob, PgRoutingNotifier, PgSessionStore, PgStore};
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::cli::ServeArgs;
 use kb_api::AppState;
@@ -441,6 +441,9 @@ pub async fn run_serve(args: &ServeArgs) -> anyhow::Result<()> {
             });
 
             info!("kb API server listening on https://{addr}");
+            warn!(
+                "EXPERIMENTAL BUILD — not ready for production. Features and data formats may change without notice."
+            );
 
             bind_rustls(addr, tls_config)
                 .handle(handle)
@@ -455,6 +458,9 @@ pub async fn run_serve(args: &ServeArgs) -> anyhow::Result<()> {
                 .with_context(|| format!("failed to bind to {addr}"))?;
 
             info!("kb API server listening on http://{addr}");
+            warn!(
+                "EXPERIMENTAL BUILD — not ready for production. Features and data formats may change without notice."
+            );
 
             axum::serve(listener, router)
                 .with_graceful_shutdown(shutdown_signal)

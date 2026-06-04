@@ -89,6 +89,11 @@ pub async fn security_headers_middleware(request: Request, next: Next) -> Respon
             "camera=(), microphone=(), geolocation=(), payment=()",
         ),
     );
+    // X-Experimental: mark this build as experimental pre-release.
+    headers.insert(
+        axum::http::HeaderName::from_static("x-experimental"),
+        axum::http::HeaderValue::from_static("true"),
+    );
 
     response
 }

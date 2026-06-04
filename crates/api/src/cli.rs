@@ -6,7 +6,7 @@
 
 use clap::{Args, Parser, Subcommand};
 
-/// Local File Knowledge Base — ingest and search your files from the command line.
+/// Local File Knowledge Base (experimental pre-release) — ingest and search your files from the command line.
 ///
 /// Both commands load configuration from `config.toml` (overlaid with environment
 /// variables, per plan §6 and P0-T5). Run `kb help` for the full flag reference.
