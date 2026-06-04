@@ -22,6 +22,43 @@
 
 use std::net::{IpAddr, Ipv6Addr};
 
+use thiserror::Error;
+
+// ── Upload rejection error (BUG-INGEST-06/07) ────────────────────────────────────
+
+/// A rejected upload at the validation boundary.
+///
+/// This is a **client** error: the uploaded bytes are empty, too large, of a
+/// disallowed type, or carry an unsafe filename — the caller can correct the
+/// request and retry. The validators ([`validate_upload`] and its parts) return
+/// it (as an [`anyhow::Error`]) so the API layer can downcast it and respond
+/// `400 Bad Request` rather than mapping it to a `500` (which is what an
+/// untyped `anyhow` error would otherwise produce). This mirrors how
+/// `kb_core::quota::QuotaError` is downcast to `413`.
+#[derive(Debug, Error)]
+pub enum UploadRejected {
+    /// The file exceeds the maximum allowed size.
+    #[error("rejected upload: file size {size} bytes exceeds limit of {max} bytes")]
+    TooLarge {
+        /// Actual size of the rejected file, in bytes.
+        size: u64,
+        /// Configured maximum, in bytes.
+        max: u64,
+    },
+    /// The filename contains path-traversal sequences or unsafe characters.
+    #[error("rejected upload: '{0}' contains path-traversal or unsafe characters")]
+    UnsafePath(String),
+    /// The detected MIME type is empty, denied, or not in the allow-list.
+    ///
+    /// A zero-byte upload detects as `application/x-empty`, which is not
+    /// allow-listed, and therefore surfaces here.
+    #[error(
+        "rejected upload: unsupported MIME type '{0}'. \
+         Allowed types include documents, images, audio, video, and archives."
+    )]
+    DisallowedMime(String),
+}
+
 // ── Size limits ────────────────────────────────────────────────────────────────
 
 /// Maximum bytes per individual file in an upload: 500 MiB.
@@ -215,10 +252,7 @@ pub fn is_safe_path(path: &str) -> bool {
 /// Returns `anyhow::Error` if `file_name` contains path-traversal sequences.
 pub fn validate_file_path(file_name: &str) -> anyhow::Result<()> {
     if !is_safe_path(file_name) {
-        anyhow::bail!(
-            "rejected upload: '{}' contains path-traversal or unsafe characters",
-            file_name
-        );
+        return Err(UploadRejected::UnsafePath(file_name.to_owned()).into());
     }
     Ok(())
 }
@@ -234,11 +268,11 @@ pub fn validate_file_path(file_name: &str) -> anyhow::Result<()> {
 /// Returns `anyhow::Error` when `size > max_size`.
 pub fn validate_file_size(size: u64, max_size: u64) -> anyhow::Result<()> {
     if size > max_size {
-        anyhow::bail!(
-            "rejected upload: file size {} bytes exceeds limit of {} bytes",
+        return Err(UploadRejected::TooLarge {
             size,
-            max_size
-        );
+            max: max_size,
+        }
+        .into());
     }
     Ok(())
 }
@@ -277,11 +311,7 @@ pub fn validate_mime(mime: &str) -> anyhow::Result<()> {
     if is_allowed_mime(mime, ALLOWED_MIMES) {
         return Ok(());
     }
-    anyhow::bail!(
-        "rejected upload: unsupported MIME type '{}'. \
-         Allowed types include documents, images, audio, video, and archives.",
-        mime
-    );
+    Err(UploadRejected::DisallowedMime(mime.to_owned()).into())
 }
 
 // ── SSRF protection ────────────────────────────────────────────────────────────
@@ -832,6 +862,42 @@ mod tests {
         let elf = [0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00];
         let err = validate_upload(&elf, Some("program"), MAX_INDIVIDUAL_FILE_BYTES).unwrap_err();
         assert!(err.to_string().contains("unsupported MIME type"));
+    }
+
+    #[test]
+    fn rejections_downcast_to_upload_rejected() {
+        // BUG-INGEST-06/07: every validate_upload rejection must be downcastable
+        // to a typed UploadRejected so the API layer can answer 400 (not 500).
+
+        // Zero-byte upload → application/x-empty → DisallowedMime (BUG-INGEST-06).
+        let err = validate_upload(b"", None, 1024).unwrap_err();
+        match err.downcast_ref::<UploadRejected>() {
+            Some(UploadRejected::DisallowedMime(m)) => assert_eq!(m, "application/x-empty"),
+            other => panic!("expected DisallowedMime, got {other:?}"),
+        }
+
+        // MIME/magic mismatch (ELF executable) → DisallowedMime (BUG-INGEST-07).
+        let elf = [0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00];
+        let err = validate_upload(&elf, Some("program"), MAX_INDIVIDUAL_FILE_BYTES).unwrap_err();
+        assert!(matches!(
+            err.downcast_ref::<UploadRejected>(),
+            Some(UploadRejected::DisallowedMime(_))
+        ));
+
+        // Oversized → TooLarge.
+        let big = vec![b'a'; 2048];
+        let err = validate_upload(&big, Some("big.dat"), 512).unwrap_err();
+        assert!(matches!(
+            err.downcast_ref::<UploadRejected>(),
+            Some(UploadRejected::TooLarge { .. })
+        ));
+
+        // Unsafe filename → UnsafePath.
+        let err = validate_upload(b"hello", Some("../escape.txt"), 1024).unwrap_err();
+        assert!(matches!(
+            err.downcast_ref::<UploadRejected>(),
+            Some(UploadRejected::UnsafePath(_))
+        ));
     }
 
     #[test]

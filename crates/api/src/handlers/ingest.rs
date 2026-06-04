@@ -192,7 +192,7 @@ pub async fn ingest(
         &parsed,
     )
     .await
-    .map_err(internal_error)?;
+    .map_err(map_ingest_error)?;
 
     let doc_id_str = result.document_id.map(|id| id.to_string());
     Ok((
@@ -479,6 +479,21 @@ fn internal_error(e: impl std::fmt::Display) -> (StatusCode, Json<ErrorResponse>
             message: "an unexpected error occurred".into(),
         }),
     )
+}
+
+/// Map an ingest-pipeline error to an HTTP response (BUG-INGEST-06/07).
+///
+/// Upload-validation rejections — empty, oversized, disallowed-type, or
+/// unsafe-named bytes — are **client** errors the caller can fix, so they become
+/// `400 Bad Request`. Everything else (blob store, DB, pipeline faults) is an
+/// internal `500`. Without this downcast, every validation rejection surfaced as
+/// a `500` because only `QuotaError` (→ `413`, above) was special-cased.
+fn map_ingest_error(e: anyhow::Error) -> (StatusCode, Json<ErrorResponse>) {
+    if let Some(rejected) = e.downcast_ref::<security::UploadRejected>() {
+        tracing::warn!(error = %rejected, "ingest: rejected upload (400)");
+        return bad_request("invalid_upload", &rejected.to_string());
+    }
+    internal_error(e)
 }
 
 /// Build a `429 Too Many Requests` error tuple without headers.
@@ -847,6 +862,22 @@ mod tests {
         let (status, body) = internal_error(anyhow::anyhow!("disk full"));
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(body.error, "internal_error");
+    }
+
+    #[test]
+    fn upload_rejection_maps_to_400_else_500() {
+        // BUG-INGEST-06/07: a typed UploadRejected (zero-byte upload detects as
+        // application/x-empty) maps to 400, not 500.
+        let rejected = anyhow::Error::new(security::UploadRejected::DisallowedMime(
+            "application/x-empty".into(),
+        ));
+        let (status, body) = map_ingest_error(rejected);
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body.error, "invalid_upload");
+
+        // An untyped error (e.g. a DB fault) still maps to 500.
+        let (status, _) = map_ingest_error(anyhow::anyhow!("db connection lost"));
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     // ── throttled_error tests ────────────────────────────────────────────────
