@@ -62,8 +62,11 @@ impl TikaConfig {
 /// server.
 ///
 /// Sends the file bytes to `{base_url}/tika` via HTTP PUT with
-/// `Accept: application/json`. Tika returns a JSON object whose
-/// `"X-TIKA:content"` field becomes [`Extracted::text`] and whose remaining fields
+/// `Accept: text/plain`, so Tika returns the document's **plain body text**
+/// rather than its default XHTML rendering (which would pollute search with tag
+/// tokens and overflow the reranker). The response body becomes
+/// [`Extracted::text`]. If a Tika deployment instead returns a JSON object (with
+/// an `"X-TIKA:content"` field), that is parsed too and its remaining fields
 /// become [`Extracted::meta`].
 ///
 /// # Document formats
@@ -160,10 +163,18 @@ impl Extractor for TikaExtractor {
         let content_type = office_mime_for_path(file.path.as_deref())
             .or(file.mime.as_deref())
             .unwrap_or("application/octet-stream");
+        // Ask Tika for *plain text*, not its default XHTML. With `Accept:
+        // text/html`/`application/xml` (Tika's default), `X-TIKA:content` is a
+        // full XHTML document (`<html xmlns=…><head><meta …>…`); embedding and
+        // reranking that markup pollutes search with tag tokens and produces a
+        // token-dense chunk that overflows the rerank model's window (a single
+        // ~700-char XHTML chunk tokenises past 512, 500-ing the reranker). The
+        // `text/plain` handler returns just the document's body text, which the
+        // body parsing below reads via the plain-text path.
         let resp = self
             .http
             .put(&url)
-            .header("Accept", "application/json")
+            .header("Accept", "text/plain")
             .header("Content-Type", content_type)
             .body(file.bytes.clone())
             .send()
@@ -263,8 +274,16 @@ mod tests {
     /// instance.
     struct MockTika {
         addr: SocketAddr,
-        scenario: Arc<Mutex<MockScenario>>,
+        state: Arc<MockState>,
         shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    }
+
+    /// Shared mock state: the canned response plus the last request's `Accept`
+    /// header, so tests can assert the extractor negotiates `text/plain`.
+    #[derive(Default)]
+    struct MockState {
+        scenario: Mutex<MockScenario>,
+        last_accept: Mutex<Option<String>>,
     }
 
     /// What the mock Tika server should return on the next request.
@@ -317,12 +336,12 @@ mod tests {
     impl MockTika {
         /// Start the mock server on an ephemeral port.
         async fn start() -> Self {
-            let scenario = Arc::new(Mutex::new(MockScenario::default()));
-            let state = Arc::clone(&scenario);
+            let state = Arc::new(MockState::default());
+            let app_state = Arc::clone(&state);
 
             let app = Router::new()
                 .route("/tika", put(handle_tika))
-                .with_state(state);
+                .with_state(app_state);
 
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let addr = listener.local_addr().unwrap();
@@ -341,7 +360,7 @@ mod tests {
 
             MockTika {
                 addr,
-                scenario,
+                state,
                 shutdown_tx: Some(shutdown_tx),
             }
         }
@@ -353,7 +372,12 @@ mod tests {
 
         /// Lock the scenario for mutation between calls.
         async fn set_scenario(&self, s: MockScenario) {
-            *self.scenario.lock().await = s;
+            *self.state.scenario.lock().await = s;
+        }
+
+        /// The `Accept` header value sent on the most recent request, if any.
+        async fn last_accept(&self) -> Option<String> {
+            self.state.last_accept.lock().await.clone()
         }
 
         /// Gracefully shut down.
@@ -365,9 +389,16 @@ mod tests {
         }
     }
 
-    /// Axum handler for `PUT /tika` — reads the shared scenario and responds.
-    async fn handle_tika(State(scenario): State<Arc<Mutex<MockScenario>>>) -> Response {
-        let s = scenario.lock().await.clone();
+    /// Axum handler for `PUT /tika` — records the request's `Accept` header,
+    /// then reads the shared scenario and responds.
+    async fn handle_tika(
+        State(state): State<Arc<MockState>>,
+        headers: axum::http::HeaderMap,
+    ) -> Response {
+        if let Some(accept) = headers.get(axum::http::header::ACCEPT) {
+            *state.last_accept.lock().await = accept.to_str().ok().map(str::to_owned);
+        }
+        let s = state.scenario.lock().await.clone();
         let mut resp = Response::new(axum::body::Body::from(s.body));
         *resp.status_mut() = s.status;
         resp.headers_mut().insert(
@@ -501,6 +532,28 @@ mod tests {
         assert!(
             !out.text.is_empty(),
             "office document must yield searchable text"
+        );
+
+        mock.shutdown().await;
+    }
+
+    /// The extractor must negotiate `Accept: text/plain` so Tika returns clean
+    /// body text rather than its default XHTML — which would store tag markup as
+    /// content and produce token-dense chunks that overflow the reranker.
+    #[tokio::test]
+    async fn requests_plain_text_not_xhtml() {
+        let mock = MockTika::start().await;
+        mock.set_scenario(tika_text_response("clean body text"))
+            .await;
+
+        let ex = extractor_with_mock(&mock).await;
+        let out = ex.extract(&pdf_raw()).await.unwrap();
+
+        assert_eq!(out.text, "clean body text");
+        assert_eq!(
+            mock.last_accept().await.as_deref(),
+            Some("text/plain"),
+            "extractor must request text/plain so Tika strips XHTML markup"
         );
 
         mock.shutdown().await;

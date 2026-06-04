@@ -38,6 +38,27 @@ pub struct LlamaReranker {
     model: String,
 }
 
+/// Max characters of each document sent to the cross-encoder reranker.
+///
+/// The rerank model (e.g. bge-reranker-v2-m3) scores the `query`+`document` pair
+/// within a fixed token window (512 for bge). If a chunk pushes the pair over
+/// that window the backend returns HTTP 500 ("input is too large to process"),
+/// which then trips the per-backend circuit breaker and disables reranking for
+/// **every** subsequent search. We cap the document (and query) length
+/// conservatively so a long chunk can never overflow the model — reranking only
+/// needs the leading, already-vector-matched portion of a chunk to score it.
+const MAX_RERANK_DOC_CHARS: usize = 700;
+/// Max characters of the query sent to the reranker (see [`MAX_RERANK_DOC_CHARS`]).
+const MAX_RERANK_QUERY_CHARS: usize = 150;
+
+/// Truncate `s` to at most `max_chars` characters, on a UTF-8 char boundary.
+fn truncate_chars(s: &str, max_chars: usize) -> &str {
+    match s.char_indices().nth(max_chars) {
+        Some((byte_idx, _)) => &s[..byte_idx],
+        None => s,
+    }
+}
+
 impl LlamaReranker {
     /// Create a new reranker that sends requests with the given `model`.
     ///
@@ -67,9 +88,18 @@ impl Reranker for LlamaReranker {
         local_only: bool,
         priority: i32,
     ) -> anyhow::Result<Vec<f32>> {
+        // Cap each query+document pair below the rerank model's token window so a
+        // long chunk can never 500 the backend (which would trip its circuit
+        // breaker and disable reranking for all later searches). See
+        // [`MAX_RERANK_DOC_CHARS`].
+        let query = truncate_chars(query, MAX_RERANK_QUERY_CHARS);
+        let docs: Vec<String> = docs
+            .iter()
+            .map(|d| truncate_chars(d, MAX_RERANK_DOC_CHARS).to_owned())
+            .collect();
         Ok(self
             .client
-            .rerank(&self.model, query, docs, local_only, priority)
+            .rerank(&self.model, query, &docs, local_only, priority)
             .await?)
     }
 }
@@ -141,6 +171,34 @@ mod tests {
         assert!(scores.is_empty());
 
         mock.shutdown().await;
+    }
+
+    // ── input truncation (rerank token-window guard) ─────────────────────
+
+    /// A string at or under the limit is returned unchanged.
+    #[test]
+    fn truncate_chars_keeps_short_input() {
+        assert_eq!(truncate_chars("hello", 10), "hello");
+        assert_eq!(truncate_chars("hello", 5), "hello");
+        assert_eq!(truncate_chars("", 5), "");
+    }
+
+    /// A string over the limit is cut to exactly `max_chars` characters.
+    #[test]
+    fn truncate_chars_caps_long_input() {
+        let long = "x".repeat(1000);
+        assert_eq!(truncate_chars(&long, 700).chars().count(), 700);
+        assert_eq!(truncate_chars(&long, MAX_RERANK_DOC_CHARS).len(), 700);
+    }
+
+    /// Truncation lands on a UTF-8 char boundary (never splits a code point).
+    #[test]
+    fn truncate_chars_respects_char_boundaries() {
+        // Each 'é' is 2 bytes; cutting at 3 chars must yield 6 bytes, valid UTF-8.
+        let s = "éééééé";
+        let out = truncate_chars(s, 3);
+        assert_eq!(out.chars().count(), 3);
+        assert_eq!(out, "ééé");
     }
 
     /// Length mismatch between input and response returns an error.
