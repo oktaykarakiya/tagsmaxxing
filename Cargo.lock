@@ -2060,6 +2060,7 @@ dependencies = [
  "axum",
  "dashmap",
  "kb-core",
+ "kb-metrics",
  "kb-mock-backend",
  "kb-scheduler",
  "reqwest 0.13.4",

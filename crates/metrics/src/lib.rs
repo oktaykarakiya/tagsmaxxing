@@ -3,7 +3,8 @@
 //! This crate provides the metrics infrastructure for the Local File Knowledge Base:
 //!
 //! - [`init_metrics`] — installs the global Prometheus recorder, registers all metric
-//!   descriptions, and returns a static handle for rendering. Call once at startup.
+//!   descriptions, seeds the backup/DR metric families to a baseline so they appear on
+//!   `/metrics` from startup, and returns a static handle for rendering. Call once at startup.
 //! - [`render`] — renders all currently collected metrics in the Prometheus text
 //!   exposition format (`GET /metrics`).
 //! - [`record_request`] — records an LLM request with outcome, duration, role, and model
@@ -57,6 +58,7 @@ pub fn init_metrics() -> &'static PrometheusHandle {
             }
         };
         describe_all();
+        seed_backup_dr_metrics();
         handle
     })
 }
@@ -65,12 +67,88 @@ pub fn init_metrics() -> &'static PrometheusHandle {
 ///
 /// Returns an empty string when [`init_metrics`] has not been called yet (the
 /// metrics endpoint is harmless but empty before initialisation).
+///
+/// The output is **canonicalised** ([`canonicalize_exposition`]): metric families
+/// are ordered by name and the samples within each family are sorted, so repeated
+/// calls produce byte-identical output. The underlying exporter renders families
+/// and label-sets in nondeterministic hash-map order; stable output keeps
+/// `/metrics` diffable and lets callers compare snapshots without spurious churn.
 #[must_use]
 pub fn render() -> String {
     match HANDLE.get() {
-        Some(h) => h.render(),
+        Some(h) => canonicalize_exposition(&h.render()),
         None => String::new(),
     }
+}
+
+/// Reorder a Prometheus text-exposition document into a deterministic form.
+///
+/// The input is split into metric-family blocks (separated by blank lines, as the
+/// exporter emits them). Within each block the leading `# HELP` / `# TYPE` comment
+/// lines are kept in place and the sample lines are sorted; blocks are then ordered
+/// by metric name. This preserves the exposition format (comments stay grouped with
+/// their samples) while removing the exporter's run-to-run ordering nondeterminism.
+fn canonicalize_exposition(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let mut blocks: Vec<(String, String)> = trimmed
+        .split("\n\n")
+        .filter_map(|block| {
+            let mut comments: Vec<&str> = Vec::new();
+            let mut samples: Vec<&str> = Vec::new();
+            for line in block.lines() {
+                if line.starts_with('#') {
+                    comments.push(line);
+                } else if !line.trim().is_empty() {
+                    samples.push(line);
+                }
+            }
+            if comments.is_empty() && samples.is_empty() {
+                return None;
+            }
+            let key = block_sort_key(&comments, &samples);
+            samples.sort_unstable();
+
+            let mut out = String::new();
+            for line in comments.iter().chain(samples.iter()) {
+                out.push_str(line);
+                out.push('\n');
+            }
+            Some((key, out.trim_end().to_owned()))
+        })
+        .collect();
+
+    blocks.sort_by(|a, b| a.0.cmp(&b.0));
+    blocks
+        .into_iter()
+        .map(|(_, body)| body)
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// Determine the metric name used to order a family block.
+///
+/// Prefers the name in a `# HELP <name> …` or `# TYPE <name> …` comment; if a block
+/// has no such comment, falls back to the metric name of its first sample line (the
+/// text before the first `{` or space). Returns an empty string for an empty block.
+fn block_sort_key(comments: &[&str], samples: &[&str]) -> String {
+    for comment in comments {
+        let mut parts = comment.split_whitespace();
+        let _hash = parts.next(); // "#"
+        if matches!(parts.next(), Some("HELP" | "TYPE"))
+            && let Some(name) = parts.next()
+        {
+            return name.to_owned();
+        }
+    }
+    if let Some(sample) = samples.first() {
+        let name_end = sample.find(['{', ' ']).unwrap_or(sample.len());
+        return sample[..name_end].to_owned();
+    }
+    String::new()
 }
 
 // ── Metric descriptions ──────────────────────────────────────────────────────────
@@ -210,6 +288,59 @@ fn describe_all() {
         "kb_tenant_budget_cents",
         "Monthly spend budget in cents (USD) for this tenant"
     );
+}
+
+// ── Backup / disaster-recovery seeding ───────────────────────────────────────────
+
+/// String labels for the maintenance job kinds, mirrored from
+/// `kb_pipeline::MaintenanceJobKind`.
+///
+/// Duplicated here (rather than depending on `kb-pipeline`) to keep `kb-metrics`
+/// a leaf crate with no upward dependencies. The production scheduler emits the
+/// authoritative series via [`record_maintenance_success`] /
+/// [`record_maintenance_failure`] once it runs; these labels only drive the
+/// startup seed so the family is scrapeable before the first run.
+const MAINTENANCE_JOB_KINDS: [&str; 5] = [
+    "vacuum",
+    "log_prune",
+    "blob_cache_eviction",
+    "b2_lifecycle",
+    "reembed_check",
+];
+
+/// Seed the backup / disaster-recovery metric families with baseline values so
+/// they are present in `/metrics` output from process start — before the backup,
+/// restore-test, integrity-scan, orphan-GC and maintenance jobs have run for the
+/// first time.
+///
+/// The Prometheus exporter only renders a metric family once a data point has
+/// been recorded for it. Without this seed, an operator scraping a freshly
+/// started instance would see no backup/DR signals at all and could not write
+/// alerting rules against backup staleness, restore-test outcomes, or integrity
+/// failures — "an untested backup is not a backup". Each seeded value is
+/// overwritten by the corresponding `record_*` helper once the real job runs.
+///
+/// Timestamp gauges are seeded to `0` (the Unix-epoch "never ran" sentinel, so a
+/// `time() - last_success > threshold` rule fires correctly); boolean and count
+/// gauges are seeded to `0` (the neutral "no observation yet" baseline).
+fn seed_backup_dr_metrics() {
+    // Backup freshness / restore-test (plan §21, P8-T7).
+    metrics::gauge!("kb_restore_test_success").set(0.0);
+    metrics::gauge!("kb_backup_age_hours").set(0.0);
+    metrics::gauge!("kb_backup_stale").set(0.0);
+
+    // Orphan GC + integrity scan (plan §23, P8-T10).
+    metrics::gauge!("kb_orphan_gc_blobs_found").set(0.0);
+    metrics::gauge!("kb_orphan_gc_blobs_deleted").set(0.0);
+    metrics::gauge!("kb_missing_blobs_found").set(0.0);
+    metrics::gauge!("kb_integrity_scan_verified").set(0.0);
+    metrics::gauge!("kb_integrity_scan_failed").set(0.0);
+
+    // Maintenance scheduler (plan §25, P8-T11) — one series per job kind.
+    for kind in MAINTENANCE_JOB_KINDS {
+        metrics::gauge!("kb_maintenance_last_success", "kind" => kind).set(0.0);
+        metrics::gauge!("kb_maintenance_last_failure", "kind" => kind).set(0.0);
+    }
 }
 
 // ── Request-level recording helpers ──────────────────────────────────────────────
@@ -642,6 +773,119 @@ mod tests {
         let text2 = render();
         assert!(text2.lines().any(|l| l.starts_with("kb_backup_age_hours ")));
         assert!(text2.lines().any(|l| l.starts_with("kb_backup_stale ")));
+    }
+
+    #[test]
+    fn backup_dr_families_present_after_init() {
+        // `init_metrics` must seed every backup/DR family so it renders even
+        // before any backup/restore/integrity/maintenance job has run. This
+        // mirrors the e2e contract (test_backup_and_dr_metrics_exposed): the
+        // family is "present" if a non-comment line begins with `name ` or
+        // `name{` (a real data line, not just a HELP/TYPE comment).
+        let _h = ensure_init();
+        let text = render();
+
+        let families = [
+            "kb_backup_stale",
+            "kb_backup_age_hours",
+            "kb_restore_test_success",
+            "kb_integrity_scan_failed",
+            "kb_missing_blobs_found",
+            "kb_maintenance_last_success",
+        ];
+        for fam in families {
+            let present = text.lines().any(|l| {
+                let l = l.trim_start();
+                l.starts_with(&format!("{fam} ")) || l.starts_with(&format!("{fam}{{"))
+            });
+            assert!(present, "backup/DR family {fam} missing after init: {text}");
+        }
+    }
+
+    #[test]
+    fn seed_backup_dr_metrics_emits_per_kind_maintenance_series() {
+        let _h = ensure_init();
+        let text = render();
+        // The seed must emit one maintenance series per known job kind so the
+        // labelled family is scrapeable from startup.
+        for kind in MAINTENANCE_JOB_KINDS {
+            assert!(
+                text.contains(&format!("kb_maintenance_last_success{{kind=\"{kind}\"}}")),
+                "missing seeded kb_maintenance_last_success for kind {kind} in: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn canonicalize_orders_families_and_samples_deterministically() {
+        // Two inputs with the same content but different family/sample order
+        // must canonicalise to the same string.
+        let a = "# HELP kb_b help b\n# TYPE kb_b gauge\nkb_b{x=\"2\"} 2\nkb_b{x=\"1\"} 1\n\n# HELP kb_a help a\n# TYPE kb_a gauge\nkb_a 0";
+        let b = "# HELP kb_a help a\n# TYPE kb_a gauge\nkb_a 0\n\n# HELP kb_b help b\n# TYPE kb_b gauge\nkb_b{x=\"1\"} 1\nkb_b{x=\"2\"} 2";
+
+        let ca = canonicalize_exposition(a);
+        let cb = canonicalize_exposition(b);
+        assert_eq!(
+            ca, cb,
+            "differently-ordered inputs must canonicalise equally"
+        );
+
+        // kb_a family sorts before kb_b, and HELP/TYPE stay with their samples.
+        let expected = "# HELP kb_a help a\n# TYPE kb_a gauge\nkb_a 0\n\n# HELP kb_b help b\n# TYPE kb_b gauge\nkb_b{x=\"1\"} 1\nkb_b{x=\"2\"} 2";
+        assert_eq!(ca, expected);
+    }
+
+    #[test]
+    fn canonicalize_is_idempotent_and_handles_empty() {
+        assert_eq!(canonicalize_exposition(""), "");
+        assert_eq!(canonicalize_exposition("   \n  \n"), "");
+
+        let raw =
+            "# HELP kb_z z\n# TYPE kb_z gauge\nkb_z 3\n\n# HELP kb_a a\n# TYPE kb_a gauge\nkb_a 1";
+        let once = canonicalize_exposition(raw);
+        let twice = canonicalize_exposition(&once);
+        assert_eq!(once, twice, "canonicalisation must be idempotent");
+    }
+
+    #[test]
+    fn block_sort_key_prefers_help_type_then_sample() {
+        assert_eq!(
+            block_sort_key(&["# HELP kb_foo some help text"], &["kb_foo 1"]),
+            "kb_foo"
+        );
+        assert_eq!(
+            block_sort_key(&["# TYPE kb_bar gauge"], &["kb_bar{a=\"1\"} 1"]),
+            "kb_bar"
+        );
+        // No usable comment → fall back to the sample's metric name.
+        assert_eq!(block_sort_key(&[], &["kb_baz{label=\"x\"} 9"]), "kb_baz");
+        assert_eq!(block_sort_key(&[], &["kb_qux 7"]), "kb_qux");
+        assert_eq!(block_sort_key(&[], &[]), "");
+    }
+
+    #[test]
+    fn render_orders_families_alphabetically() {
+        // Canonicalised render output lists metric families in name order, so
+        // `/metrics` is byte-stable for a fixed metric set (the exporter itself
+        // orders families and label-sets nondeterministically). Values may be
+        // mutated by other tests sharing the global recorder, so we assert only
+        // on the *ordering* of family HELP lines, not their values.
+        let _h = ensure_init();
+        record_backend("order-test", true, 1, 2, 1);
+        seed_backup_dr_metrics();
+
+        let text = render();
+        let help_names: Vec<&str> = text
+            .lines()
+            .filter_map(|l| l.strip_prefix("# HELP "))
+            .filter_map(|rest| rest.split_whitespace().next())
+            .collect();
+        let mut sorted = help_names.clone();
+        sorted.sort_unstable();
+        assert_eq!(
+            help_names, sorted,
+            "metric families must render in name order"
+        );
     }
 
     #[test]

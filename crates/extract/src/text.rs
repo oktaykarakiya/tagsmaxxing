@@ -86,12 +86,52 @@ impl Extractor for TextExtractor {
             raw
         };
 
+        // Strip NUL and other control characters before the text is chunked,
+        // embedded, and persisted. A NUL byte cannot be stored in a PostgreSQL
+        // `text` column (it rejects 0x00), so hostile or malformed uploads
+        // carrying one would otherwise crash the transactional ingest with a
+        // 500 (BUG-INGEST-11). Ordinary whitespace (tab/newline/CR) is kept.
+        let text = strip_control_chars(&text);
+
         Ok(Extracted {
             text,
             meta: serde_json::Value::Object(Default::default()),
             page_images: Vec::new(),
         })
     }
+}
+
+// ── Control-character sanitization ───────────────────────────────────────────
+
+/// Remove NUL and other control characters from extracted text.
+///
+/// PostgreSQL's `text` type cannot store a NUL byte (`\0`), so any extracted
+/// content carrying one would crash the transactional ingest with a server
+/// error. Other C0/C1 control characters are stripped too: they have no place
+/// in searchable document text and can corrupt later rendering. The ordinary
+/// whitespace controls — tab (`\t`), line feed (`\n`), and carriage return
+/// (`\r`) — are preserved so line and paragraph structure survives
+/// (BUG-INGEST-11).
+///
+/// # Examples
+///
+/// ```rust
+/// use kb_extract::text::strip_control_chars;
+///
+/// assert_eq!(strip_control_chars("a\u{0}b\u{7}c"), "abc");
+/// assert_eq!(strip_control_chars("keep\ttab\nnewline"), "keep\ttab\nnewline");
+/// ```
+#[must_use]
+pub fn strip_control_chars(input: &str) -> String {
+    input.chars().filter(|c| !is_stripped_control(*c)).collect()
+}
+
+/// Whether `c` is a control character that [`strip_control_chars`] removes.
+///
+/// Returns `true` for every Unicode control character except tab, line feed,
+/// and carriage return, which are retained as legitimate whitespace.
+fn is_stripped_control(c: char) -> bool {
+    c.is_control() && c != '\t' && c != '\n' && c != '\r'
 }
 
 // ── CSV parsing ────────────────────────────────────────────────────────────────
@@ -811,6 +851,77 @@ mod tests {
             path: Some("notes.md".into()),
         }
     }
+    // ── strip_control_chars unit tests ─────────────────────────────────────
+
+    #[test]
+    fn strip_control_removes_nul() {
+        assert_eq!(strip_control_chars("line1\u{0}line2"), "line1line2");
+    }
+
+    #[test]
+    fn strip_control_removes_c0_controls() {
+        // BEL, BS, VT, ESC, US — all C0 controls without legitimate text use.
+        assert_eq!(
+            strip_control_chars("a\u{7}b\u{8}c\u{b}d\u{1b}e\u{1f}f"),
+            "abcdef"
+        );
+    }
+
+    #[test]
+    fn strip_control_removes_del() {
+        assert_eq!(strip_control_chars("a\u{7f}b"), "ab");
+    }
+
+    #[test]
+    fn strip_control_preserves_whitespace() {
+        assert_eq!(
+            strip_control_chars("keep\ttab\nand\r\nnewline"),
+            "keep\ttab\nand\r\nnewline"
+        );
+    }
+
+    #[test]
+    fn strip_control_preserves_unicode_emoji_rtl() {
+        // Multi-byte UTF-8 (none of which is a control char) must survive intact.
+        let s = "café 日本語 العربية مرحبا 😀🎉🚀";
+        assert_eq!(strip_control_chars(s), s);
+    }
+
+    #[test]
+    fn strip_control_empty_input() {
+        assert_eq!(strip_control_chars(""), "");
+    }
+
+    #[test]
+    fn strip_control_only_controls_yields_empty() {
+        assert_eq!(strip_control_chars("\u{0}\u{1}\u{7}\u{1b}\u{7f}"), "");
+    }
+
+    // ── NUL / control bytes through TextExtractor (BUG-INGEST-11) ───────────
+
+    #[tokio::test]
+    async fn extractor_strips_nul_and_control_bytes() {
+        let ex = TextExtractor;
+        // The exact hostile byte sequence the e2e test sends, plus a marker.
+        let content = b"line1\x00line2\x07\x08\x0b\x1b\x1f end marker123";
+        let out = ex.extract(&doc_raw(content)).await.unwrap();
+        // No NUL or other stripped control char survives into stored text.
+        assert!(
+            !out.text
+                .chars()
+                .any(|c| c.is_control() && c != '\n' && c != '\r' && c != '\t'),
+            "control chars leaked into extracted text: {:?}",
+            out.text
+        );
+        // The searchable marker is preserved.
+        assert!(
+            out.text.contains("marker123"),
+            "lost marker: {:?}",
+            out.text
+        );
+        assert_eq!(out.text, "line1line2 end marker123");
+    }
+
     // ── TextExtractor (non-MD, non-HTML) ──────────────────────────────────
 
     #[tokio::test]

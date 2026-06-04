@@ -195,9 +195,13 @@ impl IngestPipeline {
     ) -> anyhow::Result<IngestOutput> {
         anyhow::ensure!(!files.is_empty(), "at least one file is required");
 
-        // Bound user_note to MAX_USER_NOTE_BYTES to prevent the LLM tagger
-        // from receiving multi-megabyte prompt payloads (BUG-INGEST-10).
+        // Sanitize the user note: strip NUL and other control characters
+        // (which a PostgreSQL `text` column cannot store, so they would crash
+        // the transactional ingest with a 500 — BUG-INGEST-11), then bound it to
+        // MAX_USER_NOTE_BYTES to keep multi-megabyte payloads out of the LLM
+        // tagger prompt (BUG-INGEST-10).
         let user_note = user_note.map(|note| {
+            let note = strip_control_chars(&note);
             if note.len() > MAX_USER_NOTE_BYTES {
                 truncate_to_char_boundary(&note, MAX_USER_NOTE_BYTES).to_string()
             } else {
@@ -572,6 +576,27 @@ pub fn truncate_to_char_boundary(s: &str, max_bytes: usize) -> &str {
         end -= 1;
     }
     &s[..end]
+}
+
+/// Remove NUL and other control characters from a user-supplied string.
+///
+/// A NUL byte (`\0`) cannot be stored in a PostgreSQL `text` column, so a note
+/// carrying one would crash the transactional ingest with a 500. Every other
+/// control character is stripped as well, since notes are free-text annotations
+/// with no legitimate use for them. The ordinary whitespace controls — tab
+/// (`\t`), line feed (`\n`), and carriage return (`\r`) — are preserved
+/// (BUG-INGEST-11).
+///
+/// (The extractor applies the equivalent cleanup to document *content*; this
+/// guards the separate `user_note` path, which never passes through an
+/// extractor. The two crates do not share a dependency, so the small helper is
+/// duplicated rather than re-exported.)
+#[must_use]
+pub fn strip_control_chars(input: &str) -> String {
+    input
+        .chars()
+        .filter(|&c| !(c.is_control() && c != '\t' && c != '\n' && c != '\r'))
+        .collect()
 }
 
 // ── filename sanitization ──────────────────────────────────────────────────
@@ -982,6 +1007,34 @@ mod tests {
         assert_eq!(result, s);
         // Must be the same slice, not a copy.
         assert!(std::ptr::eq(result.as_ptr(), s.as_ptr()));
+    }
+
+    // ── strip_control_chars tests (BUG-INGEST-11) ──────────────────────────
+
+    #[test]
+    fn strip_control_removes_nul_and_controls() {
+        // The exact control bytes the e2e note payload carries (BEL + ESC),
+        // plus a NUL, must all be removed.
+        assert_eq!(
+            strip_control_chars("note\u{0}\u{7}\u{1b}with-controls"),
+            "notewith-controls"
+        );
+    }
+
+    #[test]
+    fn strip_control_preserves_whitespace_and_unicode() {
+        let s = "café 😀\tindented\nline";
+        assert_eq!(strip_control_chars(s), s);
+    }
+
+    #[test]
+    fn strip_control_empty_input() {
+        assert_eq!(strip_control_chars(""), "");
+    }
+
+    #[test]
+    fn strip_control_all_controls_yields_empty() {
+        assert_eq!(strip_control_chars("\u{0}\u{1}\u{7}\u{1b}\u{7f}"), "");
     }
 
     // ── Construction ───────────────────────────────────────────────────────

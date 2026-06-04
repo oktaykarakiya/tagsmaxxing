@@ -689,7 +689,7 @@ touches = ["crates/extract/src/text.rs", "crates/pipeline/src/ingest.rs"]
 conflict_group = "extract"
 depends_on = []
 severity = "high"
-status = "todo"
+status = "done"
 acceptance = "test_null_bytes_and_control_chars_handled passes"
 notes = "Content with NUL (\\x00) and C0 control characters causes a 500. Sanitize or reject content with null bytes; strip or replace control characters before processing."
 
@@ -841,7 +841,7 @@ touches = ["crates/metrics/src/lib.rs", "crates/llm/src/client.rs"]
 conflict_group = "metrics_defs"
 depends_on = []
 severity = "medium"
-status = "todo"
+status = "done"
 acceptance = "test_circuit_breaker_metric_wired passes"
 notes = "kb_circuit_breaker_open gauge is defined but record_circuit_breaker has no production callers. Wire the metric recording into the actual circuit-breaker state transitions in the LLM client."
 

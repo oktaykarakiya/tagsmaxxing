@@ -482,20 +482,41 @@ impl LlamaClient {
     }
 
     /// Reset circuit-breaker state for a backend that just succeeded.
+    ///
+    /// Also publishes the breaker's now-closed state (`0`) to the
+    /// `kb_circuit_breaker_open` gauge so operators can alert on a tripped
+    /// breaker (plan §6.4/§22). Recording on every success means a healthy
+    /// backend that has served at least one request emits a live data line.
     fn record_success(&self, backend_id: &str) {
         self.circuits.remove(backend_id);
+        kb_metrics::record_circuit_breaker(backend_id, false);
     }
 
     /// Record a failed call and trip the breaker if the threshold is reached.
+    ///
+    /// Publishes the breaker's resulting open/closed state to the
+    /// `kb_circuit_breaker_open` gauge (plan §6.4/§22): `1` once the
+    /// consecutive-failure threshold trips it into cooldown, `0` while it is
+    /// still closed.
     fn record_failure(&self, backend_id: &str) {
         if self.circuit_threshold == 0 {
+            // Circuit-breaking disabled — the breaker can never open.
+            kb_metrics::record_circuit_breaker(backend_id, false);
             return;
         }
-        let mut entry = self.circuits.entry(backend_id.to_string()).or_default();
-        entry.failures = entry.failures.saturating_add(1);
-        if entry.failures >= self.circuit_threshold {
-            entry.cooldown_until = Some(Instant::now() + self.cooldown);
-        }
+        // Mutate the breaker state under the shard guard, then drop the guard
+        // before touching the metrics recorder.
+        let open = {
+            let mut entry = self.circuits.entry(backend_id.to_string()).or_default();
+            entry.failures = entry.failures.saturating_add(1);
+            if entry.failures >= self.circuit_threshold {
+                entry.cooldown_until = Some(Instant::now() + self.cooldown);
+                true
+            } else {
+                false
+            }
+        };
+        kb_metrics::record_circuit_breaker(backend_id, open);
     }
 
     // ── health helpers ──────────────────────────────────────────────────
@@ -1009,6 +1030,69 @@ mod tests {
         // After success, no circuit-breaker entry (backend not failed).
         assert_eq!(client.circuit_count(), 0);
         mock.shutdown().await;
+    }
+
+    /// Circuit-breaker state transitions publish the `kb_circuit_breaker_open`
+    /// gauge so the metric is a live alerting signal, not a dead HELP/TYPE-only
+    /// family (BUG-OBS-04). Drives the breaker directly to keep the test
+    /// deterministic (no real backend / sleeps).
+    #[tokio::test]
+    async fn circuit_breaker_state_publishes_gauge() {
+        // Install the global Prometheus recorder so the gauge is renderable.
+        let _ = kb_metrics::init_metrics();
+
+        let pool = Pool::new(vec![], Duration::from_secs(1));
+        // threshold = 2 → the second failure trips the breaker.
+        let client = LlamaClient::new(pool, Client::new(), 1, 2, Duration::from_millis(50));
+
+        // Unique label so parallel tests sharing the global recorder don't clash.
+        let backend = "bug-obs-04-backend";
+        let closed = format!("kb_circuit_breaker_open{{dependency=\"{backend}\"}} 0");
+        let opened = format!("kb_circuit_breaker_open{{dependency=\"{backend}\"}} 1");
+
+        // First failure: below threshold → breaker closed (0).
+        client.record_failure(backend);
+        let text = kb_metrics::render();
+        assert!(
+            text.contains(&closed),
+            "expected closed breaker, got: {text}"
+        );
+
+        // Second failure reaches the threshold → breaker open (1).
+        client.record_failure(backend);
+        let text = kb_metrics::render();
+        assert!(text.contains(&opened), "expected open breaker, got: {text}");
+
+        // A success resets the breaker → closed (0) again.
+        client.record_success(backend);
+        let text = kb_metrics::render();
+        assert!(
+            text.contains(&closed),
+            "expected reset-to-closed breaker, got: {text}"
+        );
+    }
+
+    /// With circuit-breaking disabled (`threshold == 0`) a failure still
+    /// publishes a closed-breaker (`0`) data line — the breaker can never open.
+    #[tokio::test]
+    async fn circuit_breaker_disabled_publishes_closed_gauge() {
+        let _ = kb_metrics::init_metrics();
+
+        let pool = Pool::new(vec![], Duration::from_secs(1));
+        let client = LlamaClient::new(pool, Client::new(), 1, 0, Duration::from_millis(50));
+
+        let backend = "bug-obs-04-disabled";
+        client.record_failure(backend);
+
+        let text = kb_metrics::render();
+        assert!(
+            text.contains(&format!(
+                "kb_circuit_breaker_open{{dependency=\"{backend}\"}} 0"
+            )),
+            "expected closed breaker with breaking disabled, got: {text}"
+        );
+        // No circuit entry is tracked when breaking is disabled.
+        assert_eq!(client.circuit_count(), 0);
     }
 
     // ── rerank ───────────────────────────────────────────────────────────
