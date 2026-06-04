@@ -1114,9 +1114,9 @@ touches = ["crates/api/src/web/admin_handlers.rs", "crates/api/src/web/handlers_
 conflict_group = "admin_handlers"
 depends_on = ["BUG-RBAC-01"]
 severity = "medium"
-status = "todo"
+status = "done"
 acceptance = "test_privileged_action_writes_audit_event and test_team_self_service_actions_are_audited pass"
-notes = "Role changes, invites, and other admin/team actions don't write audit events. Add audit logging (decrypt_audit store) to these handlers."
+notes = "Added admin_insert_audit_event calls to account_invite_user (UserCreated), account_change_role (UserRoleChanged), and account_remove_user (UserDisabled) — matching the pattern in admin_handlers.rs. Handlers now write audit events for all team self-service mutations."
 
 
 # ── Upgrade Journey ─────────────────────────────────────────────────────────

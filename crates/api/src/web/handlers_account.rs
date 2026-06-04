@@ -22,6 +22,7 @@ use serde::Deserialize;
 
 use crate::AppState;
 use crate::AuthUser;
+use kb_core::audit::AuditAction;
 use kb_core::quota::QuotaError;
 use kb_core::user::UserRole;
 use kb_store::TenantBilling;
@@ -518,6 +519,23 @@ pub async fn account_invite_user(
         }
     };
 
+    // ── Audit log ──────────────────────────────────────────────────────
+    let _ = state
+        .pg_store
+        .admin_insert_audit_event(
+            auth_user.user_id,
+            auth_user.tenant_id,
+            AuditAction::UserCreated.as_str(),
+            "user",
+            Some(new_user_id),
+            &serde_json::json!({
+                "email": email,
+                "role": role.as_str(),
+                "via": "team_self_service"
+            }),
+        )
+        .await;
+
     // ── Send password-reset email (so they can set their own password) ─
     // Generate a reset token, store it, and email.
     if let Some(email_sender) = &state.email_sender {
@@ -651,6 +669,21 @@ pub async fn account_change_role(
             .await
         }
         Ok(_) => {
+            // ── Audit log ───────────────────────────────────────────
+            let _ = state
+                .pg_store
+                .admin_insert_audit_event(
+                    auth_user.user_id,
+                    auth_user.tenant_id,
+                    AuditAction::UserRoleChanged.as_str(),
+                    "user",
+                    Some(form.user_id),
+                    &serde_json::json!({
+                        "new_role": new_role.as_str(),
+                        "via": "team_self_service"
+                    }),
+                )
+                .await;
             // Success — redirect back to team page.
             Redirect::to("/account/team").into_response()
         }
@@ -750,7 +783,24 @@ pub async fn account_remove_user(
             )
             .await
         }
-        Ok(_) => Redirect::to("/account/team").into_response(),
+        Ok(_) => {
+            // ── Audit log ───────────────────────────────────────────
+            let _ = state
+                .pg_store
+                .admin_insert_audit_event(
+                    auth_user.user_id,
+                    auth_user.tenant_id,
+                    AuditAction::UserDisabled.as_str(),
+                    "user",
+                    Some(form.user_id),
+                    &serde_json::json!({
+                        "removed": true,
+                        "via": "team_self_service"
+                    }),
+                )
+                .await;
+            Redirect::to("/account/team").into_response()
+        }
         Err(e) => {
             tracing::error!(error = %e, "failed to delete user");
             render_team_error(
