@@ -1101,9 +1101,9 @@ touches = ["crates/api/src/web/handlers_account.rs"]
 conflict_group = "billing_handlers"
 depends_on = []
 severity = "medium"
-status = "todo"
+status = "done"
 acceptance = "test_team_mutations_enforced_server_side_for_member passes"
-notes = "Members can forge team management POSTs (invite, remove). Add server-side role checks: only Owner/Admin can manage team members."
+notes = "Role gates already present: account_invite_user (Owner|Admin gate at L393), account_change_role (Owner|Admin gate at L563), account_remove_user (Owner gate at L677), account_delete (Owner gate at L882). All return 403 for Member-role forged POSTs. Fixed in a prior commit; just ci green."
 
 [[bug]]
 id = "BUG-RBAC-07"
