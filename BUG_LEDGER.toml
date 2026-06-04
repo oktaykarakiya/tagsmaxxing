@@ -909,9 +909,9 @@ touches = ["crates/llm/src/tagger.rs"]
 conflict_group = "tagger"
 depends_on = ["BUG-TAG-01"]
 severity = "medium"
-status = "todo"
+status = "done"
 acceptance = "test_summary_is_faithful passes (judge verdict)"
-notes = "The summary doesn't faithfully represent the document. Adjust the tagger prompt to generate more accurate, grounded summaries."
+notes = "Added a dedicated 'Rules for the summary' section to SYSTEM_PROMPT: summary must be a faithful grounded précis, preserve key named entities + exact numbers/metrics (no rounding/rescaling), never invent facts/numbers/names/claims, concise & neutral. Bumped TAGGER_CONTRACT_VERSION 1.1.1->1.1.2. just ci green (fmt/build/clippy/test/deny/audit/cov 80.47%)."
 
 [[bug]]
 id = "BUG-TAG-03"

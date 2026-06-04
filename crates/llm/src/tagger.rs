@@ -25,7 +25,7 @@ use crate::client::LlamaClient;
 ///
 /// Bump when the prompt template or JSON Schema changes so that downstream
 /// consumers can detect a breaking output shape change.
-pub const TAGGER_CONTRACT_VERSION: &str = "1.1.1";
+pub const TAGGER_CONTRACT_VERSION: &str = "1.1.2";
 
 /// The system prompt — pure instruction, no user data (defence layer 1).
 const SYSTEM_PROMPT: &str = "\
@@ -41,6 +41,21 @@ matter, domain, and document type as evidenced by the text in front of you. \
 Derive each tag directly from the content; never invent tags for topics the \
 document does not discuss, and never tag incidental details (a single line item, \
 a passing mention) as if they were the document's subject.\n\
+\n\
+Rules for the summary:\n\
+- The summary MUST be a faithful, grounded précis of THIS document: every \
+statement must be directly supported by the text in front of you. Summarize only \
+what the document actually says.\n\
+- Preserve the document's key concrete facts: the main named entities (projects, \
+people, organizations, systems) and the important numbers and metrics (amounts, \
+percentages, latencies, throughput, dates) exactly as they appear in the source. \
+Do not round, rescale, or paraphrase a figure into a different value.\n\
+- NEVER invent, infer beyond, or alter facts, numbers, names, totals, events, or \
+claims that are not stated in the document. If the document does not state \
+something, do not put it in the summary. A summary that adds outside knowledge or \
+fabricated metrics is wrong.\n\
+- Keep it concise (1–3 sentences) and neutral; report the document's content, do \
+not editorialize.\n\
 \n\
 Rules for tags:\n\
 - Each tag must be clearly grounded in the document's content. If a tag is not \
@@ -321,7 +336,7 @@ mod tests {
 
     #[test]
     fn contract_version_is_stable() {
-        assert_eq!(JsonSchemaTagger::contract_version(), "1.1.1");
+        assert_eq!(JsonSchemaTagger::contract_version(), "1.1.2");
     }
 
     #[test]
