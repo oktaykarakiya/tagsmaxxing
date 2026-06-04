@@ -219,7 +219,7 @@ impl IngestPipeline {
         }
 
         // 1. Build document + file records.
-        let (document, file_records) = if files.len() == 1 {
+        let (document, mut file_records) = if files.len() == 1 {
             let f = &files[0];
             DocumentBuilder::build_single(
                 tenant_id,
@@ -341,6 +341,15 @@ impl IngestPipeline {
             }
         }
         let chunk_count: usize = embedded_per_file.iter().map(|c| c.len()).sum();
+
+        // 7b. Mark every file ready. The DocumentBuilder creates file records as
+        //     `Pending`; this synchronous pipeline has now blob-stored, extracted,
+        //     and embedded each one, so it finishes their lifecycle here — matching
+        //     the document's `Ready` status below. Without this, files would stay
+        //     `pending` forever even though ingestion fully succeeded.
+        for file in &mut file_records {
+            file.status = ProcessingStatus::Ready;
+        }
 
         // 8. Transactional ingest: upsert document + files + tags + chunks
         //    in one atomic transaction.
@@ -719,6 +728,9 @@ mod tests {
         /// total_chunks)` — kept simple so tests don't need to clone
         /// whole Documents.
         calls: Mutex<Vec<(String, usize, usize, usize)>>,
+        /// Status (`as_str`) of every file in the most recent call, so tests can
+        /// assert the pipeline finishes a file's lifecycle (Pending → Ready).
+        file_statuses: Mutex<Vec<String>>,
     }
 
     impl MockIngestStore {
@@ -726,6 +738,7 @@ mod tests {
             Self {
                 doc_id: AtomicI64::new(doc_id),
                 calls: Mutex::new(Vec::new()),
+                file_statuses: Mutex::new(Vec::new()),
             }
         }
 
@@ -756,6 +769,10 @@ mod tests {
                 tag_ids.len(),
                 total_chunks,
             ));
+            *self.file_statuses.lock().unwrap() = files
+                .iter()
+                .map(|f| f.status.as_str().to_string())
+                .collect();
             Ok(self.doc_id.load(Ordering::SeqCst))
         }
     }
@@ -1222,6 +1239,40 @@ mod tests {
         assert_eq!(*file_count, 1);
         assert_eq!(*tag_count, 2);
         assert_eq!(*total_chunks, output.chunk_count);
+    }
+
+    // ── File lifecycle finished (Pending → Ready) ──────────────────────────
+
+    /// A successful ingest must mark its file records `ready`, not leave them in
+    /// the `pending` state the DocumentBuilder creates them in. (Regression:
+    /// every ingested file was stuck `pending` even though the document was
+    /// `ready`.)
+    #[tokio::test]
+    async fn files_are_marked_ready_after_ingest() {
+        let (pipeline, store) = build_test_pipeline(
+            "Some extracted text for the file.",
+            TagOutput {
+                title: "Lifecycle".into(),
+                summary: "Checks file status transitions.".into(),
+                tags: vec!["lifecycle".into()],
+            },
+        )
+        .await;
+
+        let files = vec![IngestFile {
+            bytes: b"file body content".to_vec(),
+            page_label: None,
+            path: Some("doc.txt".into()),
+        }];
+
+        pipeline.ingest(1, files, None, false).await.unwrap();
+
+        let statuses = store.file_statuses.lock().unwrap();
+        assert!(!statuses.is_empty(), "a file should have been persisted");
+        assert!(
+            statuses.iter().all(|s| s == "ready"),
+            "all files must be 'ready' after a successful ingest, got {statuses:?}"
+        );
     }
 
     // ── Empty files rejected ───────────────────────────────────────────────
