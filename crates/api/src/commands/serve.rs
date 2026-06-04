@@ -22,9 +22,11 @@ use kb_core::blob::Blob;
 use kb_core::degradation::DegradationState;
 use kb_core::kind::DocKind;
 use kb_core::session::SessionStore;
+use kb_extract::audio::{AudioExtractor, WhisperConfig};
 use kb_extract::code::CodeExtractor;
 use kb_extract::text::TextExtractor;
 use kb_extract::tika::{TikaConfig, TikaExtractor};
+use kb_extract::video::VideoExtractor;
 use kb_llm::{JsonSchemaTagger, LlamaClient, LlamaReranker};
 use kb_pipeline::embedder::ChunkEmbedder;
 use kb_pipeline::ingest::{ExtractorRouter, IngestPipeline};
@@ -224,6 +226,21 @@ pub async fn run_serve(args: &ServeArgs) -> anyhow::Result<()> {
     extractors.insert(
         DocKind::Archive,
         Arc::new(TikaExtractor::new(http.clone(), TikaConfig::new(tika_url))),
+    );
+    // Audio/video: transcode with ffmpeg + transcribe with whisper-server
+    // (OpenAI `/v1/audio/transcriptions`). Without these the files ingest but
+    // their speech is never transcribed and they stay unsearchable. WHISPER_URL
+    // is hot-swappable via the WhisperConfig ArcSwap.
+    let whisper_url =
+        std::env::var("WHISPER_URL").unwrap_or_else(|_| "http://localhost:9000".to_string());
+    let whisper_config = WhisperConfig::new(whisper_url);
+    extractors.insert(
+        DocKind::Audio,
+        Arc::new(AudioExtractor::new(http.clone(), whisper_config.clone())),
+    );
+    extractors.insert(
+        DocKind::Video,
+        Arc::new(VideoExtractor::new(http.clone(), whisper_config)),
     );
 
     // ── Build pipeline components ───────────────────────────────────────────

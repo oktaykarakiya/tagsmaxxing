@@ -41,11 +41,14 @@ RUN cargo build --release -p kb-api --bin kb
 
 # ── Stage 4: Runtime (minimal debian:slim, non-root) ─────────────────────────
 FROM docker.io/debian:bookworm-slim AS runtime
-# curl is needed by the HEALTHCHECK; ca-certificates for TLS.
+# curl is needed by the HEALTHCHECK; ca-certificates for TLS; ffmpeg is used by
+# the audio/video extractors to transcode media to 16 kHz mono WAV / keyframes
+# before whisper transcription.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
+        ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 # Non-root user (uid 1000) as required by plan §14.
 RUN useradd --uid 1000 --create-home --shell /sbin/nologin kb

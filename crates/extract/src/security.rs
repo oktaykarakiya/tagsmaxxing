@@ -487,19 +487,36 @@ fn detect_upload_mime(bytes: &[u8]) -> &'static str {
         return "application/x-empty";
     }
     let detected = tree_magic_mini::from_u8(bytes);
-    // tree_magic_mini 3.2.2 classifies some ZIP containers — notably minimal
-    // OOXML office documents (.docx/.xlsx) — as `application/octet-stream` even
-    // though they carry the ZIP local-file-header magic (`PK\x03\x04`). Left
-    // unhandled, such a file is rejected at the allow-list before it can reach
-    // the archive/Tika extractor that reads it (BUG-INGEST-05). Recognise the
-    // ZIP magic explicitly and normalise to `application/zip`, which is already
-    // allow-listed and routed to `DocKind::Archive` → Tika. This widens
-    // *detection*, not policy: genuine ZIPs are already accepted, and the
-    // bytes are still handed to Tika across the sandboxed extractor boundary.
-    if detected == "application/octet-stream" && bytes.starts_with(b"PK\x03\x04") {
-        return "application/zip";
+    if detected == "application/octet-stream" {
+        return normalize_octet_stream_magic(bytes);
     }
     detected
+}
+
+/// Recover a usable MIME type for container formats that `tree_magic_mini` 3.2.2
+/// misclassifies as `application/octet-stream` despite a clear magic signature.
+///
+/// Detection is by **magic bytes only**, never by filename/declared type — a
+/// renamed payload (e.g. an ELF named `.docx`) still carries its own magic and
+/// is rejected, so this widens *detection*, not the allow-list policy. Each
+/// returned type is already allow-listed and routes the file to the extractor
+/// that can read it (BUG-INGEST-05 OOXML + audio/video ingestion); the bytes
+/// then cross the sandboxed extractor boundary (Tika / ffmpeg+whisper).
+/// Genuinely-unknown bytes stay `application/octet-stream` and are rejected.
+fn normalize_octet_stream_magic(bytes: &[u8]) -> &'static str {
+    // ZIP container (incl. OOXML .docx/.xlsx): `PK\x03\x04` → Tika.
+    if bytes.starts_with(b"PK\x03\x04") {
+        return "application/zip";
+    }
+    // RIFF/WAVE audio: `RIFF` then `WAVE` at offset 8 → whisper.
+    if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WAVE" {
+        return "audio/wav";
+    }
+    // ISO base media (MP4 / QuickTime): the `ftyp` box type at offset 4 → ffmpeg.
+    if bytes.len() >= 8 && &bytes[4..8] == b"ftyp" {
+        return "video/mp4";
+    }
+    "application/octet-stream"
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
@@ -914,16 +931,37 @@ mod tests {
     }
 
     #[test]
-    fn zip_magic_normalises_to_zip() {
-        // BUG-INGEST-05: a ZIP container that tree_magic_mini mislabels (e.g. a
-        // minimal OOXML .docx detected as octet-stream) is normalised to
-        // application/zip via its PK magic, so it passes the allow-list and can
-        // reach the archive/Tika extractor instead of being rejected.
-        let mut bytes = b"PK\x03\x04".to_vec();
-        bytes.extend_from_slice(&[0u8; 64]);
-        assert_eq!(detect_upload_mime(&bytes), "application/zip");
-        // It now passes upload validation (application/zip is allow-listed).
-        validate_upload(&bytes, Some("report.docx"), MAX_INDIVIDUAL_FILE_BYTES).unwrap();
+    fn normalize_octet_stream_magic_recovers_container_types() {
+        // tree_magic_mini mislabels these containers as octet-stream; recover
+        // them by magic so they reach the right extractor (BUG-INGEST-05 OOXML +
+        // audio/video). Test the pure helper directly (independent of how
+        // tree_magic happens to classify a given sample).
+        let mut zip = b"PK\x03\x04".to_vec();
+        zip.extend_from_slice(&[0u8; 8]);
+        assert_eq!(normalize_octet_stream_magic(&zip), "application/zip");
+
+        let mut wav = b"RIFF".to_vec();
+        wav.extend_from_slice(&[0u8; 4]);
+        wav.extend_from_slice(b"WAVE");
+        wav.extend_from_slice(&[0u8; 8]);
+        assert_eq!(normalize_octet_stream_magic(&wav), "audio/wav");
+
+        let mut mp4 = vec![0u8, 0, 0, 0x14];
+        mp4.extend_from_slice(b"ftypisom");
+        mp4.extend_from_slice(&[0u8; 8]);
+        assert_eq!(normalize_octet_stream_magic(&mp4), "video/mp4");
+
+        // Genuinely-unknown bytes stay octet-stream (still rejected).
+        assert_eq!(
+            normalize_octet_stream_magic(b"\x01\x02\x03 not a known container"),
+            "application/octet-stream"
+        );
+
+        // Every recovered type is allow-listed (so a normalised file passes the
+        // allow-list and routes to its extractor).
+        assert!(is_allowed_mime("application/zip", ALLOWED_MIMES));
+        assert!(is_allowed_mime("audio/wav", ALLOWED_MIMES));
+        assert!(is_allowed_mime("video/mp4", ALLOWED_MIMES));
     }
 
     #[test]

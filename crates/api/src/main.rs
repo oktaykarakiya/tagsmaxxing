@@ -27,9 +27,11 @@ use anyhow::Context;
 use clap::Parser;
 use kb_config::AppConfig;
 use kb_core::kind::DocKind;
+use kb_extract::audio::{AudioExtractor, WhisperConfig};
 use kb_extract::code::CodeExtractor;
 use kb_extract::text::TextExtractor;
 use kb_extract::tika::{TikaConfig, TikaExtractor};
+use kb_extract::video::VideoExtractor;
 use kb_llm::{JsonSchemaTagger, LlamaClient, LlamaReranker};
 use kb_pipeline::embedder::ChunkEmbedder;
 use kb_pipeline::ingest::{ExtractorRouter, IngestPipeline};
@@ -148,8 +150,21 @@ async fn run() -> anyhow::Result<()> {
         DocKind::Archive,
         Arc::new(TikaExtractor::new(http.clone(), TikaConfig::new(tika_url))),
     );
-    // Other kinds (Image, Audio, Video, Binary) fall back to
-    // Extracted::default() — no extraction, just deterministic metadata.
+    // Audio/video: ffmpeg transcode + whisper-server transcription (BUG-INGEST
+    // audio/video). WHISPER_URL is hot-swappable via WhisperConfig.
+    let whisper_url =
+        std::env::var("WHISPER_URL").unwrap_or_else(|_| "http://localhost:9000".to_string());
+    let whisper_config = WhisperConfig::new(whisper_url);
+    extractors.insert(
+        DocKind::Audio,
+        Arc::new(AudioExtractor::new(http.clone(), whisper_config.clone())),
+    );
+    extractors.insert(
+        DocKind::Video,
+        Arc::new(VideoExtractor::new(http.clone(), whisper_config)),
+    );
+    // Other kinds (Image, Binary) fall back to Extracted::default() — no
+    // extraction, just deterministic metadata.
 
     match cli.command {
         Command::Ingest(args) => {
