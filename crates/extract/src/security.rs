@@ -486,7 +486,20 @@ fn detect_upload_mime(bytes: &[u8]) -> &'static str {
     if bytes.is_empty() {
         return "application/x-empty";
     }
-    tree_magic_mini::from_u8(bytes)
+    let detected = tree_magic_mini::from_u8(bytes);
+    // tree_magic_mini 3.2.2 classifies some ZIP containers — notably minimal
+    // OOXML office documents (.docx/.xlsx) — as `application/octet-stream` even
+    // though they carry the ZIP local-file-header magic (`PK\x03\x04`). Left
+    // unhandled, such a file is rejected at the allow-list before it can reach
+    // the archive/Tika extractor that reads it (BUG-INGEST-05). Recognise the
+    // ZIP magic explicitly and normalise to `application/zip`, which is already
+    // allow-listed and routed to `DocKind::Archive` → Tika. This widens
+    // *detection*, not policy: genuine ZIPs are already accepted, and the
+    // bytes are still handed to Tika across the sandboxed extractor boundary.
+    if detected == "application/octet-stream" && bytes.starts_with(b"PK\x03\x04") {
+        return "application/zip";
+    }
+    detected
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
@@ -898,6 +911,19 @@ mod tests {
             err.downcast_ref::<UploadRejected>(),
             Some(UploadRejected::UnsafePath(_))
         ));
+    }
+
+    #[test]
+    fn zip_magic_normalises_to_zip() {
+        // BUG-INGEST-05: a ZIP container that tree_magic_mini mislabels (e.g. a
+        // minimal OOXML .docx detected as octet-stream) is normalised to
+        // application/zip via its PK magic, so it passes the allow-list and can
+        // reach the archive/Tika extractor instead of being rejected.
+        let mut bytes = b"PK\x03\x04".to_vec();
+        bytes.extend_from_slice(&[0u8; 64]);
+        assert_eq!(detect_upload_mime(&bytes), "application/zip");
+        // It now passes upload validation (application/zip is allow-listed).
+        validate_upload(&bytes, Some("report.docx"), MAX_INDIVIDUAL_FILE_BYTES).unwrap();
     }
 
     #[test]

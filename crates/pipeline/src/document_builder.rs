@@ -208,7 +208,17 @@ fn detect_mime(bytes: &[u8]) -> &'static str {
     if bytes.is_empty() {
         return "application/x-empty";
     }
-    tree_magic_mini::from_u8(bytes)
+    let detected = tree_magic_mini::from_u8(bytes);
+    // Mirror kb_extract::security::detect_upload_mime: tree_magic_mini 3.2.2
+    // classifies some ZIP containers — notably minimal OOXML office documents —
+    // as application/octet-stream despite the ZIP local-file-header magic. The
+    // upload-edge allow-list normalises these to application/zip; do the same
+    // here so the file is *routed* consistently (infer_kind_from_mime ->
+    // DocKind::Archive -> Tika) rather than to DocKind::Binary (BUG-INGEST-05).
+    if detected == "application/octet-stream" && bytes.starts_with(b"PK\x03\x04") {
+        return "application/zip";
+    }
+    detected
 }
 
 /// Build a tenant-prefixed, content-addressed blob key.
@@ -370,6 +380,17 @@ mod tests {
     fn detects_zip() {
         let zip = b"PK\x03\x04\x00\x00\x00\x00\x00\x00\x00\x00";
         assert_eq!(detect_mime(zip), "application/zip");
+    }
+
+    #[test]
+    fn pk_zip_magic_normalises_octet_stream_to_zip() {
+        // BUG-INGEST-05: a ZIP container tree_magic_mini mislabels as
+        // octet-stream (e.g. a minimal OOXML doc) must still be routed as
+        // application/zip (-> DocKind::Archive -> Tika), matching the
+        // upload-edge allow-list normalisation.
+        let mut bytes = b"PK\x03\x04".to_vec();
+        bytes.extend_from_slice(&[0u8; 80]);
+        assert_eq!(detect_mime(&bytes), "application/zip");
     }
 
     #[test]

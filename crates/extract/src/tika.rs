@@ -117,6 +117,30 @@ impl TikaExtractor {
     }
 }
 
+/// Map a known office-document filename extension to the MIME type that makes
+/// Tika extract clean body text (BUG-INGEST-05).
+///
+/// OOXML files (`.docx`/`.xlsx`/`.pptx`) are ZIP containers and are commonly
+/// detected as `application/zip`; sent to Tika as a zip they trigger verbose
+/// archive recursion instead of document extraction. Routing on the extension
+/// to the precise office MIME yields just the document text. Returns `None` for
+/// non-office paths so the caller falls back to the detected MIME.
+fn office_mime_for_path(path: Option<&str>) -> Option<&'static str> {
+    let ext = path?.rsplit('.').next()?.to_ascii_lowercase();
+    Some(match ext.as_str() {
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "doc" => "application/msword",
+        "xls" => "application/vnd.ms-excel",
+        "ppt" => "application/vnd.ms-powerpoint",
+        "odt" => "application/vnd.oasis.opendocument.text",
+        "ods" => "application/vnd.oasis.opendocument.spreadsheet",
+        "odp" => "application/vnd.oasis.opendocument.presentation",
+        _ => return None,
+    })
+}
+
 #[async_trait]
 impl Extractor for TikaExtractor {
     async fn extract(&self, file: &RawFile) -> anyhow::Result<Extracted> {
@@ -125,10 +149,22 @@ impl Extractor for TikaExtractor {
         // Drop the guard so we don't hold it across the await point.
         drop(base);
 
+        // Send a Content-Type so Tika selects a parser: its PUT /tika does not
+        // sniff the body, so with no/octet-stream type it returns empty text
+        // (BUG-INGEST-05). Prefer the office MIME implied by the filename
+        // extension over the detected one: OOXML files arrive detected as
+        // application/zip, and sent as such Tika does *verbose archive
+        // recursion* (dumping every package part) — a single huge chunk that
+        // later overflows the reranker. The office MIME makes Tika extract just
+        // the document body text.
+        let content_type = office_mime_for_path(file.path.as_deref())
+            .or(file.mime.as_deref())
+            .unwrap_or("application/octet-stream");
         let resp = self
             .http
             .put(&url)
             .header("Accept", "application/json")
+            .header("Content-Type", content_type)
             .body(file.bytes.clone())
             .send()
             .await
@@ -389,6 +425,24 @@ mod tests {
     fn config_handles_empty_url() {
         let cfg = TikaConfig::new(String::new());
         assert_eq!(cfg.current_url(), "");
+    }
+
+    #[test]
+    fn office_mime_for_path_maps_extensions() {
+        // BUG-INGEST-05: office extensions route to the precise MIME so Tika
+        // extracts document body text (not verbose zip recursion).
+        assert_eq!(
+            office_mime_for_path(Some("q3.docx")),
+            Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        );
+        assert_eq!(
+            office_mime_for_path(Some("/tmp/Report.XLSX")),
+            Some("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        );
+        // Non-office, no extension, or no path → None (caller falls back).
+        assert_eq!(office_mime_for_path(Some("archive.zip")), None);
+        assert_eq!(office_mime_for_path(Some("noext")), None);
+        assert_eq!(office_mime_for_path(None), None);
     }
 
     // ── extraction: happy path ───────────────────────────────────────────

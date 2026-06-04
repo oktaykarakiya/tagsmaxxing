@@ -607,13 +607,13 @@ id = "BUG-INGEST-05"
 description = "Office formats (.docx, .xlsx) not searchable — Tika extraction gap"
 test_names = ["test_office_formats_are_searchable"]
 test_file = "tests/catalog/test_kb_correctness.py"
-touches = ["crates/extract/src/tika.rs", "crates/api/src/commands/serve.rs", "crates/api/src/main.rs"]
+touches = ["crates/extract/src/tika.rs", "crates/extract/src/security.rs", "crates/api/src/commands/serve.rs", "crates/api/src/main.rs"]
 conflict_group = "extract"
 depends_on = []
 severity = "medium"
 status = "done"
 acceptance = "test_office_formats_are_searchable passes"
-notes = "DONE: confirmed root cause was wiring — OOXML .docx/.xlsx detect as application/zip -> DocKind::Archive, which had NO registered extractor (pipeline fell back to Extracted::default(), empty text). Registered a TikaExtractor for DocKind::Archive in BOTH the production routers (crates/api/src/commands/serve.rs and crates/api/src/main.rs), built from TIKA_URL (env, default http://localhost:9998; hot-swappable via TikaConfig's ArcSwap) using the shared reqwest client. TikaExtractor already implements the Extractor trait and the tika container is part of the e2e stack. Added a colocated tika.rs test (extracts_office_ooxml_as_searchable_text) asserting a .docx arriving as application/zip/Archive yields searchable text. Re-scoped touches to serve.rs + main.rs. just ci green."
+notes = "DONE (two layers). Layer 1 (routing): registered a TikaExtractor for DocKind::Archive in both production routers (serve.rs + main.rs), built from TIKA_URL (hot-swappable via TikaConfig). Layer 2 (detection — found by the e2e run, NOT in the original blocked-analysis): the ledger claimed OOXML detects as application/zip, but live e2e showed the minimal OOXML .docx is detected by tree_magic_mini 3.2.2 as application/octet-stream (libmagic gets it right; tree_magic doesn't), so validate_upload REJECTED it (400) before routing. Fixed detect_upload_mime (security.rs) to normalise PK-zip-magic octet-stream -> application/zip (already allow-listed, infer_kind_from_mime -> Archive -> Tika); widens detection not policy (genuine zips already accepted; bytes still cross the sandboxed Tika boundary). Tests: tika.rs extracts_office_ooxml_as_searchable_text + security.rs zip_magic_normalises_to_zip. CHECKPOINT-adjacent (untrusted-bytes boundary, security.rs) — flagged for review. Verified: test_office_formats_are_searchable PASSES against the rebuilt image. just ci green."
 
 [[bug]]
 id = "BUG-INGEST-06"
