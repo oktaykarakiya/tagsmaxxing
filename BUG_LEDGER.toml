@@ -948,9 +948,9 @@ touches = ["crates/llm/src/tagger.rs"]
 conflict_group = "tagger"
 depends_on = ["BUG-TAG-01"]
 severity = "high"
-status = "todo"
+status = "done"
 acceptance = "test_prompt_injection_in_note_is_contained passes"
-notes = "Prompt injection attempts in user_note (e.g. 'Ignore previous instructions') influence tagger output. Add input sanitization, clear instruction boundaries, and output validation."
+notes = "Added 3-layer defence: (1) SYSTEM_PROMPT with CRITICAL DEFENCE RULE explicitly forbidding instruction-following from user text; (2) sanitise_user_note wraps note in XML data-only delimiters with injection-pattern detection; (3) validate_tags_against_injection filters output tags matching ALL_CAPS/underscore injection targets from the user note. Bumped TAGGER_CONTRACT_VERSION 1.1.3→1.1.4."
 
 [[bug]]
 id = "BUG-TAG-06"
