@@ -6,6 +6,7 @@
 pub mod audio;
 pub mod binary;
 pub mod code;
+pub mod document;
 pub mod image;
 pub mod security;
 pub mod text;

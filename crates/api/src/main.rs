@@ -29,7 +29,8 @@ use kb_config::AppConfig;
 use kb_core::kind::DocKind;
 use kb_extract::audio::{AudioExtractor, WhisperConfig};
 use kb_extract::code::CodeExtractor;
-use kb_extract::text::TextExtractor;
+use kb_extract::document::DocumentExtractor;
+use kb_extract::image::ImageExtractor;
 use kb_extract::tika::{TikaConfig, TikaExtractor};
 use kb_extract::video::VideoExtractor;
 use kb_llm::{JsonSchemaTagger, LlamaClient, LlamaReranker};
@@ -138,14 +139,21 @@ async fn run() -> anyhow::Result<()> {
     };
 
     // ── Build extractor router ─────────────────────────────────────────────
-    let mut extractors: ExtractorRouter = std::collections::HashMap::new();
-    extractors.insert(DocKind::Document, Arc::new(TextExtractor));
-    extractors.insert(DocKind::Code, Arc::new(CodeExtractor));
-    // OOXML office formats (.docx/.xlsx) are detected as application/zip and
-    // routed to DocKind::Archive; wire Apache Tika so their content is extracted
-    // and searchable (BUG-INGEST-05). TIKA_URL is hot-swappable via TikaConfig.
+    // Document: native text for plain-text MIME, Tika for PDF/rich docs.
+    // Archive: Tika (incl. OOXML detected as zip, BUG-INGEST-05). Image: EXIF.
+    // TIKA_URL is hot-swappable via TikaConfig.
     let tika_url =
         std::env::var("TIKA_URL").unwrap_or_else(|_| "http://localhost:9998".to_string());
+    let mut extractors: ExtractorRouter = std::collections::HashMap::new();
+    extractors.insert(
+        DocKind::Document,
+        Arc::new(DocumentExtractor::new(TikaExtractor::new(
+            http.clone(),
+            TikaConfig::new(tika_url.clone()),
+        ))),
+    );
+    extractors.insert(DocKind::Code, Arc::new(CodeExtractor));
+    extractors.insert(DocKind::Image, Arc::new(ImageExtractor));
     extractors.insert(
         DocKind::Archive,
         Arc::new(TikaExtractor::new(http.clone(), TikaConfig::new(tika_url))),

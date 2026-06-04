@@ -24,7 +24,8 @@ use kb_core::kind::DocKind;
 use kb_core::session::SessionStore;
 use kb_extract::audio::{AudioExtractor, WhisperConfig};
 use kb_extract::code::CodeExtractor;
-use kb_extract::text::TextExtractor;
+use kb_extract::document::DocumentExtractor;
+use kb_extract::image::ImageExtractor;
 use kb_extract::tika::{TikaConfig, TikaExtractor};
 use kb_extract::video::VideoExtractor;
 use kb_llm::{JsonSchemaTagger, LlamaClient, LlamaReranker};
@@ -212,17 +213,23 @@ pub async fn run_serve(args: &ServeArgs) -> anyhow::Result<()> {
     };
 
     // ── Build extractor router ──────────────────────────────────────────────
-    let mut extractors: ExtractorRouter = HashMap::new();
-    extractors.insert(DocKind::Document, Arc::new(TextExtractor));
-    extractors.insert(DocKind::Code, Arc::new(CodeExtractor));
-    // OOXML office formats (.docx/.xlsx) are detected as application/zip and
-    // routed to DocKind::Archive; without a registered extractor their content
-    // is never extracted and they stay unsearchable (BUG-INGEST-05). Wire Apache
-    // Tika for Archive so office documents (and other container formats Tika
-    // understands) yield searchable text. TIKA_URL is read at startup and is
-    // hot-swappable at runtime via the TikaConfig ArcSwap.
+    // Tika (TIKA_URL, hot-swappable via TikaConfig) reads rich documents (PDF,
+    // MS Office, OpenDocument) and other container formats. The Document
+    // extractor uses native text extraction for plain-text MIME types and falls
+    // back to Tika for binary documents; Archive (incl. OOXML detected as zip,
+    // BUG-INGEST-05) goes straight to Tika.
     let tika_url =
         std::env::var("TIKA_URL").unwrap_or_else(|_| "http://localhost:9998".to_string());
+    let mut extractors: ExtractorRouter = HashMap::new();
+    extractors.insert(
+        DocKind::Document,
+        Arc::new(DocumentExtractor::new(TikaExtractor::new(
+            http.clone(),
+            TikaConfig::new(tika_url.clone()),
+        ))),
+    );
+    extractors.insert(DocKind::Code, Arc::new(CodeExtractor));
+    extractors.insert(DocKind::Image, Arc::new(ImageExtractor));
     extractors.insert(
         DocKind::Archive,
         Arc::new(TikaExtractor::new(http.clone(), TikaConfig::new(tika_url))),
