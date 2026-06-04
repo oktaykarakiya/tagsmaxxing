@@ -144,19 +144,22 @@ async fn run() -> anyhow::Result<()> {
     // TIKA_URL is hot-swappable via TikaConfig.
     let tika_url =
         std::env::var("TIKA_URL").unwrap_or_else(|_| "http://localhost:9998".to_string());
+    // One TikaConfig shared (cloned) into both Tika-backed extractors so a
+    // runtime TikaConfig::set_url() reaches both — clones share the inner ArcSwap.
+    let tika_config = TikaConfig::new(tika_url);
     let mut extractors: ExtractorRouter = std::collections::HashMap::new();
     extractors.insert(
         DocKind::Document,
         Arc::new(DocumentExtractor::new(TikaExtractor::new(
             http.clone(),
-            TikaConfig::new(tika_url.clone()),
+            tika_config.clone(),
         ))),
     );
     extractors.insert(DocKind::Code, Arc::new(CodeExtractor));
     extractors.insert(DocKind::Image, Arc::new(ImageExtractor));
     extractors.insert(
         DocKind::Archive,
-        Arc::new(TikaExtractor::new(http.clone(), TikaConfig::new(tika_url))),
+        Arc::new(TikaExtractor::new(http.clone(), tika_config)),
     );
     // Audio/video: ffmpeg transcode + whisper-server transcription (BUG-INGEST
     // audio/video). WHISPER_URL is hot-swappable via WhisperConfig.
@@ -197,12 +200,15 @@ async fn run() -> anyhow::Result<()> {
                     Arc::clone(&pg_store) as Arc<dyn kb_core::usage::UsageRecorder>
                 ),
             );
-            let canonicalizer = Arc::new(TagCanonicalizer::new(
-                Arc::clone(&pg_store) as Arc<dyn kb_pipeline::TagStore>,
-                Arc::clone(&embed_llm),
-                DEFAULT_EMBED_MODEL.into(),
-                TAG_MERGE_THRESHOLD,
-            ));
+            let canonicalizer = Arc::new(
+                TagCanonicalizer::new(
+                    Arc::clone(&pg_store) as Arc<dyn kb_pipeline::TagStore>,
+                    Arc::clone(&embed_llm),
+                    DEFAULT_EMBED_MODEL.into(),
+                    TAG_MERGE_THRESHOLD,
+                )
+                .with_usage_recorder(Arc::clone(&pg_store) as Arc<dyn kb_core::usage::UsageRecorder>),
+            );
 
             let blob: Arc<dyn kb_core::blob::Blob> = Arc::new(kb_store::LocalBlob::new(
                 "kb-blobs".into(),

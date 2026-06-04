@@ -21,7 +21,9 @@
 use std::sync::Arc;
 
 use anyhow::Context;
-use kb_core::provider::EmbedReq;
+use kb_core::provider::{EmbedReq, Usage};
+use kb_core::role::Role;
+use kb_core::usage::{UsageEvent, UsageRecorder};
 use kb_llm::LlamaClient;
 
 use crate::tag_store::TagStore;
@@ -239,6 +241,8 @@ pub struct TagCanonicalizer {
     embed_model: String,
     /// Cosine-similarity merge threshold (plan §6.5).
     threshold: f32,
+    /// Optional usage sink so each tag-name embed call is metered (BUG-BILL-03).
+    usage_recorder: Option<Arc<dyn UsageRecorder>>,
 }
 
 impl TagCanonicalizer {
@@ -257,6 +261,41 @@ impl TagCanonicalizer {
             llm,
             embed_model,
             threshold,
+            usage_recorder: None,
+        }
+    }
+
+    /// Attach a [`UsageRecorder`] so each `Role::Embed` tag-name embedding is
+    /// metered into `usage_events` (BUG-BILL-03). Without this the tag
+    /// canonicalization embeds — 0..N per freshly-ingested document — go
+    /// uncounted, under-reporting embed-role consumption and billing.
+    pub fn with_usage_recorder(mut self, recorder: Arc<dyn UsageRecorder>) -> Self {
+        self.usage_recorder = Some(recorder);
+        self
+    }
+
+    /// Record one embed usage event against `tenant_id`. No-op without a
+    /// recorder; recording failures are logged, never propagated (metering must
+    /// not fail ingestion).
+    async fn meter(&self, tenant_id: i64, usage: &Usage) {
+        let Some(recorder) = &self.usage_recorder else {
+            return;
+        };
+        let event = UsageEvent {
+            id: 0,
+            tenant_id,
+            user_id: None,
+            model: self.embed_model.clone(),
+            role: Role::Embed,
+            backend_id: None,
+            prompt_tokens: Some(usage.prompt_tokens as i32),
+            completion_tokens: Some(usage.completion_tokens as i32),
+            latency_ms: None,
+            cost_micros: None,
+            created_at: chrono::Utc::now(),
+        };
+        if let Err(e) = recorder.record_usage(&event).await {
+            tracing::warn!(error = %e, tenant_id, "tag canonicalizer: failed to meter usage event");
         }
     }
 
@@ -294,7 +333,9 @@ impl TagCanonicalizer {
             }
 
             // 2. Embed the normalized tag name.
-            let embedding = self.embed_tag_name(&normalized, local_only).await?;
+            let embedding = self
+                .embed_tag_name(tenant_id, &normalized, local_only)
+                .await?;
 
             // 3. Cosine-match against existing tags (including those just inserted).
             if let Some((best_id, _score)) =
@@ -326,11 +367,17 @@ impl TagCanonicalizer {
         Ok(tag_ids)
     }
 
-    /// Embed a single tag name, returning its vector.
+    /// Embed a single tag name for `tenant_id`, returning its vector and metering
+    /// the call (BUG-BILL-03).
     ///
     /// # Errors
     /// Returns an error if the LLM backend call fails or returns zero vectors.
-    async fn embed_tag_name(&self, name: &str, local_only: bool) -> anyhow::Result<Vec<f32>> {
+    async fn embed_tag_name(
+        &self,
+        tenant_id: i64,
+        name: &str,
+        local_only: bool,
+    ) -> anyhow::Result<Vec<f32>> {
         let req = EmbedReq {
             texts: vec![name.to_string()],
         };
@@ -340,6 +387,8 @@ impl TagCanonicalizer {
             .embed(&self.embed_model, &req, local_only, 0)
             .await
             .map_err(|e| anyhow::anyhow!("failed to embed tag name '{name}': {e}"))?;
+
+        self.meter(tenant_id, &resp.usage).await;
 
         resp.vectors
             .into_iter()
@@ -689,6 +738,44 @@ mod tests {
         // The new tag should exist in the store.
         let tags = store.find_similar_tags(1).await.unwrap();
         assert_eq!(tags.len(), 2, "should have 'unrelated' + 'newtopic'");
+        mock.shutdown().await;
+    }
+
+    /// A [`UsageRecorder`] that captures events for assertions (BUG-BILL-03).
+    #[derive(Default)]
+    struct CapturingRecorder {
+        events: std::sync::Mutex<Vec<UsageEvent>>,
+    }
+
+    #[async_trait::async_trait]
+    impl UsageRecorder for CapturingRecorder {
+        async fn record_usage(&self, event: &UsageEvent) -> anyhow::Result<()> {
+            self.events.lock().unwrap().push(event.clone());
+            Ok(())
+        }
+    }
+
+    /// BUG-BILL-03: embedding a fresh (non-aliased) tag name must record a
+    /// `Role::Embed` usage event so canonicalization isn't a metering blind spot.
+    #[tokio::test]
+    async fn canonicalize_meters_embed_usage() {
+        let store = Arc::new(MockTagStore::new());
+        let (canon, mock) = canonicalizer_with_mock(store.clone()).await;
+        let recorder = Arc::new(CapturingRecorder::default());
+        let canon = canon.with_usage_recorder(recorder.clone() as Arc<dyn UsageRecorder>);
+
+        mock.scenario().lock().await.embed_content = Some(vec![vec![1.0, 0.0]]);
+
+        // A fresh tag (no alias, no similar existing tag) forces an embed call.
+        canon
+            .canonicalize(7, &["freshtopic".into()], false)
+            .await
+            .unwrap();
+
+        let events = recorder.events.lock().unwrap();
+        assert_eq!(events.len(), 1, "tag-name embed must record one usage event");
+        assert_eq!(events[0].role, Role::Embed);
+        assert_eq!(events[0].tenant_id, 7);
         mock.shutdown().await;
     }
 
