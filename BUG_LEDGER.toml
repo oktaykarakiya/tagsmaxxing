@@ -1003,9 +1003,9 @@ touches = ["crates/api/src/web/admin_routing_handlers.rs"]
 conflict_group = "admin_handlers"
 depends_on = ["BUG-ISOL-01"]
 severity = "critical"
-status = "todo"
+status = "done"
 acceptance = "test_cross_tenant_route_creation_forbidden passes"
-notes = "POST /admin/routes accepts a tenant_id field that can be forged to another tenant's slug. Fix: ignore the client-supplied tenant_id and force it to the authenticated user's tenant."
+notes = "POST /admin/routes accepts a tenant_id field that can be forged to another tenant's slug. Fix: ignore the client-supplied tenant_id and force it to the authenticated user's tenant. Done: admin_route_create now binds tenant_id = Some(auth_user.tenant_id), ignoring the form field (kept on RouteForm only to deserialize)."
 
 
 # ── Encryption ──────────────────────────────────────────────────────────────

@@ -89,7 +89,12 @@ pub struct ModelForm {
 #[derive(Debug, Deserialize)]
 pub struct RouteForm {
     pub csrf_token: String,
+    /// Client-supplied tenant binding — **ignored** for security (BUG-ISOL-03).
+    /// The route is always bound to the authenticated caller's tenant, so a
+    /// forged value here cannot target another tenant. Kept on the struct only
+    /// so the posted field deserializes without error.
     #[serde(default)]
+    #[allow(dead_code)]
     pub tenant_id: String,
     pub role: String,
     #[serde(default)]
@@ -911,22 +916,10 @@ pub async fn admin_route_create(
     csrf::validate_csrf(&headers, &form.csrf_token).map_err(|_| StatusCode::FORBIDDEN)?;
 
     let pg = &state.pg_store;
-    let tenant_id: Option<i64> = if form.tenant_id.trim().is_empty() {
-        None
-    } else {
-        match form.tenant_id.trim().parse() {
-            Ok(id) => Some(id),
-            Err(_) => {
-                return render_routes_list(
-                    &state,
-                    &auth_user,
-                    "Invalid tenant ID (must be a number or empty).",
-                    "",
-                )
-                .await;
-            }
-        }
-    };
+    // Security (BUG-ISOL-03): never trust the client-supplied `tenant_id`. The
+    // route's tenant binding is forced to the authenticated caller's tenant so a
+    // tenant admin cannot forge a route targeting another tenant's slug/id.
+    let tenant_id: Option<i64> = Some(auth_user.tenant_id);
 
     let role = match Role::from_str(&form.role) {
         Ok(r) => r,
