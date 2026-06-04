@@ -2059,6 +2059,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "chrono",
  "dashmap",
  "kb-core",
  "kb-metrics",
@@ -2069,6 +2070,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

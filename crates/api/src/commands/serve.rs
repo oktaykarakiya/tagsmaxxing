@@ -227,17 +227,22 @@ pub async fn run_serve(args: &ServeArgs) -> anyhow::Result<()> {
     );
 
     // ── Build pipeline components ───────────────────────────────────────────
-    let tagger = Arc::new(JsonSchemaTagger::new(
-        llm_factory(),
-        DEFAULT_CHAT_MODEL.into(),
-    ));
+    // The tagger and embedder meter each model call's token usage into
+    // usage_events via the store (BUG-BILL-03).
+    let tagger = Arc::new(
+        JsonSchemaTagger::new(llm_factory(), DEFAULT_CHAT_MODEL.into())
+            .with_usage_recorder(Arc::clone(&pg_store) as Arc<dyn kb_core::usage::UsageRecorder>),
+    );
 
     let embed_llm = Arc::new(llm_factory());
-    let embedder = Arc::new(ChunkEmbedder::new(
-        Arc::clone(&embed_llm),
-        DEFAULT_EMBED_MODEL.into(),
-        EMBED_DIM,
-    ));
+    let embedder = Arc::new(
+        ChunkEmbedder::new(
+            Arc::clone(&embed_llm),
+            DEFAULT_EMBED_MODEL.into(),
+            EMBED_DIM,
+        )
+        .with_usage_recorder(Arc::clone(&pg_store) as Arc<dyn kb_core::usage::UsageRecorder>),
+    );
     let canonicalizer = Arc::new(TagCanonicalizer::new(
         Arc::clone(&pg_store) as Arc<dyn kb_pipeline::TagStore>,
         Arc::clone(&embed_llm),

@@ -1,5 +1,6 @@
 //! Per-call usage accounting record (plan §5, §15).
 
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -33,4 +34,24 @@ pub struct UsageEvent {
     pub cost_micros: Option<i64>,
     /// When the call occurred.
     pub created_at: DateTime<Utc>,
+}
+
+/// Sink that records per-call usage so it can be metered, quota-enforced, and
+/// (for priced backends) billed (BUG-BILL-03).
+///
+/// Implemented by the store (persisting to `usage_events`) and injected into the
+/// components that make model calls — the tagger and the chunk embedder — so each
+/// call's token usage is attributed to the calling tenant at the point where the
+/// model, role, and token counts are known.
+///
+/// Recording is **best-effort**: implementors surface errors for logging, but
+/// callers must not let a metering failure abort the surrounding ingest.
+#[async_trait]
+pub trait UsageRecorder: Send + Sync {
+    /// Persist a single usage event.
+    ///
+    /// # Errors
+    /// Returns an error if the event could not be persisted; the caller logs it
+    /// and continues (metering must never fail an ingest).
+    async fn record_usage(&self, event: &UsageEvent) -> anyhow::Result<()>;
 }

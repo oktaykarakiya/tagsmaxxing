@@ -10,7 +10,9 @@ use std::sync::Arc;
 use anyhow::{Context, anyhow};
 use kb_core::chunk::Chunk;
 use kb_core::embedder::EmbedKind;
-use kb_core::provider::EmbedReq;
+use kb_core::provider::{EmbedReq, Usage};
+use kb_core::role::Role;
+use kb_core::usage::{UsageEvent, UsageRecorder};
 use kb_llm::LlamaClient;
 
 use crate::chunker::{MAX_EMBED_BATCH_SIZE, TextChunk};
@@ -41,6 +43,9 @@ pub struct ChunkEmbedder {
     embed_model: String,
     /// Expected output vector dimension (BGE-M3 = 1024; plan §5 embedder lock-in).
     expected_dim: usize,
+    /// Optional sink for per-call token usage (BUG-BILL-03). When set, each
+    /// document-embedding batch's usage is metered to the calling tenant.
+    usage_recorder: Option<Arc<dyn UsageRecorder>>,
 }
 
 impl ChunkEmbedder {
@@ -53,6 +58,41 @@ impl ChunkEmbedder {
             llm,
             embed_model,
             expected_dim,
+            usage_recorder: None,
+        }
+    }
+
+    /// Attach a [`UsageRecorder`] so each document-embedding batch's token usage
+    /// is metered into `usage_events` for the calling tenant (BUG-BILL-03).
+    #[must_use]
+    pub fn with_usage_recorder(mut self, recorder: Arc<dyn UsageRecorder>) -> Self {
+        self.usage_recorder = Some(recorder);
+        self
+    }
+
+    /// Meter one embedding batch's token usage to `tenant_id` (best-effort).
+    ///
+    /// A no-op when no [`UsageRecorder`] is attached. Recording failures are
+    /// logged and swallowed — metering must never fail an embedding call.
+    async fn meter(&self, tenant_id: i64, usage: &Usage) {
+        let Some(recorder) = &self.usage_recorder else {
+            return;
+        };
+        let event = UsageEvent {
+            id: 0,
+            tenant_id,
+            user_id: None,
+            model: self.embed_model.clone(),
+            role: Role::Embed,
+            backend_id: None,
+            prompt_tokens: Some(usage.prompt_tokens as i32),
+            completion_tokens: Some(usage.completion_tokens as i32),
+            latency_ms: None,
+            cost_micros: None,
+            created_at: chrono::Utc::now(),
+        };
+        if let Err(e) = recorder.record_usage(&event).await {
+            tracing::warn!(error = %e, tenant_id, "embedder: failed to meter usage event");
         }
     }
 
@@ -84,7 +124,7 @@ impl ChunkEmbedder {
 
         let texts: Vec<String> = chunks.iter().map(|c| c.content.clone()).collect();
         let vectors = self
-            .batch_embed(&texts, EmbedKind::Document, local_only)
+            .batch_embed(&texts, EmbedKind::Document, Some(tenant_id), local_only)
             .await?;
 
         anyhow::ensure!(
@@ -126,7 +166,7 @@ impl ChunkEmbedder {
         names: &[String],
         local_only: bool,
     ) -> anyhow::Result<Vec<Vec<f32>>> {
-        self.batch_embed(names, EmbedKind::Document, local_only)
+        self.batch_embed(names, EmbedKind::Document, None, local_only)
             .await
     }
 
@@ -146,7 +186,12 @@ impl ChunkEmbedder {
         local_only: bool,
     ) -> anyhow::Result<Vec<f32>> {
         let vectors = self
-            .batch_embed(&[query_text.to_string()], EmbedKind::Query, local_only)
+            .batch_embed(
+                &[query_text.to_string()],
+                EmbedKind::Query,
+                None,
+                local_only,
+            )
             .await?;
         anyhow::ensure!(
             vectors.len() == 1,
@@ -168,6 +213,7 @@ impl ChunkEmbedder {
         &self,
         texts: &[String],
         kind: EmbedKind,
+        tenant_id: Option<i64>,
         local_only: bool,
     ) -> anyhow::Result<Vec<Vec<f32>>> {
         // Apply BGE-M3 instruction prefix based on embedding kind.
@@ -191,6 +237,13 @@ impl ChunkEmbedder {
                 .embed(&self.embed_model, &req, local_only, 0)
                 .await
                 .context("failed to embed batch")?;
+
+            // Meter this batch's token usage to the tenant (BUG-BILL-03). Only
+            // tenant-attributable calls (document embedding during ingest) are
+            // metered; query embedding passes `None`.
+            if let Some(tid) = tenant_id {
+                self.meter(tid, &resp.usage).await;
+            }
 
             for (i, vector) in resp.vectors.into_iter().enumerate() {
                 if vector.len() != self.expected_dim {
@@ -251,6 +304,20 @@ mod tests {
         (embedder, mock)
     }
 
+    /// A [`UsageRecorder`] capturing events for assertions (BUG-BILL-03).
+    #[derive(Default)]
+    struct CapturingRecorder {
+        events: std::sync::Mutex<Vec<UsageEvent>>,
+    }
+
+    #[async_trait::async_trait]
+    impl UsageRecorder for CapturingRecorder {
+        async fn record_usage(&self, event: &UsageEvent) -> anyhow::Result<()> {
+            self.events.lock().unwrap().push(event.clone());
+            Ok(())
+        }
+    }
+
     /// A minimal `TextChunk` helper.
     fn tc(content: &str, idx: i32, file_id: i64, page_no: i32) -> TextChunk {
         TextChunk {
@@ -286,6 +353,42 @@ mod tests {
         assert_eq!(chunks[0].idx, 0);
         assert_eq!(chunks[0].embedding.len(), MOCK_DIM);
 
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn embed_chunks_meters_usage_to_tenant() {
+        // BUG-BILL-03: embedding document chunks meters an Embed usage event
+        // attributed to the tenant and the embed model.
+        let (embedder, mock) = embedder_with_mock(MOCK_DIM).await;
+        let recorder = Arc::new(CapturingRecorder::default());
+        let embedder = embedder.with_usage_recorder(recorder.clone() as Arc<dyn UsageRecorder>);
+
+        let input = vec![tc("hello", 0, 1, 1)];
+        embedder.embed_chunks(input, 42, 7, false).await.unwrap();
+        mock.shutdown().await;
+
+        let events = recorder.events.lock().unwrap();
+        assert_eq!(events.len(), 1, "one embed batch should be metered");
+        assert_eq!(events[0].tenant_id, 42);
+        assert_eq!(events[0].role, Role::Embed);
+        assert_eq!(events[0].model, "bge-m3");
+    }
+
+    #[tokio::test]
+    async fn embed_query_is_not_metered() {
+        // Query embedding (search path) is not tenant-attributed here, so it
+        // must NOT record a usage event even when a recorder is attached.
+        let (embedder, mock) = embedder_with_mock(MOCK_DIM).await;
+        let recorder = Arc::new(CapturingRecorder::default());
+        let embedder = embedder.with_usage_recorder(recorder.clone() as Arc<dyn UsageRecorder>);
+
+        embedder.embed_query("a search query", false).await.unwrap();
+
+        assert!(
+            recorder.events.lock().unwrap().is_empty(),
+            "query embedding must not be metered"
+        );
         mock.shutdown().await;
     }
 

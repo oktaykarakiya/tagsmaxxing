@@ -154,17 +154,26 @@ async fn run() -> anyhow::Result<()> {
     match cli.command {
         Command::Ingest(args) => {
             // Owned LlamaClient for the tagger (JsonSchemaTagger takes by value).
-            let tagger = Arc::new(JsonSchemaTagger::new(
-                llm_factory(),
-                DEFAULT_CHAT_MODEL.into(),
-            ));
+            // The tagger + embedder meter token usage into usage_events via the
+            // store (BUG-BILL-03).
+            let tagger = Arc::new(
+                JsonSchemaTagger::new(llm_factory(), DEFAULT_CHAT_MODEL.into())
+                    .with_usage_recorder(
+                        Arc::clone(&pg_store) as Arc<dyn kb_core::usage::UsageRecorder>
+                    ),
+            );
             // Shared LlamaClient for embedder + canonicalizer.
             let embed_llm = Arc::new(llm_factory());
-            let embedder = Arc::new(ChunkEmbedder::new(
-                Arc::clone(&embed_llm),
-                DEFAULT_EMBED_MODEL.into(),
-                EMBED_DIM,
-            ));
+            let embedder = Arc::new(
+                ChunkEmbedder::new(
+                    Arc::clone(&embed_llm),
+                    DEFAULT_EMBED_MODEL.into(),
+                    EMBED_DIM,
+                )
+                .with_usage_recorder(
+                    Arc::clone(&pg_store) as Arc<dyn kb_core::usage::UsageRecorder>
+                ),
+            );
             let canonicalizer = Arc::new(TagCanonicalizer::new(
                 Arc::clone(&pg_store) as Arc<dyn kb_pipeline::TagStore>,
                 Arc::clone(&embed_llm),

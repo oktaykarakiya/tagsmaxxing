@@ -769,13 +769,13 @@ id = "BUG-BILL-03"
 description = "Dashboard token usage display may not match recorded usage_events"
 test_names = ["test_usage_metering_matches_actual_consumption"]
 test_file = "tests/catalog/test_billing_enterprise.py"
-touches = ["crates/api/src/web/handlers_dashboard.rs", "crates/store/src/dashboard.rs"]
+touches = ["crates/core/src/usage.rs", "crates/core/src/tagger.rs", "crates/store/src/usage_recorder.rs", "crates/store/src/lib.rs", "crates/llm/src/tagger.rs", "crates/llm/Cargo.toml", "crates/pipeline/src/embedder.rs", "crates/pipeline/src/ingest.rs", "crates/api/src/commands/serve.rs", "crates/api/src/main.rs", "crates/extract/Cargo.toml"]
 conflict_group = "billing_handlers"
 depends_on = []
 severity = "medium"
-status = "blocked"
+status = "done"
 acceptance = "test_usage_metering_matches_actual_consumption passes"
-notes = "BLOCKED: not a display bug. Verified against live e2e DB: dashboard shows 0 B and the recorded usage_events total IS 0 — display already matches (the format_bytes-rounding hypothesis is wrong; both queries are mathematically identical). Real failure is `recorded_after > recorded_before` (0>0): no production path writes usage_events. `insert_usage_event` has zero non-test callers, crates/pipeline/src/ingest.rs does no usage accounting, and LLM client/adapter parse Usage but never persist it. Fix must instrument the ingest/LLM call path (crates/pipeline/src/ingest.rs, crates/llm, or crates/scheduler) to call insert_usage_event — all outside the permitted display files (handlers_dashboard.rs, dashboard.rs are read-only)."
+notes = "DONE (full metering): confirmed not a display bug — the dashboard already reads usage_events; the real gap was that NO production path wrote them (insert_usage_event had zero non-test callers). Added a kb_core::usage::UsageRecorder trait (async); PgStore implements it (crates/store/src/usage_recorder.rs) by delegating to the tenant-scoped insert_usage_event. Injected it (builder .with_usage_recorder, no constructor churn) into BOTH model-calling components so token usage is metered at the point model+role+tokens are known: JsonSchemaTagger meters each chat call (role=Text, model, tenant via new TagInput.tenant_id) and ChunkEmbedder meters each document-embedding batch (role=Embed); query embedding passes None and is NOT metered. Wired pg_store as the recorder in serve.rs + main.rs ingest paths. Added tenant_id to TagInput (kb-core) + all construction sites. Tests: tagger tag_meters_token_usage_to_tenant + embedder embed_chunks_meters_usage_to_tenant / embed_query_is_not_metered (CapturingRecorder mock). CHECKPOINT (billing) — flagged for human review; user chose the full-metering approach. just ci green."
 
 [[bug]]
 id = "BUG-BILL-04"

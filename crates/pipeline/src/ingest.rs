@@ -284,6 +284,7 @@ impl IngestPipeline {
 
         // 5. Tag the whole document once over all pages' text + metadata.
         let tag_input = TagInput {
+            tenant_id,
             text: merged.merged_text.clone(),
             user_note: document.user_note.clone(),
             kind: merged.kind,
@@ -506,6 +507,7 @@ pub async fn process_retag_job(
 
     // 3. Tag the document.
     let tag_input = TagInput {
+        tenant_id,
         text: document_text.to_string(),
         user_note: None,
         kind: DocKind::Document,
@@ -1277,6 +1279,7 @@ mod tests {
     async fn tagger_error_propagates() {
         let tagger = FailingTagger;
         let input = TagInput {
+            tenant_id: 1,
             text: "test".into(),
             user_note: None,
             kind: DocKind::Document,

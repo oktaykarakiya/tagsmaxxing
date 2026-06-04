@@ -8,6 +8,9 @@ use crate::kind::DocKind;
 /// Input to the tagger: everything known about a whole document, tagged once over all pages.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TagInput {
+    /// Owning tenant, used to attribute the tagging model call's token usage to
+    /// the right tenant in `usage_events` (BUG-BILL-03).
+    pub tenant_id: i64,
     /// Combined extracted text across all member pages.
     pub text: String,
     /// The user's note/description (typed or voice-transcribed); strongly drives tags.

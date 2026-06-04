@@ -13,9 +13,12 @@
 //!    produce a valid [`TagOutput`] JSON object — the structural barrier prevents
 //!    free-text injection from leaking into the output shape.
 
-use kb_core::provider::{ChatMessage, ChatReq, ChatRole};
+use std::sync::Arc;
+
+use kb_core::provider::{ChatMessage, ChatReq, ChatRole, Usage};
 use kb_core::role::Role;
 use kb_core::tagger::{TagInput, TagOutput, Tagger};
+use kb_core::usage::{UsageEvent, UsageRecorder};
 
 use crate::client::LlamaClient;
 
@@ -134,12 +137,53 @@ pub struct JsonSchemaTagger {
     client: LlamaClient,
     /// Model id to pass in the OpenAI request body.
     model: String,
+    /// Optional sink for per-call token usage (BUG-BILL-03). When set, each
+    /// chat call's usage is metered to the calling tenant.
+    usage_recorder: Option<Arc<dyn UsageRecorder>>,
 }
 
 impl JsonSchemaTagger {
     /// Create a new tagger backed by `client`, using `model` in the API request.
     pub fn new(client: LlamaClient, model: String) -> Self {
-        Self { client, model }
+        Self {
+            client,
+            model,
+            usage_recorder: None,
+        }
+    }
+
+    /// Attach a [`UsageRecorder`] so each tagging model call's token usage is
+    /// metered into `usage_events` for the calling tenant (BUG-BILL-03).
+    #[must_use]
+    pub fn with_usage_recorder(mut self, recorder: Arc<dyn UsageRecorder>) -> Self {
+        self.usage_recorder = Some(recorder);
+        self
+    }
+
+    /// Meter one chat call's token usage to `tenant_id` (best-effort).
+    ///
+    /// A no-op when no [`UsageRecorder`] is attached. Recording failures are
+    /// logged and swallowed — metering must never fail a tagging call.
+    async fn meter(&self, tenant_id: i64, usage: &Usage) {
+        let Some(recorder) = &self.usage_recorder else {
+            return;
+        };
+        let event = UsageEvent {
+            id: 0,
+            tenant_id,
+            user_id: None,
+            model: self.model.clone(),
+            role: Role::Text,
+            backend_id: None,
+            prompt_tokens: Some(usage.prompt_tokens as i32),
+            completion_tokens: Some(usage.completion_tokens as i32),
+            latency_ms: None,
+            cost_micros: None,
+            created_at: chrono::Utc::now(),
+        };
+        if let Err(e) = recorder.record_usage(&event).await {
+            tracing::warn!(error = %e, tenant_id, "tagger: failed to meter usage event");
+        }
     }
 
     /// Return a reference to the contract version for external inspection.
@@ -349,6 +393,9 @@ impl Tagger for JsonSchemaTagger {
             .await
             .map_err(|e| anyhow::anyhow!("tagger model call failed: {e}"))?;
 
+        // Meter the tagging call's token usage to the tenant (BUG-BILL-03).
+        self.meter(input.tenant_id, &resp.usage).await;
+
         match Self::parse_and_validate(&resp.text, input.user_note.as_deref()) {
             Ok(output) => return Ok(output),
             Err(first_error) => {
@@ -383,6 +430,9 @@ impl Tagger for JsonSchemaTagger {
                             "tagger retry model call failed: {e} (first parse error: {first_error})"
                         )
                     })?;
+
+                // Meter the retry call's token usage too (BUG-BILL-03).
+                self.meter(input.tenant_id, &retry_resp.usage).await;
 
                 Self::parse_and_validate(&retry_resp.text, input.user_note.as_deref())
                     .map_err(|e| {
@@ -438,10 +488,25 @@ mod tests {
     /// A minimal document input for tests.
     fn sample_input() -> TagInput {
         TagInput {
+            tenant_id: 1,
             text: "This is a sample document about Rust programming.".to_string(),
             user_note: Some("Learning material".to_string()),
             kind: DocKind::Document,
             meta: serde_json::json!({"pages": 1}),
+        }
+    }
+
+    /// A [`UsageRecorder`] that captures every event for assertions (BUG-BILL-03).
+    #[derive(Default)]
+    struct CapturingRecorder {
+        events: std::sync::Mutex<Vec<UsageEvent>>,
+    }
+
+    #[async_trait::async_trait]
+    impl UsageRecorder for CapturingRecorder {
+        async fn record_usage(&self, event: &UsageEvent) -> anyhow::Result<()> {
+            self.events.lock().unwrap().push(event.clone());
+            Ok(())
         }
     }
 
@@ -813,6 +878,36 @@ mod tests {
         assert_eq!(output.title, "Rust Programming Guide");
         assert_eq!(output.tags.len(), 3);
 
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn tag_meters_token_usage_to_tenant() {
+        // BUG-BILL-03: a successful tag() must record one Text usage event,
+        // attributed to the input's tenant and the tagger's model.
+        let (tagger, mock) = tagger_with_mock().await;
+        let recorder = Arc::new(CapturingRecorder::default());
+        let tagger = tagger.with_usage_recorder(recorder.clone() as Arc<dyn UsageRecorder>);
+        mock.scenario().lock().await.chat_content = Some(valid_tag_output_json());
+
+        let input = sample_input(); // tenant_id = 1
+        tagger.tag(&input, false).await.unwrap();
+        mock.shutdown().await;
+
+        let events = recorder.events.lock().unwrap();
+        assert_eq!(events.len(), 1, "exactly one chat call should be metered");
+        assert_eq!(events[0].tenant_id, 1);
+        assert_eq!(events[0].role, Role::Text);
+        assert_eq!(events[0].model, "test-model");
+        assert!(events[0].prompt_tokens.is_some());
+    }
+
+    #[tokio::test]
+    async fn tag_without_recorder_does_not_panic() {
+        // With no recorder attached, metering is a no-op.
+        let (tagger, mock) = tagger_with_mock().await;
+        mock.scenario().lock().await.chat_content = Some(valid_tag_output_json());
+        tagger.tag(&sample_input(), false).await.unwrap();
         mock.shutdown().await;
     }
 
