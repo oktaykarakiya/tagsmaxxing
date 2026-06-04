@@ -854,9 +854,9 @@ touches = ["crates/metrics/src/lib.rs", "crates/api/src/middleware.rs"]
 conflict_group = "metrics_defs"
 depends_on = []
 severity = "medium"
-status = "todo"
+status = "blocked"
 acceptance = "test_http_red_metrics_present passes"
-notes = "No per-route HTTP request count, error count, or latency metrics on /metrics. Add an HTTP metrics middleware that records these with route, method, and status labels."
+notes = "BLOCKED: RED metrics middleware implemented but breaks existing integration test crates/api/tests/p6_integration.rs::metrics_endpoint_returns_valid_prometheus_output (snapshot of exact /metrics output — the new middleware adds kb_http_* metrics AND counts the /metrics call itself, so the hardcoded expected output is stale). Fix needs to ALSO update p6_integration.rs (outside the bug's touches=middleware.rs+metrics/lib.rs). Re-scope touches to include crates/api/tests/p6_integration.rs. First agent also hung on a dropped API socket mid-fix."
 
 [[bug]]
 id = "BUG-OBS-06"
