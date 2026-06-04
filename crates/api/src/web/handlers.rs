@@ -679,15 +679,10 @@ pub async fn upload_submit(
         )
             .into_response(),
         Err(e) => {
-            tracing::error!(error = %e, "upload_submit: process_upload_inline failed");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({
-                    "error": "internal_error",
-                    "message": "an unexpected error occurred"
-                })),
-            )
-                .into_response()
+            // Map upload-validation rejections to 400 (and quota to 413), mirroring
+            // POST /api/ingest — a zero-byte / disallowed-MIME / oversized /
+            // unsafe-named upload is a client error, not a 500 (BUG-INGEST-06/07).
+            crate::handlers::ingest::map_ingest_error(e).into_response()
         }
     }
 }

@@ -726,13 +726,20 @@ pub async fn add_page(
         }
         Err(e) => {
             tracing::error!(error = %e, %doc_id, "add-page failed");
+            // Surface the specific reason for client-side rejections (zero-byte /
+            // disallowed-MIME / oversized / unsafe-named) rather than a generic
+            // failure message; keep the generic message for true server faults.
+            let msg = match e.downcast_ref::<kb_extract::security::UploadRejected>() {
+                Some(rejected) => rejected.to_string(),
+                None => "Failed to process uploaded files.".to_string(),
+            };
             let csrf = generate_fresh_csrf();
             let mut resp = build_document_detail_page(
                 &state,
                 auth_user.tenant_id,
                 doc_id,
                 &csrf,
-                "Failed to process uploaded files.",
+                &msg,
             )
             .await;
             resp.headers_mut().insert(

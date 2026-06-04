@@ -488,10 +488,20 @@ fn internal_error(e: impl std::fmt::Display) -> (StatusCode, Json<ErrorResponse>
 /// `400 Bad Request`. Everything else (blob store, DB, pipeline faults) is an
 /// internal `500`. Without this downcast, every validation rejection surfaced as
 /// a `500` because only `QuotaError` (→ `413`, above) was special-cased.
-fn map_ingest_error(e: anyhow::Error) -> (StatusCode, Json<ErrorResponse>) {
+pub(crate) fn map_ingest_error(e: anyhow::Error) -> (StatusCode, Json<ErrorResponse>) {
     if let Some(rejected) = e.downcast_ref::<security::UploadRejected>() {
         tracing::warn!(error = %rejected, "ingest: rejected upload (400)");
         return bad_request("invalid_upload", &rejected.to_string());
+    }
+    if let Some(qe) = e.downcast_ref::<kb_core::quota::QuotaError>() {
+        tracing::warn!(error = %qe, "ingest: quota exceeded (413)");
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(ErrorResponse {
+                error: "quota_exceeded".into(),
+                message: quota_error_response(qe),
+            }),
+        );
     }
     internal_error(e)
 }
@@ -874,6 +884,19 @@ mod tests {
         let (status, body) = map_ingest_error(rejected);
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(body.error, "invalid_upload");
+
+        // A typed QuotaError maps to 413 (so web + JSON callers agree).
+        let quota = anyhow::Error::new(kb_core::quota::QuotaError::StorageExceeded {
+            current: 100,
+            additional: 10,
+            total: 110,
+            limit: 50,
+            plan_code: None,
+            upsell_plan_code: None,
+        });
+        let (status, body) = map_ingest_error(quota);
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(body.error, "quota_exceeded");
 
         // An untyped error (e.g. a DB fault) still maps to 500.
         let (status, _) = map_ingest_error(anyhow::anyhow!("db connection lost"));
