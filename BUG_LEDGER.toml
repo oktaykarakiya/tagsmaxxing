@@ -1036,9 +1036,9 @@ touches = ["crates/api/src/web/admin_handlers.rs"]
 conflict_group = "admin_handlers"
 depends_on = []
 severity = "high"
-status = "todo"
+status = "done"
 acceptance = "test_admin_role_endpoint_cannot_demote_last_owner passes"
-notes = "/admin/users/role lacks the last-owner guard. An admin could demote the sole Owner, leaving the tenant with zero owners (lockout). Add a check: before demotion, verify at least one other Owner exists."
+notes = "Added last-owner guard to admin_change_user_role: when demoting from Owner, admin_list_users counts remaining Owners; if target is the sole Owner, return 409 CONFLICT. Fails closed (500) on DB read error. Updated colocated unit test to expect 500 instead of 303 on disconnected DB."
 
 [[bug]]
 id = "BUG-RBAC-02"

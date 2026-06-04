@@ -475,6 +475,26 @@ pub async fn admin_change_user_role(
         return Err(StatusCode::FORBIDDEN);
     }
 
+    // ── Don't demote the last Owner (zero-owner lockout guard) ─────────────────
+    if new_role != UserRole::Owner {
+        match pg.admin_list_users(tid).await {
+            Ok(users) => {
+                let owner_count = users.iter().filter(|u| u.role == UserRole::Owner).count();
+                let target_is_owner = users
+                    .iter()
+                    .any(|u| u.id == form.user_id && u.role == UserRole::Owner);
+                if target_is_owner && owner_count <= 1 {
+                    return Err(StatusCode::CONFLICT);
+                }
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "failed to list users during admin role change");
+                // Fail closed — don't allow the demotion if we can't verify.
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        }
+    }
+
     match pg.admin_update_user_role(tid, form.user_id, new_role).await {
         Ok(affected) => {
             if affected > 0 {
@@ -1562,8 +1582,10 @@ mod tests {
             ))
             .with_state(state);
         let response = router.oneshot(request).await.unwrap();
-        // Redirects to /admin/users even when DB is disconnected (error is swallowed)
-        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        // Fails closed: the last-owner guard queries admin_list_users, which fails
+        // with a disconnected DB → 500 (cannot verify whether the target is the
+        // sole Owner, so the demotion is refused).
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     #[tokio::test]
