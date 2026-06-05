@@ -26,7 +26,7 @@ use super::templates::{ForgotPasswordPage, ResetPasswordPage, SignupPage, Verify
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
-use super::handlers::{generate_fresh_csrf, render_ok, render_template};
+use super::handlers::{generate_fresh_csrf, render_ok, render_template, render_with_csrf_cookie};
 
 /// Convert a human-readable workspace name into a URL-friendly slug.
 ///
@@ -112,13 +112,15 @@ pub async fn signup_submit(
 ) -> Response {
     // ── 1. Validate CSRF ────────────────────────────────────────────────────
     if let Err((status, msg)) = csrf::validate_csrf(&headers, &form.csrf_token) {
+        let csrf_token = generate_fresh_csrf();
         let page = SignupPage {
-            csrf_token: generate_fresh_csrf(),
+            csrf_token: csrf_token.clone(),
             tenant_name: form.tenant_name.clone(),
             email: form.email.clone(),
             error: msg,
         };
-        return render_template(&page, status);
+        return render_with_csrf_cookie(&page, status, &csrf_token, state.session_ttl, state.secure_cookies);
+
     }
 
     let email = form.email.trim().to_string();
@@ -126,26 +128,30 @@ pub async fn signup_submit(
 
     // Basic input validation.
     if email.is_empty() || password.len() < 8 || form.tenant_name.trim().is_empty() {
+        let csrf_token = generate_fresh_csrf();
         let page = SignupPage {
-            csrf_token: generate_fresh_csrf(),
+            csrf_token: csrf_token.clone(),
             tenant_name: form.tenant_name,
             email,
             error: "All fields are required. Password must be at least 8 characters.".into(),
         };
-        return render_template(&page, StatusCode::BAD_REQUEST);
+        return render_with_csrf_cookie(&page, StatusCode::BAD_REQUEST, &csrf_token, state.session_ttl, state.secure_cookies);
+
     }
 
     // Reject common/breached passwords.
     if kb_core::auth::is_common_password(&password) {
+        let csrf_token = generate_fresh_csrf();
         let page = SignupPage {
-            csrf_token: generate_fresh_csrf(),
+            csrf_token: csrf_token.clone(),
             tenant_name: form.tenant_name,
             email,
             error: "This password is too common and has appeared in data breaches. \
                     Please choose a stronger password."
                 .into(),
         };
-        return render_template(&page, StatusCode::BAD_REQUEST);
+        return render_with_csrf_cookie(&page, StatusCode::BAD_REQUEST, &csrf_token, state.session_ttl, state.secure_cookies);
+
     }
 
     // ── 2. Slugify + ensure uniqueness ──────────────────────────────────────
@@ -154,13 +160,15 @@ pub async fn signup_submit(
         Ok(s) => s,
         Err(e) => {
             tracing::error!(error = %e, "failed to generate unique tenant slug");
+            let csrf_token = generate_fresh_csrf();
             let page = SignupPage {
-                csrf_token: generate_fresh_csrf(),
+                csrf_token: csrf_token.clone(),
                 tenant_name: form.tenant_name,
                 email,
                 error: "An error occurred. Please try again.".into(),
             };
-            return render_template(&page, StatusCode::INTERNAL_SERVER_ERROR);
+            return render_with_csrf_cookie(&page, StatusCode::INTERNAL_SERVER_ERROR, &csrf_token, state.session_ttl, state.secure_cookies);
+
         }
     };
 
@@ -169,13 +177,15 @@ pub async fn signup_submit(
         Ok(h) => h,
         Err(e) => {
             tracing::error!(error = %e, "password hashing failed");
+            let csrf_token = generate_fresh_csrf();
             let page = SignupPage {
-                csrf_token: generate_fresh_csrf(),
+                csrf_token: csrf_token.clone(),
                 tenant_name: form.tenant_name,
                 email,
                 error: "An error occurred. Please try again.".into(),
             };
-            return render_template(&page, StatusCode::INTERNAL_SERVER_ERROR);
+            return render_with_csrf_cookie(&page, StatusCode::INTERNAL_SERVER_ERROR, &csrf_token, state.session_ttl, state.secure_cookies);
+
         }
     };
 
@@ -198,13 +208,15 @@ pub async fn signup_submit(
                 Ok(id) => id,
                 Err(e2) => {
                     tracing::error!(error = %e2, "create_tenant retry failed");
+                    let csrf_token = generate_fresh_csrf();
                     let page = SignupPage {
-                        csrf_token: generate_fresh_csrf(),
+                        csrf_token: csrf_token.clone(),
                         tenant_name: form.tenant_name,
                         email,
                         error: "This workspace name is taken. Please try a different name.".into(),
                     };
-                    return render_template(&page, StatusCode::CONFLICT);
+                    return render_with_csrf_cookie(&page, StatusCode::CONFLICT, &csrf_token, state.session_ttl, state.secure_cookies);
+
                 }
             }
         }
@@ -221,13 +233,15 @@ pub async fn signup_submit(
             tracing::error!(error = %e, "create_user failed during signup");
             // Best-effort cleanup: the tenant row is orphaned, but this is
             // extremely rare and the admin can clean it up.
+            let csrf_token = generate_fresh_csrf();
             let page = SignupPage {
-                csrf_token: generate_fresh_csrf(),
+                csrf_token: csrf_token.clone(),
                 tenant_name: form.tenant_name,
                 email,
                 error: "An account with this email already exists. Please log in instead.".into(),
             };
-            return render_template(&page, StatusCode::CONFLICT);
+            return render_with_csrf_cookie(&page, StatusCode::CONFLICT, &csrf_token, state.session_ttl, state.secure_cookies);
+
         }
     };
 
@@ -236,13 +250,15 @@ pub async fn signup_submit(
         Ok(t) => t,
         Err(e) => {
             tracing::error!(error = %e, "failed to generate email token");
+            let csrf_token = generate_fresh_csrf();
             let page = SignupPage {
-                csrf_token: generate_fresh_csrf(),
+                csrf_token: csrf_token.clone(),
                 tenant_name: form.tenant_name,
                 email,
                 error: "An error occurred. Please try again.".into(),
             };
-            return render_template(&page, StatusCode::INTERNAL_SERVER_ERROR);
+            return render_with_csrf_cookie(&page, StatusCode::INTERNAL_SERVER_ERROR, &csrf_token, state.session_ttl, state.secure_cookies);
+
         }
     };
 
@@ -429,26 +445,30 @@ pub async fn forgot_password_submit(
 ) -> Response {
     // ── 1. Validate CSRF ────────────────────────────────────────────────────
     if let Err((status, msg)) = csrf::validate_csrf(&headers, &form.csrf_token) {
+        let csrf_token = generate_fresh_csrf();
         let page = ForgotPasswordPage {
-            csrf_token: generate_fresh_csrf(),
+            csrf_token: csrf_token.clone(),
             email: form.email.clone(),
             error: msg,
             success_message: String::new(),
         };
-        return render_template(&page, status);
+        return render_with_csrf_cookie(&page, status, &csrf_token, state.session_ttl, state.secure_cookies);
+
     }
 
     let email = form.email.trim().to_string();
 
     // Always show success to prevent user enumeration.
     if email.is_empty() {
+        let csrf_token = generate_fresh_csrf();
         let page = ForgotPasswordPage {
-            csrf_token: generate_fresh_csrf(),
+            csrf_token: csrf_token.clone(),
             email,
             error: "Please enter your email address.".into(),
             success_message: String::new(),
         };
-        return render_template(&page, StatusCode::BAD_REQUEST);
+        return render_with_csrf_cookie(&page, StatusCode::BAD_REQUEST, &csrf_token, state.session_ttl, state.secure_cookies);
+
     }
 
     // ── 2. Generate reset token ─────────────────────────────────────────────
@@ -623,58 +643,68 @@ pub async fn reset_password_submit(
 ) -> Response {
     // ── 1. Validate CSRF ────────────────────────────────────────────────────
     if let Err((status, msg)) = csrf::validate_csrf(&headers, &form.csrf_token) {
+        let csrf_token = generate_fresh_csrf();
         let page = ResetPasswordPage {
-            csrf_token: generate_fresh_csrf(),
+            csrf_token: csrf_token.clone(),
             token: form.reset_token.clone(),
             error: msg,
         };
-        return render_template(&page, status);
+        return render_with_csrf_cookie(&page, status, &csrf_token, state.session_ttl, state.secure_cookies);
+
     }
 
     let token = form.reset_token.trim().to_string();
     let password = form.password;
 
     if password.len() < 8 {
+        let csrf_token = generate_fresh_csrf();
         let page = ResetPasswordPage {
-            csrf_token: generate_fresh_csrf(),
+            csrf_token: csrf_token.clone(),
             token,
             error: "Password must be at least 8 characters.".into(),
         };
-        return render_template(&page, StatusCode::BAD_REQUEST);
+        return render_with_csrf_cookie(&page, StatusCode::BAD_REQUEST, &csrf_token, state.session_ttl, state.secure_cookies);
+
     }
 
     // Reject common/breached passwords.
     if kb_core::auth::is_common_password(&password) {
+        let csrf_token = generate_fresh_csrf();
         let page = ResetPasswordPage {
-            csrf_token: generate_fresh_csrf(),
+            csrf_token: csrf_token.clone(),
             token,
             error: "This password is too common and has appeared in data breaches. \
                     Please choose a stronger password."
                 .into(),
         };
-        return render_template(&page, StatusCode::BAD_REQUEST);
+        return render_with_csrf_cookie(&page, StatusCode::BAD_REQUEST, &csrf_token, state.session_ttl, state.secure_cookies);
+
     }
 
     // ── 2. Validate the reset token ─────────────────────────────────────────
     let user = match find_user_by_reset_token_global(&state, &token).await {
         Ok(Some(u)) => u,
         Ok(None) => {
+            let csrf_token = generate_fresh_csrf();
             let page = ResetPasswordPage {
-                csrf_token: generate_fresh_csrf(),
+                csrf_token: csrf_token.clone(),
                 token,
                 error: "This reset link has expired or is invalid. Please request a new one."
                     .into(),
             };
-            return render_template(&page, StatusCode::BAD_REQUEST);
+            return render_with_csrf_cookie(&page, StatusCode::BAD_REQUEST, &csrf_token, state.session_ttl, state.secure_cookies);
+
         }
         Err(e) => {
             tracing::error!(error = %e, "failed to find user by reset token");
+            let csrf_token = generate_fresh_csrf();
             let page = ResetPasswordPage {
-                csrf_token: generate_fresh_csrf(),
+                csrf_token: csrf_token.clone(),
                 token,
                 error: "An error occurred. Please try again.".into(),
             };
-            return render_template(&page, StatusCode::INTERNAL_SERVER_ERROR);
+            return render_with_csrf_cookie(&page, StatusCode::INTERNAL_SERVER_ERROR, &csrf_token, state.session_ttl, state.secure_cookies);
+
         }
     };
 
@@ -683,12 +713,14 @@ pub async fn reset_password_submit(
         Ok(h) => h,
         Err(e) => {
             tracing::error!(error = %e, "password hashing failed");
+            let csrf_token = generate_fresh_csrf();
             let page = ResetPasswordPage {
-                csrf_token: generate_fresh_csrf(),
+                csrf_token: csrf_token.clone(),
                 token,
                 error: "An error occurred. Please try again.".into(),
             };
-            return render_template(&page, StatusCode::INTERNAL_SERVER_ERROR);
+            return render_with_csrf_cookie(&page, StatusCode::INTERNAL_SERVER_ERROR, &csrf_token, state.session_ttl, state.secure_cookies);
+
         }
     };
 
@@ -715,8 +747,9 @@ pub async fn reset_password_submit(
             Redirect::to("/login?reset_success=1").into_response()
         }
         Ok(false) => {
+            let csrf_token = generate_fresh_csrf();
             let page = ResetPasswordPage {
-                csrf_token: generate_fresh_csrf(),
+                csrf_token: csrf_token.clone(),
                 token,
                 error: "Could not reset password. The token may have expired.".into(),
             };
@@ -724,8 +757,9 @@ pub async fn reset_password_submit(
         }
         Err(e) => {
             tracing::error!(error = %e, "password reset failed");
+            let csrf_token = generate_fresh_csrf();
             let page = ResetPasswordPage {
-                csrf_token: generate_fresh_csrf(),
+                csrf_token: csrf_token.clone(),
                 token,
                 error: "An error occurred. Please try again.".into(),
             };
@@ -942,6 +976,111 @@ mod tests {
         let resp = router.oneshot(req).await.unwrap();
 
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// Regression test: CSRF mismatch on POST /signup must sync cookie to form token.
+    /// Same bug class as login — without this the user is stuck in a permanent mismatch loop.
+    #[tokio::test]
+    async fn signup_submit_csrf_mismatch_syncs_cookie_to_form_token() {
+        let state = test_state();
+        let router = auth_web_router(state);
+
+        let old_token = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let body =
+            format!("csrf_token=wrong&tenant_name=Test&email=a@b.com&password=secret123456");
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/signup")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .header("Cookie", format!("__Host-csrf={old_token}"))
+            .body(Body::from(body))
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+        let set_cookie = resp
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .find_map(|h| {
+                let s = h.to_str().ok()?;
+                if s.starts_with("__Host-csrf=") {
+                    s.split(';')
+                        .next()?
+                        .strip_prefix("__Host-csrf=")
+                        .map(|t| t.to_owned())
+                } else {
+                    None
+                }
+            })
+            .expect("error response must set __Host-csrf cookie");
+
+        assert!(!set_cookie.is_empty());
+        assert_ne!(set_cookie, old_token);
+
+        let body_bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+        let body_str = std::str::from_utf8(&body_bytes).unwrap();
+        let form_token = body_str
+            .split("name=\"csrf_token\" value=\"")
+            .nth(1)
+            .and_then(|s| s.split('\"').next())
+            .map(|s| s.to_owned())
+            .expect("error page must contain a csrf_token hidden field");
+
+        assert_eq!(set_cookie, form_token);
+    }
+
+    /// Validate that even a validation error (empty fields, not CSRF) syncs the cookie.
+    /// The old code only set the CSRF cookie on success; error re-renders used
+    /// `render_template` which does NOT set cookies — so a validation failure would
+    /// desync the cookie for the next submission.
+    #[tokio::test]
+    async fn signup_submit_validation_error_syncs_cookie_to_form_token() {
+        let state = test_state();
+        let csrf_token = csrf::generate_csrf_token().unwrap();
+        let router = auth_web_router(state);
+
+        // Use valid CSRF but empty form fields — triggers validation error, not CSRF error.
+        let body = format!("csrf_token={csrf_token}&tenant_name=&email=&password=");
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/signup")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .header("Cookie", format!("__Host-csrf={csrf_token}"))
+            .body(Body::from(body))
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let set_cookie = resp
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .find_map(|h| {
+                let s = h.to_str().ok()?;
+                if s.starts_with("__Host-csrf=") {
+                    s.split(';')
+                        .next()?
+                        .strip_prefix("__Host-csrf=")
+                        .map(|t| t.to_owned())
+                } else {
+                    None
+                }
+            })
+            .expect("validation error response must set __Host-csrf cookie");
+
+        let body_bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+        let body_str = std::str::from_utf8(&body_bytes).unwrap();
+        let form_token = body_str
+            .split("name=\"csrf_token\" value=\"")
+            .nth(1)
+            .and_then(|s| s.split('\"').next())
+            .map(|s| s.to_owned())
+            .expect("error page must contain a csrf_token hidden field");
+
+        assert_eq!(set_cookie, form_token);
     }
 
     #[tokio::test]

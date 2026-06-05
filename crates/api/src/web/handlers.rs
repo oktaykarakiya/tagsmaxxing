@@ -123,10 +123,35 @@ pub(crate) fn render_ok<T: Template>(template: &T) -> Response {
     render_template(template, StatusCode::OK)
 }
 
+/// Render a template with a `Set-Cookie` header that syncs the CSRF cookie to
+/// the freshly-generated token in the form.
+///
+/// Callers MUST use this (or set the cookie themselves) when re-rendering a form
+/// after a failed submission — otherwise the browser's stale `__Host-csrf` cookie
+/// won't match the new hidden-field token, causing a permanent CSRF mismatch loop.
+pub(crate) fn render_with_csrf_cookie<T: Template>(
+    template: &T,
+    status: StatusCode,
+    csrf_token: &str,
+    session_ttl: std::time::Duration,
+    secure: bool,
+) -> Response {
+    let mut resp = render_template(template, status);
+    resp.headers_mut().insert(
+        axum::http::header::SET_COOKIE,
+        csrf::csrf_cookie_value(csrf_token, session_ttl, secure),
+    );
+    resp
+}
+
 /// Generate a fresh CSRF token for form re-renders (after a failed submission).
 ///
 /// Falls back to an empty string on error (which will fail CSRF validation on
 /// the next submission, prompting a page reload — safe).
+///
+/// **Important**: callers that use this token in a re-rendered form MUST also
+/// set a `__Host-csrf` `Set-Cookie` header so the browser's cookie stays in sync.
+/// Use [`render_with_csrf_cookie`] for this, or set the cookie manually.
 pub(crate) fn generate_fresh_csrf() -> String {
     csrf::generate_csrf_token().unwrap_or_default()
 }
@@ -193,13 +218,16 @@ pub async fn login_submit(
 ) -> Response {
     // ── 1. Validate CSRF ────────────────────────────────────────────────────
     if let Err((status, msg)) = csrf::validate_csrf(&headers, &form.csrf_token) {
+        let csrf_token = generate_fresh_csrf();
         let page = LoginPage {
-            csrf_token: generate_fresh_csrf(),
+            csrf_token: csrf_token.clone(),
             tenant_slug: form.tenant_slug.clone(),
             email: form.email.clone(),
             error: msg,
         };
-        return render_template(&page, status);
+        return render_with_csrf_cookie(
+            &page, status, &csrf_token, state.session_ttl, state.secure_cookies,
+        );
     }
 
     // ── 2. Call the JSON login handler ──────────────────────────────────────
@@ -228,13 +256,17 @@ pub async fn login_submit(
         }
         Err((status, err_json)) => {
             // Re-render the login form with the error message.
+            // Set the CSRF cookie so the next submission doesn't get a mismatch.
+            let csrf_token = generate_fresh_csrf();
             let page = LoginPage {
-                csrf_token: generate_fresh_csrf(),
+                csrf_token: csrf_token.clone(),
                 tenant_slug: form.tenant_slug,
                 email: form.email,
                 error: err_json.message.clone(),
             };
-            render_template(&page, status)
+            render_with_csrf_cookie(
+                &page, status, &csrf_token, state.session_ttl, state.secure_cookies,
+            )
         }
     }
 }
@@ -280,13 +312,16 @@ pub async fn register_submit(
 ) -> Response {
     // ── 1. Validate CSRF ────────────────────────────────────────────────────
     if let Err((status, msg)) = csrf::validate_csrf(&headers, &form.csrf_token) {
+        let csrf_token = generate_fresh_csrf();
         let page = RegisterPage {
-            csrf_token: generate_fresh_csrf(),
+            csrf_token: csrf_token.clone(),
             tenant_slug: form.tenant_slug.clone(),
             email: form.email.clone(),
             error: msg,
         };
-        return render_template(&page, status);
+        return render_with_csrf_cookie(
+            &page, status, &csrf_token, state.session_ttl, state.secure_cookies,
+        );
     }
 
     // ── 2. Call the JSON register handler ───────────────────────────────────
@@ -311,13 +346,16 @@ pub async fn register_submit(
             resp
         }
         Err((status, err_json)) => {
+            let csrf_token = generate_fresh_csrf();
             let page = RegisterPage {
-                csrf_token: generate_fresh_csrf(),
+                csrf_token: csrf_token.clone(),
                 tenant_slug: form.tenant_slug,
                 email: form.email,
                 error: err_json.message.clone(),
             };
-            render_template(&page, status)
+            render_with_csrf_cookie(
+                &page, status, &csrf_token, state.session_ttl, state.secure_cookies,
+            )
         }
     }
 }
@@ -765,7 +803,12 @@ mod tests {
     }
 
     /// Full web router for integration tests (includes search routes, P6-T5; upload routes, P6-T6).
+    ///
+    /// Mirrors the layers applied in `build_web_router`, including
+    /// `DefaultBodyLimit` so upload tests verify the body limit is in place.
     fn web_router(state: Arc<AppState>) -> axum::Router {
+        use axum::extract::DefaultBodyLimit;
+
         // Public pages (no auth).
         let public = axum::Router::new()
             .route("/login", get(login_page).post(login_submit))
@@ -784,6 +827,9 @@ mod tests {
 
         public
             .merge(protected)
+            .layer(DefaultBodyLimit::max(
+                crate::handlers::ingest::MAX_PAYLOAD_BYTES as usize,
+            ))
             .layer(axum::middleware::from_fn(security_headers_middleware))
             .with_state(state)
     }
@@ -1011,6 +1057,74 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     }
 
+    /// After a CSRF mismatch, the error page MUST include a `Set-Cookie` header
+    /// that syncs the `__Host-csrf` cookie to the fresh token embedded in the
+    /// re-rendered form. Without this, the user is stuck in a permanent mismatch
+    /// loop: the browser keeps the old cookie but the form has a new token.
+    ///
+    /// This is a regression test for the bug where `render_template` was used
+    /// instead of `render_with_csrf_cookie` on error paths.
+    #[tokio::test]
+    async fn login_submit_csrf_mismatch_syncs_cookie_to_form_token() {
+        let state = test_state();
+        let router = web_router(state);
+
+        // Send a valid-but-wrong CSRF cookie with a mismatched form token.
+        let old_token = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let body = format!("csrf_token=wrong&tenant_slug=t1&email=a@b.com&password=secret123");
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/login")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .header(header::COOKIE, format!("__Host-csrf={old_token}"))
+            .body(Body::from(body))
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+        // Extract the new CSRF token from the Set-Cookie header.
+        let set_cookie = resp
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .find_map(|h| {
+                let s = h.to_str().ok()?;
+                if s.starts_with("__Host-csrf=") {
+                    s.split(';')
+                        .next()?
+                        .strip_prefix("__Host-csrf=")
+                        .map(|t| t.to_owned())
+                } else {
+                    None
+                }
+            })
+            .expect("error response must set __Host-csrf cookie");
+
+        assert!(!set_cookie.is_empty(), "new CSRF cookie must not be empty");
+        assert_ne!(
+            set_cookie, old_token,
+            "new CSRF cookie must differ from the old one"
+        );
+
+        // Extract the CSRF token from the re-rendered form.
+        let body_bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+        let body_str = std::str::from_utf8(&body_bytes).unwrap();
+        let form_token = body_str
+            .split("name=\"csrf_token\" value=\"")
+            .nth(1)
+            .and_then(|s| s.split('\"').next())
+            .map(|s| s.to_owned())
+            .expect("error page must contain a csrf_token hidden field");
+
+        assert_eq!(
+            set_cookie, form_token,
+            "CSRF cookie ({}) must match form token ({}) — otherwise resubmit fails",
+            &set_cookie[..32.min(set_cookie.len())],
+            &form_token[..32.min(form_token.len())],
+        );
+    }
+
     // ── POST /register tests (CSRF validation) ──────────────────────────────
 
     #[tokio::test]
@@ -1028,6 +1142,59 @@ mod tests {
         let resp = router.oneshot(req).await.unwrap();
 
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// Regression test: CSRF mismatch on POST /register must sync cookie to form token.
+    /// Same bug class as login — see `login_submit_csrf_mismatch_syncs_cookie_to_form_token`.
+    #[tokio::test]
+    async fn register_submit_csrf_mismatch_syncs_cookie_to_form_token() {
+        let state = test_state();
+        let router = web_router(state);
+
+        let old_token = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let body =
+            format!("csrf_token=wrong&tenant_slug=t1&email=a@b.com&password=secret123456");
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/register")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .header(header::COOKIE, format!("__Host-csrf={old_token}"))
+            .body(Body::from(body))
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+        let set_cookie = resp
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .find_map(|h| {
+                let s = h.to_str().ok()?;
+                if s.starts_with("__Host-csrf=") {
+                    s.split(';')
+                        .next()?
+                        .strip_prefix("__Host-csrf=")
+                        .map(|t| t.to_owned())
+                } else {
+                    None
+                }
+            })
+            .expect("error response must set __Host-csrf cookie");
+
+        assert!(!set_cookie.is_empty());
+        assert_ne!(set_cookie, old_token);
+
+        let body_bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+        let body_str = std::str::from_utf8(&body_bytes).unwrap();
+        let form_token = body_str
+            .split("name=\"csrf_token\" value=\"")
+            .nth(1)
+            .and_then(|s| s.split('\"').next())
+            .map(|s| s.to_owned())
+            .expect("error page must contain a csrf_token hidden field");
+
+        assert_eq!(set_cookie, form_token);
     }
 
     // ── GET / (root redirect) ───────────────────────────────────────────────
@@ -1880,6 +2047,93 @@ mod tests {
             "expected 5xx (no real DB) or 202 (if queue connects); got {}",
             resp.status()
         );
+    }
+
+    /// Regression test: the web upload route MUST have a `DefaultBodyLimit`
+    /// higher than axum's default 2 MiB. If this test fails with a 413 or
+    /// multipart parsing error, someone removed the `DefaultBodyLimit` layer
+    /// from the web router.
+    ///
+    /// We create a valid session (so auth passes), then send ~3 MiB of
+    /// multipart data. If the body limit is too low axum rejects with 413
+    /// before the handler runs, or truncates the body causing a multipart
+    /// parse failure (400 with "multipart").
+    #[tokio::test]
+    async fn upload_body_limit_allows_over_2mib() {
+        // Create state with a valid session so the auth middleware lets us through.
+        let session_store: Arc<dyn SessionStore> = Arc::new(InMemorySessionStore::new());
+        let pg_store = Arc::new(PgStore::new("postgres://localhost/test?sslmode=disable"));
+        let state = Arc::new(AppState::new(
+            Arc::clone(&session_store) as Arc<dyn SessionStore>,
+            pg_store,
+            Some(Duration::from_secs(3600)),
+            false,
+        ));
+
+        // Create a valid session (passes auth middleware).
+        let session_token = session_store
+            .create(1, 1, UserRole::Owner, false, Duration::from_secs(3600))
+            .await
+            .unwrap();
+
+        let router = web_router(state);
+
+        // Build a ~3 MiB multipart body — well above axum's default 2 MiB limit.
+        let boundary = "testboundary123";
+        let preamble = format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"files\"; filename=\"big.bin\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+        );
+        let epilogue = format!(
+            "\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"csrf_token\"\r\n\r\nfake\r\n--{boundary}--\r\n"
+        );
+        let file_content = vec![b'A'; 3 * 1024 * 1024];
+        let mut body_bytes =
+            Vec::with_capacity(preamble.len() + file_content.len() + epilogue.len());
+        body_bytes.extend_from_slice(preamble.as_bytes());
+        body_bytes.extend_from_slice(&file_content);
+        body_bytes.extend_from_slice(epilogue.as_bytes());
+
+        let content_type = format!("multipart/form-data; boundary={boundary}");
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/upload")
+            .header(header::CONTENT_TYPE, content_type)
+            .header(
+                "Cookie",
+                format!("__Host-session={session_token}; __Host-csrf=fake"),
+            )
+            .body(Body::from(body_bytes))
+            .unwrap();
+
+        let resp = router.oneshot(req).await.unwrap();
+        let status = resp.status();
+
+        // With a proper body limit the multipart body parses fully.
+        // The request fails later (CSRF mismatch → 403, or 500 because the test
+        // has no real blob store / DB).
+        //
+        // If the body limit is too low we get either:
+        //   - 413 Payload Too Large (axum rejects before the handler)
+        //   - 400 with "multipart" in the body (truncated body → parse error)
+        assert_ne!(
+            status,
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "upload body limit too low — got 413 Payload Too Large for 3 MiB body.\n\
+             The DefaultBodyLimit layer is missing from the web router."
+        );
+
+        if status == StatusCode::BAD_REQUEST {
+            let body = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+            let body_str = std::str::from_utf8(&body).unwrap_or("");
+            assert!(
+                !body_str.contains("multipart"),
+                "upload body limit too low ({body_str} MiB body was truncated by the default 2 MiB limit).\n\
+                 Add DefaultBodyLimit to the web router."
+            );
+        }
+
+        // Any other status (403, 500, etc.) proves the multipart body was
+        // parsed successfully and the request progressed past body reading.
     }
 
     // ── csrf_token extraction from multipart ────────────────────────────────
