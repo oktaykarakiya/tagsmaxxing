@@ -24,7 +24,7 @@ pub struct RawFile {
 /// is the I/O- and dependency-light contract, so it carries already-encoded image bytes —
 /// exactly what a VLM HTTP API consumes (base64) — and leaves pixel decoding to `kb-extract`.
 /// (Recorded in `BUILD_LEDGER.toml`, task `P0-T4`.)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PageImage {
     /// Encoded image bytes.
     pub data: Bytes,

@@ -5,6 +5,7 @@ use std::fmt::Debug;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+use crate::extractor::PageImage;
 use crate::macros::str_enum;
 use crate::role::Role;
 
@@ -62,6 +63,10 @@ pub struct ChatReq {
     pub max_tokens: Option<u32>,
     /// Optional sampling temperature.
     pub temperature: Option<f32>,
+    /// Page images for multimodal VLM calls. Skipped in serde — wire serialization
+    /// is handled by the client when images are present (multimodal content format).
+    #[serde(skip)]
+    pub images: Vec<PageImage>,
 }
 
 /// Token counts for one call, normalized across providers so `usage_events`/cost work
@@ -188,5 +193,26 @@ mod tests {
         for r in ChatRole::all() {
             assert_eq!(ChatRole::from_str(r.as_str()).unwrap(), *r);
         }
+    }
+
+    #[test]
+    fn chat_req_images_defaults_empty() {
+        let req = ChatReq::default();
+        assert!(req.images.is_empty());
+    }
+
+    #[test]
+    fn chat_req_carries_images() {
+        let img = PageImage {
+            data: bytes::Bytes::from_static(b"\xff\xd8\xff"),
+            mime: "image/jpeg".into(),
+        };
+        let req = ChatReq {
+            images: vec![img.clone()],
+            ..Default::default()
+        };
+        assert_eq!(req.images.len(), 1);
+        assert_eq!(req.images[0].data, img.data);
+        assert_eq!(req.images[0].mime, "image/jpeg");
     }
 }

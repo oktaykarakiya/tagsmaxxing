@@ -28,7 +28,7 @@ use kb_extract::document::DocumentExtractor;
 use kb_extract::image::ImageExtractor;
 use kb_extract::tika::{TikaConfig, TikaExtractor};
 use kb_extract::video::VideoExtractor;
-use kb_llm::{JsonSchemaTagger, LlamaClient, LlamaReranker};
+use kb_llm::{JsonSchemaTagger, LlamaClient, LlamaReranker, VisionCaptioner};
 use kb_pipeline::embedder::ChunkEmbedder;
 use kb_pipeline::ingest::{ExtractorRouter, IngestPipeline};
 use kb_pipeline::job_queue::JobQueue;
@@ -286,14 +286,27 @@ pub async fn run_serve(args: &ServeArgs) -> anyhow::Result<()> {
     let blob: Arc<dyn Blob> = Arc::new(LocalBlob::new("kb-blobs".into(), "default".into()));
 
     // ── Ingest pipeline ─────────────────────────────────────────────────────
-    let ingest_pipeline = Arc::new(IngestPipeline::new(
-        Arc::clone(&blob),
-        extractors,
-        tagger,
-        canonicalizer,
-        embedder.clone(),
-        Arc::clone(&pg_store) as Arc<dyn kb_pipeline::ingest::IngestStore>,
+    // VLM captioner for image visual descriptions (best-effort).
+    // Shares the same scheduler pool as text/embed/rerank; the pool routes
+    // Vision role requests to the Qwen3.6-VL backend configured with
+    // `roles = ["text", "vision", "code"]`.
+    const DEFAULT_VISION_MODEL: &str = "default";
+    let vision_captioner = Arc::new(VisionCaptioner::new(
+        llm_factory(),
+        DEFAULT_VISION_MODEL.into(),
     ));
+
+    let ingest_pipeline = Arc::new(
+        IngestPipeline::new(
+            Arc::clone(&blob),
+            extractors,
+            tagger,
+            canonicalizer,
+            embedder.clone(),
+            Arc::clone(&pg_store) as Arc<dyn kb_pipeline::ingest::IngestStore>,
+        )
+        .with_vision_captioner(vision_captioner),
+    );
 
     // ── Retrieval pipeline ──────────────────────────────────────────────────
     let retrieval_pipeline = Arc::new(RetrievalPipeline::new(

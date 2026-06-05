@@ -30,6 +30,7 @@ mod client;
 mod error;
 mod reranker;
 mod tagger;
+mod vision;
 
 pub use adapter::OpenAiCompat;
 #[cfg(feature = "anthropic")]
@@ -38,3 +39,4 @@ pub use client::LlamaClient;
 pub use error::LlmError;
 pub use reranker::LlamaReranker;
 pub use tagger::JsonSchemaTagger;
+pub use vision::VisionCaptioner;

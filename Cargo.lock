@@ -2059,6 +2059,8 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "base64",
+ "bytes",
  "chrono",
  "dashmap",
  "kb-core",

@@ -147,6 +147,7 @@ pub const ALLOWED_MIMES: &[&str] = &[
     "video/mp4",
     "video/x-matroska",
     "video/webm",
+    "video/ogg",
     "video/quicktime",
     "video/x-msvideo",
     // Archives (accepted only when the binary extractor can list them)
@@ -997,6 +998,11 @@ mod tests {
             "video/quicktime"
         );
         assert!(is_allowed_mime("video/quicktime", ALLOWED_MIMES));
+
+        // OGG container (detected as video/ogg by tree_magic for both
+        // audio-only and video OGG files — must be allowed so audio OGG
+        // uploads are not rejected).
+        assert!(is_allowed_mime("video/ogg", ALLOWED_MIMES));
 
         // MP4 brands stay video/mp4.
         assert_eq!(normalize_octet_stream_magic(&ftyp(b"mp42")), "video/mp4");

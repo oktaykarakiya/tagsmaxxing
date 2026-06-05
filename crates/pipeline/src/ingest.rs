@@ -21,13 +21,14 @@ use bytes::Bytes;
 use kb_core::blob::Blob;
 use kb_core::chunk::Chunk;
 use kb_core::document::Document;
-use kb_core::extractor::{Extracted, Extractor, RawFile};
+use kb_core::extractor::{Extracted, Extractor, PageImage, RawFile};
 use kb_core::file::FileRecord;
 use kb_core::job::Job;
 use kb_core::kind::DocKind;
 use kb_core::status::ProcessingStatus;
 use kb_core::tag::TagSource;
 use kb_core::tagger::{TagInput, Tagger};
+use kb_llm::VisionCaptioner;
 
 use crate::chunker::{DEFAULT_CHUNK_SIZE_CHARS, DEFAULT_OVERLAP_CHARS, chunk_text};
 use crate::document_builder::{DocumentBuilder, PageInput};
@@ -151,6 +152,11 @@ pub struct IngestPipeline {
     embedder: Arc<ChunkEmbedder>,
     /// Database store for the final transactional upsert.
     store: Arc<dyn IngestStore>,
+    /// Optional VLM captioner for image visual descriptions.
+    /// When set and page_images are present, captions are prepended
+    /// to the tagger's text input so the tagger sees visual content
+    /// rather than just EXIF metadata.
+    vision_captioner: Option<Arc<VisionCaptioner>>,
 }
 
 impl IngestPipeline {
@@ -172,7 +178,15 @@ impl IngestPipeline {
             canonicalizer,
             embedder,
             store,
+            vision_captioner: None,
         }
+    }
+
+    /// Attach an optional VLM captioner for image visual descriptions.
+    #[must_use]
+    pub fn with_vision_captioner(mut self, captioner: Arc<VisionCaptioner>) -> Self {
+        self.vision_captioner = Some(captioner);
+        self
     }
 
     /// Run the full 8-step ingestion flow synchronously (not via job queue).
@@ -300,7 +314,35 @@ impl IngestPipeline {
         }
 
         // 4. Merge per-page metadata into document-level output.
-        let merged = MetadataMerger::merge(&extracted_pairs);
+        let mut merged = MetadataMerger::merge(&extracted_pairs);
+
+        // 4b. VLM captioning for image documents (best-effort).
+        // If we have page images and a captioner, ask the VLM to describe
+        // them and prepend the descriptions so the tagger sees visual content
+        // rather than just EXIF metadata text.
+        if let Some(ref captioner) = self.vision_captioner {
+            if !merged.page_images.is_empty() {
+                match captioner.describe_many(&merged.page_images, local_only).await {
+                    Ok(caption) if !caption.is_empty() => {
+                        // Prepend the visual description to the text the tagger
+                        // sees. Using a clear delimiter so the prompt-injection
+                        // boundary in the tagger still wraps everything.
+                        merged.merged_text = format!(
+                            "--- image description ---\n{caption}\n---\n\n{}",
+                            merged.merged_text
+                        );
+                    }
+                    Ok(_) => {} // empty caption — nothing to prepend
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            kind = ?merged.kind,
+                            "VLM captioning failed; continuing with text-only tagger input"
+                        );
+                    }
+                }
+            }
+        }
 
         // 5. Tag the whole document once over all pages' text + metadata.
         let tag_input = TagInput {
@@ -671,18 +713,19 @@ fn infer_kind_from_mime(mime: Option<&str>) -> DocKind {
         Some(m) if m.starts_with("image/") => DocKind::Image,
         Some(m) if m.starts_with("audio/") => DocKind::Audio,
         Some(m) if m.starts_with("video/") => DocKind::Video,
+        // All text/* subtypes route to Document.
+        Some(m) if m.starts_with("text/") => DocKind::Document,
+        // Known document/office MIME types.
         Some(m)
-            if m == "text/plain"
-                || m == "text/html"
-                || m == "text/markdown"
-                || m == "text/csv"
-                || m.starts_with("application/pdf")
+            if m.starts_with("application/pdf")
                 || m.starts_with("application/msword")
                 || m.starts_with("application/vnd.openxmlformats-officedocument")
-                || m.starts_with("application/vnd.oasis.opendocument") =>
+                || m.starts_with("application/vnd.oasis.opendocument")
+                || m == "application/rtf" =>
         {
             DocKind::Document
         }
+        // Known archive MIME types.
         Some(m)
             if m == "application/zip"
                 || m == "application/x-tar"
@@ -913,6 +956,79 @@ mod tests {
                 infer_kind_from_mime(Some(mime)),
                 DocKind::Document,
                 "mime '{mime}' should map to Document"
+            );
+        }
+    }
+
+    #[test]
+    fn infer_kind_rtf_maps_to_document() {
+        // Regression: application/rtf was missing → fell through to Binary.
+        assert_eq!(
+            infer_kind_from_mime(Some("application/rtf")),
+            DocKind::Document
+        );
+    }
+
+    #[test]
+    fn infer_kind_code_mimes_map_to_document() {
+        // All text/x-* code MIME types should route to Document via the
+        // text/* prefix match (regression: only text/plain etc. were listed).
+        for mime in &[
+            "text/x-python",
+            "text/x-rust",
+            "text/x-c",
+            "text/x-c++",
+            "text/x-java",
+            "text/x-go",
+            "text/x-sh",
+            "text/x-yaml",
+            "text/x-toml",
+            "text/x-log",
+            "text/javascript",
+            "text/css",
+            "text/xml",
+        ] {
+            assert_eq!(
+                infer_kind_from_mime(Some(mime)),
+                DocKind::Document,
+                "code MIME '{mime}' must route to Document"
+            );
+        }
+    }
+
+    #[test]
+    fn infer_kind_all_audio_mimes_map_to_audio() {
+        for mime in &[
+            "audio/mpeg",
+            "audio/wav",
+            "audio/wave",
+            "audio/x-wav",
+            "audio/ogg",
+            "audio/flac",
+            "audio/mp4",
+        ] {
+            assert_eq!(
+                infer_kind_from_mime(Some(mime)),
+                DocKind::Audio,
+                "audio MIME '{mime}' must route to Audio"
+            );
+        }
+    }
+
+    #[test]
+    fn infer_kind_all_video_mimes_map_to_video() {
+        for mime in &[
+            "video/mp4",
+            "video/x-matroska",
+            "video/webm",
+            "video/ogg",
+            "video/quicktime",
+            "video/x-msvideo",
+        ] {
+            assert_eq!(
+                infer_kind_from_mime(Some(mime)),
+                DocKind::Video,
+                "video MIME '{mime}' must route to Video"
             );
         }
     }
@@ -1964,6 +2080,189 @@ mod tests {
         assert_eq!(output.chunk_count, 0, "empty text → zero chunks");
 
         std::mem::forget(mock);
+    }
+
+    // ── Vision captioning (VLM) pipeline tests ────────────────────────────
+
+    /// An extractor that returns a PageImage so the vision captioner is exercised.
+    struct ImageMockExtractor;
+    #[async_trait]
+    impl Extractor for ImageMockExtractor {
+        async fn extract(&self, _raw: &RawFile) -> anyhow::Result<Extracted> {
+            Ok(Extracted {
+                text: String::new(),
+                meta: Default::default(),
+                page_images: vec![PageImage {
+                    data: Bytes::from_static(b"\xff\xd8\xff\xe0\x00\x10JFIF"),
+                    mime: "image/jpeg".into(),
+                }],
+            })
+        }
+    }
+
+    /// Build a pipeline with a VisionCaptioner backed by a mock vision backend.
+    async fn vision_test_pipeline(
+        caption: &str,
+    ) -> (IngestPipeline, Arc<MockIngestStore>, kb_mock_backend::MockBackend) {
+        use kb_core::role::Role;
+        use kb_mock_backend::MockBackend;
+        use kb_scheduler::{Pool, test_backend};
+        use reqwest::Client;
+
+        let dir = tempfile::tempdir().unwrap();
+        let blob: Arc<dyn Blob> =
+            Arc::new(kb_store::LocalBlob::new(dir.path().to_path_buf(), "vtest".into()));
+
+        let mut extractors: ExtractorRouter = HashMap::new();
+        extractors.insert(DocKind::Image, Arc::new(ImageMockExtractor));
+
+        let tagger: Arc<dyn Tagger> = Arc::new(MockTagger {
+            output: TagOutput {
+                title: "Vision Title".into(),
+                summary: "Vision summary.".into(),
+                tags: vec!["vision-tag".into()],
+            },
+        });
+
+        // Vision mock backend.
+        let vision_mock = MockBackend::start().await;
+        vision_mock.scenario().lock().await.chat_content = Some(caption.to_string());
+        let vision_url = vision_mock.url("/v1");
+        let vision_backend = Arc::new(test_backend(
+            "mock-vision", vision_url, vec![Role::Vision], 0, 2,
+        ));
+        let vision_pool = Pool::new(vec![vision_backend], Duration::from_secs(5));
+        let vision_client = kb_llm::LlamaClient::new(
+            vision_pool, Client::new(), 0, 0, Duration::from_millis(200),
+        );
+        let captioner =
+            Arc::new(VisionCaptioner::new(vision_client, "test-vision".into()));
+
+        // Embed mock backend.
+        let embed_mock = MockBackend::start().await;
+        let embed_url = embed_mock.url("/v1");
+        let embed_backend = Arc::new(test_backend(
+            "mock-embed", embed_url, vec![Role::Embed], 0, 8,
+        ));
+        let embed_pool = Pool::new(vec![embed_backend], Duration::from_secs(5));
+        let llm = Arc::new(kb_llm::LlamaClient::new(
+            embed_pool, Client::new(), 0, 0, Duration::from_millis(200),
+        ));
+        let embedder = Arc::new(ChunkEmbedder::new(
+            Arc::clone(&llm), "test-embed".into(), 3,
+        ));
+
+        let tag_store: Arc<dyn crate::tag_store::TagStore> =
+            Arc::new(crate::tag_store::mock::MockTagStore::new());
+        let canonicalizer = Arc::new(TagCanonicalizer::new(
+            tag_store, Arc::clone(&llm), "test-embed".into(),
+            crate::tag_canonicalizer::TAG_MERGE_THRESHOLD,
+        ));
+
+        let ingest_store = Arc::new(MockIngestStore::new(200));
+        let store_ref = Arc::clone(&ingest_store) as Arc<dyn IngestStore>;
+
+        let pipeline = IngestPipeline::new(
+            blob, extractors, tagger, canonicalizer, embedder, store_ref,
+        )
+        .with_vision_captioner(captioner);
+
+        std::mem::forget(embed_mock);
+        (pipeline, ingest_store, vision_mock)
+    }
+
+    /// Image with VisionCaptioner: pipeline succeeds (captioner was called).
+    #[tokio::test]
+    async fn pipeline_images_are_captioned() {
+        let caption = "A red car parked near a beach.";
+        let (pipeline, store, vision_mock) = vision_test_pipeline(caption).await;
+
+        let files = vec![IngestFile {
+            bytes: vec![0xff, 0xd8, 0xff],
+            page_label: None,
+            path: Some("car.jpg".into()),
+        }];
+
+        let output = pipeline.ingest(1, files, None, false).await.unwrap();
+        assert_eq!(output.document_id, 200);
+        assert_eq!(store.call_count(), 1, "pipeline should commit one document");
+
+        vision_mock.shutdown().await;
+    }
+
+    /// Without a VisionCaptioner, images ingest normally (backward compat).
+    #[tokio::test]
+    async fn pipeline_no_captioner_images_ingest_normally() {
+        let dir = tempfile::tempdir().unwrap();
+        let blob: Arc<dyn Blob> =
+            Arc::new(kb_store::LocalBlob::new(dir.path().to_path_buf(), "nc-t".into()));
+
+        let mut extractors: ExtractorRouter = HashMap::new();
+        extractors.insert(DocKind::Image, Arc::new(ImageMockExtractor));
+
+        let tagger: Arc<dyn Tagger> = Arc::new(MockTagger {
+            output: TagOutput {
+                title: "No Captioner".into(),
+                summary: "S".into(),
+                tags: vec!["t".into()],
+            },
+        });
+
+        use kb_core::role::Role;
+        use kb_scheduler::Pool;
+
+        let mock = kb_mock_backend::MockBackend::start().await;
+        let backend = Arc::new(kb_scheduler::test_backend(
+            "mock-embed", mock.url("/v1"), vec![Role::Embed], 0, 8,
+        ));
+        let pool = Pool::new(vec![backend], Duration::from_secs(5));
+        let llm = Arc::new(kb_llm::LlamaClient::new(
+            pool, reqwest::Client::new(), 0, 0, Duration::from_millis(200),
+        ));
+        let embedder = Arc::new(ChunkEmbedder::new(Arc::clone(&llm), "e".into(), 3));
+        let tag_store: Arc<dyn crate::tag_store::TagStore> =
+            Arc::new(crate::tag_store::mock::MockTagStore::new());
+        let canonicalizer = Arc::new(TagCanonicalizer::new(
+            tag_store, Arc::clone(&llm), "e".into(),
+            crate::tag_canonicalizer::TAG_MERGE_THRESHOLD,
+        ));
+        let ingest_store = Arc::new(MockIngestStore::new(301));
+        let pipeline = IngestPipeline::new(
+            blob, extractors, tagger, canonicalizer, embedder,
+            Arc::clone(&ingest_store) as Arc<dyn IngestStore>,
+        );
+        // NO .with_vision_captioner()
+
+        let files = vec![IngestFile {
+            bytes: vec![0xff, 0xd8, 0xff],
+            page_label: None,
+            path: Some("pic.jpg".into()),
+        }];
+        let output = pipeline.ingest(1, files, None, false).await.unwrap();
+        assert_eq!(output.document_id, 301);
+        assert_eq!(ingest_store.call_count(), 1);
+
+        std::mem::forget(mock);
+    }
+
+    /// Text documents are unaffected by the presence of a VisionCaptioner
+    /// (page_images is empty, so describe_many is never called).
+    #[tokio::test]
+    async fn pipeline_text_document_unaffected_by_captioner() {
+        let (pipeline, store, vision_mock) =
+            vision_test_pipeline("should-not-be-called").await;
+
+        let files = vec![IngestFile {
+            bytes: b"Hello, world.".to_vec(),
+            page_label: None,
+            path: Some("note.txt".into()),
+        }];
+
+        let output = pipeline.ingest(1, files, None, false).await.unwrap();
+        assert_eq!(output.document_id, 200);
+        assert_eq!(store.call_count(), 1);
+
+        vision_mock.shutdown().await;
     }
 
     // ── Lease renaming — verify the old name is gone ──────────────────────

@@ -240,23 +240,23 @@ impl LlamaClient {
             },
         });
 
-        let body = OpenAiChatBody {
-            model,
-            messages: req
-                .messages
-                .iter()
-                .map(|m| OpenAiMessage {
-                    role: m.role.as_str(),
-                    content: &m.content,
-                })
-                .collect(),
-            max_tokens: req.max_tokens,
-            temperature: req.temperature,
-            response_format,
-        };
-
-        let raw: OpenAiChatResp = self
-            .call_with_failover(
+        let raw: OpenAiChatResp = if req.images.is_empty() {
+            // Text-only path: use the type-safe struct serialization.
+            let body = OpenAiChatBody {
+                model,
+                messages: req
+                    .messages
+                    .iter()
+                    .map(|m| OpenAiMessage {
+                        role: m.role.as_str(),
+                        content: &m.content,
+                    })
+                    .collect(),
+                max_tokens: req.max_tokens,
+                temperature: req.temperature,
+                response_format,
+            };
+            self.call_with_failover(
                 role,
                 model,
                 "/chat/completions",
@@ -264,7 +264,65 @@ impl LlamaClient {
                 local_only,
                 priority,
             )
-            .await?;
+            .await?
+        } else {
+            // Multimodal path: build raw JSON with content-part arrays
+            // for OpenAI vision API compatibility. The response shape is
+            // identical to the text-only path, so we deserialize as
+            // OpenAiChatResp either way.
+            let messages: Vec<serde_json::Value> = req
+                .messages
+                .iter()
+                .map(|m| {
+                    let mut content_parts: Vec<serde_json::Value> = Vec::new();
+                    if !m.content.is_empty() {
+                        content_parts.push(serde_json::json!({
+                            "type": "text",
+                            "text": m.content,
+                        }));
+                    }
+                    for img in &req.images {
+                        use base64::Engine;
+                        let b64 = base64::engine::general_purpose::STANDARD
+                            .encode(&img.data);
+                        content_parts.push(serde_json::json!({
+                            "type": "image_url",
+                            "image_url": {
+                                "url": format!("data:{};base64,{}", img.mime, b64)
+                            }
+                        }));
+                    }
+                    serde_json::json!({
+                        "role": m.role.as_str(),
+                        "content": content_parts,
+                    })
+                })
+                .collect();
+
+            let mut body = serde_json::json!({
+                "model": model,
+                "messages": messages,
+            });
+            if let Some(mt) = req.max_tokens {
+                body["max_tokens"] = serde_json::json!(mt);
+            }
+            if let Some(t) = req.temperature {
+                body["temperature"] = serde_json::json!(t);
+            }
+            if let Some(ref rf) = response_format {
+                body["response_format"] = serde_json::json!(rf);
+            }
+
+            self.call_with_failover(
+                role,
+                model,
+                "/chat/completions",
+                &body,
+                local_only,
+                priority,
+            )
+            .await?
+        };
 
         Ok(ChatResp {
             text: raw
@@ -582,6 +640,7 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::Ordering;
 
+    use kb_core::extractor::PageImage;
     use kb_core::provider::{ChatMessage, ChatReq, EmbedReq};
     use kb_core::role::Role;
     use kb_mock_backend::{MockBackend, ResponseMode};
@@ -666,6 +725,37 @@ mod tests {
         assert_eq!(resp.text, "mock response");
         assert_eq!(resp.usage.prompt_tokens, 10);
         assert_eq!(resp.usage.completion_tokens, 5);
+
+        mock.shutdown().await;
+    }
+
+    /// Multimodal chat: sending a request with images uses the vision role
+    /// and returns the mock's chat content.
+    #[tokio::test]
+    async fn multimodal_chat_returns_caption() {
+        let (client, mock) = client_with_one_backend(Role::Vision, 2).await;
+        // Set a known caption that the mock will return for any chat request.
+        let caption = "A photo of a sunset over mountains.";
+        mock.scenario().lock().await.chat_content = Some(caption.to_string());
+
+        let img = PageImage {
+            data: bytes::Bytes::from_static(b"\xff\xd8\xff"),
+            mime: "image/jpeg".into(),
+        };
+        let req = ChatReq {
+            messages: vec![ChatMessage {
+                role: kb_core::provider::ChatRole::User,
+                content: "Describe this image.".into(),
+            }],
+            images: vec![img],
+            ..Default::default()
+        };
+
+        let resp = client
+            .chat(Role::Vision, "test-model", &req, false, 0)
+            .await
+            .unwrap();
+        assert_eq!(resp.text, caption);
 
         mock.shutdown().await;
     }

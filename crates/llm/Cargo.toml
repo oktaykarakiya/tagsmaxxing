@@ -26,8 +26,10 @@ anyhow = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
+base64 = { workspace = true }
 
 [dev-dependencies]
 kb-mock-backend = { workspace = true }
+bytes = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "net"] }
 axum = "0.8"

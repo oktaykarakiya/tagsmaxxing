@@ -5,7 +5,7 @@
 //! Pure logic, no I/O. The caller is responsible for sorting pages by
 //! `page_no` before calling [`MetadataMerger::merge`].
 
-use kb_core::extractor::Extracted;
+use kb_core::extractor::{Extracted, PageImage};
 use kb_core::file::FileRecord;
 use kb_core::kind::DocKind;
 
@@ -28,6 +28,8 @@ pub struct MergedDocument {
     pub kind: DocKind,
     /// Number of pages (= `pages.len()`).
     pub page_count: i32,
+    /// Page images collected from all pages for downstream VLM captioning.
+    pub page_images: Vec<PageImage>,
 }
 
 /// Merges per-page extraction results into document-level output.
@@ -51,14 +53,24 @@ impl MetadataMerger {
         let merged_text = merge_text(pages);
         let merged_meta = merge_meta(pages);
         let kind = dominant_kind(pages);
+        let page_images = merge_images(pages);
 
         MergedDocument {
             merged_text,
             merged_meta,
             kind,
             page_count,
+            page_images,
         }
     }
+}
+
+/// Collect all page images from per-page extraction results.
+fn merge_images(pages: &[(FileRecord, Extracted)]) -> Vec<PageImage> {
+    pages
+        .iter()
+        .flat_map(|(_, extracted)| extracted.page_images.clone())
+        .collect()
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -554,5 +566,31 @@ mod tests {
         let m = MetadataMerger::merge(&[(f1, e1), (f2, e2)]);
         assert_eq!(m.merged_meta["page_1"]["key"], "v1");
         assert_eq!(m.merged_meta["page_2"]["key"], "v2");
+    }
+
+    // ── page_images preservation (VLM captioning) ─────────────────────────
+
+    #[test]
+    fn merge_preserves_page_images() {
+        let f = test_file(1, None, Some("image/jpeg"));
+        let mut e = test_extracted("", serde_json::json!({}));
+        e.page_images = vec![PageImage {
+            data: bytes::Bytes::from_static(b"\xff\xd8\xff"),
+            mime: "image/jpeg".into(),
+        }];
+
+        let m = MetadataMerger::merge(&[(f, e)]);
+        assert_eq!(m.page_images.len(), 1);
+        assert_eq!(m.page_images[0].mime, "image/jpeg");
+    }
+
+    #[test]
+    fn merge_page_images_empty_for_non_image_docs() {
+        let f = test_file(1, None, Some("text/plain"));
+        let e = test_extracted("hello", serde_json::json!({}));
+        // Extracted::default() has empty page_images
+
+        let m = MetadataMerger::merge(&[(f, e)]);
+        assert!(m.page_images.is_empty());
     }
 }
