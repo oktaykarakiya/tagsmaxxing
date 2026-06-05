@@ -2,7 +2,7 @@
 //! (plan §7, P3-T4).
 //!
 //! The [`ChunkEmbedder`] transparently splits oversized batches, verifies output
-//! dimensions against the configured schema (BGE-M3 = 1024), and returns either
+//! dimensions against the configured schema (Qwen3-Embedding-4B = 2560), and returns either
 //! fully-formed [`Chunk`] records or raw vectors for tag canonicalization.
 
 use std::sync::Arc;
@@ -17,15 +17,16 @@ use kb_llm::LlamaClient;
 
 use crate::chunker::{MAX_EMBED_BATCH_SIZE, TextChunk};
 
-/// BGE-M3 instruction prefix prepended to query text before embedding
-/// (plan §4, BGE-M3 specification). This ensures query embeddings land in
+/// Query instruction prefix (Qwen3-Embedding format) prepended to query text
+/// before embedding (plan §4). This ensures query embeddings land in
 /// the same semantic space as document embeddings, which use no prefix.
 ///
 /// Without this prefix, paraphrased queries with zero keyword overlap score
 /// as random noise in the vector index because cosine similarity between a
 /// bare-text query vector and a document-chunk vector measures proximity in
 /// different subspaces.
-const BGE_M3_QUERY_PREFIX: &str = "Represent this sentence for searching relevant passages: ";
+const EMBED_QUERY_PREFIX: &str =
+    "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery: ";
 
 /// Wraps [`LlamaClient`] to batch-embed text chunks and tag names, verifying that
 /// every returned vector has the expected dimension (plan §7, §11).
@@ -41,7 +42,7 @@ pub struct ChunkEmbedder {
     llm: Arc<LlamaClient>,
     /// Model id sent in the OpenAI-compatible `/embeddings` body.
     embed_model: String,
-    /// Expected output vector dimension (BGE-M3 = 1024; plan §5 embedder lock-in).
+    /// Expected output vector dimension (Qwen3-Embedding-4B = 2560; plan §5 embedder lock-in).
     expected_dim: usize,
     /// Optional sink for per-call token usage (BUG-BILL-03). When set, each
     /// document-embedding batch's usage is metered to the calling tenant.
@@ -51,8 +52,8 @@ pub struct ChunkEmbedder {
 impl ChunkEmbedder {
     /// Create a new batch embedder.
     ///
-    /// `expected_dim` must equal the schema's `VECTOR(N)` (currently 1024 for
-    /// BGE-M3). Every call verifies the returned vectors against this dimension.
+    /// `expected_dim` must equal the schema's `VECTOR(N)` (currently 2560 for
+    /// Qwen3-Embedding-4B). Every call verifies the returned vectors against this dimension.
     pub fn new(llm: Arc<LlamaClient>, embed_model: String, expected_dim: usize) -> Self {
         Self {
             llm,
@@ -205,8 +206,8 @@ impl ChunkEmbedder {
 
     /// Send `texts` to the embed backend in batches, verifying output dimensions.
     ///
-    /// For [`EmbedKind::Query`], the BGE-M3 retrieval instruction prefix
-    /// ([`BGE_M3_QUERY_PREFIX`]) is prepended to every text so the query
+    /// For [`EmbedKind::Query`], the Qwen3-Embedding retrieval instruction prefix
+    /// ([`EMBED_QUERY_PREFIX`]) is prepended to every text so the query
     /// embedding lands in the same semantic space as stored document embeddings.
     /// [`EmbedKind::Document`] texts are sent unchanged.
     async fn batch_embed(
@@ -216,11 +217,11 @@ impl ChunkEmbedder {
         tenant_id: Option<i64>,
         local_only: bool,
     ) -> anyhow::Result<Vec<Vec<f32>>> {
-        // Apply BGE-M3 instruction prefix based on embedding kind.
+        // Apply the query instruction prefix (Qwen3-Embedding format) for queries only.
         let processed: Vec<String> = match kind {
             EmbedKind::Query => texts
                 .iter()
-                .map(|t| format!("{BGE_M3_QUERY_PREFIX}{t}"))
+                .map(|t| format!("{EMBED_QUERY_PREFIX}{t}"))
                 .collect(),
             EmbedKind::Document => texts.to_vec(),
         };
@@ -548,20 +549,20 @@ mod tests {
         }
     }
 
-    // ── BGE-M3 instruction prefix ──────────────────────────────────────────
+    // ── query instruction prefix ───────────────────────────────────────────
 
-    /// Verify that the BGE-M3 query instruction prefix is prepended for
+    /// Verify that the query instruction prefix is prepended for
     /// [`EmbedKind::Query`] but not for [`EmbedKind::Document`].
     #[test]
-    fn bge_m3_query_prefix_is_applied() {
+    fn query_prefix_is_applied() {
         // Pure-function test: the constant is a non-empty string.
-        assert!(!BGE_M3_QUERY_PREFIX.is_empty());
-        assert!(BGE_M3_QUERY_PREFIX.contains("searching relevant passages"));
+        assert!(!EMBED_QUERY_PREFIX.is_empty());
+        assert!(EMBED_QUERY_PREFIX.contains("retrieve relevant passages"));
 
         // Simulate the logic applied in `batch_embed`.
         let text = "how do black holes form";
-        let query_text = format!("{BGE_M3_QUERY_PREFIX}{text}");
-        assert!(query_text.starts_with(BGE_M3_QUERY_PREFIX));
+        let query_text = format!("{EMBED_QUERY_PREFIX}{text}");
+        assert!(query_text.starts_with(EMBED_QUERY_PREFIX));
         assert!(query_text.ends_with(text));
         assert!(query_text.len() > text.len());
     }
@@ -572,9 +573,9 @@ mod tests {
         let text = "When a sufficiently massive star exhausts its nuclear fuel";
         // Document: no prefix applied (the logic in batch_embed returns texts
         // as-is for EmbedKind::Document).
-        assert!(!text.starts_with(BGE_M3_QUERY_PREFIX));
+        assert!(!text.starts_with(EMBED_QUERY_PREFIX));
         // The prefix should not appear anywhere in an unmodified document.
-        assert!(!text.contains("searching relevant passages"));
+        assert!(!text.contains("retrieve relevant passages"));
     }
 
     /// End-to-end: `embed_query` succeeds through the mock backend (proves the

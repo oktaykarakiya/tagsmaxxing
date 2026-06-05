@@ -16,14 +16,14 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
-    /// All twenty migrations are present, in version order (1–20).
+    /// All twenty-three migrations are present, in version order (1–23).
     #[test]
     fn embeds_the_schema_migrations() {
         let versions: Vec<i64> = MIGRATOR.iter().map(|m| m.version).collect();
         assert_eq!(
             versions,
             vec![
-                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23
             ]
         );
     }
@@ -114,6 +114,28 @@ mod tests {
         // Embedder lock-in row recording id + dim (§5 note).
         assert!(sql.contains("'embedder'"));
         assert!(sql.contains("\"dim\": 1024"));
+    }
+
+    /// Migration 0023: the embedder switch to Qwen3-Embedding-4B widens both vector columns to
+    /// 2560, rebuilds the chunks HNSW index via a `halfvec` cast (pgvector caps `vector` ANN
+    /// indexes at 2000 dims), and records the new embedder lock-in.
+    #[test]
+    fn schema_migrates_to_qwen3_4b_2560() {
+        let sql: String = MIGRATOR
+            .iter()
+            .map(|m| m.sql.as_ref())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(sql.contains("vector(2560)"), "columns widened to 2560");
+        assert!(
+            sql.contains("halfvec(2560)) halfvec_cosine_ops"),
+            "halfvec-cast HNSW for >2000-dim vectors"
+        );
+        assert!(
+            sql.contains("\"id\": \"qwen3-embed-4b\""),
+            "embedder id updated"
+        );
+        assert!(sql.contains("\"dim\": 2560"), "embedder dim updated");
     }
 
     /// Migration 0007 (P6-T11): tag provenance columns (`source`, `locked`) must be present,

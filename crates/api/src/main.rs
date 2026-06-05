@@ -46,12 +46,13 @@ mod commands;
 
 use cli::{Cli, Command};
 
-/// Default embedding dimension (matches the schema embedder lock-in, plan §5).
-const EMBED_DIM: usize = 1024;
+/// Default embedding dimension (matches the schema embedder lock-in, plan §5;
+/// Qwen3-Embedding-4B = 2560 via migration 0023).
+const EMBED_DIM: usize = 2560;
 
 /// Default model name sent in OpenAI-compatible API requests.
 const DEFAULT_CHAT_MODEL: &str = "default";
-const DEFAULT_EMBED_MODEL: &str = "bge-m3";
+const DEFAULT_EMBED_MODEL: &str = "qwen3-embed-4b";
 const DEFAULT_RERANK_MODEL: &str = "default";
 
 /// Number of consecutive failures before a per-backend circuit breaker trips.
