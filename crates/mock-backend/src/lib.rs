@@ -68,7 +68,7 @@ pub struct Scenario {
     /// text. Distinct texts get distinct (near-orthogonal) vectors and identical texts get
     /// identical ones — so a real embedder's "different words → different vectors" behaviour is
     /// modelled. Needed by full-pipeline canonicalization tests that must keep N distinct tags
-    /// distinct against a `VECTOR(1024)` schema.
+    /// distinct against a `VECTOR(2560)` schema.
     pub embed_dim: Option<usize>,
     /// Behaviour for `POST /v1/rerank`.
     pub rerank: ResponseMode,

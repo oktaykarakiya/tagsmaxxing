@@ -22,6 +22,6 @@ pub struct Chunk {
     pub content: String,
     /// Seconds into the audio/video for transcript chunks; `None` otherwise.
     pub ts_offset: Option<f64>,
-    /// Dense embedding. Length MUST equal the embedder/schema dimension (BGE-M3 = 1024).
+    /// Dense embedding. Length MUST equal the embedder/schema dimension (Qwen3-Embedding-4B = 2560).
     pub embedding: Vec<f32>,
 }

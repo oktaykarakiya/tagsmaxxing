@@ -232,7 +232,7 @@ async fn upsert_chunks_replaces_atomically() -> anyhow::Result<()> {
     let rec = make_file_record(s.tenant_id, s.document_id, sha, "key-chunks");
     let file_id = s.store.upsert_file(&rec).await?;
 
-    let emb = vec![0.1f32; 1024];
+    let emb = vec![0.1f32; kb_store::EMBED_DIM];
     let chunks: Vec<Chunk> = (0..3)
         .map(|i| {
             make_chunk(
@@ -262,7 +262,7 @@ async fn upsert_chunks_replaces_atomically() -> anyhow::Result<()> {
             file_id,
             0,
             "new-chunk",
-            vec![0.2f32; 1024],
+            vec![0.2f32; kb_store::EMBED_DIM],
         ),
         make_chunk(
             s.tenant_id,
@@ -270,7 +270,7 @@ async fn upsert_chunks_replaces_atomically() -> anyhow::Result<()> {
             file_id,
             1,
             "new-chunk-2",
-            vec![0.3f32; 1024],
+            vec![0.3f32; kb_store::EMBED_DIM],
         ),
     ];
     s.store.upsert_chunks(file_id, &new_chunks).await?;
@@ -310,7 +310,7 @@ async fn upsert_chunks_empty_slice_deletes_all() -> anyhow::Result<()> {
                 file_id,
                 i,
                 &format!("temp-{i}"),
-                vec![0.0f32; 1024],
+                vec![0.0f32; kb_store::EMBED_DIM],
             )
         })
         .collect();
@@ -334,7 +334,7 @@ async fn upsert_chunks_empty_slice_deletes_all() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `upsert_chunks` preserves the embedding dimension (pgvector 1024).
+/// `upsert_chunks` preserves the embedding dimension (pgvector 2560).
 #[tokio::test]
 #[ignore = "requires Podman + image pull; run with --ignored"]
 async fn upsert_chunks_preserves_embedding_dimension() -> anyhow::Result<()> {
@@ -344,7 +344,9 @@ async fn upsert_chunks_preserves_embedding_dimension() -> anyhow::Result<()> {
     let rec = make_file_record(s.tenant_id, s.document_id, sha, "key-emb");
     let file_id = s.store.upsert_file(&rec).await?;
 
-    let emb = (0..1024).map(|i| i as f32 * 0.001).collect::<Vec<f32>>();
+    let emb = (0..kb_store::EMBED_DIM)
+        .map(|i| i as f32 * 0.001)
+        .collect::<Vec<f32>>();
     let chunks = vec![make_chunk(
         s.tenant_id,
         s.document_id,
@@ -361,7 +363,7 @@ async fn upsert_chunks_preserves_embedding_dimension() -> anyhow::Result<()> {
             .bind(file_id)
             .fetch_one(&s.pool)
             .await?;
-    assert_eq!(dim, 1024);
+    assert_eq!(dim, 2560);
 
     Ok(())
 }

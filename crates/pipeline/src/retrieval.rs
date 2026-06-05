@@ -420,7 +420,7 @@ mod tests {
                 std::time::Duration::from_millis(200),
             )),
             "model".into(),
-            1024,
+            kb_store::EMBED_DIM,
         ));
         let store: Arc<dyn Store> = Arc::new(MockStore::new(vec![]));
         let reranker: Arc<dyn Reranker> = Arc::new(MockReranker::new(vec![]));

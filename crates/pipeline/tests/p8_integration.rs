@@ -1290,7 +1290,8 @@ async fn maintenance_reembed_check_handler_runs_on_real_postgres() -> anyhow::Re
     let store = setup_pg_store().await?;
     let pool = store.pool()?;
 
-    let handler = kb_pipeline::maintenance::ReembedCheckHandler::new(pool, "bge-m3".to_string());
+    let handler =
+        kb_pipeline::maintenance::ReembedCheckHandler::new(pool, "qwen3-embed-4b".to_string());
     handler.run().await?;
 
     Ok(())
@@ -1307,9 +1308,15 @@ async fn maintenance_reembed_check_detects_mismatch() -> anyhow::Result<()> {
         .execute(&pool)
         .await?;
 
-    let handler = kb_pipeline::maintenance::ReembedCheckHandler::new(pool, "bge-m3".to_string());
-    // Should still complete (mismatch is logged, not an error).
-    handler.run().await?;
+    let handler =
+        kb_pipeline::maintenance::ReembedCheckHandler::new(pool, "qwen3-embed-4b".to_string());
+    // A mismatch is reported as an Err so the maintenance failure gauge is set (alerting
+    // operators that a re-embed migration may be needed) — see ReembedCheckHandler::run.
+    let result = handler.run().await;
+    assert!(
+        result.is_err(),
+        "embedder mismatch (settings `unknown-model-v2` vs expected `qwen3-embed-4b`) must error"
+    );
 
     Ok(())
 }

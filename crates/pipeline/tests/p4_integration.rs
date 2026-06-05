@@ -7,7 +7,7 @@
 //! winning chunk, tag-filtered search excludes non-matching docs, and RRF fusion
 //! favours documents matching both vector and keyword signals.
 //!
-//! Mock LLM backends provide the query embedding (1024-dim spike vectors) and
+//! Mock LLM backends provide the query embedding (2560-dim spike vectors) and
 //! reranking scores. Data is inserted directly via SQL so the test can control
 //! embeddings and tag assignments precisely.
 //!
@@ -41,13 +41,13 @@ mod tests {
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
-    /// Produce a 1024-dim vector with a single spike at `pos` set to 1.0,
+    /// Produce an EMBED_DIM-dimensional vector with a single spike at `pos` set to 1.0,
     /// all other elements zero. The spike gives the vector unit length,
     /// making cosine distance a meaningful signal when different chunks use
     /// different spike positions.
     fn spike_vector(pos: usize) -> Vec<f32> {
-        let mut v = vec![0.0f32; 1024];
-        if pos < 1024 {
+        let mut v = vec![0.0f32; kb_store::EMBED_DIM];
+        if pos < kb_store::EMBED_DIM {
             v[pos] = 1.0;
         }
         v
@@ -222,12 +222,12 @@ mod tests {
 
     /// Build a [`RetrievalPipeline`] with a mock LLM backend for query
     /// embedding and a pass-through reranker. The mock backend is configured
-    /// to return a 1024-dim spike vector for every embed call.
+    /// to return an EMBED_DIM-dimensional spike vector for every embed call.
     async fn build_retrieval_pipeline(store: Arc<PgStore>) -> (RetrievalPipeline, MockBackend) {
         let mock = MockBackend::start().await;
         let base_url = mock.url("/v1");
 
-        // 1024-dim vector for all query embeddings.
+        // EMBED_DIM-dimensional vector for all query embeddings.
         mock.scenario().lock().await.embed_content = Some(vec![spike_vector(0)]);
 
         let backend = Arc::new(test_backend(
@@ -246,7 +246,11 @@ mod tests {
             Duration::from_millis(200),
         ));
 
-        let embedder = Arc::new(ChunkEmbedder::new(llm, "bge-m3".into(), 1024));
+        let embedder = Arc::new(ChunkEmbedder::new(
+            llm,
+            "bge-m3".into(),
+            kb_store::EMBED_DIM,
+        ));
         let store_trait: Arc<dyn Store> = store as Arc<dyn Store>;
         let reranker: Arc<dyn Reranker> = Arc::new(PassThroughReranker);
 
@@ -298,7 +302,7 @@ mod tests {
     #[test]
     fn vector_formatting_roundtrip() {
         let v = spike_vector(0);
-        assert_eq!(v.len(), 1024);
+        assert_eq!(v.len(), kb_store::EMBED_DIM);
         assert_eq!(v[0], 1.0);
         assert_eq!(v[1], 0.0);
 
@@ -306,8 +310,8 @@ mod tests {
         assert!(formatted.starts_with('['));
         assert!(formatted.ends_with(']'));
         assert!(formatted.contains("1"));
-        // 1024 elements → at least 1024 chars.
-        assert!(formatted.len() > 1024);
+        // EMBED_DIM (2560) elements → comfortably more than EMBED_DIM chars.
+        assert!(formatted.len() > kb_store::EMBED_DIM);
     }
 
     #[test]

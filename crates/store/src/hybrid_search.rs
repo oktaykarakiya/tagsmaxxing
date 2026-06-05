@@ -786,10 +786,10 @@ mod tests {
         Ok(chunk_id)
     }
 
-    /// Helper: a 1024-dim vector with a single spike at `pos`.
+    /// Helper: an EMBED_DIM-dimensional vector with a single spike at `pos`.
     fn spike_vector(pos: usize) -> Vec<f32> {
-        let mut v = vec![0.0f32; 1024];
-        if pos < 1024 {
+        let mut v = vec![0.0f32; crate::EMBED_DIM];
+        if pos < crate::EMBED_DIM {
             v[pos] = 1.0;
         }
         v
@@ -1123,7 +1123,7 @@ mod tests {
                 top_k: 10,
             };
             // Query embedding similar to both (spike at both positions).
-            let mut query_vec = vec![0.0f32; 1024];
+            let mut query_vec = vec![0.0f32; crate::EMBED_DIM];
             query_vec[0] = 0.7;
             query_vec[1] = 0.7;
 

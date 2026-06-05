@@ -34,8 +34,9 @@ pub const EXPORT_SCHEMA_VERSION: u32 = 1;
 /// Embedder id recorded in the manifest (the default at schema-design time).
 pub const EMBEDDER_ID: &str = "bge-m3";
 
-/// Expected embedding dimension (BGE-M3).
-pub const EMBEDDER_DIM: usize = 1024;
+/// Expected embedding dimension — the single source of truth is [`kb_store::EMBED_DIM`]
+/// (Qwen3-Embedding-4B = 2560). Reported in the export manifest's `embedder_dim`.
+pub const EMBEDDER_DIM: usize = kb_store::EMBED_DIM;
 
 // ── JSONL record type ─────────────────────────────────────────────────────────
 
@@ -665,7 +666,7 @@ mod tests {
         let json = serde_json::to_string_pretty(&m).unwrap();
         assert!(json.contains("\"schema_version\": 1"));
         assert!(json.contains("\"embedder_id\": \"bge-m3\""));
-        assert!(json.contains("\"embedder_dim\": 1024"));
+        assert!(json.contains("\"embedder_dim\": 2560"));
         assert!(json.contains("\"tenant_slug\": \"acme\""));
         assert!(json.contains("\"document_count\": 5"));
         assert!(json.contains("\"file_count\": 7"));
@@ -954,7 +955,7 @@ mod tests {
             id: 99,
             tenant_id: 1,
             name: "travel".into(),
-            embedding: Some(vec![0.5_f32; 1024]),
+            embedding: Some(vec![0.5_f32; kb_store::EMBED_DIM]),
         };
 
         blob.add_blob(&file.blob_key, b"fake-jpeg-data");

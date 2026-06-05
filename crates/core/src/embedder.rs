@@ -19,7 +19,7 @@ str_enum! {
 /// an index — mixing models silently corrupts the vector space (plan §11).
 #[async_trait]
 pub trait Embedder: Send + Sync {
-    /// Output vector dimension; MUST equal the schema's `VECTOR(N)` (BGE-M3 = 1024).
+    /// Output vector dimension; MUST equal the schema's `VECTOR(N)` (Qwen3-Embedding-4B = 2560).
     fn dim(&self) -> usize;
 
     /// Embed a batch of texts, applying the instruction selected by `kind`.

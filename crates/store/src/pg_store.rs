@@ -2619,7 +2619,7 @@ mod tests {
             top_k: 10,
         };
         let err = store
-            .hybrid_search(1, &q, &[0.1_f32; 1024])
+            .hybrid_search(1, &q, &[0.1_f32; crate::EMBED_DIM])
             .await
             .unwrap_err();
         assert!(
@@ -2637,7 +2637,10 @@ mod tests {
             top_k: 0,
         };
         // top_k=0 returns empty immediately (before pool check), even without connect.
-        let hits = store.hybrid_search(1, &q, &[0.1_f32; 1024]).await.unwrap();
+        let hits = store
+            .hybrid_search(1, &q, &[0.1_f32; crate::EMBED_DIM])
+            .await
+            .unwrap();
         assert!(hits.is_empty());
     }
 
@@ -2799,19 +2802,19 @@ mod tests {
         async fn upsert_tag_inserts_and_is_idempotent() {
             with_connected_store(|store| async move {
                 let id1 = store
-                    .upsert_tag(1, "invoice", &emb1024(&[0.1, 0.2, 0.3]))
+                    .upsert_tag(1, "invoice", &emb(&[0.1, 0.2, 0.3]))
                     .await?;
                 assert!(id1 > 0, "expected positive tag id");
 
                 // Same (tenant, name) → same id.
                 let id2 = store
-                    .upsert_tag(1, "invoice", &emb1024(&[0.999, 0.888, 0.777]))
+                    .upsert_tag(1, "invoice", &emb(&[0.999, 0.888, 0.777]))
                     .await?;
                 assert_eq!(id2, id1, "idempotent upsert must return same id");
 
                 // Different name → different id.
                 let id3 = store
-                    .upsert_tag(1, "receipt", &emb1024(&[0.1, 0.2, 0.3]))
+                    .upsert_tag(1, "receipt", &emb(&[0.1, 0.2, 0.3]))
                     .await?;
                 assert_ne!(id3, id1);
 
@@ -2826,7 +2829,7 @@ mod tests {
         async fn lookup_alias_finds_exact_match() {
             with_connected_store(|store| async move {
                 let tag_id = store
-                    .upsert_tag(1, "invoice", &emb1024(&[0.1, 0.2, 0.3]))
+                    .upsert_tag(1, "invoice", &emb(&[0.1, 0.2, 0.3]))
                     .await?;
                 store.insert_tag_alias(1, "bill", tag_id).await?;
 
@@ -2849,10 +2852,10 @@ mod tests {
             with_connected_store(|store| async move {
                 // Insert a few tags with embeddings.
                 store
-                    .upsert_tag(1, "invoice", &emb1024(&[1.0, 0.0, 0.0]))
+                    .upsert_tag(1, "invoice", &emb(&[1.0, 0.0, 0.0]))
                     .await?;
                 store
-                    .upsert_tag(1, "receipt", &emb1024(&[0.0, 1.0, 0.0]))
+                    .upsert_tag(1, "receipt", &emb(&[0.0, 1.0, 0.0]))
                     .await?;
 
                 let tags: Vec<(i64, Vec<f32>)> = store.find_similar_tags(1).await?;
@@ -2882,8 +2885,8 @@ mod tests {
                 .fetch_one(&pool)
                 .await?;
 
-                let tag1 = store.upsert_tag(1, "alpha", &emb1024(&[0.1, 0.2])).await?;
-                let tag2 = store.upsert_tag(1, "beta", &emb1024(&[0.3, 0.4])).await?;
+                let tag1 = store.upsert_tag(1, "alpha", &emb(&[0.1, 0.2])).await?;
+                let tag2 = store.upsert_tag(1, "beta", &emb(&[0.3, 0.4])).await?;
 
                 store
                     .insert_document_tags(1, doc_id, &[tag1, tag2], TagSource::Llm)
@@ -2927,7 +2930,7 @@ mod tests {
                 .await?;
 
                 let tag_id = store
-                    .upsert_tag(1, "confetti", &emb1024(&[0.7, 0.8]))
+                    .upsert_tag(1, "confetti", &emb(&[0.7, 0.8]))
                     .await?;
 
                 // LLM tag: source='llm', locked=false.
@@ -2976,12 +2979,8 @@ mod tests {
                 .fetch_one(&pool)
                 .await?;
 
-                let llm_tag = store
-                    .upsert_tag(1, "llm-tag", &emb1024(&[0.1, 0.2]))
-                    .await?;
-                let user_tag = store
-                    .upsert_tag(1, "user-tag", &emb1024(&[0.5, 0.6]))
-                    .await?;
+                let llm_tag = store.upsert_tag(1, "llm-tag", &emb(&[0.1, 0.2])).await?;
+                let user_tag = store.upsert_tag(1, "user-tag", &emb(&[0.5, 0.6])).await?;
 
                 // One LLM tag, one user tag (locked).
                 store
@@ -3017,9 +3016,7 @@ mod tests {
                 .fetch_one(&pool)
                 .await?;
 
-                let tag_id = store
-                    .upsert_tag(1, "togglable", &emb1024(&[0.3, 0.4]))
-                    .await?;
+                let tag_id = store.upsert_tag(1, "togglable", &emb(&[0.3, 0.4])).await?;
 
                 // Plant an LLM (unlocked) tag.
                 store
@@ -3052,9 +3049,7 @@ mod tests {
         #[tokio::test]
         async fn insert_tag_alias_is_idempotent() {
             with_connected_store(|store| async move {
-                let tag_id = store
-                    .upsert_tag(1, "primary", &emb1024(&[0.5, 0.5]))
-                    .await?;
+                let tag_id = store.upsert_tag(1, "primary", &emb(&[0.5, 0.5])).await?;
 
                 store.insert_tag_alias(1, "secondary", tag_id).await?;
                 // Second insert should not error.
@@ -3150,39 +3145,43 @@ mod tests {
         }
     }
 
-    /// Pad a short seed into the full 1024-component width that the schema's
-    /// `VECTOR(1024)` columns (`tags.embedding`, `chunks.embedding`) require — pgvector
-    /// rejects a mismatched-dimension insert (`expected 1024 dimensions, not N`). Test
-    /// fixtures only care about a few leading components, so the tail is zero-filled.
-    fn emb1024(seed: &[f32]) -> Vec<f32> {
-        let mut v = vec![0.0f32; 1024];
-        let n = seed.len().min(1024);
+    /// Pad a short seed into the full embedding width that the schema's `VECTOR(N)` columns
+    /// (`tags.embedding`, `chunks.embedding`) require — pgvector rejects a mismatched-dimension
+    /// insert (`expected N dimensions, not M`). `N` is [`crate::EMBED_DIM`]. Test fixtures only
+    /// care about a few leading components, so the tail is zero-filled.
+    fn emb(seed: &[f32]) -> Vec<f32> {
+        let mut v = vec![0.0f32; crate::EMBED_DIM];
+        let n = seed.len().min(crate::EMBED_DIM);
         v[..n].copy_from_slice(&seed[..n]);
         v
     }
 
     #[test]
-    fn emb1024_pads_to_full_width_preserving_seed() {
-        let v = emb1024(&[1.0, 2.0, 3.0]);
-        assert_eq!(v.len(), 1024, "must match the VECTOR(1024) column width");
+    fn emb_pads_to_full_width_preserving_seed() {
+        let v = emb(&[1.0, 2.0, 3.0]);
+        assert_eq!(
+            v.len(),
+            crate::EMBED_DIM,
+            "must match the VECTOR(N) column width"
+        );
         assert_eq!(&v[..3], &[1.0, 2.0, 3.0], "leading seed preserved");
         assert!(v[3..].iter().all(|&x| x == 0.0), "tail zero-filled");
     }
 
     #[test]
-    fn emb1024_truncates_oversized_seed() {
-        let v = emb1024(&[0.5f32; 2048]);
+    fn emb_truncates_oversized_seed() {
+        let v = emb(&[0.5f32; crate::EMBED_DIM + 256]);
         assert_eq!(
             v.len(),
-            1024,
+            crate::EMBED_DIM,
             "an over-long seed is truncated, never overflows"
         );
     }
 
     #[test]
-    fn emb1024_handles_empty_seed() {
-        let v = emb1024(&[]);
-        assert_eq!(v.len(), 1024);
+    fn emb_handles_empty_seed() {
+        let v = emb(&[]);
+        assert_eq!(v.len(), crate::EMBED_DIM);
         assert!(v.iter().all(|&x| x == 0.0));
     }
 
@@ -3385,11 +3384,11 @@ mod tests {
                 ];
                 // Pre-create the tags so FK constraint is satisfied.
                 let pool = store.pool()?;
-                let tag1 = store.upsert_tag(1, "alpha", &emb1024(&[0.1, 0.2])).await?;
-                let tag2 = store.upsert_tag(1, "beta", &emb1024(&[0.3, 0.4])).await?;
+                let tag1 = store.upsert_tag(1, "alpha", &emb(&[0.1, 0.2])).await?;
+                let tag2 = store.upsert_tag(1, "beta", &emb(&[0.3, 0.4])).await?;
 
-                let c1 = make_chunk(1, 0, 0, 0, "chunk A content", 1024);
-                let c2 = make_chunk(1, 0, 0, 1, "chunk B content", 1024);
+                let c1 = make_chunk(1, 0, 0, 0, "chunk A content", crate::EMBED_DIM);
+                let c2 = make_chunk(1, 0, 0, 1, "chunk B content", crate::EMBED_DIM);
 
                 let doc_id = store
                     .transactional_ingest(&doc, &files, &[tag1, tag2], &[vec![c1], vec![c2]])
@@ -3445,11 +3444,9 @@ mod tests {
                     "only",
                     b"unique1111unique2222unique3333",
                 )];
-                let tag_id = store
-                    .upsert_tag(1, "single-tag", &emb1024(&[0.5, 0.5]))
-                    .await?;
+                let tag_id = store.upsert_tag(1, "single-tag", &emb(&[0.5, 0.5])).await?;
 
-                let c = make_chunk(1, 0, 0, 0, "single chunk", 1024);
+                let c = make_chunk(1, 0, 0, 0, "single chunk", crate::EMBED_DIM);
 
                 let doc_id = store
                     .transactional_ingest(&doc, &files, &[tag_id], &[vec![c]])
@@ -3476,7 +3473,14 @@ mod tests {
                         &doc_ready,
                         &files,
                         &[tag_id],
-                        &[vec![make_chunk(1, 0, doc_id, 0, "re-chunk", 1024)]],
+                        &[vec![make_chunk(
+                            1,
+                            0,
+                            doc_id,
+                            0,
+                            "re-chunk",
+                            crate::EMBED_DIM,
+                        )]],
                     )
                     .await?;
 

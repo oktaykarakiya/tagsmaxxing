@@ -1,5 +1,5 @@
 //! Integration test: the schema migrations apply cleanly on a *fresh* pgvector Postgres,
-//! produce 1024-dim vector columns, enable RLS, and are idempotent on re-run (plan §5/§13/§16,
+//! produce 2560-dim vector columns, enable RLS, and are idempotent on re-run (plan §5/§13/§16,
 //! acceptance of P0-T6).
 //!
 //! This test needs **Podman** (this project targets Podman exclusively) and network access to
@@ -57,14 +57,15 @@ async fn migrations_apply_on_fresh_pgvector() -> TestResult {
             .await?;
     assert!(has_vector, "vector extension must be installed");
 
-    // The embedder lock-in: chunks.embedding is exactly vector(1024) (plan §5).
+    // The embedder lock-in: chunks.embedding is exactly vector(2560) after the Qwen3-Embedding-4B
+    // migration (0023) widens it from the original 1024 (plan §5).
     let chunks_dim: String = sqlx::query_scalar(
         "SELECT format_type(a.atttypid, a.atttypmod) FROM pg_attribute a \
          WHERE a.attrelid = 'chunks'::regclass AND a.attname = 'embedding'",
     )
     .fetch_one(&pool)
     .await?;
-    assert_eq!(chunks_dim, "vector(1024)", "chunks.embedding dim");
+    assert_eq!(chunks_dim, "vector(2560)", "chunks.embedding dim");
 
     let tags_dim: String = sqlx::query_scalar(
         "SELECT format_type(a.atttypid, a.atttypmod) FROM pg_attribute a \
@@ -72,7 +73,7 @@ async fn migrations_apply_on_fresh_pgvector() -> TestResult {
     )
     .fetch_one(&pool)
     .await?;
-    assert_eq!(tags_dim, "vector(1024)", "tags.embedding dim");
+    assert_eq!(tags_dim, "vector(2560)", "tags.embedding dim");
 
     // RLS is enabled (and FORCEd) on the tenant-scoped tables (plan §13).
     for table in [
@@ -130,8 +131,8 @@ async fn migrations_apply_on_fresh_pgvector() -> TestResult {
     .await?;
     let id: String = embedder.try_get("id")?;
     let dim: i32 = embedder.try_get("dim")?;
-    assert_eq!(id, "bge-m3");
-    assert_eq!(dim, 1024);
+    assert_eq!(id, "qwen3-embed-4b");
+    assert_eq!(dim, 2560);
 
     // Forward-only re-run is a no-op (the _sqlx_migrations ledger skips applied versions).
     MIGRATOR.run(&pool).await?;

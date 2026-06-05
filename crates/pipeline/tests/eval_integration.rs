@@ -5,7 +5,7 @@
 //! labelled queries, computes recall@k + MRR, and asserts the metrics do not
 //! regress below the committed baseline in `tests/fixtures/eval_baseline.json`.
 //!
-//! Mock LLM backends provide the query embedding (1024-dim spike vectors) and
+//! Mock LLM backends provide the query embedding (2560-dim spike vectors) and
 //! a pass-through reranker. Data is inserted directly via SQL so the test can
 //! control embeddings precisely.
 //!
@@ -28,7 +28,7 @@ mod tests {
     use kb_pipeline::embedder::ChunkEmbedder;
     use kb_pipeline::eval::{
         EvalBaseline, LabeledQuery, check_regression, compute_metrics, eval_queries,
-        fixture_corpus, format_vector, spike_1024,
+        fixture_corpus, format_vector, spike,
     };
     use kb_pipeline::retrieval::RetrievalPipeline;
     use kb_scheduler::{Pool, test_backend};
@@ -80,7 +80,7 @@ mod tests {
         let docs = fixture_corpus();
         let mut doc_ids = Vec::with_capacity(docs.len());
 
-        let emb = format_vector(&spike_1024(0));
+        let emb = format_vector(&spike(0));
 
         for (i, doc) in docs.iter().enumerate() {
             // Insert document.
@@ -157,8 +157,8 @@ mod tests {
         let mock = MockBackend::start().await;
         let base_url = mock.url("/v1");
 
-        // 1024-dim spike at 0 for all query embeddings.
-        mock.scenario().lock().await.embed_content = Some(vec![spike_1024(0)]);
+        // EMBED_DIM-dimensional spike at 0 for all query embeddings.
+        mock.scenario().lock().await.embed_content = Some(vec![spike(0)]);
 
         let backend = Arc::new(test_backend("mock-eval", base_url, vec![Role::Embed], 0, 8));
         let pool = Pool::new(vec![backend], Duration::from_secs(10));
@@ -170,7 +170,11 @@ mod tests {
             Duration::from_millis(200),
         ));
 
-        let embedder = Arc::new(ChunkEmbedder::new(llm, "bge-m3".into(), 1024));
+        let embedder = Arc::new(ChunkEmbedder::new(
+            llm,
+            "bge-m3".into(),
+            kb_store::EMBED_DIM,
+        ));
         let store_trait: Arc<dyn Store> = store as Arc<dyn Store>;
         let reranker: Arc<dyn Reranker> = Arc::new(PassThroughReranker);
 

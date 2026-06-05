@@ -44,7 +44,7 @@ pub use crypto_shred::{
 };
 pub use eval::{
     EvalBaseline, EvalMetrics, LabeledQuery, check_regression, compute_metrics, eval_queries,
-    fixture_corpus, format_vector, recall_at_k, reciprocal_rank, spike_1024,
+    fixture_corpus, format_vector, recall_at_k, reciprocal_rank, spike,
 };
 pub use export::{ExportPipeline, ExportStore, process_export_job};
 pub use folder_watcher::{

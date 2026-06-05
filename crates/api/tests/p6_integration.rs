@@ -61,11 +61,11 @@ use kb_api::AppState;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────────
 
-/// Produce a 1024-dim vector with a single spike at `pos` set to 1.0, all other
-/// elements zero. Spikes at different positions are orthogonal.
+/// Produce an [`EMBED_DIM`](kb_store::EMBED_DIM)-dimensional vector with a single spike at `pos`
+/// set to 1.0, all other elements zero. Spikes at different positions are orthogonal.
 fn spike_vector(pos: usize) -> Vec<f32> {
-    let mut v = vec![0.0f32; 1024];
-    if pos < 1024 {
+    let mut v = vec![0.0f32; kb_store::EMBED_DIM];
+    if pos < kb_store::EMBED_DIM {
         v[pos] = 1.0;
     }
     v
@@ -173,7 +173,7 @@ async fn setup_p6_infra() -> anyhow::Result<(P6Infra, MockBackend)> {
     let blob: Arc<dyn Blob> =
         Arc::new(LocalBlob::new(tmp.path().join("blobs"), "test".to_string()));
 
-    // Mock LLM backend — embed returns a 1024-dim spike vector.
+    // Mock LLM backend — embed returns an EMBED_DIM-dimensional spike vector.
     let mock = MockBackend::start().await;
     let base_url = mock.url("/v1");
     mock.scenario().lock().await.embed_content = Some(vec![spike_vector(0)]);
@@ -194,7 +194,11 @@ async fn setup_p6_infra() -> anyhow::Result<(P6Infra, MockBackend)> {
         Duration::from_millis(200),
     ));
 
-    let embedder = Arc::new(ChunkEmbedder::new(Arc::clone(&llm), "bge-m3".into(), 1024));
+    let embedder = Arc::new(ChunkEmbedder::new(
+        Arc::clone(&llm),
+        "bge-m3".into(),
+        kb_store::EMBED_DIM,
+    ));
 
     let infra = P6Infra {
         store,

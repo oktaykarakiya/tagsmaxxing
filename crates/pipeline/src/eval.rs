@@ -356,13 +356,13 @@ pub fn eval_queries() -> Vec<LabeledQuery> {
 
 // ── Helpers (public, used by integration tests) ───────────────────────────────
 
-/// Produce a 1024-dim vector with a single 1.0 at `pos` (mod 1024),
-/// matching the convention used in `p4_integration.rs`.
+/// Produce an embedding-width ([`kb_store::EMBED_DIM`]) vector with a single 1.0 at
+/// `pos` (mod the width), matching the convention used in `p4_integration.rs`.
 #[must_use]
-pub fn spike_1024(pos: usize) -> Vec<f32> {
-    let mut v = vec![0.0_f32; 1024];
+pub fn spike(pos: usize) -> Vec<f32> {
+    let mut v = vec![0.0_f32; kb_store::EMBED_DIM];
     if !v.is_empty() {
-        v[pos % 1024] = 1.0;
+        v[pos % kb_store::EMBED_DIM] = 1.0;
     }
     v
 }
@@ -765,8 +765,8 @@ mod tests {
     /// Smoke-test that our spike-vector intuition is correct.
     #[test]
     fn spike_vector_cosine() {
-        let spike0 = spike_1024(0);
-        let spike1 = spike_1024(1);
+        let spike0 = spike(0);
+        let spike1 = spike(1);
 
         // Same spike → cosine ≈ 1.0.
         let dot_self: f32 = spike0.iter().zip(spike0.iter()).map(|(a, b)| a * b).sum();

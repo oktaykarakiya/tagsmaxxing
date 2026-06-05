@@ -161,13 +161,13 @@ fn make_chunk(tenant_id: i64, document_id: i64, file_id: i64, idx: i32, content:
         idx,
         content: content.into(),
         ts_offset: None,
-        embedding: vec![0.1f32; 1024],
+        embedding: vec![0.1f32; kb_store::EMBED_DIM],
     }
 }
 
 fn spike_vector(tenant_specific_pos: usize) -> Vec<f32> {
-    let mut v = vec![0.0f32; 1024];
-    if tenant_specific_pos < 1024 {
+    let mut v = vec![0.0f32; kb_store::EMBED_DIM];
+    if tenant_specific_pos < kb_store::EMBED_DIM {
         v[tenant_specific_pos] = 1.0;
     }
     v
@@ -287,7 +287,7 @@ async fn tenant_b_cannot_read_tenant_a_files() -> anyhow::Result<()> {
 async fn tags_are_tenant_scoped() -> anyhow::Result<()> {
     let s = setup_two_tenants().await?;
 
-    let emb_a = vec![0.1f32; 1024];
+    let emb_a = vec![0.1f32; kb_store::EMBED_DIM];
     let tag_a1 = s.store.upsert_tag(s.tenant_a, "alpha", &emb_a).await?;
     let tag_a2 = s.store.upsert_tag(s.tenant_a, "beta", &emb_a).await?;
     s.store
@@ -607,7 +607,11 @@ async fn transactional_ingest_respects_tenant_boundary() -> anyhow::Result<()> {
     let rec = make_file_rec(s.tenant_a, 0, 1, "isolated-page");
     let tag_id = s
         .store
-        .upsert_tag(s.tenant_a, "isolated-tag", &vec![0.5f32; 1024])
+        .upsert_tag(
+            s.tenant_a,
+            "isolated-tag",
+            &vec![0.5f32; kb_store::EMBED_DIM],
+        )
         .await?;
     let chunk = make_chunk(s.tenant_a, 0, 0, 0, "isolated chunk text");
 

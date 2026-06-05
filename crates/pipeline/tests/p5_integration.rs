@@ -53,11 +53,11 @@ use reqwest::Client;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────────
 
-/// Produce a 1024-dim vector with a single spike at `pos` set to 1.0, all other
+/// Produce an embedding-width vector with a single spike at `pos` set to 1.0, all other
 /// elements zero. Spikes at different positions are orthogonal.
 fn spike_vector(pos: usize) -> Vec<f32> {
-    let mut v = vec![0.0f32; 1024];
-    if pos < 1024 {
+    let mut v = vec![0.0f32; kb_store::EMBED_DIM];
+    if pos < kb_store::EMBED_DIM {
         v[pos] = 1.0;
     }
     v
@@ -185,7 +185,7 @@ async fn setup_two_tenants() -> anyhow::Result<(TwoTenantInfra, MockBackend)> {
     // Mock LLM backend (used for embed, chat if needed).
     let mock = MockBackend::start().await;
     let base_url = mock.url("/v1");
-    // Default: embed returns a 1024-dim spike vector at position 0.
+    // Default: embed returns an EMBED_DIM-dimensional spike vector at position 0.
     mock.scenario().lock().await.embed_content = Some(vec![spike_vector(0)]);
 
     let backend = Arc::new(test_backend(
@@ -204,7 +204,11 @@ async fn setup_two_tenants() -> anyhow::Result<(TwoTenantInfra, MockBackend)> {
         Duration::from_millis(200),
     ));
 
-    let embedder = Arc::new(ChunkEmbedder::new(Arc::clone(&llm), "bge-m3".into(), 1024));
+    let embedder = Arc::new(ChunkEmbedder::new(
+        Arc::clone(&llm),
+        "bge-m3".into(),
+        kb_store::EMBED_DIM,
+    ));
 
     let infra = TwoTenantInfra {
         store,
@@ -608,7 +612,7 @@ async fn e2e_export_produces_valid_zip() {
     let manifest: serde_json::Value = serde_json::from_slice(&manifest_bytes).unwrap();
     assert_eq!(manifest["schema_version"], 1);
     assert_eq!(manifest["embedder_id"], "bge-m3");
-    assert_eq!(manifest["embedder_dim"], 1024);
+    assert_eq!(manifest["embedder_dim"], 2560);
     assert_eq!(manifest["tenant_slug"], "tenant-a");
     assert_eq!(manifest["document_count"], 1);
     assert_eq!(manifest["file_count"], 1);

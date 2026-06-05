@@ -97,10 +97,10 @@ mod tests {
             })
             .to_string(),
         );
-        // Deterministic per-input 1024-dim embeddings (matches the VECTOR(1024) schema): the
+        // Deterministic per-input embeddings (matches the VECTOR schema dimension): the
         // three distinct tag names get three distinct, near-orthogonal vectors, so the
         // canonicalizer keeps them as 3 separate tags rather than merging them.
-        mock.scenario().lock().await.embed_dim = Some(1024);
+        mock.scenario().lock().await.embed_dim = Some(kb_store::EMBED_DIM);
 
         let backend = Arc::new(test_backend(
             "mock-e2e",
@@ -137,8 +137,13 @@ mod tests {
             0.85,
         ));
 
-        // Embedder (dim=3 matches mock)
-        let embedder = Arc::new(ChunkEmbedder::new(Arc::clone(&llm), "bge-m3".into(), 3));
+        // Embedder — the mock now emits EMBED_DIM-wide vectors (see `embed_dim` above), which
+        // must match both the embedder's expected_dim and the `VECTOR(2560)` chunks column.
+        let embedder = Arc::new(ChunkEmbedder::new(
+            Arc::clone(&llm),
+            "bge-m3".into(),
+            kb_store::EMBED_DIM,
+        ));
 
         // Extractor router
         let mut extractors: HashMap<DocKind, Arc<dyn Extractor>> = HashMap::new();
