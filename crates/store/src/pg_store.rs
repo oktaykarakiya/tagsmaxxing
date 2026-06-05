@@ -659,15 +659,20 @@ pub(crate) async fn begin_tenant_tx(
     Ok(tx)
 }
 
-/// Derive a stable 64-bit advisory-lock key from a tenant id + file content hash so that
-/// concurrent ingests of the *same* file serialize on `pg_advisory_xact_lock`, while different
-/// files lock on different keys and never contend. Key collisions only cause rare, harmless
-/// extra serialization — never incorrectness.
-fn ingest_advisory_key(tenant_id: i64, sha256: &[u8]) -> i64 {
-    let mut head = [0u8; 8];
-    let n = sha256.len().min(8);
-    head[..n].copy_from_slice(&sha256[..n]);
-    i64::from_le_bytes(head) ^ tenant_id.rotate_left(32)
+/// Derive a stable, order-independent 64-bit advisory-lock key from a tenant id + the set of
+/// file content hashes in an ingest, so concurrent ingests of the *same upload* (same files in
+/// any order) serialize on `pg_advisory_xact_lock` while unrelated uploads lock on different keys
+/// and never contend. Key collisions only cause rare, harmless extra serialization — never
+/// incorrectness.
+fn ingest_advisory_key(tenant_id: i64, file_shas: &[&[u8]]) -> i64 {
+    file_shas
+        .iter()
+        .fold(tenant_id.rotate_left(32), |acc, sha| {
+            let mut head = [0u8; 8];
+            let n = sha.len().min(8);
+            head[..n].copy_from_slice(&sha[..n]);
+            acc ^ i64::from_le_bytes(head)
+        })
 }
 
 #[cfg(test)]
@@ -675,26 +680,25 @@ mod advisory_key_tests {
     use super::ingest_advisory_key;
 
     #[test]
-    fn stable_and_distinguishes_inputs() {
-        let sha_a = [0x11u8; 32];
-        let sha_b = [0x22u8; 32];
-        // Deterministic for identical inputs (so concurrent workers derive the same lock).
+    fn stable_order_independent_and_set_sensitive() {
+        let a: &[u8] = &[0x11u8; 32];
+        let b: &[u8] = &[0x22u8; 32];
+        // Deterministic, and order-independent (the same file set in any order → same lock).
         assert_eq!(
-            ingest_advisory_key(1, &sha_a),
-            ingest_advisory_key(1, &sha_a)
+            ingest_advisory_key(1, &[a, b]),
+            ingest_advisory_key(1, &[b, a])
+        );
+        // A different file set → a different key (one file vs two).
+        assert_ne!(
+            ingest_advisory_key(1, &[a]),
+            ingest_advisory_key(1, &[a, b])
         );
         // Different file (same tenant) → different key, so unrelated ingests don't serialize.
-        assert_ne!(
-            ingest_advisory_key(1, &sha_a),
-            ingest_advisory_key(1, &sha_b)
-        );
-        // Different tenant (same file) → different key.
-        assert_ne!(
-            ingest_advisory_key(1, &sha_a),
-            ingest_advisory_key(2, &sha_a)
-        );
+        assert_ne!(ingest_advisory_key(1, &[a]), ingest_advisory_key(1, &[b]));
+        // Different tenant (same set) → different key.
+        assert_ne!(ingest_advisory_key(1, &[a]), ingest_advisory_key(2, &[a]));
         // A short hash must not panic (defensive — real sha256 is always 32 bytes).
-        let _ = ingest_advisory_key(1, &[0xAB]);
+        let _ = ingest_advisory_key(1, &[&[0xABu8][..]]);
     }
 }
 
@@ -1341,45 +1345,59 @@ impl PgStore {
         let pool = self.app_pool()?;
         let mut tx = begin_tenant_tx(&pool, doc.tenant_id).await?;
 
-        // 0. Serialize concurrent ingests of the SAME single file so the idempotency lookup
-        //    below cannot race: two READ COMMITTED transactions would otherwise both miss the
-        //    other's *uncommitted* file row and each INSERT a document (the
-        //    (tenant_id, sha256, document_id) unique key cannot prevent that — distinct doc ids).
-        //    This transaction-scoped advisory lock makes the second ingest wait for the first to
-        //    commit, after which the lookup finds and reuses the document. Different files lock on
-        //    different keys, so unrelated ingests never contend; the lock auto-releases on
-        //    commit/rollback.
-        if doc.id == 0 && files.len() == 1 {
-            let lock_key =
-                ingest_advisory_key(doc.tenant_id, files[0].sha256.as_bytes().as_slice());
+        // 0. Serialize concurrent ingests of the SAME upload (same set of files) so the
+        //    idempotency lookup below cannot race: two READ COMMITTED transactions would
+        //    otherwise both miss the other's *uncommitted* file rows and each INSERT a document
+        //    (the (tenant_id, sha256, document_id) unique key cannot prevent that — distinct doc
+        //    ids). This transaction-scoped advisory lock, keyed on the whole file set, makes the
+        //    second ingest wait for the first to commit, after which the lookup finds and reuses
+        //    the document. Unrelated uploads lock on different keys and never contend; the lock
+        //    auto-releases on commit/rollback.
+        if doc.id == 0 && !files.is_empty() {
+            let shas: Vec<&[u8]> = files
+                .iter()
+                .map(|f| f.sha256.as_bytes().as_slice())
+                .collect();
+            let lock_key = ingest_advisory_key(doc.tenant_id, &shas);
             sqlx::query("SELECT pg_advisory_xact_lock($1)")
                 .bind(lock_key)
                 .execute(&mut *tx)
                 .await
-                .context("failed to acquire same-file ingest advisory lock")?;
+                .context("failed to acquire same-upload ingest advisory lock")?;
         }
 
         // 1. Resolve the target document, then upsert it (forcing status='ready').
         //    - explicit id → update it (caller threaded a known document).
-        //    - id == 0 and this exact single file (same sha256 + path) was already
-        //      ingested → reuse its document so re-ingesting an identical upload is
-        //      idempotent (plan §749) instead of duplicating. Same bytes under a
-        //      *different* name still makes a new document (the lookup keys on path,
-        //      preserving BUG-INGEST-02 orphan-avoidance). Multi-file keeps insert.
+        //    - id == 0 → reuse the document whose file set is EXACTLY this upload's
+        //      (sha256, path) pairs, so re-ingesting an identical upload — single- or multi-file
+        //      — is idempotent (plan §749) instead of duplicating. A different set (different
+        //      bytes, a renamed page, or an added/removed page) does not match and makes a new
+        //      document; keying on path preserves BUG-INGEST-02 orphan-avoidance.
         //    - otherwise → insert a new document.
         //    The advisory lock above makes this lookup + upsert race-free under concurrent
-        //    same-file uploads, not merely atomic within a single transaction.
+        //    same-upload ingests, not merely atomic within a single transaction.
         let target_id: i64 = if doc.id > 0 {
             doc.id
-        } else if files.len() == 1 {
+        } else if !files.is_empty() {
+            let sha_hexes: Vec<String> = files.iter().map(|f| f.sha256.to_hex()).collect();
+            let paths: Vec<Option<String>> = files.iter().map(|f| f.path.clone()).collect();
             sqlx::query_scalar::<Postgres, i64>(
-                "SELECT document_id FROM files \
-                 WHERE tenant_id=$1 AND sha256=$2 AND path IS NOT DISTINCT FROM $3 \
-                 ORDER BY document_id LIMIT 1",
+                "WITH incoming AS ( \
+                     SELECT decode(t.sha_hex, 'hex') AS sha256, t.path \
+                     FROM unnest($2::text[], $3::text[]) AS t(sha_hex, path) \
+                 ) \
+                 SELECT f.document_id FROM files f \
+                 JOIN incoming i ON f.sha256 = i.sha256 AND f.path IS NOT DISTINCT FROM i.path \
+                 WHERE f.tenant_id = $1 \
+                 GROUP BY f.document_id \
+                 HAVING COUNT(*) = $4 \
+                    AND (SELECT COUNT(*) FROM files f2 WHERE f2.document_id = f.document_id) = $4 \
+                 ORDER BY f.document_id LIMIT 1",
             )
             .bind(doc.tenant_id)
-            .bind(files[0].sha256.as_bytes().as_slice())
-            .bind(&files[0].path)
+            .bind(&sha_hexes)
+            .bind(&paths)
+            .bind(files.len() as i64)
             .fetch_optional(&mut *tx)
             .await
             .context("failed to look up existing document for idempotent re-ingest")?
@@ -3761,6 +3779,173 @@ mod tests {
                     file_count, 1,
                     "concurrent same-file ingest must not duplicate files"
                 );
+                Ok(())
+            })
+            .await
+            .unwrap();
+        }
+
+        /// Multi-file (multi-page document) re-ingest: uploading the SAME set of files again with
+        /// `doc.id == 0` reuses the document by its exact (sha256, path) file set rather than
+        /// creating a duplicate.
+        #[ignore]
+        #[tokio::test]
+        async fn transactional_ingest_multifile_reingest_reuses_document() {
+            with_connected_store(|store| async move {
+                let tag_id = store.upsert_tag(1, "t", &emb(&[0.5, 0.5])).await?;
+                let files = [
+                    make_file_rec(1, 1, "front", b"front-page-bytes"),
+                    make_file_rec(1, 2, "back", b"back-page-bytes"),
+                ];
+                let chunks1 = vec![
+                    vec![make_chunk(1, 0, 0, 0, "front v1", crate::EMBED_DIM)],
+                    vec![make_chunk(1, 0, 0, 0, "back v1", crate::EMBED_DIM)],
+                ];
+                let id1 = store
+                    .transactional_ingest(
+                        &make_doc(0, 1, "document", 2),
+                        &files,
+                        &[tag_id],
+                        &chunks1,
+                    )
+                    .await?;
+
+                // Re-ingest the same two pages (id == 0 again) → reuse, not duplicate.
+                let chunks2 = vec![
+                    vec![make_chunk(1, 0, 0, 0, "front v2", crate::EMBED_DIM)],
+                    vec![make_chunk(1, 0, 0, 0, "back v2", crate::EMBED_DIM)],
+                ];
+                let id2 = store
+                    .transactional_ingest(
+                        &make_doc(0, 1, "document", 2),
+                        &files,
+                        &[tag_id],
+                        &chunks2,
+                    )
+                    .await?;
+
+                assert_eq!(
+                    id1, id2,
+                    "re-ingesting the same multi-file document must reuse it"
+                );
+
+                let pool = store.pool()?;
+                let doc_count: i64 =
+                    sqlx::query_scalar("SELECT COUNT(*) FROM documents WHERE tenant_id = 1")
+                        .fetch_one(&pool)
+                        .await?;
+                assert_eq!(
+                    doc_count, 1,
+                    "multi-file re-ingest must not duplicate the document"
+                );
+                let file_count: i64 =
+                    sqlx::query_scalar("SELECT COUNT(*) FROM files WHERE document_id = $1")
+                        .bind(id1)
+                        .fetch_one(&pool)
+                        .await?;
+                assert_eq!(file_count, 2, "the document keeps exactly its two pages");
+                Ok(())
+            })
+            .await
+            .unwrap();
+        }
+
+        /// A *different* file set (a page swapped out) must create a NEW document — the lookup
+        /// requires an exact (sha256, path) set match, not just an overlap.
+        #[ignore]
+        #[tokio::test]
+        async fn transactional_ingest_multifile_different_set_creates_new_document() {
+            with_connected_store(|store| async move {
+                let tag_id = store.upsert_tag(1, "t", &emb(&[0.5, 0.5])).await?;
+                let a = make_file_rec(1, 1, "a", b"page-a-bytes");
+                let b = make_file_rec(1, 2, "b", b"page-b-bytes");
+                let c = make_file_rec(1, 2, "c", b"page-c-bytes");
+                let chunks = vec![
+                    vec![make_chunk(1, 0, 0, 0, "x", crate::EMBED_DIM)],
+                    vec![make_chunk(1, 0, 0, 0, "y", crate::EMBED_DIM)],
+                ];
+
+                let id1 = store
+                    .transactional_ingest(
+                        &make_doc(0, 1, "document", 2),
+                        &[a.clone(), b],
+                        &[tag_id],
+                        &chunks,
+                    )
+                    .await?;
+                // {a, c} overlaps {a, b} on `a` but is a different set → a new document.
+                let id2 = store
+                    .transactional_ingest(
+                        &make_doc(0, 1, "document", 2),
+                        &[a, c],
+                        &[tag_id],
+                        &chunks,
+                    )
+                    .await?;
+                assert_ne!(id1, id2, "a different page set must create a new document");
+                Ok(())
+            })
+            .await
+            .unwrap();
+        }
+
+        /// Concurrency for multi-file: several workers ingesting the SAME multi-page upload at
+        /// once must collapse to one document — the advisory lock keys on the whole file set.
+        #[ignore]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn transactional_ingest_concurrent_same_multifile_collapses_to_one_document() {
+            with_connected_store(|store| async move {
+                let store = std::sync::Arc::new(store);
+                let tag_id = store.upsert_tag(1, "t", &emb(&[0.5, 0.5])).await?;
+
+                const N: usize = 6;
+                let mut handles = Vec::with_capacity(N);
+                for i in 0..N {
+                    let store = std::sync::Arc::clone(&store);
+                    handles.push(tokio::spawn(async move {
+                        let files = [
+                            make_file_rec(1, 1, "front", b"front-page"),
+                            make_file_rec(1, 2, "back", b"back-page"),
+                        ];
+                        let chunks = vec![
+                            vec![make_chunk(1, 0, 0, 0, &format!("f{i}"), crate::EMBED_DIM)],
+                            vec![make_chunk(1, 0, 0, 0, &format!("b{i}"), crate::EMBED_DIM)],
+                        ];
+                        store
+                            .transactional_ingest(
+                                &make_doc(0, 1, "document", 2),
+                                &files,
+                                &[tag_id],
+                                &chunks,
+                            )
+                            .await
+                    }));
+                }
+
+                let mut ids = Vec::with_capacity(N);
+                for h in handles {
+                    ids.push(h.await.expect("ingest task panicked")?);
+                }
+                assert!(
+                    ids.iter().all(|&id| id == ids[0]),
+                    "concurrent same multi-file ingests must collapse to one document, got {ids:?}"
+                );
+
+                let pool = store.pool()?;
+                let doc_count: i64 =
+                    sqlx::query_scalar("SELECT COUNT(*) FROM documents WHERE tenant_id = 1")
+                        .fetch_one(&pool)
+                        .await?;
+                assert_eq!(
+                    doc_count, 1,
+                    "concurrent multi-file ingest must not duplicate documents"
+                );
+                let file_count: i64 =
+                    sqlx::query_scalar("SELECT COUNT(*) FROM files WHERE document_id = $1")
+                        .bind(ids[0])
+                        .fetch_one(&pool)
+                        .await?;
+                assert_eq!(file_count, 2, "the document keeps exactly its two pages");
                 Ok(())
             })
             .await
