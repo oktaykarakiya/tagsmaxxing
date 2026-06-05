@@ -1302,8 +1302,36 @@ impl PgStore {
         let pool = self.app_pool()?;
         let mut tx = begin_tenant_tx(&pool, doc.tenant_id).await?;
 
-        // 1. Upsert document, forcing status='ready'.
-        let doc_id = if doc.id > 0 {
+        // 1. Resolve the target document, then upsert it (forcing status='ready').
+        //    - explicit id → update it (caller threaded a known document).
+        //    - id == 0 and this exact single file (same sha256 + path) was already
+        //      ingested → reuse its document so re-ingesting an identical upload is
+        //      idempotent (plan §749) instead of duplicating. Same bytes under a
+        //      *different* name still makes a new document (the lookup keys on path,
+        //      preserving BUG-INGEST-02 orphan-avoidance). Multi-file keeps insert.
+        //    - otherwise → insert a new document.
+        //    The lookup runs inside this transaction, so it is atomic with the upsert.
+        let target_id: i64 = if doc.id > 0 {
+            doc.id
+        } else if files.len() == 1 {
+            sqlx::query_scalar::<Postgres, i64>(
+                "SELECT document_id FROM files \
+                 WHERE tenant_id=$1 AND sha256=$2 AND path IS NOT DISTINCT FROM $3 \
+                 ORDER BY document_id LIMIT 1",
+            )
+            .bind(doc.tenant_id)
+            .bind(files[0].sha256.as_bytes().as_slice())
+            .bind(&files[0].path)
+            .fetch_optional(&mut *tx)
+            .await
+            .context("failed to look up existing document for idempotent re-ingest")?
+            .unwrap_or(0)
+        } else {
+            0
+        };
+
+        // Upsert the document, forcing status='ready'.
+        let doc_id = if target_id > 0 {
             sqlx::query_scalar::<Postgres, i64>(
                 "UPDATE documents SET tenant_id=$1,title=$2,summary=$3,summary_enc=$4,user_note=$5,user_note_enc=$6,kind=$7,meta=$8,page_count=$9,status='ready' WHERE id=$10 RETURNING id",
             )
@@ -1311,7 +1339,7 @@ impl PgStore {
             .bind(&doc.title).bind(&doc.summary).bind(&summary_enc)
             .bind(&doc.user_note).bind(&user_note_enc)
             .bind(doc.kind.as_str()).bind(&doc.meta).bind(doc.page_count)
-            .bind(doc.id)
+            .bind(target_id)
             .fetch_one(&mut *tx).await
             .context("failed to update document in transaction")?
         } else {
@@ -3516,6 +3544,100 @@ mod tests {
                         .await?;
                 assert_eq!(content, "re-chunk");
 
+                Ok(())
+            })
+            .await
+            .unwrap();
+        }
+
+        /// Re-ingesting an identical single-file upload (same sha256 + path) with
+        /// `doc.id == 0` BOTH times reuses the existing document — the caller never has to
+        /// thread the id back itself. This is the plan §749 idempotency contract at the
+        /// store layer (the `IngestPipeline` always passes `doc.id == 0`), and is exactly
+        /// what the pipeline's p3 integration test exercises end-to-end.
+        #[ignore]
+        #[tokio::test]
+        async fn transactional_ingest_idempotent_reingest_without_explicit_id() {
+            with_connected_store(|store| async move {
+                let tag_id = store.upsert_tag(1, "t", &emb(&[0.5, 0.5])).await?;
+                let files = [make_file_rec(1, 1, "same", b"reingest-without-explicit-id")];
+
+                // First ingest: fresh document, id resolved by the store (not the caller).
+                let doc = make_doc(0, 1, "document", 1);
+                let c1 = make_chunk(1, 0, 0, 0, "v1", crate::EMBED_DIM);
+                let id1 = store
+                    .transactional_ingest(&doc, &files, &[tag_id], &[vec![c1]])
+                    .await?;
+
+                // Second ingest of the SAME file (same sha + path), again with id == 0.
+                let doc2 = make_doc(0, 1, "document", 1);
+                let c2 = make_chunk(1, 0, 0, 0, "v2", crate::EMBED_DIM);
+                let id2 = store
+                    .transactional_ingest(&doc2, &files, &[tag_id], &[vec![c2]])
+                    .await?;
+
+                assert_eq!(id1, id2, "identical re-ingest must reuse its document");
+
+                let pool = store.pool()?;
+                let doc_count: i64 =
+                    sqlx::query_scalar("SELECT COUNT(*) FROM documents WHERE tenant_id = 1")
+                        .fetch_one(&pool)
+                        .await?;
+                assert_eq!(doc_count, 1, "re-ingest must not create a second document");
+
+                let file_count: i64 =
+                    sqlx::query_scalar("SELECT COUNT(*) FROM files WHERE document_id = $1")
+                        .bind(id1)
+                        .fetch_one(&pool)
+                        .await?;
+                assert_eq!(file_count, 1, "re-ingest must not duplicate the file row");
+                Ok(())
+            })
+            .await
+            .unwrap();
+        }
+
+        /// Same bytes under a *different* filename must create a NEW document rather than
+        /// reassigning the existing file — the BUG-INGEST-02 orphan-avoidance contract.
+        /// The idempotency lookup keys on `path`, so a different name does not match and the
+        /// first document keeps its file.
+        #[ignore]
+        #[tokio::test]
+        async fn transactional_ingest_same_bytes_different_name_creates_new_document() {
+            with_connected_store(|store| async move {
+                let tag_id = store.upsert_tag(1, "t", &emb(&[0.5, 0.5])).await?;
+                let sha = b"identical-bytes-distinct-names";
+                let files_a = [make_file_rec(1, 1, "name-a", sha)];
+                let files_b = [make_file_rec(1, 1, "name-b", sha)];
+
+                let doc = make_doc(0, 1, "document", 1);
+                let ca = make_chunk(1, 0, 0, 0, "a", crate::EMBED_DIM);
+                let id1 = store
+                    .transactional_ingest(&doc, &files_a, &[tag_id], &[vec![ca]])
+                    .await?;
+
+                // Same sha256, different path → a new document (no orphaning of the first).
+                let doc2 = make_doc(0, 1, "document", 1);
+                let cb = make_chunk(1, 0, 0, 0, "b", crate::EMBED_DIM);
+                let id2 = store
+                    .transactional_ingest(&doc2, &files_b, &[tag_id], &[vec![cb]])
+                    .await?;
+
+                assert_ne!(
+                    id1, id2,
+                    "same bytes + different name must create a new document"
+                );
+
+                let pool = store.pool()?;
+                let first_files: i64 =
+                    sqlx::query_scalar("SELECT COUNT(*) FROM files WHERE document_id = $1")
+                        .bind(id1)
+                        .fetch_one(&pool)
+                        .await?;
+                assert_eq!(
+                    first_files, 1,
+                    "first document must keep its file (no orphan)"
+                );
                 Ok(())
             })
             .await
