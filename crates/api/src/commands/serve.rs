@@ -287,12 +287,19 @@ pub async fn run_serve(args: &ServeArgs) -> anyhow::Result<()> {
 
     // ── Ingest pipeline ─────────────────────────────────────────────────────
     // VLM captioner for image visual descriptions (best-effort).
-    // Shares the same scheduler pool as text/embed/rerank; the pool routes
-    // Vision role requests to the Qwen3.6-VL backend configured with
-    // `roles = ["text", "vision", "code"]`.
+    // Uses a separate LlamaClient with max_retries=0 so VLM-specific failures
+    // (e.g. unsupported image formats, GPU device-lost) do not cascade into
+    // circuit-breaker trips for the `text` role, which shares the same backend.
     const DEFAULT_VISION_MODEL: &str = "default";
+    let vision_client = LlamaClient::new(
+        pool.clone(),
+        http.clone(),
+        0, // max_retries: must NOT retry — protect the text circuit breaker
+        CIRCUIT_THRESHOLD,
+        Duration::from_secs(COOLDOWN_SECS),
+    );
     let vision_captioner = Arc::new(VisionCaptioner::new(
-        llm_factory(),
+        vision_client,
         DEFAULT_VISION_MODEL.into(),
     ));
 

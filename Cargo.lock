@@ -2063,6 +2063,7 @@ dependencies = [
  "bytes",
  "chrono",
  "dashmap",
+ "image",
  "kb-core",
  "kb-metrics",
  "kb-mock-backend",
