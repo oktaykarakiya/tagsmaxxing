@@ -659,6 +659,45 @@ pub(crate) async fn begin_tenant_tx(
     Ok(tx)
 }
 
+/// Derive a stable 64-bit advisory-lock key from a tenant id + file content hash so that
+/// concurrent ingests of the *same* file serialize on `pg_advisory_xact_lock`, while different
+/// files lock on different keys and never contend. Key collisions only cause rare, harmless
+/// extra serialization — never incorrectness.
+fn ingest_advisory_key(tenant_id: i64, sha256: &[u8]) -> i64 {
+    let mut head = [0u8; 8];
+    let n = sha256.len().min(8);
+    head[..n].copy_from_slice(&sha256[..n]);
+    i64::from_le_bytes(head) ^ tenant_id.rotate_left(32)
+}
+
+#[cfg(test)]
+mod advisory_key_tests {
+    use super::ingest_advisory_key;
+
+    #[test]
+    fn stable_and_distinguishes_inputs() {
+        let sha_a = [0x11u8; 32];
+        let sha_b = [0x22u8; 32];
+        // Deterministic for identical inputs (so concurrent workers derive the same lock).
+        assert_eq!(
+            ingest_advisory_key(1, &sha_a),
+            ingest_advisory_key(1, &sha_a)
+        );
+        // Different file (same tenant) → different key, so unrelated ingests don't serialize.
+        assert_ne!(
+            ingest_advisory_key(1, &sha_a),
+            ingest_advisory_key(1, &sha_b)
+        );
+        // Different tenant (same file) → different key.
+        assert_ne!(
+            ingest_advisory_key(1, &sha_a),
+            ingest_advisory_key(2, &sha_a)
+        );
+        // A short hash must not panic (defensive — real sha256 is always 32 bytes).
+        let _ = ingest_advisory_key(1, &[0xAB]);
+    }
+}
+
 /// Returns the number of times [`begin_tenant_tx`] has been called during tests.
 #[cfg(test)]
 fn set_tenant_call_count() -> u64 {
@@ -1302,6 +1341,24 @@ impl PgStore {
         let pool = self.app_pool()?;
         let mut tx = begin_tenant_tx(&pool, doc.tenant_id).await?;
 
+        // 0. Serialize concurrent ingests of the SAME single file so the idempotency lookup
+        //    below cannot race: two READ COMMITTED transactions would otherwise both miss the
+        //    other's *uncommitted* file row and each INSERT a document (the
+        //    (tenant_id, sha256, document_id) unique key cannot prevent that — distinct doc ids).
+        //    This transaction-scoped advisory lock makes the second ingest wait for the first to
+        //    commit, after which the lookup finds and reuses the document. Different files lock on
+        //    different keys, so unrelated ingests never contend; the lock auto-releases on
+        //    commit/rollback.
+        if doc.id == 0 && files.len() == 1 {
+            let lock_key =
+                ingest_advisory_key(doc.tenant_id, files[0].sha256.as_bytes().as_slice());
+            sqlx::query("SELECT pg_advisory_xact_lock($1)")
+                .bind(lock_key)
+                .execute(&mut *tx)
+                .await
+                .context("failed to acquire same-file ingest advisory lock")?;
+        }
+
         // 1. Resolve the target document, then upsert it (forcing status='ready').
         //    - explicit id → update it (caller threaded a known document).
         //    - id == 0 and this exact single file (same sha256 + path) was already
@@ -1310,7 +1367,8 @@ impl PgStore {
         //      *different* name still makes a new document (the lookup keys on path,
         //      preserving BUG-INGEST-02 orphan-avoidance). Multi-file keeps insert.
         //    - otherwise → insert a new document.
-        //    The lookup runs inside this transaction, so it is atomic with the upsert.
+        //    The advisory lock above makes this lookup + upsert race-free under concurrent
+        //    same-file uploads, not merely atomic within a single transaction.
         let target_id: i64 = if doc.id > 0 {
             doc.id
         } else if files.len() == 1 {
@@ -3637,6 +3695,71 @@ mod tests {
                 assert_eq!(
                     first_files, 1,
                     "first document must keep its file (no orphan)"
+                );
+                Ok(())
+            })
+            .await
+            .unwrap();
+        }
+
+        /// Concurrency: several workers ingesting the SAME single file at once (the
+        /// "impatient user uploads the same thing several times in a row" case — uploads become
+        /// queued jobs run by a concurrent worker pool) must still collapse to ONE document.
+        /// Without serialization the READ COMMITTED idempotency lookup races: each transaction
+        /// misses the others' uncommitted file row and INSERTs its own document, and the
+        /// `(tenant_id, sha256, document_id)` unique key cannot catch it (distinct doc ids). The
+        /// per-(tenant, sha256) advisory lock in `transactional_ingest` serializes them.
+        #[ignore]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn transactional_ingest_concurrent_same_file_collapses_to_one_document() {
+            with_connected_store(|store| async move {
+                let store = std::sync::Arc::new(store);
+                let tag_id = store.upsert_tag(1, "t", &emb(&[0.5, 0.5])).await?;
+
+                const N: usize = 8;
+                let mut handles = Vec::with_capacity(N);
+                for i in 0..N {
+                    let store = std::sync::Arc::clone(&store);
+                    handles.push(tokio::spawn(async move {
+                        let doc = make_doc(0, 1, "document", 1);
+                        let files = [make_file_rec(1, 1, "racy", b"concurrent-same-file")];
+                        let c = make_chunk(1, 0, 0, 0, &format!("v{i}"), crate::EMBED_DIM);
+                        store
+                            .transactional_ingest(&doc, &files, &[tag_id], &[vec![c]])
+                            .await
+                    }));
+                }
+
+                let mut ids = Vec::with_capacity(N);
+                for h in handles {
+                    ids.push(h.await.expect("ingest task panicked")?);
+                }
+
+                // Every concurrent call must resolve to the same document …
+                assert!(
+                    ids.iter().all(|&id| id == ids[0]),
+                    "all concurrent re-ingests must resolve to one document, got {ids:?}"
+                );
+
+                // … and the DB must hold exactly one document + one file for the tenant.
+                let pool = store.pool()?;
+                let doc_count: i64 =
+                    sqlx::query_scalar("SELECT COUNT(*) FROM documents WHERE tenant_id = 1")
+                        .fetch_one(&pool)
+                        .await?;
+                assert_eq!(
+                    doc_count, 1,
+                    "concurrent same-file ingest must not duplicate documents"
+                );
+
+                let file_count: i64 =
+                    sqlx::query_scalar("SELECT COUNT(*) FROM files WHERE document_id = $1")
+                        .bind(ids[0])
+                        .fetch_one(&pool)
+                        .await?;
+                assert_eq!(
+                    file_count, 1,
+                    "concurrent same-file ingest must not duplicate files"
                 );
                 Ok(())
             })
