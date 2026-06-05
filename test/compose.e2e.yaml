@@ -9,9 +9,10 @@
 # always start when the overlay is included.
 #
 #   Service        internal+host port   role(s)
-#   llama-text     8090                 text, vision, code  (Qwen3-VL + mmproj)
-#   llama-embed    8091                 embed               (bge-m3, 1024-dim)
-#   llama-rerank   8092                 rerank              (bge-reranker-v2-m3)
+#   llama-text     8090                 text, vision, code  (Qwen3.6-35B-A3B-VL + mmproj)
+#   llama-embed    8091                 embed               (Qwen3-Embedding-4B, 2560-dim)
+#   llama-rerank   8092                 rerank              (LEGACY GGUF; the current stack uses
+#                                                            the host ettin sidecar, not a GGUF)
 #   whisper        8080 (host 8093)     audio               (whisper.cpp .bin)
 #
 # Always run compose from the repo root (paths below are root-relative):
@@ -32,8 +33,8 @@ services:
     ports:
       - "127.0.0.1:${LLAMA_TEXT_PORT:-8090}:8090"
     environment:
-      LLAMA_ARG_MODEL: /models/${LLAMA_TEXT_MODEL_FILE:-Qwen3VL-30B-A3B-Instruct-Q4_K_M.gguf}
-      LLAMA_ARG_MMPROJ: /models/${LLAMA_MMPROJ_FILE:-mmproj-Qwen3VL-30B-A3B-Instruct-F16.gguf}
+      LLAMA_ARG_MODEL: /models/${LLAMA_TEXT_MODEL_FILE:-Qwen3.6-35B-A3B-APEX-I-Compact.gguf}
+      LLAMA_ARG_MMPROJ: /models/${LLAMA_MMPROJ_FILE:-mmproj-Qwen3.6-35B-A3B.gguf}
       LLAMA_ARG_HOST: "0.0.0.0"
       LLAMA_ARG_PORT: "8090"
       LLAMA_ARG_N_GPU_LAYERS: ${LLAMA_N_GPU_LAYERS:-99}
@@ -48,7 +49,7 @@ services:
       retries: 60
     restart: unless-stopped
 
-  # ── Embeddings — bge-m3 (1024-dim, matches the app's vector size) — port 8091 ──
+  # ── Embeddings — Qwen3-Embedding-4B (2560-dim, matches the app's vector size) — port 8091 ──
   llama-embed:
     image: ${LLAMA_SERVER_IMAGE:-docker.io/ghcr.io/ggerganov/llama.cpp:server}
     volumes:
@@ -56,7 +57,7 @@ services:
     ports:
       - "127.0.0.1:${LLAMA_EMBED_PORT:-8091}:8091"
     environment:
-      LLAMA_ARG_MODEL: /models/${LLAMA_EMBED_MODEL_FILE:-bge-m3-q8_0.gguf}
+      LLAMA_ARG_MODEL: /models/${LLAMA_EMBED_MODEL_FILE:-Qwen3-Embedding-4B-Q4_K_M.gguf}
       LLAMA_ARG_EMBEDDINGS: "1"
       LLAMA_ARG_HOST: "0.0.0.0"
       LLAMA_ARG_PORT: "8091"
@@ -72,9 +73,10 @@ services:
       retries: 40
     restart: unless-stopped
 
-  # ── Reranking — bge-reranker-v2-m3 — port 8092. LLAMA_ARG_RERANKING enables
-  #    /rerank + pooling rank. If this server fails to start on your llama.cpp
-  #    build, add LLAMA_ARG_POOLING: rank here (see README troubleshooting). ──────
+  # ── Reranking — LEGACY llama.cpp GGUF path (port 8092). The current stack uses the
+  #    ettin-reranker-400m sentence-transformers sidecar (tools/ettin-rerank/), which is
+  #    NOT a GGUF; this container only applies if you supply an older bge-reranker GGUF.
+  #    LLAMA_ARG_RERANKING enables /rerank + pooling rank. ──────────────────────────────
   llama-rerank:
     image: ${LLAMA_SERVER_IMAGE:-docker.io/ghcr.io/ggerganov/llama.cpp:server}
     volumes:

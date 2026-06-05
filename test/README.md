@@ -32,10 +32,13 @@ maps each role to the right one:
 
 | Model in `./models` | Service | Role(s) |
 |---|---|---|
-| `Qwen3VL-30B-A3B-Instruct-Q4_K_M.gguf` + `mmproj-…-F16.gguf` | `llama-text` | text, vision, code |
-| `bge-m3-q8_0.gguf` (1024-dim) | `llama-embed` | embed |
-| `bge-reranker-v2-m3-q8_0.gguf` | `llama-rerank` | rerank |
+| `Qwen3.6-35B-A3B-APEX-I-Compact.gguf` + `mmproj-Qwen3.6-35B-A3B.gguf` | `llama-text` | text, vision, code |
+| `Qwen3-Embedding-4B-Q4_K_M.gguf` (2560-dim) | `llama-embed` | embed |
+| `ettin-reranker-400m-v1` (host sentence-transformers sidecar, `tools/ettin-rerank/` — **not** a GGUF) | — | rerank |
 | `ggml-large-v3-turbo.bin` | `whisper` | audio |
+
+The actual local stack on the dev box runs in **host-llama mode** (`E2E_LLAMA=host`); see
+[`docs/LOCAL_RUNBOOK.md`](../docs/LOCAL_RUNBOOK.md) for the post-reboot bring-up.
 
 Plus the base stack: `postgres`, `tika`, `app`, `caddy`. The suite talks to the
 app over **HTTPS via Caddy (`https://localhost:9443`)** because the session

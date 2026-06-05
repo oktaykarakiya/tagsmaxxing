@@ -197,7 +197,7 @@ def test_conceptual_query_ranks_relevant_doc_first(api, judge):
 def test_multilingual_query_retrieves_same_topic_doc(api, judge):
     """A query in one language retrieves a same-topic document written in another.
 
-    bge-m3 is multilingual: ingest a document written in one language about a
+    Qwen3-Embedding-4B is multilingual: ingest a document written in one language about a
     topic, then search for that topic in a *different* language. Have the judge
     rule whether the top hit is about the same topic — testing cross-lingual
     semantic retrieval, a capability no other test exercises.

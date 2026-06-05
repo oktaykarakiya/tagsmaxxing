@@ -50,10 +50,10 @@ fi
 
 # Model files that must exist under ./models.
 EXPECTED_MODELS=(
-  "${LLAMA_TEXT_MODEL_FILE:-Qwen3VL-30B-A3B-Instruct-Q4_K_M.gguf}"
-  "${LLAMA_MMPROJ_FILE:-mmproj-Qwen3VL-30B-A3B-Instruct-F16.gguf}"
-  "${LLAMA_EMBED_MODEL_FILE:-bge-m3-q8_0.gguf}"
-  "${LLAMA_RERANK_MODEL_FILE:-bge-reranker-v2-m3-q8_0.gguf}"
+  "${LLAMA_TEXT_MODEL_FILE:-Qwen3.6-35B-A3B-APEX-I-Compact.gguf}"
+  "${LLAMA_MMPROJ_FILE:-mmproj-Qwen3.6-35B-A3B.gguf}"
+  "${LLAMA_EMBED_MODEL_FILE:-Qwen3-Embedding-4B-Q4_K_M.gguf}"
+  # Reranker is the ettin sentence-transformers sidecar (tools/ettin-rerank/), not a GGUF.
   "${WHISPER_MODEL_FILE:-ggml-large-v3-turbo.bin}"
 )
 

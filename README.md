@@ -39,6 +39,9 @@ with per-tenant RLS isolation and at-rest encryption.
 
 ## Quickstart
 
+> Running the full local model stack on the dev box (host-llama mode), or bringing everything back
+> up after a reboot? See **[`docs/LOCAL_RUNBOOK.md`](docs/LOCAL_RUNBOOK.md)**.
+
 ```bash
 # 1. Clone
 git clone git@github.com:oktaykarakiya/tagsmaxxing.git
@@ -234,21 +237,21 @@ health_interval_secs = 10
 max_retries = 3
 
 [[backend]]
-id = "qwen3vl"
+id = "qwen3.6-vl"
 base_url = "http://127.0.0.1:8080/v1"
 roles = ["text", "vision", "code"]
 slots = 2
 priority = 0
 
 [[backend]]
-id = "bge-m3"
+id = "qwen3-embed-4b"
 base_url = "http://127.0.0.1:8081/v1"
 roles = ["embed"]
 slots = 4
 priority = 0
 
 [[backend]]
-id = "bge-reranker"
+id = "ettin-rerank"
 base_url = "http://127.0.0.1:8082/v1"
 roles = ["rerank"]
 slots = 4

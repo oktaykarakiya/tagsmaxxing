@@ -39,9 +39,9 @@ _PERF_HTTP_TIMEOUT = os.environ.get("PERF_HTTP_TIMEOUT", "600")
 os.environ["HTTP_TIMEOUT"] = _PERF_HTTP_TIMEOUT
 
 # ── Configurable thresholds (env vars with lenient defaults) ─────────────────
-# These defaults are deliberately lenient because the real models (Qwen, bge-m3,
-# bge-reranker) run on local llama.cpp and ingest (extract → tag → embed → store)
-# can take 30–90+ seconds per document depending on hardware.
+# These defaults are deliberately lenient because the real models (Qwen3.6-VL,
+# Qwen3-Embedding-4B on local llama.cpp; ettin-reranker on a CPU sidecar) and ingest
+# (extract → tag → embed → store) can take 30–90+ seconds per document depending on hardware.
 
 
 def _env_int(key: str, default: int) -> int:

@@ -5,9 +5,9 @@
 # llama.cpp servers, reached from inside the app container through the socat
 # relays started by test/scripts/host_relays.sh:
 #
-#   host 0.0.0.0:9080 -> 127.0.0.1:8080   text/vision/code (Qwen3VL-30B + mmproj)
-#   host 0.0.0.0:9081 -> 127.0.0.1:8081   embed            (bge-m3, 1024-dim)
-#   host 0.0.0.0:9082 -> 127.0.0.1:8082   rerank           (bge-reranker-v2-m3)
+#   host 0.0.0.0:9080 -> 127.0.0.1:8080   text/vision/code (Qwen3.6-35B-A3B-VL + mmproj)
+#   host 0.0.0.0:9081 -> 127.0.0.1:8081   embed            (Qwen3-Embedding-4B, 2560-dim)
+#   host 0.0.0.0:9082 -> 127.0.0.1:8082   rerank           (ettin-reranker-400m sidecar)
 #
 # The container resolves the host via `host.containers.internal` (podman injects
 # it automatically on netavark networks). Mounted read-only at /etc/kb/config.toml.
