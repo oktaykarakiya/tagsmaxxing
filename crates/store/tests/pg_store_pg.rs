@@ -181,21 +181,15 @@ async fn upsert_file_is_idempotent_on_sha256_conflict() -> anyhow::Result<()> {
 async fn upsert_file_updates_on_conflict() -> anyhow::Result<()> {
     let s = setup_store().await?;
 
-    // Create a second document to switch to on update.
-    let doc2_id: i64 = sqlx::query_scalar(
-        "INSERT INTO documents (tenant_id, kind) VALUES ($1, 'image') RETURNING id",
-    )
-    .bind(s.tenant_id)
-    .fetch_one(&s.pool)
-    .await?;
-
     let sha = Sha256::from_bytes([3u8; 32]);
     let mut rec = make_file_record(s.tenant_id, s.document_id, sha, "key-update");
 
     let id1 = s.store.upsert_file(&rec).await?;
 
-    // Change fields and re-insert.
-    rec.document_id = doc2_id;
+    // Re-upsert the SAME file (same tenant + sha256 + document_id) with changed non-key
+    // fields. Under the BUG-INGEST-02 key (tenant_id, sha256, document_id), document_id is
+    // part of the key, so it stays the same to hit the UPDATE branch — the same bytes under
+    // a *different* document_id is intentionally a new file row (see transactional_ingest).
     rec.page_label = Some("updated-label".into());
     rec.meta = serde_json::json!({"updated": true});
     rec.status = ProcessingStatus::Ready;
@@ -214,7 +208,7 @@ async fn upsert_file_updates_on_conflict() -> anyhow::Result<()> {
     let db_meta: String = row.try_get("meta")?;
     let db_status: String = row.try_get("status")?;
 
-    assert_eq!(db_doc_id, doc2_id);
+    assert_eq!(db_doc_id, s.document_id);
     assert_eq!(db_label, "updated-label");
     assert!(db_meta.contains("updated"));
     assert_eq!(db_status, "ready");

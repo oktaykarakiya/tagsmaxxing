@@ -1054,7 +1054,10 @@ impl OrphanGcRunner for PgOrphanGcRunner {
                 if entry.file_type()?.is_file()
                     && let Some(name) = entry.file_name().to_str()
                 {
-                    keys.push(format!("test-tenant/{name}"));
+                    // Keys are flat (LocalBlob adds the `test-tenant` prefix itself, so the
+                    // blob lives at {root}/test-tenant/{key}); list them the same way the DB
+                    // and the put/delete calls reference them.
+                    keys.push(name.to_string());
                 }
             }
         }
@@ -1104,17 +1107,23 @@ async fn orphan_gc_with_real_pgstore_deletes_orphan_blobs() -> anyhow::Result<()
     // ── Create a file record in the DB ──
     let data = Bytes::from_static(b"file with db row");
     let hash = sha2::Sha256::digest(&data);
-    let hex_hash = hex::encode(hash);
-    let blob_key = format!("test-tenant/{hex_hash}");
+    // Flat key — LocalBlob namespaces it under its own `test-tenant` prefix.
+    let blob_key = hex::encode(hash);
 
     blob.put(&blob_key, data.clone()).await?;
 
     let pool = store.pool()?;
-    sqlx::query(
-        "INSERT INTO files (tenant_id, sha256, blob_key, path, mime, size_bytes, status) \
-         VALUES (1, $1, $2, 'test.txt', 'text/plain', $3, 'ready')",
+    let doc_id: i64 = sqlx::query_scalar(
+        "INSERT INTO documents (tenant_id, kind) VALUES (1, 'document') RETURNING id",
     )
-    .bind(&hex_hash)
+    .fetch_one(&pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO files (tenant_id, document_id, sha256, blob_key, path, mime, size_bytes, status) \
+         VALUES (1, $1, $2, $3, 'test.txt', 'text/plain', $4, 'ready')",
+    )
+    .bind(doc_id)
+    .bind(hash.as_slice())
     .bind(&blob_key)
     .bind(data.len() as i64)
     .execute(&pool)
@@ -1123,7 +1132,7 @@ async fn orphan_gc_with_real_pgstore_deletes_orphan_blobs() -> anyhow::Result<()
     // ── Create an orphan blob (no DB row) ──
     let orphan_data = Bytes::from_static(b"orphan blob without db row");
     let orphan_hash = sha2::Sha256::digest(&orphan_data);
-    let orphan_key = format!("test-tenant/{}", hex::encode(orphan_hash));
+    let orphan_key = hex::encode(orphan_hash);
     blob.put(&orphan_key, orphan_data).await?;
 
     // ── Run orphan GC ──
@@ -1159,14 +1168,21 @@ async fn orphan_gc_grace_period_preserves_recent_blobs() -> anyhow::Result<()> {
     let blob = Arc::new(LocalBlob::new(blob_dir.clone(), "test-tenant".into()));
 
     let data = Bytes::from_static(b"recent file");
-    let blob_key = "test-tenant/recent-file.bin";
+    let blob_key = "recent-file.bin";
     blob.put(blob_key, data.clone()).await?;
 
     let pool = store.pool()?;
-    sqlx::query(
-        "INSERT INTO files (tenant_id, sha256, blob_key, path, mime, size_bytes, status, ingested_at) \
-         VALUES (1, 'aabbcc', $1, 'recent.txt', 'text/plain', $2, 'ready', NOW())",
+    let doc_id: i64 = sqlx::query_scalar(
+        "INSERT INTO documents (tenant_id, kind) VALUES (1, 'document') RETURNING id",
     )
+    .fetch_one(&pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO files (tenant_id, document_id, sha256, blob_key, path, mime, size_bytes, status, ingested_at) \
+         VALUES (1, $1, $2, $3, 'recent.txt', 'text/plain', $4, 'ready', NOW())",
+    )
+    .bind(doc_id)
+    .bind(&[0xaau8; 32][..])
     .bind(blob_key)
     .bind(data.len() as i64)
     .execute(&pool)
@@ -1236,11 +1252,17 @@ async fn integrity_scan_with_real_pgstore_verifies_hashes() -> anyhow::Result<()
         blob.put(&blob_key, data.clone()).await?;
 
         let pool = store.pool()?;
-        sqlx::query(
-            "INSERT INTO files (tenant_id, sha256, blob_key, path, mime, size_bytes, status) \
-             VALUES (1, $1, $2, $3, 'application/octet-stream', $4, 'ready')",
+        let doc_id: i64 = sqlx::query_scalar(
+            "INSERT INTO documents (tenant_id, kind) VALUES (1, 'document') RETURNING id",
         )
-        .bind(&hex_hash)
+        .fetch_one(&pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO files (tenant_id, document_id, sha256, blob_key, path, mime, size_bytes, status) \
+             VALUES (1, $1, $2, $3, $4, 'application/octet-stream', $5, 'ready')",
+        )
+        .bind(doc_id)
+        .bind(hash.as_slice())
         .bind(&blob_key)
         .bind(format!("file-{i}.bin"))
         .bind(64i64)

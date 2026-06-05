@@ -489,7 +489,9 @@ async fn e2e_api_ingest_search_document_detail() {
         "must list files"
     );
 
-    // ── 5. GET /api/documents/:id/file/:file_id — verify blob download ──────
+    // ── 5. GET /api/documents/:id/file/:file_id — blob download is a presigned 302
+    //       redirect (plan §20): the app returns a Location URL so the client fetches
+    //       bytes directly from object storage, never proxying them through the API. ──
     let file_id = doc["files"][0]["id"].as_i64().unwrap();
     let req = auth_request(
         "GET",
@@ -497,13 +499,14 @@ async fn e2e_api_ingest_search_document_detail() {
         &session,
     );
     let resp = router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    let body = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
     assert_eq!(
-        body.as_ref(),
-        content,
-        "downloaded file bytes must match ingested content"
+        resp.status(),
+        StatusCode::FOUND,
+        "blob download must be a presigned redirect"
+    );
+    assert!(
+        resp.headers().contains_key(axum::http::header::LOCATION),
+        "redirect must carry a Location (presigned download URL)"
     );
 
     // ── 6. GET /api/jobs/:id — verify non-existent job returns 4xx ───────────
@@ -750,9 +753,12 @@ async fn e2e_admin_tenant_user_crud() {
         body_str.contains("tenant-a") || body_str.contains("Tenant Alpha"),
         "tenants page must list tenant-a"
     );
+    // BUG-ISOL-01: a tenant Owner must NOT enumerate other tenants. The admin tenants page
+    // is scoped to the caller's own tenant, so alice (tenant-a) must never see tenant-b here
+    // — asserting its ABSENCE is the security-correct contract.
     assert!(
-        body_str.contains("tenant-b") || body_str.contains("Tenant Beta"),
-        "tenants page must list tenant-b"
+        !body_str.contains("tenant-b") && !body_str.contains("Tenant Beta"),
+        "tenants page must NOT leak other tenants (BUG-ISOL-01 cross-tenant isolation)"
     );
 
     // ── 6. Admin (bob of tenant B) can access their own dashboard ────────────
