@@ -39,7 +39,7 @@ use kb_scheduler::Pool;
 use kb_scheduler::Reloader;
 use kb_store::ROUTING_CHANNEL;
 use kb_store::api_token_store::InMemoryApiTokenStore;
-use kb_store::{LocalBlob, PgRoutingNotifier, PgSessionStore, PgStore};
+use kb_store::{EMBED_DIM, LocalBlob, PgRoutingNotifier, PgSessionStore, PgStore};
 use tracing::{info, warn};
 
 use crate::cli::ServeArgs;
@@ -47,10 +47,6 @@ use kb_api::AppState;
 use kb_api::backpressure::InflightLimiter;
 use kb_api::metrics_collector;
 use kb_api::stripe_client;
-
-/// Default embedding dimension (matches the schema embedder lock-in, plan §5;
-/// Qwen3-Embedding-4B = 2560 via migration 0023).
-const EMBED_DIM: usize = 2560;
 
 /// Default model names for OpenAI-compatible API requests.
 const DEFAULT_CHAT_MODEL: &str = "default";

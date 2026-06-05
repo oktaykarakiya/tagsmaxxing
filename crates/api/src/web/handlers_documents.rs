@@ -387,10 +387,10 @@ pub async fn add_document_tag(
     {
         Ok(Some(id)) => id,
         Ok(None) => {
-            // Create a new tag with a zero embedding at the schema dimension (1024 =
-            // BGE-M3; must match pgvector(1024) or the DB rejects the INSERT). The
-            // embedding for a user-sourced tag is never used for semantic search.
-            let dummy_embed: Vec<f32> = vec![0.0; 1024];
+            // Create a new tag with a zero embedding at the schema dimension
+            // ([`kb_store::EMBED_DIM`]; must match the tags.embedding VECTOR(N) or the DB
+            // rejects the INSERT). A user-sourced tag's embedding is never used for search.
+            let dummy_embed: Vec<f32> = vec![0.0; kb_store::EMBED_DIM];
             match state
                 .pg_store
                 .upsert_tag(auth_user.tenant_id, &tag_name, &dummy_embed)

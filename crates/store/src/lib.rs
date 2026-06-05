@@ -12,6 +12,14 @@
 //!   [`InMemorySessionStore`](session_store::InMemorySessionStore) for dev/test and
 //!   [`PgSessionStore`](session_store::PgSessionStore) for production (plan §13, P5-T4).
 
+/// The embedding vector dimension the schema is built for — Qwen3-Embedding-4B = **2560**.
+///
+/// MUST equal the `VECTOR(N)` of `chunks.embedding` / `tags.embedding` (migration 0023) and the
+/// `expected_dim` the embedder verifies. Single source of truth so callers that build
+/// placeholder/zero embeddings (e.g. user-sourced tags) never drift from the schema and have
+/// their INSERT rejected for a dimension mismatch.
+pub const EMBED_DIM: usize = 2560;
+
 pub mod admin_queries;
 pub mod api_token_store;
 pub mod b2_blob;

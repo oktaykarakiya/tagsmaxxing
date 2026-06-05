@@ -39,16 +39,12 @@ use kb_pipeline::ingest::{ExtractorRouter, IngestPipeline};
 use kb_pipeline::retrieval::RetrievalPipeline;
 use kb_pipeline::tag_canonicalizer::{TAG_MERGE_THRESHOLD, TagCanonicalizer};
 use kb_scheduler::Pool;
-use kb_store::PgStore;
+use kb_store::{EMBED_DIM, PgStore};
 
 mod cli;
 mod commands;
 
 use cli::{Cli, Command};
-
-/// Default embedding dimension (matches the schema embedder lock-in, plan §5;
-/// Qwen3-Embedding-4B = 2560 via migration 0023).
-const EMBED_DIM: usize = 2560;
 
 /// Default model name sent in OpenAI-compatible API requests.
 const DEFAULT_CHAT_MODEL: &str = "default";
