@@ -28,6 +28,8 @@ pub async fn run_search(
     let query = build_query(args);
     // CLI/system search: no attributable acting user (P14-T2), and never force the
     // keyword degrade — `degrade = false` (P14-T5). The mode is ignored for CLI output.
+    // `local_only = false`: a system context, not a plan-gated request path, so the
+    // remote-models plan gate (P14-T6) does not apply — remote backends used if configured.
     let (hits, _mode) = pipeline
         .retrieve(tenant_id, None, &query, false, false)
         .await

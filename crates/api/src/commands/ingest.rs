@@ -24,7 +24,9 @@ pub async fn run_ingest(
 
     let note = args.note.clone();
     // CLI ingest runs as the operator (no per-user attribution), so usage is
-    // recorded tenant-only (P14-T1).
+    // recorded tenant-only (P14-T1). `local_only = false`: this is a system
+    // context, not a plan-gated request path, so the remote-models plan gate
+    // (P14-T6) does not apply here — remote backends are used if configured.
     let output = pipeline
         .ingest(tenant_id, None, files, note, false)
         .await

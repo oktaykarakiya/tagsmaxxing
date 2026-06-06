@@ -171,6 +171,15 @@ pub async fn search(
         .await;
     let degrade = budget_check_forces_degrade(budget);
 
+    // ── Resolve the remote-models plan gate (P14-T6) ─────────────────────────
+    // Per request (hot-swappable), alongside the budget resolve above: a free-plan
+    // tenant's query embedding + rerank are forced local-only; pro/team (and
+    // grandfathered) tenants may use remote backends. Threaded into the full
+    // (non-degrade) path; the keyword degrade path makes no model call regardless.
+    // Fail-closed to local-only on a lookup error (never leaks remote access).
+    let local_only =
+        crate::handlers::resolve_local_only(&state.pg_store, auth_user.tenant_id).await;
+
     // ── Build query + run pipeline ───────────────────────────────────────────
     let query = SearchQuery {
         text: params.q.clone(),
@@ -187,7 +196,7 @@ pub async fn search(
             auth_user.tenant_id,
             Some(auth_user.user_id),
             &query,
-            false,
+            local_only,
             degrade,
         )
         .await

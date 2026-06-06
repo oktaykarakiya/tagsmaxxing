@@ -201,6 +201,13 @@ pub async fn ingest(
         return Err(internal_error(e));
     }
 
+    // ── Resolve the remote-models plan gate (P14-T6) ─────────────────────────
+    // Per request (hot-swappable): a free-plan tenant is forced to local-only
+    // models; pro/team (and grandfathered) tenants may use remote backends.
+    // Fail-closed to local-only on a lookup error (never leaks remote access).
+    let local_only =
+        crate::handlers::resolve_local_only(&state.pg_store, auth_user.tenant_id).await;
+
     // ── Ensure required components are present ───────────────────────────────
     let blob = state
         .blob
@@ -222,6 +229,7 @@ pub async fn ingest(
         auth_user.tenant_id,
         Some(auth_user.user_id),
         &parsed,
+        local_only,
     )
     .await
     .map_err(map_ingest_error)?;
@@ -335,12 +343,18 @@ pub(crate) struct InlineIngestResult {
 ///
 /// `user_id` is the uploading user; it is threaded into the pipeline so every
 /// metered model call is attributed to that user in `usage_events` (P14-T1).
+///
+/// `local_only` gates remote model backends per the tenant's plan (P14-T6):
+/// `true` forces the pipeline to use ONLY local models (free plan), `false`
+/// permits remote backends if configured (pro/team or grandfathered). The
+/// caller resolves it per request via [`super::resolve_local_only`].
 pub(crate) async fn process_upload_inline(
     blob: &dyn Blob,
     pipeline: &IngestPipeline,
     tenant_id: i64,
     user_id: Option<i64>,
     parsed: &ParsedUpload,
+    local_only: bool,
 ) -> anyhow::Result<InlineIngestResult> {
     // ── Validate each file ─────────────────────────────────────────────────
     for f in &parsed.files {
@@ -365,7 +379,7 @@ pub(crate) async fn process_upload_inline(
             user_id, // attribute metered usage to the uploading user (P14-T1)
             parsed.files.clone(),
             parsed.user_note.clone(),
-            false, // local_only — false uses remote backends if configured
+            local_only, // free plan → local-only models; pro/team → remote OK (P14-T6)
         )
         .await?;
 

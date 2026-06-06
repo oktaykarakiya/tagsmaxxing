@@ -525,6 +525,15 @@ pub async fn search_submit(
         .await;
     let degrade = crate::handlers::search::budget_check_forces_degrade(budget);
 
+    // ── Resolve the remote-models plan gate (P14-T6) ─────────────────────────
+    // Per request (hot-swappable), alongside the budget resolve above: free-plan
+    // tenants are forced to local-only query embedding + rerank; pro/team (and
+    // grandfathered) tenants may use remote backends. Only consulted on the full
+    // (non-degrade) path. Mirrors the JSON search handler. Fail-closed to
+    // local-only on a lookup error (never leaks remote access).
+    let local_only =
+        crate::handlers::resolve_local_only(&state.pg_store, auth_user.tenant_id).await;
+
     // ── Build query + run pipeline ───────────────────────────────────────────
     let query = kb_core::query::Query {
         text: query_text.clone(),
@@ -541,7 +550,7 @@ pub async fn search_submit(
             auth_user.tenant_id,
             Some(auth_user.user_id),
             &query,
-            false,
+            local_only,
             degrade,
         )
         .await
@@ -782,6 +791,13 @@ pub async fn upload_submit(
         }
     };
 
+    // ── Resolve the remote-models plan gate (P14-T6) ────────────────────────
+    // Per request (hot-swappable): free-plan tenants are forced to local-only
+    // models; pro/team (and grandfathered) tenants may use remote backends.
+    // Fail-closed to local-only on a lookup error (never leaks remote access).
+    let local_only =
+        crate::handlers::resolve_local_only(&state.pg_store, auth_user.tenant_id).await;
+
     // ── 6. Process upload inline (synchronous — no worker pool needed) ──────
     // Uses the same path as POST /api/ingest: validate → store blobs → pipeline
     // ingest → return document_id immediately. The job-queue worker pool is not
@@ -792,6 +808,7 @@ pub async fn upload_submit(
         auth_user.tenant_id,
         Some(auth_user.user_id),
         &parsed,
+        local_only,
     )
     .await
     {

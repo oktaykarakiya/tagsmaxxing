@@ -1493,9 +1493,9 @@ description = "B3: remote-models plan gate. Replace hardcoded local_only=false w
 depends_on = ["P14-T1"]
 plan_sections = ["29", "26"]
 acceptance = "free plan forces local_only=true on ingest+search; pro/team allow remote; resolved per-call (no startup capture); unit+integration tests; just ci green. CHECKPOINT: human review (plan/billing behavior)."
-status = "todo"
+status = "done"
 checkpoint = true
-notes = ""
+notes = "CHECKPOINT APPROVED by user 2026-06-06. Wired the dead is_remote_models_allowed gate. handlers/mod.rs adds local_only_for_plan(remote_allowed)=!remote_allowed (pure, unit-tested) + resolve_local_only(&pg_store, tenant) per-request async resolver. Replaced hardcoded local_only=false in ingest (shared process_upload_inline + /api/ingest), search.rs, and both web paths with resolve_local_only resolved PER REQUEST (hot-swappable; a plan upgrade/downgrade or Stripe webhook takes effect on the next request, no restart). Mapping (vs 0018_plans.sql): free->local_only=true, pro/team/grandfathered->false. FAIL-CLOSED to local-only on a plan-lookup DB error (a capability gate must never grant the paid remote capability on uncertainty; the request stays available on local models; moot in this all-local deployment) — approved over hard-fail(500). CLI left local_only=false (operator/system context, commented). 2 unit + 4 #[ignore] pg integration tests. just ci green (cov 80.15%)."
 
 [[task]]
 id = "P14-T7"
