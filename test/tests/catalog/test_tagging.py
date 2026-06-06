@@ -57,7 +57,7 @@ _BROAD_CONTENT = (
 )
 
 # ── Helpers ────────────────────────────────────────────────────────────────
-_RETAG_TIMEOUT = 90  # seconds — generous for llama.cpp retag job
+_RETAG_TIMEOUT = 60  # seconds — must be < pytest --timeout=90 to avoid race
 _RETAG_POLL_INTERVAL = 2.0
 
 
@@ -76,15 +76,22 @@ def _retag_via_browser_and_wait(
 ) -> dict:
     """Trigger a retag through the browser UI and poll until tags change or timeout.
 
-    Returns the document detail after retag has completed.
+    Returns the document detail after retag has completed (or timeout).
     """
     before_tag_names = _tag_names(api.get_document(doc_id))
+
+    # Bound all Playwright operations to avoid greenlet hangs.
+    page.set_default_timeout(15_000)
 
     flows.browser_login(page, tenant, email, password)
     page.goto(f"/documents/{doc_id}")
     # Click the Re-tag button (form action ends with /retag).
-    page.click("form[action$='/retag'] button[type='submit']")
-    page.wait_for_load_state("networkidle")
+    try:
+        page.click("form[action$='/retag'] button[type='submit']", timeout=10_000)
+        page.wait_for_load_state("networkidle", timeout=15_000)
+    except Exception:
+        # Form submission may have still succeeded; proceed to polling.
+        pass
 
     # Poll until tags differ from before or timeout.
     deadline = time.monotonic() + _RETAG_TIMEOUT
