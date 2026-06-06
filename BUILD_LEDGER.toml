@@ -1420,3 +1420,189 @@ acceptance = "Deferred — see phase header."
 status = "deferred"
 checkpoint = false
 notes = "POST-v1 backlog (doc 03). Extends the per-tenant DEK substrate. Not auto-built."
+
+# ── Phase P14 — Limits, Metering & Observability hardening ─────────────────────
+# Wire the dead limit/metering/metrics machinery into live paths (audit 2026-06-06).
+# UX-first HARD enforcement of token-count budgets; per-user usage attribution; a
+# single Prometheus/Grafana pane fed from the Postgres source-of-truth. Design:
+# Postgres = system-of-record (enforce/bill); Prometheus = observability pane;
+# one UsageRecorder seam fans out to both; bounded overshoot + fail-open metering.
+# Full plan: ~/.claude/plans/if-the-user-were-lovely-scroll.md.
+# Sequencing: spine T1->(T4->T5) is STRICTLY SEQUENTIAL; C/D/E (T8-T16) parallelizable
+# in worktree-isolated agents. e2e baseline anchor: 180/43/83 @ c3871bc (run 6d6705).
+
+[[task]]
+id = "P14-T1"
+phase = "P14"
+description = "A1: per-user attribution + monthly rollup + async fail-open recorder. Attribution{tenant_id,user_id}; thread AuthUser.user_id -> jobs.created_by (migration) -> pipeline -> UsageRecorder; populate UsageEvent.user_id. Make the recorder async/buffered/fail-open (never aborts a request). Add tenant_monthly_usage rollup table (migration) upserted in the SAME tx as the usage_events insert, for O(1) enforcement reads. Foundation: blocks A2/A3, B, C1."
+depends_on = []
+plan_sections = ["5", "15", "29"]
+acceptance = "usage_events.user_id populated for ingest AND search calls; tenant_monthly_usage upserts transactionally with the event; recorder failure never fails the request (test); unit+integration tests; just ci green; no new e2e failures vs baseline."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P14-T2"
+phase = "P14"
+description = "A2: meter the search read path. Give RetrievalPipeline a UsageRecorder + Attribution; embed_query passes the context (not None) so query embedding is metered; add with_usage_recorder to LlamaReranker and record rerank usage (consume the currently-dead_code usage at llm/client.rs:138)."
+depends_on = ["P14-T1"]
+plan_sections = ["8", "15"]
+acceptance = "a search records usage_events rows (Embed + Rerank) attributed to tenant+user; unit+integration tests; just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P14-T3"
+phase = "P14"
+description = "A3: meter vision + close tag-canonicalizer gaps. Add a UsageRecorder to VisionCaptioner::describe_image; make tag-canonicalizer metering consistent across alias/similarity hits (no unmetered AI calls remain)."
+depends_on = ["P14-T1"]
+plan_sections = ["7", "15"]
+acceptance = "every AI call site records usage; a VLM ingest records a Vision usage row; unit tests; just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P14-T4"
+phase = "P14"
+description = "B1: monthly token budget enforcement on ingest (UX-first hard block). UTC period_month window on get_token_usage + reconciliation; pre-estimate the job's tokens and check rollup+estimate<=budget BEFORE enqueue -> 429 + upsell; tolerate bounded concurrency overshoot (documented). Emit kb_quota_rejections_total{limit=tokens}."
+depends_on = ["P14-T1"]
+plan_sections = ["29", "26.6"]
+acceptance = "over-budget tenant -> ingest 429 + upsell; under-budget allowed; single huge ingest cannot grossly overshoot; rejection counter increments; unit+integration tests; just ci green. CHECKPOINT: human review (billing/quota)."
+status = "todo"
+checkpoint = true
+notes = ""
+
+[[task]]
+id = "P14-T5"
+phase = "P14"
+description = "B2: token budget on search -> RLS-safe keyword degrade. retrieve(): over-budget (rollup read) OR embed/rerank backend unavailable -> skip embed+rerank, return keyword-only. Promote execute_keyword_query to Store::keyword_search running INSIDE the same begin_tenant_tx with identical filters; signal X-Search-Mode: keyword. Ship a cross-tenant negative test for the lexical path."
+depends_on = ["P14-T4"]
+plan_sections = ["8", "13", "29"]
+acceptance = "over-budget search returns keyword-only (not 500) with X-Search-Mode header; lexical path enforces tenant isolation (cross-tenant negative test passes); unit+integration tests; just ci green. CHECKPOINT: human review (tenant isolation + billing)."
+status = "todo"
+checkpoint = true
+notes = ""
+
+[[task]]
+id = "P14-T6"
+phase = "P14"
+description = "B3: remote-models plan gate. Replace hardcoded local_only=false with is_remote_models_allowed(tenant) RESOLVED AT CALL TIME (hot-swappable) in ingest + search handlers (ingest.rs:326, search.rs:167, web/handlers.rs:513/727)."
+depends_on = ["P14-T1"]
+plan_sections = ["29", "26"]
+acceptance = "free plan forces local_only=true on ingest+search; pro/team allow remote; resolved per-call (no startup capture); unit+integration tests; just ci green. CHECKPOINT: human review (plan/billing behavior)."
+status = "todo"
+checkpoint = true
+notes = ""
+
+[[task]]
+id = "P14-T7"
+phase = "P14"
+description = "B4: per-tenant backpressure fairness. Make ingest in-flight limiting per-tenant fair-share so one tenant cannot 429 everyone (enterprise + UX). api/backpressure.rs + ingest handlers."
+depends_on = []
+plan_sections = ["22"]
+acceptance = "one tenant saturating ingest does not 429 a second tenant; global ceiling still honored; unit tests; just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P14-T8"
+phase = "P14"
+description = "C1: revive per-tenant gauges via the existing metrics_collector (reads the rollup): kb_active_users, kb_tenant_spend_monthly_micros, kb_tenant_budget_exceeded/_cents, new per-tenant monthly token-usage gauge; run the rollup<->usage_events reconciliation here."
+depends_on = ["P14-T1"]
+plan_sections = ["15", "26.6"]
+acceptance = "/metrics exposes the revived per-tenant gauges with live values; reconciliation heals injected drift; unit+collector tests; just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P14-T9"
+phase = "P14"
+description = "C2: revive runtime gauges. Map DegradationState -> kb_subsystem_degraded; publish kb_inflight_ingest from the backpressure limiter; add kb_queue_oldest_job_age_secs (collector already polls the queue)."
+depends_on = []
+plan_sections = ["15", "22"]
+acceptance = "the three dead gauges show live values on /metrics; unit+collector tests; just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P14-T10"
+phase = "P14"
+description = "C3: counters at the seam. kb_tokens_total{role,model} (from the metering seam), kb_quota_rejections_total{limit}, kb_rate_limit_rejections_total{kind}, kb_metering_write_failures_total."
+depends_on = ["P14-T1", "P14-T4"]
+plan_sections = ["15", "29"]
+acceptance = "counters increment at their call sites; visible on /metrics; unit tests; just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P14-T11"
+phase = "P14"
+description = "C4: request correlation. Add a request-id middleware and call the unused request_span/tenant_span (crates/logging) so every request log carries request_id, tenant_id, user_id."
+depends_on = []
+plan_sections = ["18", "15"]
+acceptance = "every request log line carries request_id+tenant_id (+user_id when authed); middleware test; just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P14-T12"
+phase = "P14"
+description = "D1: complete the single pane. Extend crates/metrics/grafana-dashboard.json (token-usage vs budget, rejections, inflight, degradation, queue age); document the Grafana Postgres datasource for exact per-user usage; extend prometheus_alerts.yml (rejection spikes, degradation, inflight saturation); update docs/LOCAL_RUNBOOK.md."
+depends_on = ["P14-T8", "P14-T9", "P14-T10"]
+plan_sections = ["15", "26.6"]
+acceptance = "dashboard JSON valid + panels for the revived metrics; alert rules valid; runbook updated; just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P14-T13"
+phase = "P14"
+description = "D2: in-app per-user view + approaching-limit warnings in handlers_dashboard.rs / handlers_account.rs (per-user usage breakdown; non-blocking 80/90% banners; clear at-cap/degraded messaging)."
+depends_on = ["P14-T1", "P14-T4"]
+plan_sections = ["15", "29"]
+acceptance = "dashboard shows per-user usage + approaching-limit warning; degraded-search banner; unit/handler tests; just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P14-T14"
+phase = "P14"
+description = "E1: provisioning hook + dedicated test account. Admin endpoint POST /admin/tenants/:id/quota-override wrapping set_admin_quota_override (if absent); seed a limits-e2e tenant+user with tiny caps; reusable test/lib fixture that resets usage between cases."
+depends_on = ["P14-T4"]
+plan_sections = ["29"]
+acceptance = "admin can shrink a tenant's caps via the endpoint (admin-only, audited); fixture provisions+resets the limits-e2e account; unit+integration tests; just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P14-T15"
+phase = "P14"
+description = "E2: Playwright limits journey (test/tests/catalog/test_limits_enforcement.py). Log in as limits-e2e and assert every limit via the browser: storage 413+banner, token budget 429+upsell, over-budget search keyword-only basic-results, invite past max_users 403+seat msg, request flood 429, dashboard usage+per-user+warning."
+depends_on = ["P14-T5", "P14-T13", "P14-T14"]
+plan_sections = ["29", "15"]
+acceptance = "the journey passes against the limits-e2e account; isolates the rate-cap case from the per-IP login limiter; recorded in results CSV."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P14-T16"
+phase = "P14"
+description = "E3: per-case API/observability tests. Extend test_quotas.py (each limit -> correct status + kb_quota_rejections_total increment) and test_observability.py (revived gauges present + move) on the dedicated account."
+depends_on = ["P14-T8", "P14-T14"]
+plan_sections = ["29", "15"]
+acceptance = "API-layer per-case assertions pass; rejection/usage metrics asserted; recorded in results CSV."
+status = "todo"
+checkpoint = false
+notes = ""
