@@ -283,8 +283,7 @@ impl LlamaClient {
                     }
                     for img in &req.images {
                         use base64::Engine;
-                        let b64 = base64::engine::general_purpose::STANDARD
-                            .encode(&img.data);
+                        let b64 = base64::engine::general_purpose::STANDARD.encode(&img.data);
                         content_parts.push(serde_json::json!({
                             "type": "image_url",
                             "image_url": {

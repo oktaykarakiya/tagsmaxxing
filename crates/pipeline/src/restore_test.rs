@@ -1316,6 +1316,7 @@ mod tests {
             last_error: None,
             run_after: Utc::now(),
             created_at: Utc::now(),
+            created_by: None,
         };
 
         let result = process_restore_test_job(&runner, &test_config(), &job).await;

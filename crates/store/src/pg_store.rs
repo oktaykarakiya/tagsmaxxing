@@ -739,6 +739,24 @@ fn parse_vector_text(s: &str) -> anyhow::Result<Vec<f32>> {
 
 const USAGE_INSERT_SQL: &str = "INSERT INTO usage_events (tenant_id,user_id,model,role,backend_id,prompt_tokens,completion_tokens,latency_ms,cost_micros) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id";
 
+/// Upsert the per-tenant monthly token rollup (P14-T1). `$2` is the event's
+/// `created_at`; it is truncated to the first day of its UTC calendar month so
+/// every event in a month shares one `(tenant_id, period_month)` row. The
+/// `date_trunc(...) AT TIME ZONE 'UTC'` cast yields a `DATE`, matching the
+/// `period_month DATE` column. Runs inside the same tenant transaction as the
+/// `usage_events` insert, so the event and its rollup commit atomically.
+const MONTHLY_ROLLUP_UPSERT_SQL: &str = "INSERT INTO tenant_monthly_usage \
+     (tenant_id, period_month, tokens_used, updated_at) \
+     VALUES ($1, (date_trunc('month', $2::timestamptz AT TIME ZONE 'UTC'))::date, $3, now()) \
+     ON CONFLICT (tenant_id, period_month) DO UPDATE \
+     SET tokens_used = tenant_monthly_usage.tokens_used + EXCLUDED.tokens_used, \
+         updated_at = now()";
+
+/// Point-select the current UTC month's token rollup for a tenant (P14-T1).
+const MONTHLY_ROLLUP_CURRENT_SQL: &str = "SELECT tokens_used FROM tenant_monthly_usage \
+     WHERE tenant_id = $1 \
+       AND period_month = (date_trunc('month', now() AT TIME ZONE 'UTC'))::date";
+
 // ── Store implementation ─────────────────────────────────────────────────────
 
 #[async_trait]
@@ -1267,6 +1285,11 @@ impl PgStore {
 
     /// Record a single model-call usage event, returning the new row's id.
     ///
+    /// In the SAME tenant transaction, when the event reports any tokens, the
+    /// per-tenant monthly rollup (`tenant_monthly_usage`) is upserted by the
+    /// event's UTC calendar month (P14-T1), so the event and its aggregate
+    /// commit atomically and enforcement can read the month in O(1).
+    ///
     /// # Errors
     /// Returns an error if the database is not connected or the query fails.
     pub async fn insert_usage_event(&self, event: &UsageEvent) -> anyhow::Result<i64> {
@@ -1285,10 +1308,47 @@ impl PgStore {
             .fetch_one(&mut *tx)
             .await
             .context("failed to insert usage event")?;
+
+        // Roll the event's tokens into the tenant's monthly counter (P14-T1).
+        // Only when there is something to add, so zero-token calls (e.g. a
+        // local backend that reports no usage) never create empty rows.
+        let tokens =
+            event.prompt_tokens.unwrap_or(0) as i64 + event.completion_tokens.unwrap_or(0) as i64;
+        if tokens > 0 {
+            sqlx::query(MONTHLY_ROLLUP_UPSERT_SQL)
+                .bind(event.tenant_id)
+                .bind(event.created_at)
+                .bind(tokens)
+                .execute(&mut *tx)
+                .await
+                .context("failed to upsert monthly token rollup")?;
+        }
+
         tx.commit()
             .await
             .context("failed to commit insert_usage_event")?;
         Ok(id)
+    }
+
+    /// Return the tenant's token total for the current UTC calendar month from
+    /// the pre-aggregated rollup (P14-T1), or `0` when no usage has been
+    /// recorded this month. This is the O(1) read backing per-month token quota
+    /// enforcement (no `SUM` over `usage_events`).
+    ///
+    /// # Errors
+    /// Returns an error if the database is not connected or the query fails.
+    pub async fn get_current_month_token_rollup(&self, tenant_id: i64) -> anyhow::Result<i64> {
+        let pool = self.app_pool()?;
+        let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
+        let tokens: Option<i64> = sqlx::query_scalar::<Postgres, i64>(MONTHLY_ROLLUP_CURRENT_SQL)
+            .bind(tenant_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .context("failed to read current-month token rollup")?;
+        tx.commit()
+            .await
+            .context("failed to commit get_current_month_token_rollup")?;
+        Ok(tokens.unwrap_or(0))
     }
 
     /// Atomically upsert a document and all its files, tags, and chunks in one
@@ -2439,7 +2499,7 @@ impl PgStore {
         let pool = self.pool()?;
         let row: Option<sqlx::postgres::PgRow> = sqlx::query(
             "SELECT id, tenant_id, file_id, document_id, kind, priority, status, attempts, \
-             last_error, run_after, created_at \
+             last_error, run_after, created_at, created_by \
              FROM jobs WHERE id = $1 AND tenant_id = $2",
         )
         .bind(job_id)
@@ -2465,6 +2525,7 @@ impl PgStore {
                     last_error: r.try_get("last_error")?,
                     run_after: r.try_get("run_after")?,
                     created_at: r.try_get("created_at")?,
+                    created_by: r.try_get("created_by")?,
                 }))
             }
             None => Ok(None),
@@ -3298,6 +3359,44 @@ mod tests {
         assert!(USAGE_INSERT_SQL.contains("$1"));
         assert!(USAGE_INSERT_SQL.contains("$9"));
         assert!(USAGE_INSERT_SQL.contains("cost_micros"));
+    }
+
+    #[test]
+    fn monthly_rollup_upsert_sql_is_well_formed() {
+        // P14-T1: month-truncated UTC upsert keyed on (tenant_id, period_month),
+        // adding the new tokens to the running total on conflict.
+        assert!(MONTHLY_ROLLUP_UPSERT_SQL.starts_with("INSERT INTO tenant_monthly_usage"));
+        assert!(MONTHLY_ROLLUP_UPSERT_SQL.contains("date_trunc('month', $2::timestamptz"));
+        assert!(MONTHLY_ROLLUP_UPSERT_SQL.contains("AT TIME ZONE 'UTC'))::date"));
+        assert!(
+            MONTHLY_ROLLUP_UPSERT_SQL.contains("ON CONFLICT (tenant_id, period_month) DO UPDATE")
+        );
+        assert!(
+            MONTHLY_ROLLUP_UPSERT_SQL
+                .contains("tokens_used = tenant_monthly_usage.tokens_used + EXCLUDED.tokens_used")
+        );
+        assert!(MONTHLY_ROLLUP_UPSERT_SQL.contains("$1"));
+        assert!(MONTHLY_ROLLUP_UPSERT_SQL.contains("$3"));
+    }
+
+    #[test]
+    fn monthly_rollup_current_sql_is_well_formed() {
+        assert!(
+            MONTHLY_ROLLUP_CURRENT_SQL.starts_with("SELECT tokens_used FROM tenant_monthly_usage")
+        );
+        assert!(
+            MONTHLY_ROLLUP_CURRENT_SQL
+                .contains("date_trunc('month', now() AT TIME ZONE 'UTC'))::date")
+        );
+        assert!(MONTHLY_ROLLUP_CURRENT_SQL.contains("$1"));
+    }
+
+    #[tokio::test]
+    async fn get_current_month_token_rollup_errors_before_connect() {
+        // Before a pool is connected the rollup read surfaces an error rather
+        // than panicking (mirrors the other pre-connect guards).
+        let store = PgStore::new("postgres://localhost/db");
+        assert!(store.get_current_month_token_rollup(1).await.is_err());
     }
 
     #[tokio::test]

@@ -709,6 +709,7 @@ mod tests {
             last_error: Some(serde_json::to_string(&payload).unwrap()),
             run_after: chrono::Utc::now(),
             created_at: chrono::Utc::now(),
+            created_by: None,
         };
         let result = process_email_job(provider, job).await;
         assert!(result.is_ok());
@@ -730,6 +731,7 @@ mod tests {
             last_error: Some(serde_json::to_string(&payload).unwrap()),
             run_after: chrono::Utc::now(),
             created_at: chrono::Utc::now(),
+            created_by: None,
         };
         let result = process_email_job(provider, job).await;
         assert!(result.is_err());
@@ -751,6 +753,7 @@ mod tests {
             last_error: None,
             run_after: chrono::Utc::now(),
             created_at: chrono::Utc::now(),
+            created_by: None,
         };
         let result = process_email_job(provider, job).await;
         assert!(result.is_err());
@@ -771,6 +774,7 @@ mod tests {
             last_error: Some("not json".into()),
             run_after: chrono::Utc::now(),
             created_at: chrono::Utc::now(),
+            created_by: None,
         };
         let result = process_email_job(provider, job).await;
         assert!(result.is_err());

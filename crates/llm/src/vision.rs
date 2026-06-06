@@ -44,12 +44,7 @@ const MAX_IMAGE_DIM: u32 = 1024;
 /// MIME types that the VLM backend is known to support. Images with
 /// unsupported MIME types (e.g. `image/webp`) are silently skipped to
 /// prevent backend crashes (`vk::DeviceLostError` on AMD Vulkan).
-const VLM_SUPPORTED_MIMES: &[&str] = &[
-    "image/jpeg",
-    "image/png",
-    "image/gif",
-    "image/tiff",
-];
+const VLM_SUPPORTED_MIMES: &[&str] = &["image/jpeg", "image/png", "image/gif", "image/tiff"];
 
 /// Calls a VLM (vision-language model) through the scheduler pool to
 /// produce textual descriptions of encoded image bytes.
@@ -94,8 +89,8 @@ impl VisionCaptioner {
         }
 
         // ── Client-side resize ────────────────────────────────────────────
-        let image_bytes = resize_for_vlm(&image.data, &image.mime)
-            .unwrap_or_else(|| image.data.to_vec());
+        let image_bytes =
+            resize_for_vlm(&image.data, &image.mime).unwrap_or_else(|| image.data.to_vec());
 
         // ── VLM call ──────────────────────────────────────────────────────
         let resized = PageImage {
@@ -175,19 +170,13 @@ fn resize_for_vlm(bytes: &[u8], mime: &str) -> Option<Vec<u8>> {
     let new_w = (w as f64 * scale) as u32;
     let new_h = (h as f64 * scale) as u32;
 
-    let resized = img.resize_exact(
-        new_w,
-        new_h,
-        image::imageops::FilterType::Lanczos3,
-    );
+    let resized = img.resize_exact(new_w, new_h, image::imageops::FilterType::Lanczos3);
 
     let mut buf = std::io::Cursor::new(Vec::new());
     // Always encode as JPEG for predictable, compact output. The VLM
     // decodes this natively and the quality difference vs PNG for a
     // captioning prompt is negligible.
-    resized
-        .write_to(&mut buf, image::ImageFormat::Jpeg)
-        .ok()?;
+    resized.write_to(&mut buf, image::ImageFormat::Jpeg).ok()?;
 
     let out = buf.into_inner();
     tracing::debug!(
@@ -219,9 +208,7 @@ mod tests {
 
     /// Build a captioner with a mock vision backend.
     /// Uses `max_retries = 0` so VLM failures never cascade to circuit breaker.
-    async fn captioner_with_vision_backend(
-        caption: &str,
-    ) -> (VisionCaptioner, MockBackend) {
+    async fn captioner_with_vision_backend(caption: &str) -> (VisionCaptioner, MockBackend) {
         let mock = MockBackend::start().await;
         mock.scenario().lock().await.chat_content = Some(caption.to_string());
 
@@ -268,7 +255,10 @@ mod tests {
         let expected = "A photo of a sunset over mountains.";
         let (captioner, mock) = captioner_with_vision_backend(expected).await;
 
-        let caption = captioner.describe_image(&test_image(), false).await.unwrap();
+        let caption = captioner
+            .describe_image(&test_image(), false)
+            .await
+            .unwrap();
         assert_eq!(caption, expected);
 
         mock.shutdown().await;
@@ -299,7 +289,10 @@ mod tests {
         let (captioner, mock) = captioner_with_vision_backend("should-not-be-called").await;
 
         // Should return empty without calling the VLM.
-        let result = captioner.describe_image(&test_webp_image(), false).await.unwrap();
+        let result = captioner
+            .describe_image(&test_webp_image(), false)
+            .await
+            .unwrap();
         assert!(result.is_empty(), "WebP should be skipped, got: {result:?}");
 
         mock.shutdown().await;
@@ -336,7 +329,7 @@ mod tests {
     /// Large images get downscaled.
     #[test]
     fn resize_large_image_downscales() {
-        use image::{RgbImage, ImageFormat};
+        use image::{ImageFormat, RgbImage};
 
         // Create a 2000×2000 RGB image (exceeds MAX_IMAGE_DIM=1024).
         let img = RgbImage::from_pixel(2000, 2000, image::Rgb([120, 80, 200]));
@@ -364,7 +357,10 @@ mod tests {
         let (captioner, mock) = captioner_with_vision_backend("unused").await;
         mock.scenario().lock().await.chat = ResponseMode::ServerError;
 
-        let err = captioner.describe_image(&test_image(), false).await.unwrap_err();
+        let err = captioner
+            .describe_image(&test_image(), false)
+            .await
+            .unwrap_err();
         assert!(
             err.to_string().contains("VLM captioning failed"),
             "error should mention VLM captioning: {err}"
@@ -377,7 +373,10 @@ mod tests {
     async fn describe_many_empty_on_all_empty_captions() {
         let (captioner, mock) = captioner_with_vision_backend("").await;
 
-        let result = captioner.describe_many(&[test_image()], false).await.unwrap();
+        let result = captioner
+            .describe_many(&[test_image()], false)
+            .await
+            .unwrap();
         assert!(result.is_empty(), "empty caption should be skipped");
 
         mock.shutdown().await;
@@ -387,7 +386,7 @@ mod tests {
 
     #[tokio::test]
     async fn describe_image_resizes_large_image_before_sending() {
-        use image::{RgbImage, ImageFormat};
+        use image::{ImageFormat, RgbImage};
 
         let expected = "A large purple square.";
         let (captioner, mock) = captioner_with_vision_backend(expected).await;
@@ -397,7 +396,9 @@ mod tests {
         let mut buf = std::io::Cursor::new(Vec::new());
         img.write_to(&mut buf, ImageFormat::Jpeg).unwrap();
         let large_jpeg = buf.into_inner();
-        let original_len = large_jpeg.len();
+        // Pre-existing unused binding; prefixed to satisfy clippy -D warnings
+        // (the mock can't validate payload size — see note below).
+        let _original_len = large_jpeg.len();
 
         let page = PageImage {
             data: bytes::Bytes::from(large_jpeg),

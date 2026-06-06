@@ -21,7 +21,7 @@ use bytes::Bytes;
 use kb_core::blob::Blob;
 use kb_core::chunk::Chunk;
 use kb_core::document::Document;
-use kb_core::extractor::{Extracted, Extractor, PageImage, RawFile};
+use kb_core::extractor::{Extracted, Extractor, RawFile};
 use kb_core::file::FileRecord;
 use kb_core::job::Job;
 use kb_core::kind::DocKind;
@@ -195,6 +195,12 @@ impl IngestPipeline {
     /// [`process_ingest_job`] as the handler with
     /// [`run_worker_pool`](crate::run_worker_pool).
     ///
+    /// `user_id` attributes every metered model call made during this ingest
+    /// (tagging, tag-name embedding, chunk embedding) to the acting user in
+    /// `usage_events` (P14-T1). Pass the request's `AuthUser.user_id` on the
+    /// inline path, or `Job::created_by` from the job processor; `None` records
+    /// the usage tenant-only.
+    ///
     /// # Errors
     ///
     /// Returns an error if any step fails. The final
@@ -203,6 +209,7 @@ impl IngestPipeline {
     pub async fn ingest(
         &self,
         tenant_id: i64,
+        user_id: Option<i64>,
         files: Vec<IngestFile>,
         user_note: Option<String>,
         local_only: bool,
@@ -320,26 +327,29 @@ impl IngestPipeline {
         // If we have page images and a captioner, ask the VLM to describe
         // them and prepend the descriptions so the tagger sees visual content
         // rather than just EXIF metadata text.
-        if let Some(ref captioner) = self.vision_captioner {
-            if !merged.page_images.is_empty() {
-                match captioner.describe_many(&merged.page_images, local_only).await {
-                    Ok(caption) if !caption.is_empty() => {
-                        // Prepend the visual description to the text the tagger
-                        // sees. Using a clear delimiter so the prompt-injection
-                        // boundary in the tagger still wraps everything.
-                        merged.merged_text = format!(
-                            "--- image description ---\n{caption}\n---\n\n{}",
-                            merged.merged_text
-                        );
-                    }
-                    Ok(_) => {} // empty caption — nothing to prepend
-                    Err(e) => {
-                        tracing::warn!(
-                            error = %e,
-                            kind = ?merged.kind,
-                            "VLM captioning failed; continuing with text-only tagger input"
-                        );
-                    }
+        if let Some(ref captioner) = self.vision_captioner
+            && !merged.page_images.is_empty()
+        {
+            match captioner
+                .describe_many(&merged.page_images, local_only)
+                .await
+            {
+                Ok(caption) if !caption.is_empty() => {
+                    // Prepend the visual description to the text the tagger
+                    // sees. Using a clear delimiter so the prompt-injection
+                    // boundary in the tagger still wraps everything.
+                    merged.merged_text = format!(
+                        "--- image description ---\n{caption}\n---\n\n{}",
+                        merged.merged_text
+                    );
+                }
+                Ok(_) => {} // empty caption — nothing to prepend
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        kind = ?merged.kind,
+                        "VLM captioning failed; continuing with text-only tagger input"
+                    );
                 }
             }
         }
@@ -347,6 +357,7 @@ impl IngestPipeline {
         // 5. Tag the whole document once over all pages' text + metadata.
         let tag_input = TagInput {
             tenant_id,
+            user_id,
             text: merged.merged_text.clone(),
             user_note: document.user_note.clone(),
             kind: merged.kind,
@@ -357,7 +368,7 @@ impl IngestPipeline {
         // 6. Canonicalize tags against the tenant's existing tag set.
         let tag_ids = self
             .canonicalizer
-            .canonicalize(tenant_id, &tag_output.tags, local_only)
+            .canonicalize(tenant_id, user_id, &tag_output.tags, local_only)
             .await?;
 
         // 7. Chunk + embed — one batch per file so transactional_ingest
@@ -377,7 +388,7 @@ impl IngestPipeline {
             } else {
                 let embedded = self
                     .embedder
-                    .embed_chunks(text_chunks, tenant_id, document.id, local_only)
+                    .embed_chunks(text_chunks, tenant_id, user_id, document.id, local_only)
                     .await?;
                 embedded_per_file.push(embedded);
             }
@@ -469,8 +480,10 @@ where
         .await
         .map_err(|e| e.to_string())?;
 
+    // Attribute the ingest's model-call usage to the user who enqueued the job
+    // (P14-T1); `created_by` is `None` for system-enqueued jobs.
     pipeline
-        .ingest(job.tenant_id, files, None, false)
+        .ingest(job.tenant_id, job.created_by, files, None, false)
         .await
         .map_err(|e| e.to_string())
 }
@@ -552,11 +565,16 @@ impl RetagStore for kb_store::PgStore {
 /// Returns the canonical tag ids now assigned to the document
 /// (locked ids ∪ newly canonicalized ids).
 ///
+/// `user_id` attributes the retag's model-call usage to the user who requested
+/// it (P14-T1, typically `Job::created_by`); `None` records it tenant-only.
+///
 /// # Errors
 ///
 /// Returns an error string suitable for `jobs.last_error` if any step fails.
+#[allow(clippy::too_many_arguments)]
 pub async fn process_retag_job(
     tenant_id: i64,
+    user_id: Option<i64>,
     document_id: i64,
     document_text: &str,
     tagger: &dyn Tagger,
@@ -579,6 +597,7 @@ pub async fn process_retag_job(
     // 3. Tag the document.
     let tag_input = TagInput {
         tenant_id,
+        user_id,
         text: document_text.to_string(),
         user_note: None,
         kind: DocKind::Document,
@@ -591,7 +610,7 @@ pub async fn process_retag_job(
 
     // 4. Canonicalize.
     let new_tag_ids = canonicalizer
-        .canonicalize(tenant_id, &tag_output.tags, local_only)
+        .canonicalize(tenant_id, user_id, &tag_output.tags, local_only)
         .await
         .map_err(|e| format!("canonicalizer failed: {e}"))?;
 
@@ -750,6 +769,7 @@ mod tests {
     use std::time::Duration;
 
     use kb_core::chunk::Chunk;
+    use kb_core::extractor::PageImage;
     use kb_core::job::{Job, JobKind, JobStatus};
     use kb_core::tagger::TagOutput;
 
@@ -1338,7 +1358,13 @@ mod tests {
         }];
 
         let output = pipeline
-            .ingest(1 /* tenant_id */, files, Some("my note".into()), false)
+            .ingest(
+                1,    /* tenant_id */
+                None, /* user_id */
+                files,
+                Some("my note".into()),
+                false,
+            )
             .await
             .unwrap();
 
@@ -1381,7 +1407,7 @@ mod tests {
             path: Some("doc.txt".into()),
         }];
 
-        pipeline.ingest(1, files, None, false).await.unwrap();
+        pipeline.ingest(1, None, files, None, false).await.unwrap();
 
         let statuses = store.file_statuses.lock().unwrap();
         assert!(!statuses.is_empty(), "a file should have been persisted");
@@ -1405,7 +1431,10 @@ mod tests {
         )
         .await;
 
-        let err = pipeline.ingest(1, vec![], None, false).await.unwrap_err();
+        let err = pipeline
+            .ingest(1, None, vec![], None, false)
+            .await
+            .unwrap_err();
         assert!(
             err.to_string().contains("at least one file"),
             "expected 'at least one file' error, got: {err}"
@@ -1467,6 +1496,7 @@ mod tests {
         let tagger = FailingTagger;
         let input = TagInput {
             tenant_id: 1,
+            user_id: None,
             text: "test".into(),
             user_note: None,
             kind: DocKind::Document,
@@ -1554,7 +1584,7 @@ mod tests {
             path: Some("bytes-test.txt".into()),
         }];
 
-        let _output = pipeline.ingest(1, files, None, false).await.unwrap();
+        let _output = pipeline.ingest(1, None, files, None, false).await.unwrap();
 
         // Verify the extractor received the exact bytes.
         let received = recording.received_bytes();
@@ -1632,7 +1662,7 @@ mod tests {
             path: Some("unknown.bin".into()),
         }];
 
-        let output = pipeline.ingest(1, files, None, false).await.unwrap();
+        let output = pipeline.ingest(1, None, files, None, false).await.unwrap();
 
         // The document should still be created (with empty text, tag only).
         assert_eq!(output.document_id, 10);
@@ -1707,7 +1737,7 @@ mod tests {
             path: Some("blob.txt".into()),
         }];
 
-        let output = pipeline.ingest(1, files, None, false).await.unwrap();
+        let output = pipeline.ingest(1, None, files, None, false).await.unwrap();
         assert_eq!(output.document_id, 77);
 
         // Read the blob back — the key is tenant-prefixed hex(sha256),
@@ -1761,7 +1791,7 @@ mod tests {
         ];
 
         let output = pipeline
-            .ingest(1, files, Some("two pages".into()), false)
+            .ingest(1, None, files, Some("two pages".into()), false)
             .await
             .unwrap();
 
@@ -1857,7 +1887,7 @@ mod tests {
         }];
 
         let _output = pipeline
-            .ingest(1, files, Some("my custom note".into()), false)
+            .ingest(1, None, files, Some("my custom note".into()), false)
             .await
             .unwrap();
 
@@ -1894,6 +1924,7 @@ mod tests {
             last_error: None,
             run_after: chrono::Utc::now(),
             created_at: chrono::Utc::now(),
+            created_by: None,
         };
 
         let test_bytes = b"job-processed content".to_vec();
@@ -1940,6 +1971,7 @@ mod tests {
             last_error: None,
             run_after: chrono::Utc::now(),
             created_at: chrono::Utc::now(),
+            created_by: None,
         };
 
         let err = process_ingest_job(&pipeline, &job, |_tenant_id, _file_id| {
@@ -2075,7 +2107,7 @@ mod tests {
             path: Some("photo.png".into()),
         }];
 
-        let output = pipeline.ingest(1, files, None, false).await.unwrap();
+        let output = pipeline.ingest(1, None, files, None, false).await.unwrap();
         assert_eq!(output.document_id, 33);
         assert_eq!(output.chunk_count, 0, "empty text → zero chunks");
 
@@ -2103,15 +2135,21 @@ mod tests {
     /// Build a pipeline with a VisionCaptioner backed by a mock vision backend.
     async fn vision_test_pipeline(
         caption: &str,
-    ) -> (IngestPipeline, Arc<MockIngestStore>, kb_mock_backend::MockBackend) {
+    ) -> (
+        IngestPipeline,
+        Arc<MockIngestStore>,
+        kb_mock_backend::MockBackend,
+    ) {
         use kb_core::role::Role;
         use kb_mock_backend::MockBackend;
         use kb_scheduler::{Pool, test_backend};
         use reqwest::Client;
 
         let dir = tempfile::tempdir().unwrap();
-        let blob: Arc<dyn Blob> =
-            Arc::new(kb_store::LocalBlob::new(dir.path().to_path_buf(), "vtest".into()));
+        let blob: Arc<dyn Blob> = Arc::new(kb_store::LocalBlob::new(
+            dir.path().to_path_buf(),
+            "vtest".into(),
+        ));
 
         let mut extractors: ExtractorRouter = HashMap::new();
         extractors.insert(DocKind::Image, Arc::new(ImageMockExtractor));
@@ -2129,43 +2167,52 @@ mod tests {
         vision_mock.scenario().lock().await.chat_content = Some(caption.to_string());
         let vision_url = vision_mock.url("/v1");
         let vision_backend = Arc::new(test_backend(
-            "mock-vision", vision_url, vec![Role::Vision], 0, 2,
+            "mock-vision",
+            vision_url,
+            vec![Role::Vision],
+            0,
+            2,
         ));
         let vision_pool = Pool::new(vec![vision_backend], Duration::from_secs(5));
-        let vision_client = kb_llm::LlamaClient::new(
-            vision_pool, Client::new(), 0, 0, Duration::from_millis(200),
-        );
-        let captioner =
-            Arc::new(VisionCaptioner::new(vision_client, "test-vision".into()));
+        let vision_client =
+            kb_llm::LlamaClient::new(vision_pool, Client::new(), 0, 0, Duration::from_millis(200));
+        let captioner = Arc::new(VisionCaptioner::new(vision_client, "test-vision".into()));
 
         // Embed mock backend.
         let embed_mock = MockBackend::start().await;
         let embed_url = embed_mock.url("/v1");
         let embed_backend = Arc::new(test_backend(
-            "mock-embed", embed_url, vec![Role::Embed], 0, 8,
+            "mock-embed",
+            embed_url,
+            vec![Role::Embed],
+            0,
+            8,
         ));
         let embed_pool = Pool::new(vec![embed_backend], Duration::from_secs(5));
         let llm = Arc::new(kb_llm::LlamaClient::new(
-            embed_pool, Client::new(), 0, 0, Duration::from_millis(200),
+            embed_pool,
+            Client::new(),
+            0,
+            0,
+            Duration::from_millis(200),
         ));
-        let embedder = Arc::new(ChunkEmbedder::new(
-            Arc::clone(&llm), "test-embed".into(), 3,
-        ));
+        let embedder = Arc::new(ChunkEmbedder::new(Arc::clone(&llm), "test-embed".into(), 3));
 
         let tag_store: Arc<dyn crate::tag_store::TagStore> =
             Arc::new(crate::tag_store::mock::MockTagStore::new());
         let canonicalizer = Arc::new(TagCanonicalizer::new(
-            tag_store, Arc::clone(&llm), "test-embed".into(),
+            tag_store,
+            Arc::clone(&llm),
+            "test-embed".into(),
             crate::tag_canonicalizer::TAG_MERGE_THRESHOLD,
         ));
 
         let ingest_store = Arc::new(MockIngestStore::new(200));
         let store_ref = Arc::clone(&ingest_store) as Arc<dyn IngestStore>;
 
-        let pipeline = IngestPipeline::new(
-            blob, extractors, tagger, canonicalizer, embedder, store_ref,
-        )
-        .with_vision_captioner(captioner);
+        let pipeline =
+            IngestPipeline::new(blob, extractors, tagger, canonicalizer, embedder, store_ref)
+                .with_vision_captioner(captioner);
 
         std::mem::forget(embed_mock);
         (pipeline, ingest_store, vision_mock)
@@ -2183,7 +2230,7 @@ mod tests {
             path: Some("car.jpg".into()),
         }];
 
-        let output = pipeline.ingest(1, files, None, false).await.unwrap();
+        let output = pipeline.ingest(1, None, files, None, false).await.unwrap();
         assert_eq!(output.document_id, 200);
         assert_eq!(store.call_count(), 1, "pipeline should commit one document");
 
@@ -2194,8 +2241,10 @@ mod tests {
     #[tokio::test]
     async fn pipeline_no_captioner_images_ingest_normally() {
         let dir = tempfile::tempdir().unwrap();
-        let blob: Arc<dyn Blob> =
-            Arc::new(kb_store::LocalBlob::new(dir.path().to_path_buf(), "nc-t".into()));
+        let blob: Arc<dyn Blob> = Arc::new(kb_store::LocalBlob::new(
+            dir.path().to_path_buf(),
+            "nc-t".into(),
+        ));
 
         let mut extractors: ExtractorRouter = HashMap::new();
         extractors.insert(DocKind::Image, Arc::new(ImageMockExtractor));
@@ -2213,22 +2262,36 @@ mod tests {
 
         let mock = kb_mock_backend::MockBackend::start().await;
         let backend = Arc::new(kb_scheduler::test_backend(
-            "mock-embed", mock.url("/v1"), vec![Role::Embed], 0, 8,
+            "mock-embed",
+            mock.url("/v1"),
+            vec![Role::Embed],
+            0,
+            8,
         ));
         let pool = Pool::new(vec![backend], Duration::from_secs(5));
         let llm = Arc::new(kb_llm::LlamaClient::new(
-            pool, reqwest::Client::new(), 0, 0, Duration::from_millis(200),
+            pool,
+            reqwest::Client::new(),
+            0,
+            0,
+            Duration::from_millis(200),
         ));
         let embedder = Arc::new(ChunkEmbedder::new(Arc::clone(&llm), "e".into(), 3));
         let tag_store: Arc<dyn crate::tag_store::TagStore> =
             Arc::new(crate::tag_store::mock::MockTagStore::new());
         let canonicalizer = Arc::new(TagCanonicalizer::new(
-            tag_store, Arc::clone(&llm), "e".into(),
+            tag_store,
+            Arc::clone(&llm),
+            "e".into(),
             crate::tag_canonicalizer::TAG_MERGE_THRESHOLD,
         ));
         let ingest_store = Arc::new(MockIngestStore::new(301));
         let pipeline = IngestPipeline::new(
-            blob, extractors, tagger, canonicalizer, embedder,
+            blob,
+            extractors,
+            tagger,
+            canonicalizer,
+            embedder,
             Arc::clone(&ingest_store) as Arc<dyn IngestStore>,
         );
         // NO .with_vision_captioner()
@@ -2238,7 +2301,7 @@ mod tests {
             page_label: None,
             path: Some("pic.jpg".into()),
         }];
-        let output = pipeline.ingest(1, files, None, false).await.unwrap();
+        let output = pipeline.ingest(1, None, files, None, false).await.unwrap();
         assert_eq!(output.document_id, 301);
         assert_eq!(ingest_store.call_count(), 1);
 
@@ -2249,8 +2312,7 @@ mod tests {
     /// (page_images is empty, so describe_many is never called).
     #[tokio::test]
     async fn pipeline_text_document_unaffected_by_captioner() {
-        let (pipeline, store, vision_mock) =
-            vision_test_pipeline("should-not-be-called").await;
+        let (pipeline, store, vision_mock) = vision_test_pipeline("should-not-be-called").await;
 
         let files = vec![IngestFile {
             bytes: b"Hello, world.".to_vec(),
@@ -2258,7 +2320,7 @@ mod tests {
             path: Some("note.txt".into()),
         }];
 
-        let output = pipeline.ingest(1, files, None, false).await.unwrap();
+        let output = pipeline.ingest(1, None, files, None, false).await.unwrap();
         assert_eq!(output.document_id, 200);
         assert_eq!(store.call_count(), 1);
 
@@ -2416,10 +2478,18 @@ mod tests {
             },
         };
 
-        let result =
-            process_retag_job(1, 42, "document text", &tagger, &canon, &retag_store, false)
-                .await
-                .unwrap();
+        let result = process_retag_job(
+            1,
+            None,
+            42,
+            "document text",
+            &tagger,
+            &canon,
+            &retag_store,
+            false,
+        )
+        .await
+        .unwrap();
 
         // Locked tag 100 + LLM tags should all be present.
         assert!(result.contains(&100), "locked tag must be in result");
@@ -2448,7 +2518,7 @@ mod tests {
             },
         };
 
-        let result = process_retag_job(1, 42, "text", &tagger, &canon, &retag_store, false)
+        let result = process_retag_job(1, None, 42, "text", &tagger, &canon, &retag_store, false)
             .await
             .unwrap();
 
@@ -2484,7 +2554,7 @@ mod tests {
             },
         };
 
-        let result = process_retag_job(1, 42, "text", &tagger, &canon, &retag_store, false)
+        let result = process_retag_job(1, None, 42, "text", &tagger, &canon, &retag_store, false)
             .await
             .unwrap();
 
@@ -2517,9 +2587,18 @@ mod tests {
         // the tagger.
         mock.scenario().lock().await.embed_content = Some(vec![vec![0.1, 0.2]]);
 
-        let err = process_retag_job(1, 42, "text", &ErrorTagger, &canon, &retag_store, false)
-            .await
-            .unwrap_err();
+        let err = process_retag_job(
+            1,
+            None,
+            42,
+            "text",
+            &ErrorTagger,
+            &canon,
+            &retag_store,
+            false,
+        )
+        .await
+        .unwrap_err();
         assert!(
             err.contains("tag service unavailable"),
             "error should be propagated: {err}"
@@ -2547,7 +2626,7 @@ mod tests {
             },
         };
 
-        let result = process_retag_job(1, 99, "text", &tagger, &canon, &retag_store, false)
+        let result = process_retag_job(1, None, 99, "text", &tagger, &canon, &retag_store, false)
             .await
             .unwrap();
 

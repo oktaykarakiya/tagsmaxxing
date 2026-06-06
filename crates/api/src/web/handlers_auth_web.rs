@@ -119,8 +119,13 @@ pub async fn signup_submit(
             email: form.email.clone(),
             error: msg,
         };
-        return render_with_csrf_cookie(&page, status, &csrf_token, state.session_ttl, state.secure_cookies);
-
+        return render_with_csrf_cookie(
+            &page,
+            status,
+            &csrf_token,
+            state.session_ttl,
+            state.secure_cookies,
+        );
     }
 
     let email = form.email.trim().to_string();
@@ -135,8 +140,13 @@ pub async fn signup_submit(
             email,
             error: "All fields are required. Password must be at least 8 characters.".into(),
         };
-        return render_with_csrf_cookie(&page, StatusCode::BAD_REQUEST, &csrf_token, state.session_ttl, state.secure_cookies);
-
+        return render_with_csrf_cookie(
+            &page,
+            StatusCode::BAD_REQUEST,
+            &csrf_token,
+            state.session_ttl,
+            state.secure_cookies,
+        );
     }
 
     // Reject common/breached passwords.
@@ -150,8 +160,13 @@ pub async fn signup_submit(
                     Please choose a stronger password."
                 .into(),
         };
-        return render_with_csrf_cookie(&page, StatusCode::BAD_REQUEST, &csrf_token, state.session_ttl, state.secure_cookies);
-
+        return render_with_csrf_cookie(
+            &page,
+            StatusCode::BAD_REQUEST,
+            &csrf_token,
+            state.session_ttl,
+            state.secure_cookies,
+        );
     }
 
     // ── 2. Slugify + ensure uniqueness ──────────────────────────────────────
@@ -167,8 +182,13 @@ pub async fn signup_submit(
                 email,
                 error: "An error occurred. Please try again.".into(),
             };
-            return render_with_csrf_cookie(&page, StatusCode::INTERNAL_SERVER_ERROR, &csrf_token, state.session_ttl, state.secure_cookies);
-
+            return render_with_csrf_cookie(
+                &page,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &csrf_token,
+                state.session_ttl,
+                state.secure_cookies,
+            );
         }
     };
 
@@ -184,8 +204,13 @@ pub async fn signup_submit(
                 email,
                 error: "An error occurred. Please try again.".into(),
             };
-            return render_with_csrf_cookie(&page, StatusCode::INTERNAL_SERVER_ERROR, &csrf_token, state.session_ttl, state.secure_cookies);
-
+            return render_with_csrf_cookie(
+                &page,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &csrf_token,
+                state.session_ttl,
+                state.secure_cookies,
+            );
         }
     };
 
@@ -215,8 +240,13 @@ pub async fn signup_submit(
                         email,
                         error: "This workspace name is taken. Please try a different name.".into(),
                     };
-                    return render_with_csrf_cookie(&page, StatusCode::CONFLICT, &csrf_token, state.session_ttl, state.secure_cookies);
-
+                    return render_with_csrf_cookie(
+                        &page,
+                        StatusCode::CONFLICT,
+                        &csrf_token,
+                        state.session_ttl,
+                        state.secure_cookies,
+                    );
                 }
             }
         }
@@ -240,8 +270,13 @@ pub async fn signup_submit(
                 email,
                 error: "An account with this email already exists. Please log in instead.".into(),
             };
-            return render_with_csrf_cookie(&page, StatusCode::CONFLICT, &csrf_token, state.session_ttl, state.secure_cookies);
-
+            return render_with_csrf_cookie(
+                &page,
+                StatusCode::CONFLICT,
+                &csrf_token,
+                state.session_ttl,
+                state.secure_cookies,
+            );
         }
     };
 
@@ -257,8 +292,13 @@ pub async fn signup_submit(
                 email,
                 error: "An error occurred. Please try again.".into(),
             };
-            return render_with_csrf_cookie(&page, StatusCode::INTERNAL_SERVER_ERROR, &csrf_token, state.session_ttl, state.secure_cookies);
-
+            return render_with_csrf_cookie(
+                &page,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &csrf_token,
+                state.session_ttl,
+                state.secure_cookies,
+            );
         }
     };
 
@@ -452,8 +492,13 @@ pub async fn forgot_password_submit(
             error: msg,
             success_message: String::new(),
         };
-        return render_with_csrf_cookie(&page, status, &csrf_token, state.session_ttl, state.secure_cookies);
-
+        return render_with_csrf_cookie(
+            &page,
+            status,
+            &csrf_token,
+            state.session_ttl,
+            state.secure_cookies,
+        );
     }
 
     let email = form.email.trim().to_string();
@@ -467,8 +512,13 @@ pub async fn forgot_password_submit(
             error: "Please enter your email address.".into(),
             success_message: String::new(),
         };
-        return render_with_csrf_cookie(&page, StatusCode::BAD_REQUEST, &csrf_token, state.session_ttl, state.secure_cookies);
-
+        return render_with_csrf_cookie(
+            &page,
+            StatusCode::BAD_REQUEST,
+            &csrf_token,
+            state.session_ttl,
+            state.secure_cookies,
+        );
     }
 
     // ── 2. Generate reset token ─────────────────────────────────────────────
@@ -649,8 +699,13 @@ pub async fn reset_password_submit(
             token: form.reset_token.clone(),
             error: msg,
         };
-        return render_with_csrf_cookie(&page, status, &csrf_token, state.session_ttl, state.secure_cookies);
-
+        return render_with_csrf_cookie(
+            &page,
+            status,
+            &csrf_token,
+            state.session_ttl,
+            state.secure_cookies,
+        );
     }
 
     let token = form.reset_token.trim().to_string();
@@ -663,8 +718,13 @@ pub async fn reset_password_submit(
             token,
             error: "Password must be at least 8 characters.".into(),
         };
-        return render_with_csrf_cookie(&page, StatusCode::BAD_REQUEST, &csrf_token, state.session_ttl, state.secure_cookies);
-
+        return render_with_csrf_cookie(
+            &page,
+            StatusCode::BAD_REQUEST,
+            &csrf_token,
+            state.session_ttl,
+            state.secure_cookies,
+        );
     }
 
     // Reject common/breached passwords.
@@ -677,8 +737,13 @@ pub async fn reset_password_submit(
                     Please choose a stronger password."
                 .into(),
         };
-        return render_with_csrf_cookie(&page, StatusCode::BAD_REQUEST, &csrf_token, state.session_ttl, state.secure_cookies);
-
+        return render_with_csrf_cookie(
+            &page,
+            StatusCode::BAD_REQUEST,
+            &csrf_token,
+            state.session_ttl,
+            state.secure_cookies,
+        );
     }
 
     // ── 2. Validate the reset token ─────────────────────────────────────────
@@ -692,8 +757,13 @@ pub async fn reset_password_submit(
                 error: "This reset link has expired or is invalid. Please request a new one."
                     .into(),
             };
-            return render_with_csrf_cookie(&page, StatusCode::BAD_REQUEST, &csrf_token, state.session_ttl, state.secure_cookies);
-
+            return render_with_csrf_cookie(
+                &page,
+                StatusCode::BAD_REQUEST,
+                &csrf_token,
+                state.session_ttl,
+                state.secure_cookies,
+            );
         }
         Err(e) => {
             tracing::error!(error = %e, "failed to find user by reset token");
@@ -703,8 +773,13 @@ pub async fn reset_password_submit(
                 token,
                 error: "An error occurred. Please try again.".into(),
             };
-            return render_with_csrf_cookie(&page, StatusCode::INTERNAL_SERVER_ERROR, &csrf_token, state.session_ttl, state.secure_cookies);
-
+            return render_with_csrf_cookie(
+                &page,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &csrf_token,
+                state.session_ttl,
+                state.secure_cookies,
+            );
         }
     };
 
@@ -719,8 +794,13 @@ pub async fn reset_password_submit(
                 token,
                 error: "An error occurred. Please try again.".into(),
             };
-            return render_with_csrf_cookie(&page, StatusCode::INTERNAL_SERVER_ERROR, &csrf_token, state.session_ttl, state.secure_cookies);
-
+            return render_with_csrf_cookie(
+                &page,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &csrf_token,
+                state.session_ttl,
+                state.secure_cookies,
+            );
         }
     };
 
@@ -987,7 +1067,7 @@ mod tests {
 
         let old_token = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         let body =
-            format!("csrf_token=wrong&tenant_name=Test&email=a@b.com&password=secret123456");
+            "csrf_token=wrong&tenant_name=Test&email=a@b.com&password=secret123456".to_string();
         let req = axum::http::Request::builder()
             .method("POST")
             .uri("/signup")

@@ -620,6 +620,7 @@ mod tests {
             last_error: None,
             run_after: Utc::now(),
             created_at: Utc::now(),
+            created_by: None,
         };
 
         let result = process_integrity_scan_job(&runner, &test_config(), &job).await;

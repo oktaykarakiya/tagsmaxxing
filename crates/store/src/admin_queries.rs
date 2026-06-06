@@ -350,7 +350,7 @@ impl PgStore {
         let rows: Vec<sqlx::postgres::PgRow> = if let Some(ref s) = status {
             sqlx::query(
                 "SELECT id, tenant_id, file_id, document_id, kind, priority, status, \
-                 attempts, last_error, run_after, created_at \
+                 attempts, last_error, run_after, created_at, created_by \
                  FROM jobs WHERE tenant_id = $1 AND status = $2 \
                  ORDER BY created_at DESC LIMIT $3",
             )
@@ -363,7 +363,7 @@ impl PgStore {
         } else {
             sqlx::query(
                 "SELECT id, tenant_id, file_id, document_id, kind, priority, status, \
-                 attempts, last_error, run_after, created_at \
+                 attempts, last_error, run_after, created_at, created_by \
                  FROM jobs WHERE tenant_id = $1 \
                  ORDER BY created_at DESC LIMIT $2",
             )
@@ -791,6 +791,7 @@ fn job_from_pg_row(r: sqlx::postgres::PgRow) -> anyhow::Result<Job> {
         last_error: r.try_get("last_error")?,
         run_after: r.try_get("run_after")?,
         created_at: r.try_get("created_at")?,
+        created_by: r.try_get("created_by")?,
     })
 }
 

@@ -815,6 +815,7 @@ async fn account_deletion_enqueues_shred_job() {
             tenant_id,
             None,
             None,
+            None,
             kb_core::job::JobKind::DeleteTenant,
             10,
         )

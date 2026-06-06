@@ -189,6 +189,7 @@ pub async fn ingest(
         blob.as_ref(),
         pipeline.as_ref(),
         auth_user.tenant_id,
+        Some(auth_user.user_id),
         &parsed,
     )
     .await
@@ -219,6 +220,10 @@ pub async fn ingest(
 /// This is the core upload processing logic, extracted so both paths can
 /// reuse it without duplication.
 ///
+/// `created_by` is the id of the user performing the upload (P14-T1); it is
+/// stored on every enqueued job so the resulting model-call usage is attributed
+/// to that user.
+///
 /// # Returns
 ///
 /// `(first_job_id, file_count)` on success.
@@ -230,6 +235,7 @@ pub(crate) async fn process_upload_files(
     blob: &dyn Blob,
     job_queue: &JobQueue,
     tenant_id: i64,
+    created_by: Option<i64>,
     parsed: &ParsedUpload,
 ) -> anyhow::Result<(i64, usize)> {
     // ── Upload-edge validation (plan §17, §31.5) ────────────────────────────
@@ -261,13 +267,13 @@ pub(crate) async fn process_upload_files(
     // When false, enqueue one job per file (each becomes a 1-page document).
     let job_id = if parsed.group_as_document {
         job_queue
-            .enqueue(tenant_id, None, None, JobKind::Ingest, 100)
+            .enqueue(tenant_id, created_by, None, None, JobKind::Ingest, 100)
             .await?
     } else {
         let mut first_id: Option<i64> = None;
         for _f in &parsed.files {
             let id = job_queue
-                .enqueue(tenant_id, None, None, JobKind::Ingest, 100)
+                .enqueue(tenant_id, created_by, None, None, JobKind::Ingest, 100)
                 .await?;
             if first_id.is_none() {
                 first_id = Some(id);
@@ -295,10 +301,14 @@ pub(crate) struct InlineIngestResult {
 /// fed directly through the pipeline (extract → tag → embed → store). A job
 /// is enqueued for audit/replay but is completed synchronously so the caller
 /// gets the document id immediately.
+///
+/// `user_id` is the uploading user; it is threaded into the pipeline so every
+/// metered model call is attributed to that user in `usage_events` (P14-T1).
 pub(crate) async fn process_upload_inline(
     blob: &dyn Blob,
     pipeline: &IngestPipeline,
     tenant_id: i64,
+    user_id: Option<i64>,
     parsed: &ParsedUpload,
 ) -> anyhow::Result<InlineIngestResult> {
     // ── Validate each file ─────────────────────────────────────────────────
@@ -321,6 +331,7 @@ pub(crate) async fn process_upload_inline(
     let output = pipeline
         .ingest(
             tenant_id,
+            user_id, // attribute metered usage to the uploading user (P14-T1)
             parsed.files.clone(),
             parsed.user_note.clone(),
             false, // local_only — false uses remote backends if configured

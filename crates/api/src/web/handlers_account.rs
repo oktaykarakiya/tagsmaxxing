@@ -1073,6 +1073,7 @@ pub async fn account_delete(
     if let Err(e) = job_queue
         .enqueue(
             auth_user.tenant_id,
+            None, // created_by: tenant-wide crypto-shred is a maintenance job
             None,
             None,
             kb_core::job::JobKind::DeleteTenant,

@@ -160,18 +160,19 @@ impl JsonSchemaTagger {
         self
     }
 
-    /// Meter one chat call's token usage to `tenant_id` (best-effort).
+    /// Meter one chat call's token usage to `tenant_id`, attributed to
+    /// `user_id` when known (best-effort, P14-T1).
     ///
     /// A no-op when no [`UsageRecorder`] is attached. Recording failures are
     /// logged and swallowed — metering must never fail a tagging call.
-    async fn meter(&self, tenant_id: i64, usage: &Usage) {
+    async fn meter(&self, tenant_id: i64, user_id: Option<i64>, usage: &Usage) {
         let Some(recorder) = &self.usage_recorder else {
             return;
         };
         let event = UsageEvent {
             id: 0,
             tenant_id,
-            user_id: None,
+            user_id,
             model: self.model.clone(),
             role: Role::Text,
             backend_id: None,
@@ -393,8 +394,10 @@ impl Tagger for JsonSchemaTagger {
             .await
             .map_err(|e| anyhow::anyhow!("tagger model call failed: {e}"))?;
 
-        // Meter the tagging call's token usage to the tenant (BUG-BILL-03).
-        self.meter(input.tenant_id, &resp.usage).await;
+        // Meter the tagging call's token usage to the tenant (BUG-BILL-03),
+        // attributed to the acting user when known (P14-T1).
+        self.meter(input.tenant_id, input.user_id, &resp.usage)
+            .await;
 
         match Self::parse_and_validate(&resp.text, input.user_note.as_deref()) {
             Ok(output) => return Ok(output),
@@ -431,8 +434,9 @@ impl Tagger for JsonSchemaTagger {
                         )
                     })?;
 
-                // Meter the retry call's token usage too (BUG-BILL-03).
-                self.meter(input.tenant_id, &retry_resp.usage).await;
+                // Meter the retry call's token usage too (BUG-BILL-03, P14-T1).
+                self.meter(input.tenant_id, input.user_id, &retry_resp.usage)
+                    .await;
 
                 Self::parse_and_validate(&retry_resp.text, input.user_note.as_deref())
                     .map_err(|e| {
@@ -489,6 +493,7 @@ mod tests {
     fn sample_input() -> TagInput {
         TagInput {
             tenant_id: 1,
+            user_id: Some(7),
             text: "This is a sample document about Rust programming.".to_string(),
             user_note: Some("Learning material".to_string()),
             kind: DocKind::Document,
@@ -890,13 +895,15 @@ mod tests {
         let tagger = tagger.with_usage_recorder(recorder.clone() as Arc<dyn UsageRecorder>);
         mock.scenario().lock().await.chat_content = Some(valid_tag_output_json());
 
-        let input = sample_input(); // tenant_id = 1
+        let input = sample_input(); // tenant_id = 1, user_id = Some(7)
         tagger.tag(&input, false).await.unwrap();
         mock.shutdown().await;
 
         let events = recorder.events.lock().unwrap();
         assert_eq!(events.len(), 1, "exactly one chat call should be metered");
         assert_eq!(events[0].tenant_id, 1);
+        // P14-T1: the acting user from TagInput is attributed on the event.
+        assert_eq!(events[0].user_id, Some(7));
         assert_eq!(events[0].role, Role::Text);
         assert_eq!(events[0].model, "test-model");
         assert!(events[0].prompt_tokens.is_some());

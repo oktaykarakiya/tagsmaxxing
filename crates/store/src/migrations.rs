@@ -16,16 +16,11 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
-    /// All twenty-three migrations are present, in version order (1–23).
+    /// All twenty-five migrations are present, in version order (1–25).
     #[test]
     fn embeds_the_schema_migrations() {
         let versions: Vec<i64> = MIGRATOR.iter().map(|m| m.version).collect();
-        assert_eq!(
-            versions,
-            vec![
-                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23
-            ]
-        );
+        assert_eq!(versions, (1..=25).collect::<Vec<i64>>());
     }
 
     /// Forward-only and monotonic: no down/reversible scripts, strictly increasing versions,
@@ -521,6 +516,55 @@ mod tests {
         assert!(
             sql.contains("TEXT PRIMARY KEY"),
             "event_id must be TEXT PRIMARY KEY for ON CONFLICT dedup"
+        );
+    }
+
+    /// Migrations 0024/0025 (P14-T1): per-user job attribution column and the
+    /// tenant-scoped monthly token rollup table.
+    #[test]
+    fn schema_adds_job_attribution_and_monthly_rollup() {
+        let sql: String = MIGRATOR
+            .iter()
+            .map(|m| m.sql.as_ref())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // 0024: jobs.created_by, nullable, FK to users with ON DELETE SET NULL.
+        assert!(
+            sql.contains("ALTER TABLE jobs ADD COLUMN created_by BIGINT"),
+            "migration 0024 must add jobs.created_by"
+        );
+        assert!(
+            sql.contains("REFERENCES users(id) ON DELETE SET NULL"),
+            "jobs.created_by must FK users(id) ON DELETE SET NULL"
+        );
+
+        // 0025: the rollup table with its composite primary key.
+        assert!(
+            sql.contains("CREATE TABLE tenant_monthly_usage "),
+            "migration 0025 must create tenant_monthly_usage"
+        );
+        assert!(
+            sql.contains("PRIMARY KEY (tenant_id, period_month)"),
+            "tenant_monthly_usage PK must be (tenant_id, period_month)"
+        );
+        assert!(
+            sql.contains("tokens_used  BIGINT NOT NULL DEFAULT 0"),
+            "tenant_monthly_usage must have a tokens_used counter"
+        );
+
+        // 0025: tenant isolation mirrors usage_events — RLS + the kb_app DML grant.
+        assert!(
+            sql.contains("ALTER TABLE tenant_monthly_usage ENABLE ROW LEVEL SECURITY"),
+            "tenant_monthly_usage must enable RLS like usage_events"
+        );
+        assert!(
+            sql.contains("CREATE POLICY tenant_isolation ON tenant_monthly_usage"),
+            "tenant_monthly_usage must carry a tenant_isolation policy"
+        );
+        assert!(
+            sql.contains("GRANT SELECT, INSERT, UPDATE, DELETE ON tenant_monthly_usage TO kb_app"),
+            "kb_app must be granted DML on tenant_monthly_usage"
         );
     }
 }

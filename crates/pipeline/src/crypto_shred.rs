@@ -663,6 +663,7 @@ mod tests {
             last_error: None,
             run_after: chrono::Utc::now(),
             created_at: chrono::Utc::now(),
+            created_by: None,
         };
 
         let result = process_delete_tenant_job(job, pipeline).await;
@@ -688,6 +689,7 @@ mod tests {
             last_error: None,
             run_after: chrono::Utc::now(),
             created_at: chrono::Utc::now(),
+            created_by: None,
         };
 
         let result = process_delete_tenant_job(job, pipeline).await;

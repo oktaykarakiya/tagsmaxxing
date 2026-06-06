@@ -226,7 +226,11 @@ pub async fn login_submit(
             error: msg,
         };
         return render_with_csrf_cookie(
-            &page, status, &csrf_token, state.session_ttl, state.secure_cookies,
+            &page,
+            status,
+            &csrf_token,
+            state.session_ttl,
+            state.secure_cookies,
         );
     }
 
@@ -265,7 +269,11 @@ pub async fn login_submit(
                 error: err_json.message.clone(),
             };
             render_with_csrf_cookie(
-                &page, status, &csrf_token, state.session_ttl, state.secure_cookies,
+                &page,
+                status,
+                &csrf_token,
+                state.session_ttl,
+                state.secure_cookies,
             )
         }
     }
@@ -320,7 +328,11 @@ pub async fn register_submit(
             error: msg,
         };
         return render_with_csrf_cookie(
-            &page, status, &csrf_token, state.session_ttl, state.secure_cookies,
+            &page,
+            status,
+            &csrf_token,
+            state.session_ttl,
+            state.secure_cookies,
         );
     }
 
@@ -354,7 +366,11 @@ pub async fn register_submit(
                 error: err_json.message.clone(),
             };
             render_with_csrf_cookie(
-                &page, status, &csrf_token, state.session_ttl, state.secure_cookies,
+                &page,
+                status,
+                &csrf_token,
+                state.session_ttl,
+                state.secure_cookies,
             )
         }
     }
@@ -703,6 +719,7 @@ pub async fn upload_submit(
         blob.as_ref(),
         pipeline.as_ref(),
         auth_user.tenant_id,
+        Some(auth_user.user_id),
         &parsed,
     )
     .await
@@ -1071,7 +1088,7 @@ mod tests {
 
         // Send a valid-but-wrong CSRF cookie with a mismatched form token.
         let old_token = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-        let body = format!("csrf_token=wrong&tenant_slug=t1&email=a@b.com&password=secret123");
+        let body = "csrf_token=wrong&tenant_slug=t1&email=a@b.com&password=secret123".to_string();
         let req = axum::http::Request::builder()
             .method("POST")
             .uri("/login")
@@ -1118,7 +1135,8 @@ mod tests {
             .expect("error page must contain a csrf_token hidden field");
 
         assert_eq!(
-            set_cookie, form_token,
+            set_cookie,
+            form_token,
             "CSRF cookie ({}) must match form token ({}) — otherwise resubmit fails",
             &set_cookie[..32.min(set_cookie.len())],
             &form_token[..32.min(form_token.len())],
@@ -1153,7 +1171,7 @@ mod tests {
 
         let old_token = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         let body =
-            format!("csrf_token=wrong&tenant_slug=t1&email=a@b.com&password=secret123456");
+            "csrf_token=wrong&tenant_slug=t1&email=a@b.com&password=secret123456".to_string();
         let req = axum::http::Request::builder()
             .method("POST")
             .uri("/register")

@@ -680,6 +680,7 @@ mod tests {
             last_error: None,
             run_after: Utc::now(),
             created_at: Utc::now(),
+            created_by: None,
         };
 
         let result = process_orphan_gc_job(&runner, &test_config(), &job).await;

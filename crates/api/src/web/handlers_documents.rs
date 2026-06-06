@@ -492,7 +492,14 @@ pub async fn retag_document(
     };
 
     match job_queue
-        .enqueue(auth_user.tenant_id, None, Some(doc_id), JobKind::Retag, 100)
+        .enqueue(
+            auth_user.tenant_id,
+            Some(auth_user.user_id),
+            None,
+            Some(doc_id),
+            JobKind::Retag,
+            100,
+        )
         .await
     {
         Ok(_job_id) => {
@@ -710,6 +717,7 @@ pub async fn add_page(
         blob,
         job_queue,
         auth_user.tenant_id,
+        Some(auth_user.user_id),
         &parsed,
     )
     .await

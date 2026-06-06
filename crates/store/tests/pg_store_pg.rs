@@ -13,12 +13,14 @@
 
 use std::sync::Arc;
 
-use chrono::Utc;
+use chrono::{DateTime, TimeZone, Utc};
 use kb_core::chunk::Chunk;
 use kb_core::file::FileRecord;
 use kb_core::hash::Sha256;
+use kb_core::role::Role;
 use kb_core::status::ProcessingStatus;
 use kb_core::store::Store;
+use kb_core::usage::UsageEvent;
 use kb_store::PgStore;
 use sqlx::PgPool;
 use sqlx::Row;
@@ -358,6 +360,161 @@ async fn upsert_chunks_preserves_embedding_dimension() -> anyhow::Result<()> {
             .fetch_one(&s.pool)
             .await?;
     assert_eq!(dim, 2560);
+
+    Ok(())
+}
+
+// ── Monthly token rollup (P14-T1) ───────────────────────────────────────────
+
+/// Build a usage event for `tenant_id` with the given token counts and timestamp.
+fn make_usage_event(
+    tenant_id: i64,
+    user_id: Option<i64>,
+    prompt: i32,
+    completion: i32,
+    created_at: DateTime<Utc>,
+) -> UsageEvent {
+    UsageEvent {
+        id: 0,
+        tenant_id,
+        user_id,
+        model: "test-model".into(),
+        role: Role::Embed,
+        backend_id: None,
+        prompt_tokens: Some(prompt),
+        completion_tokens: Some(completion),
+        latency_ms: None,
+        cost_micros: None,
+        created_at,
+    }
+}
+
+/// `insert_usage_event` upserts the monthly rollup in the same transaction:
+/// two events in the same UTC month sum into one `(tenant, period_month)` row.
+#[tokio::test]
+#[ignore = "requires Podman + image pull; run with --ignored"]
+async fn insert_usage_event_rolls_up_same_month() -> anyhow::Result<()> {
+    let s = setup_store().await?;
+    let when = Utc
+        .with_ymd_and_hms(2026, 6, 10, 12, 0, 0)
+        .single()
+        .unwrap();
+
+    // prompt 10 + completion 5 = 15, then 20 + 0 = 20  ⇒  35 in June 2026.
+    s.store
+        .insert_usage_event(&make_usage_event(s.tenant_id, Some(1), 10, 5, when))
+        .await?;
+    s.store
+        .insert_usage_event(&make_usage_event(s.tenant_id, Some(1), 20, 0, when))
+        .await?;
+
+    // Exactly one rollup row, summing both events. Read via the privileged pool.
+    let (period, tokens): (chrono::NaiveDate, i64) = sqlx::query_as(
+        "SELECT period_month, tokens_used FROM tenant_monthly_usage WHERE tenant_id = $1",
+    )
+    .bind(s.tenant_id)
+    .fetch_one(&s.pool)
+    .await?;
+    assert_eq!(period, chrono::NaiveDate::from_ymd_opt(2026, 6, 1).unwrap());
+    assert_eq!(tokens, 35);
+
+    let row_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM tenant_monthly_usage WHERE tenant_id = $1")
+            .bind(s.tenant_id)
+            .fetch_one(&s.pool)
+            .await?;
+    assert_eq!(row_count, 1, "same-month events share one rollup row");
+
+    Ok(())
+}
+
+/// Events in different UTC months land in separate rollup rows.
+#[tokio::test]
+#[ignore = "requires Podman + image pull; run with --ignored"]
+async fn insert_usage_event_separates_distinct_months() -> anyhow::Result<()> {
+    let s = setup_store().await?;
+    let june = Utc.with_ymd_and_hms(2026, 6, 15, 0, 0, 0).single().unwrap();
+    let july = Utc.with_ymd_and_hms(2026, 7, 1, 0, 0, 0).single().unwrap();
+
+    s.store
+        .insert_usage_event(&make_usage_event(s.tenant_id, None, 100, 0, june))
+        .await?;
+    s.store
+        .insert_usage_event(&make_usage_event(s.tenant_id, None, 7, 0, july))
+        .await?;
+
+    let rows: Vec<(chrono::NaiveDate, i64)> = sqlx::query_as(
+        "SELECT period_month, tokens_used FROM tenant_monthly_usage \
+         WHERE tenant_id = $1 ORDER BY period_month",
+    )
+    .bind(s.tenant_id)
+    .fetch_all(&s.pool)
+    .await?;
+    assert_eq!(rows.len(), 2, "two months ⇒ two rollup rows");
+    assert_eq!(
+        rows[0].0,
+        chrono::NaiveDate::from_ymd_opt(2026, 6, 1).unwrap()
+    );
+    assert_eq!(rows[0].1, 100);
+    assert_eq!(
+        rows[1].0,
+        chrono::NaiveDate::from_ymd_opt(2026, 7, 1).unwrap()
+    );
+    assert_eq!(rows[1].1, 7);
+
+    Ok(())
+}
+
+/// A zero-token event records the usage event but creates no rollup row.
+#[tokio::test]
+#[ignore = "requires Podman + image pull; run with --ignored"]
+async fn insert_usage_event_zero_tokens_skips_rollup() -> anyhow::Result<()> {
+    let s = setup_store().await?;
+    let when = Utc.with_ymd_and_hms(2026, 6, 10, 0, 0, 0).single().unwrap();
+
+    s.store
+        .insert_usage_event(&make_usage_event(s.tenant_id, None, 0, 0, when))
+        .await?;
+
+    let usage_rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM usage_events WHERE tenant_id = $1")
+            .bind(s.tenant_id)
+            .fetch_one(&s.pool)
+            .await?;
+    assert_eq!(usage_rows, 1, "the usage event is still recorded");
+
+    let rollup_rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM tenant_monthly_usage WHERE tenant_id = $1")
+            .bind(s.tenant_id)
+            .fetch_one(&s.pool)
+            .await?;
+    assert_eq!(rollup_rows, 0, "zero-token calls create no rollup row");
+
+    Ok(())
+}
+
+/// `get_current_month_token_rollup` returns the running total for the current
+/// UTC month, and 0 before any usage is recorded.
+#[tokio::test]
+#[ignore = "requires Podman + image pull; run with --ignored"]
+async fn get_current_month_token_rollup_reads_running_total() -> anyhow::Result<()> {
+    let s = setup_store().await?;
+
+    // No usage yet ⇒ 0.
+    let before = s.store.get_current_month_token_rollup(s.tenant_id).await?;
+    assert_eq!(before, 0);
+
+    // Two events in the CURRENT month sum into the O(1) read.
+    let now = Utc::now();
+    s.store
+        .insert_usage_event(&make_usage_event(s.tenant_id, Some(2), 30, 0, now))
+        .await?;
+    s.store
+        .insert_usage_event(&make_usage_event(s.tenant_id, Some(2), 12, 0, now))
+        .await?;
+
+    let after = s.store.get_current_month_token_rollup(s.tenant_id).await?;
+    assert_eq!(after, 42);
 
     Ok(())
 }

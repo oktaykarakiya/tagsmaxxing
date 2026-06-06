@@ -311,6 +311,7 @@ async fn e2e_multi_tenant_ingest_and_search_isolation() {
     let out_a = ingest_a
         .ingest(
             infra.tenant_a,
+            None,
             vec![IngestFile {
                 bytes:
                     b"Quantum computing uses qubits for exponential speedup in certain problems."
@@ -339,6 +340,7 @@ async fn e2e_multi_tenant_ingest_and_search_isolation() {
     let out_b = ingest_b
         .ingest(
             infra.tenant_b,
+            None,
             vec![IngestFile {
                 bytes: b"Oceanography studies the physical and biological aspects of the ocean."
                     .to_vec(),
@@ -566,6 +568,7 @@ async fn e2e_export_produces_valid_zip() {
     let out = ingest
         .ingest(
             infra.tenant_a,
+            None,
             vec![IngestFile {
                 bytes: content.to_vec(),
                 page_label: None,

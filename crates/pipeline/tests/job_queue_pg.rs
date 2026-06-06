@@ -114,7 +114,7 @@ async fn enqueue_creates_job_row() -> anyhow::Result<()> {
 
     let id = s
         .queue
-        .enqueue(s.tenant_id, None, None, JobKind::Ingest, 100)
+        .enqueue(s.tenant_id, None, None, None, JobKind::Ingest, 100)
         .await?;
     assert!(id > 0, "enqueued job id should be positive");
 
@@ -131,7 +131,7 @@ async fn enqueue_allows_file_id() -> anyhow::Result<()> {
 
     let id = s
         .queue
-        .enqueue(s.tenant_id, Some(42), None, JobKind::Ingest, 50)
+        .enqueue(s.tenant_id, None, Some(42), None, JobKind::Ingest, 50)
         .await?;
 
     let file_id: Option<i64> = sqlx::query_scalar("SELECT file_id FROM jobs WHERE id = $1")
@@ -143,6 +143,60 @@ async fn enqueue_allows_file_id() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// P14-T1: `created_by` survives an enqueue → claim round-trip, both persisted
+/// to the row and mapped back onto the claimed [`Job`]. A system enqueue
+/// (`created_by = None`) round-trips as `None`.
+#[tokio::test]
+#[ignore = "requires Podman + image pull; run with --ignored"]
+async fn enqueue_claim_round_trips_created_by() -> anyhow::Result<()> {
+    let s = setup().await?;
+
+    // created_by FKs users(id), so seed a user in the tenant first.
+    let user_id: i64 = sqlx::query_scalar(
+        "INSERT INTO users (tenant_id, email, password_hash) \
+         VALUES ($1, 'u@t', 'x') RETURNING id",
+    )
+    .bind(s.tenant_id)
+    .fetch_one(&s.pool)
+    .await?;
+
+    // Attributed job: created_by is persisted and returned on claim.
+    let attributed_id = s
+        .queue
+        .enqueue(s.tenant_id, Some(user_id), None, None, JobKind::Ingest, 100)
+        .await?;
+    let stored: Option<i64> = sqlx::query_scalar("SELECT created_by FROM jobs WHERE id = $1")
+        .bind(attributed_id)
+        .fetch_one(&s.pool)
+        .await?;
+    assert_eq!(stored, Some(user_id), "created_by persisted on the row");
+
+    let claimed = s.queue.claim().await?.expect("a job is claimable");
+    assert_eq!(claimed.id, attributed_id);
+    assert_eq!(
+        claimed.created_by,
+        Some(user_id),
+        "claim() maps created_by back onto the Job"
+    );
+
+    // System job: created_by None round-trips as None.
+    let system_id = s
+        .queue
+        .enqueue(s.tenant_id, None, None, None, JobKind::Reembed, 100)
+        .await?;
+    let system_stored: Option<i64> =
+        sqlx::query_scalar("SELECT created_by FROM jobs WHERE id = $1")
+            .bind(system_id)
+            .fetch_one(&s.pool)
+            .await?;
+    assert_eq!(system_stored, None);
+    let claimed_system = s.queue.claim().await?.expect("system job claimable");
+    assert_eq!(claimed_system.id, system_id);
+    assert_eq!(claimed_system.created_by, None);
+
+    Ok(())
+}
+
 #[tokio::test]
 #[ignore = "requires Podman + image pull; run with --ignored"]
 async fn enqueue_preserves_kind_and_priority() -> anyhow::Result<()> {
@@ -150,7 +204,7 @@ async fn enqueue_preserves_kind_and_priority() -> anyhow::Result<()> {
 
     let id = s
         .queue
-        .enqueue(s.tenant_id, None, None, JobKind::Reembed, 25)
+        .enqueue(s.tenant_id, None, None, None, JobKind::Reembed, 25)
         .await?;
 
     let kind_str: String = sqlx::query_scalar("SELECT kind FROM jobs WHERE id = $1")
@@ -177,7 +231,7 @@ async fn claim_returns_next_eligible_job() -> anyhow::Result<()> {
 
     let id = s
         .queue
-        .enqueue(s.tenant_id, None, None, JobKind::Ingest, 100)
+        .enqueue(s.tenant_id, None, None, None, JobKind::Ingest, 100)
         .await?;
 
     let job = s.queue.claim().await?.expect("should claim a job");
@@ -200,15 +254,15 @@ async fn claim_respects_priority_ordering() -> anyhow::Result<()> {
     // Enqueue three jobs with different priorities (lower = preferred).
     let low_id = s
         .queue
-        .enqueue(s.tenant_id, None, None, JobKind::Ingest, 10)
+        .enqueue(s.tenant_id, None, None, None, JobKind::Ingest, 10)
         .await?;
     let mid_id = s
         .queue
-        .enqueue(s.tenant_id, None, None, JobKind::Ingest, 50)
+        .enqueue(s.tenant_id, None, None, None, JobKind::Ingest, 50)
         .await?;
     let high_id = s
         .queue
-        .enqueue(s.tenant_id, None, None, JobKind::Ingest, 100)
+        .enqueue(s.tenant_id, None, None, None, JobKind::Ingest, 100)
         .await?;
 
     // Claim three times — should come out in priority order.
@@ -231,7 +285,7 @@ async fn claim_respects_run_after() -> anyhow::Result<()> {
     // Insert two jobs: one available now, one in the future.
     let now_id = s
         .queue
-        .enqueue(s.tenant_id, None, None, JobKind::Ingest, 100)
+        .enqueue(s.tenant_id, None, None, None, JobKind::Ingest, 100)
         .await?;
 
     // Manually insert a job with future run_after.
@@ -293,7 +347,7 @@ async fn complete_sets_status_to_done() -> anyhow::Result<()> {
 
     let id = s
         .queue
-        .enqueue(s.tenant_id, None, None, JobKind::Ingest, 100)
+        .enqueue(s.tenant_id, None, None, None, JobKind::Ingest, 100)
         .await?;
 
     // Claim it first (must be 'running' to complete).
@@ -313,7 +367,7 @@ async fn complete_does_not_affect_done_job() -> anyhow::Result<()> {
 
     let id = s
         .queue
-        .enqueue(s.tenant_id, None, None, JobKind::Ingest, 100)
+        .enqueue(s.tenant_id, None, None, None, JobKind::Ingest, 100)
         .await?;
 
     // Complete without claiming — shouldn't affect the queued job.
@@ -333,7 +387,7 @@ async fn fail_increments_attempts_and_sets_backoff() -> anyhow::Result<()> {
 
     let id = s
         .queue
-        .enqueue(s.tenant_id, None, None, JobKind::Ingest, 100)
+        .enqueue(s.tenant_id, None, None, None, JobKind::Ingest, 100)
         .await?;
     let _ = s.queue.claim().await?;
 
@@ -366,7 +420,7 @@ async fn fail_stores_last_error() -> anyhow::Result<()> {
 
     let id = s
         .queue
-        .enqueue(s.tenant_id, None, None, JobKind::Ingest, 100)
+        .enqueue(s.tenant_id, None, None, None, JobKind::Ingest, 100)
         .await?;
     let _ = s.queue.claim().await?;
     s.queue.fail(id, "disk full").await?;
@@ -388,7 +442,7 @@ async fn fail_dead_letters_after_max_retries() -> anyhow::Result<()> {
 
     let id = s
         .queue
-        .enqueue(s.tenant_id, None, None, JobKind::Ingest, 100)
+        .enqueue(s.tenant_id, None, None, None, JobKind::Ingest, 100)
         .await?;
 
     // First attempt.
@@ -422,7 +476,7 @@ async fn fail_errors_on_non_running_job() -> anyhow::Result<()> {
 
     let id = s
         .queue
-        .enqueue(s.tenant_id, None, None, JobKind::Ingest, 100)
+        .enqueue(s.tenant_id, None, None, None, JobKind::Ingest, 100)
         .await?;
 
     // Try to fail without claiming (status is still 'queued').
@@ -447,7 +501,7 @@ async fn concurrent_claimants_never_get_the_same_row() -> anyhow::Result<()> {
     for i in 0..50 {
         let id = s
             .queue
-            .enqueue(s.tenant_id, None, None, JobKind::Ingest, i)
+            .enqueue(s.tenant_id, None, None, None, JobKind::Ingest, i)
             .await?;
         ids.push(id);
     }
@@ -500,7 +554,7 @@ async fn worker_pool_processes_all_jobs() -> anyhow::Result<()> {
     // Enqueue 10 jobs.
     for i in 0..10 {
         s.queue
-            .enqueue(s.tenant_id, None, None, JobKind::Ingest, i)
+            .enqueue(s.tenant_id, None, None, None, JobKind::Ingest, i)
             .await?;
     }
 
@@ -543,7 +597,7 @@ async fn worker_pool_handles_failures_and_retries() -> anyhow::Result<()> {
     // Enqueue one job.
     let job_id = s
         .queue
-        .enqueue(s.tenant_id, None, None, JobKind::Ingest, 100)
+        .enqueue(s.tenant_id, None, None, None, JobKind::Ingest, 100)
         .await?;
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -612,7 +666,7 @@ async fn worker_pool_graceful_shutdown_does_not_claim_new_jobs() -> anyhow::Resu
     // Enqueue jobs.
     for i in 0..5 {
         s.queue
-            .enqueue(s.tenant_id, None, None, JobKind::Ingest, i)
+            .enqueue(s.tenant_id, None, None, None, JobKind::Ingest, i)
             .await?;
     }
 
@@ -647,7 +701,7 @@ async fn worker_pool_respects_concurrency_limit() -> anyhow::Result<()> {
     // Enqueue 8 slow jobs.
     for i in 0..8 {
         s.queue
-            .enqueue(s.tenant_id, None, None, JobKind::Ingest, i)
+            .enqueue(s.tenant_id, None, None, None, JobKind::Ingest, i)
             .await?;
     }
 
@@ -701,7 +755,7 @@ async fn claimed_job_is_not_reclaimed_while_running() -> anyhow::Result<()> {
 
     let id = s
         .queue
-        .enqueue(s.tenant_id, None, None, JobKind::Ingest, 100)
+        .enqueue(s.tenant_id, None, None, None, JobKind::Ingest, 100)
         .await?;
 
     // Claim it.
@@ -731,7 +785,7 @@ async fn failed_job_becomes_claimable_after_backoff() -> anyhow::Result<()> {
 
     let id = s
         .queue
-        .enqueue(s.tenant_id, None, None, JobKind::Ingest, 100)
+        .enqueue(s.tenant_id, None, None, None, JobKind::Ingest, 100)
         .await?;
 
     // Claim and fail it.

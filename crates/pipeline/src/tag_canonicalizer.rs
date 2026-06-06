@@ -274,17 +274,17 @@ impl TagCanonicalizer {
         self
     }
 
-    /// Record one embed usage event against `tenant_id`. No-op without a
-    /// recorder; recording failures are logged, never propagated (metering must
-    /// not fail ingestion).
-    async fn meter(&self, tenant_id: i64, usage: &Usage) {
+    /// Record one embed usage event against `tenant_id`, attributed to
+    /// `user_id` when known (P14-T1). No-op without a recorder; recording
+    /// failures are logged, never propagated (metering must not fail ingestion).
+    async fn meter(&self, tenant_id: i64, user_id: Option<i64>, usage: &Usage) {
         let Some(recorder) = &self.usage_recorder else {
             return;
         };
         let event = UsageEvent {
             id: 0,
             tenant_id,
-            user_id: None,
+            user_id,
             model: self.embed_model.clone(),
             role: Role::Embed,
             backend_id: None,
@@ -309,11 +309,15 @@ impl TagCanonicalizer {
     /// against them — e.g. `["invoice", "bill"]` results in a single canonical tag
     /// for both.
     ///
+    /// `user_id` attributes each tag-name embed call's token usage to the acting
+    /// user when known (P14-T1); `None` records the events tenant-only.
+    ///
     /// # Errors
     /// Returns an error if a database or embedding call fails.
     pub async fn canonicalize(
         &self,
         tenant_id: i64,
+        user_id: Option<i64>,
         raw_tags: &[String],
         local_only: bool,
     ) -> anyhow::Result<Vec<i64>> {
@@ -334,7 +338,7 @@ impl TagCanonicalizer {
 
             // 2. Embed the normalized tag name.
             let embedding = self
-                .embed_tag_name(tenant_id, &normalized, local_only)
+                .embed_tag_name(tenant_id, user_id, &normalized, local_only)
                 .await?;
 
             // 3. Cosine-match against existing tags (including those just inserted).
@@ -368,13 +372,14 @@ impl TagCanonicalizer {
     }
 
     /// Embed a single tag name for `tenant_id`, returning its vector and metering
-    /// the call (BUG-BILL-03).
+    /// the call (BUG-BILL-03), attributed to `user_id` when known (P14-T1).
     ///
     /// # Errors
     /// Returns an error if the LLM backend call fails or returns zero vectors.
     async fn embed_tag_name(
         &self,
         tenant_id: i64,
+        user_id: Option<i64>,
         name: &str,
         local_only: bool,
     ) -> anyhow::Result<Vec<f32>> {
@@ -388,7 +393,7 @@ impl TagCanonicalizer {
             .await
             .map_err(|e| anyhow::anyhow!("failed to embed tag name '{name}': {e}"))?;
 
-        self.meter(tenant_id, &resp.usage).await;
+        self.meter(tenant_id, user_id, &resp.usage).await;
 
         resp.vectors
             .into_iter()
@@ -683,7 +688,7 @@ mod tests {
         let (canon, mock) = canonicalizer_with_mock(store.clone()).await;
 
         let ids = canon
-            .canonicalize(1, &["rust-lang".into()], false)
+            .canonicalize(1, None, &["rust-lang".into()], false)
             .await
             .unwrap();
         assert_eq!(
@@ -705,7 +710,7 @@ mod tests {
         mock.scenario().lock().await.embed_content = Some(vec![vec![1.0, 0.0]]);
 
         let ids = canon
-            .canonicalize(1, &["bill".into()], false)
+            .canonicalize(1, None, &["bill".into()], false)
             .await
             .unwrap();
         assert_eq!(
@@ -730,7 +735,7 @@ mod tests {
         mock.scenario().lock().await.embed_content = Some(vec![vec![1.0, 0.0]]);
 
         let ids = canon
-            .canonicalize(1, &["newtopic".into()], false)
+            .canonicalize(1, None, &["newtopic".into()], false)
             .await
             .unwrap();
         assert_eq!(ids.len(), 1);
@@ -767,8 +772,9 @@ mod tests {
         mock.scenario().lock().await.embed_content = Some(vec![vec![1.0, 0.0]]);
 
         // A fresh tag (no alias, no similar existing tag) forces an embed call.
+        // P14-T1: pass an acting user so the metered event is attributed to it.
         canon
-            .canonicalize(7, &["freshtopic".into()], false)
+            .canonicalize(7, Some(13), &["freshtopic".into()], false)
             .await
             .unwrap();
         mock.shutdown().await;
@@ -783,6 +789,7 @@ mod tests {
         );
         assert_eq!(events[0].role, Role::Embed);
         assert_eq!(events[0].tenant_id, 7);
+        assert_eq!(events[0].user_id, Some(13));
     }
 
     #[tokio::test]
@@ -790,7 +797,7 @@ mod tests {
         let store = Arc::new(MockTagStore::new());
         let (canon, mock) = canonicalizer_with_mock(store.clone()).await;
 
-        let ids = canon.canonicalize(1, &[], false).await.unwrap();
+        let ids = canon.canonicalize(1, None, &[], false).await.unwrap();
         assert!(ids.is_empty());
         mock.shutdown().await;
     }
@@ -808,7 +815,7 @@ mod tests {
 
         // "first" → alias to 1, "second" → cos-match to beta(2).
         let ids = canon
-            .canonicalize(1, &["first".into(), "second".into()], false)
+            .canonicalize(1, None, &["first".into(), "second".into()], false)
             .await
             .unwrap();
         assert_eq!(ids.len(), 2, "2 inputs → 2 outputs");
@@ -827,7 +834,7 @@ mod tests {
         mock.scenario().lock().await.embed_content = Some(vec![vec![0.7, 0.7]]);
 
         let ids = canon
-            .canonicalize(1, &["invoice".into(), "bill".into()], false)
+            .canonicalize(1, None, &["invoice".into(), "bill".into()], false)
             .await
             .unwrap();
         assert_eq!(ids.len(), 2);
@@ -853,7 +860,7 @@ mod tests {
         mock.scenario().lock().await.embed_content = Some(vec![vec![0.5, 0.5]]);
 
         let ids = canon
-            .canonicalize(1, &["known-alias".into(), "new-tag".into()], false)
+            .canonicalize(1, None, &["known-alias".into(), "new-tag".into()], false)
             .await
             .unwrap();
         assert_eq!(ids.len(), 2);
@@ -871,7 +878,7 @@ mod tests {
         mock.scenario().lock().await.embed_content = Some(vec![vec![0.3, 0.9]]);
 
         let ids = canon
-            .canonicalize(1, &["dup".into(), "dup".into(), "dup".into()], false)
+            .canonicalize(1, None, &["dup".into(), "dup".into(), "dup".into()], false)
             .await
             .unwrap();
         assert_eq!(ids.len(), 3);
@@ -891,7 +898,7 @@ mod tests {
         mock.scenario().lock().await.embed_content = Some(vec![vec![0.5, 0.5]]);
 
         let ids = canon
-            .canonicalize(1, &["a".into(), "b".into(), "c".into()], false)
+            .canonicalize(1, None, &["a".into(), "b".into(), "c".into()], false)
             .await
             .unwrap();
         assert_eq!(ids.len(), 3);
@@ -915,7 +922,7 @@ mod tests {
 
         // Tenant 1 asks for the same names — must NOT see tenant 2's data.
         let ids = canon
-            .canonicalize(1, &["shared-name".into(), "alias-t2".into()], false)
+            .canonicalize(1, None, &["shared-name".into(), "alias-t2".into()], false)
             .await
             .unwrap();
         assert_eq!(ids.len(), 2);
@@ -939,7 +946,7 @@ mod tests {
         mock.scenario().lock().await.embed = kb_mock_backend::ResponseMode::ServerError;
 
         let err = canon
-            .canonicalize(1, &["new-tag".into()], false)
+            .canonicalize(1, None, &["new-tag".into()], false)
             .await
             .unwrap_err();
         assert!(
@@ -964,7 +971,7 @@ mod tests {
 
         // Only aliases — no embedding needed.
         let ids = canon
-            .canonicalize(1, &["feline".into(), "kitty".into()], false)
+            .canonicalize(1, None, &["feline".into(), "kitty".into()], false)
             .await
             .unwrap();
         assert_eq!(ids, vec![1, 1]);
@@ -981,7 +988,7 @@ mod tests {
         mock.scenario().lock().await.embed_content = Some(vec![]);
 
         let err = canon
-            .canonicalize(1, &["orphan".into()], false)
+            .canonicalize(1, None, &["orphan".into()], false)
             .await
             .unwrap_err();
         assert!(
@@ -1140,6 +1147,7 @@ mod tests {
         let ids = canon
             .canonicalize(
                 1,
+                None,
                 &["machine-learning".into(), "machine learning".into()],
                 false,
             )
@@ -1162,14 +1170,14 @@ mod tests {
 
         // First batch: create tag from "machine-learning".
         let ids = canon
-            .canonicalize(1, &["machine-learning".into()], false)
+            .canonicalize(1, None, &["machine-learning".into()], false)
             .await
             .unwrap();
         let tag_id = ids[0];
 
         // Second batch: raw alias lookup should find it immediately (no embed).
         let ids2 = canon
-            .canonicalize(1, &["machine-learning".into()], false)
+            .canonicalize(1, None, &["machine-learning".into()], false)
             .await
             .unwrap();
         assert_eq!(ids2[0], tag_id, "raw form alias must resolve immediately");

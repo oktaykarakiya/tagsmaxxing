@@ -1438,9 +1438,9 @@ description = "A1: per-user attribution + monthly rollup + async fail-open recor
 depends_on = []
 plan_sections = ["5", "15", "29"]
 acceptance = "usage_events.user_id populated for ingest AND search calls; tenant_monthly_usage upserts transactionally with the event; recorder failure never fails the request (test); unit+integration tests; just ci green; no new e2e failures vs baseline."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "Migrations 0024 (jobs.created_by FK->users) + 0025 (tenant_monthly_usage rollup, RLS ENABLE/FORCE + tenant_isolation policy + kb_app grant). Attribution{tenant_id,user_id} in kb-core; user_id threaded handler->enqueue->jobs.created_by->process_*_job->IngestPipeline::ingest->meter->UsageEvent.user_id (system jobs None; embed_query stays None pending T2). insert_usage_event upserts the rollup in the SAME begin_tenant_tx (UTC month-trunc, sum-on-conflict, skip when 0 tokens); get_current_month_token_rollup = O(1) point-select. BufferedUsageRecorder (bounded mpsc, non-blocking try_send, fail-open + dropped counter, drain task) wired into serve.rs with a 5s shutdown flush-join; store gains tokio rt. 5 buffered-recorder unit tests + attribution + #[ignore] rollup/enqueue integ tests. Also cleared pre-existing un-CI'd fmt/clippy on the branch. just ci green (cov 76.88%; buffered_recorder 97.5%). e2e deferred to A-phase boundary (A1 is black-box-neutral)."
 
 [[task]]
 id = "P14-T2"

@@ -318,6 +318,7 @@ async fn e2e_cli_ingest_and_search_roundtrip() {
     let output = ingest
         .ingest(
             infra.tenant_a,
+            None,
             vec![IngestFile {
                 bytes: b"The CLI is the command-line interface for the knowledge base.".to_vec(),
                 page_label: None,
@@ -419,6 +420,7 @@ async fn e2e_api_ingest_search_document_detail() {
     let output = ingest
         .ingest(
             infra.tenant_a,
+            None,
             vec![IngestFile {
                 bytes: content.to_vec(),
                 page_label: None,
@@ -551,6 +553,7 @@ async fn e2e_web_ui_search_and_document_detail() {
     let output = ingest
         .ingest(
             infra.tenant_a,
+            None,
             vec![IngestFile {
                 bytes: _content.to_vec(),
                 page_label: None,
@@ -688,6 +691,7 @@ async fn e2e_admin_tenant_user_crud() {
     let output = ingest
         .ingest(
             infra.tenant_a,
+            None,
             vec![IngestFile {
                 bytes: b"Admin panel test content for dashboard verification.".to_vec(),
                 page_label: None,
@@ -825,6 +829,7 @@ async fn e2e_cross_tenant_isolation_api() {
     let out_a = ingest_a
         .ingest(
             infra.tenant_a,
+            None,
             vec![IngestFile {
                 bytes: b"Confidential information owned by tenant Alpha.".to_vec(),
                 page_label: None,
@@ -848,6 +853,7 @@ async fn e2e_cross_tenant_isolation_api() {
     let out_b = ingest_b
         .ingest(
             infra.tenant_b,
+            None,
             vec![IngestFile {
                 bytes: b"Public information owned by tenant Beta.".to_vec(),
                 page_label: None,

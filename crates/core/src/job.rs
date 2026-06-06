@@ -84,6 +84,11 @@ pub struct Job {
     pub run_after: DateTime<Utc>,
     /// Row creation time.
     pub created_at: DateTime<Utc>,
+    /// User who enqueued the job, if attributable (P14-T1). `None` for
+    /// system/maintenance jobs (reembed, export, orphan_gc, …) and for rows
+    /// created before per-user attribution existed. Read by the job processor
+    /// to attribute the resulting model-call usage to this user.
+    pub created_by: Option<i64>,
 }
 
 #[cfg(test)]

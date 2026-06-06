@@ -65,7 +65,7 @@ fn calculate_backoff(attempts: i32, min_backoff_ms: i64) -> chrono::Duration {
 ///
 /// # async fn example(pool: sqlx::PgPool) -> anyhow::Result<()> {
 /// let queue = Arc::new(JobQueue::new(pool, 10_000, 3));
-/// let job_id = queue.enqueue(1, None, None, kb_core::job::JobKind::Ingest, 0).await?;
+/// let job_id = queue.enqueue(1, None, None, None, kb_core::job::JobKind::Ingest, 0).await?;
 /// # Ok(())
 /// # }
 /// ```
@@ -114,12 +114,17 @@ impl JobQueue {
     /// **higher-is-more-urgent** convention (0 = default, no special treatment);
     /// see the [module-level docs](self) for the full P9-T12 semantics.
     ///
+    /// `created_by` attributes the job to the user who enqueued it (P14-T1), so
+    /// the resulting model-call usage is metered to that user. Pass `None` for
+    /// system/maintenance jobs (reembed, export, orphan_gc, …).
+    ///
     /// # Errors
     ///
     /// Returns an error if the database operation fails.
     pub async fn enqueue(
         &self,
         tenant_id: i64,
+        created_by: Option<i64>,
         file_id: Option<i64>,
         document_id: Option<i64>,
         kind: JobKind,
@@ -127,11 +132,12 @@ impl JobQueue {
     ) -> anyhow::Result<i64> {
         let row = sqlx::query_scalar::<_, i64>(
             "INSERT INTO jobs \
-             (tenant_id, file_id, document_id, kind, priority, status, attempts, run_after, created_at) \
-             VALUES ($1, $2, $3, $4, $5, 'queued', 0, now(), now()) \
+             (tenant_id, created_by, file_id, document_id, kind, priority, status, attempts, run_after, created_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, 'queued', 0, now(), now()) \
              RETURNING id",
         )
         .bind(tenant_id)
+        .bind(created_by)
         .bind(file_id)
         .bind(document_id)
         .bind(kind.as_str())
@@ -184,7 +190,7 @@ impl JobQueue {
                  FOR UPDATE SKIP LOCKED \
              ) \
              RETURNING id, tenant_id, file_id, document_id, kind, priority, status, attempts, \
-                       last_error, run_after, created_at",
+                       last_error, run_after, created_at, created_by",
             aging_step = AGING_STEP_SECS
         ))
         .fetch_optional(&self.pool)
@@ -321,6 +327,7 @@ fn row_to_job(row: &PgRow) -> anyhow::Result<Job> {
         last_error: row.try_get("last_error")?,
         run_after: row.try_get("run_after")?,
         created_at: row.try_get("created_at")?,
+        created_by: row.try_get("created_by")?,
     })
 }
 

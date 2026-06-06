@@ -23,8 +23,10 @@ pub async fn run_ingest(
     let files = read_files(&args.files)?;
 
     let note = args.note.clone();
+    // CLI ingest runs as the operator (no per-user attribution), so usage is
+    // recorded tenant-only (P14-T1).
     let output = pipeline
-        .ingest(tenant_id, files, note, false)
+        .ingest(tenant_id, None, files, note, false)
         .await
         .context("ingest pipeline failed")?;
 

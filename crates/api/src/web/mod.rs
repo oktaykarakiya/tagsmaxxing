@@ -71,8 +71,8 @@ pub(crate) fn build_web_router(
     use axum::middleware::from_fn_with_state;
     use axum::routing::{get, post};
 
-    use axum::extract::DefaultBodyLimit;
     use crate::handlers::ingest::MAX_PAYLOAD_BYTES;
+    use axum::extract::DefaultBodyLimit;
 
     // Public web routes (no auth required).
     let public = axum::Router::new()

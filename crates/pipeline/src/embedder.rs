@@ -71,18 +71,19 @@ impl ChunkEmbedder {
         self
     }
 
-    /// Meter one embedding batch's token usage to `tenant_id` (best-effort).
+    /// Meter one embedding batch's token usage to `tenant_id`, attributed to
+    /// `user_id` when known (best-effort, P14-T1).
     ///
     /// A no-op when no [`UsageRecorder`] is attached. Recording failures are
     /// logged and swallowed — metering must never fail an embedding call.
-    async fn meter(&self, tenant_id: i64, usage: &Usage) {
+    async fn meter(&self, tenant_id: i64, user_id: Option<i64>, usage: &Usage) {
         let Some(recorder) = &self.usage_recorder else {
             return;
         };
         let event = UsageEvent {
             id: 0,
             tenant_id,
-            user_id: None,
+            user_id,
             model: self.embed_model.clone(),
             role: Role::Embed,
             backend_id: None,
@@ -107,6 +108,9 @@ impl ChunkEmbedder {
     /// The returned [`Chunk`]s have `id = 0` (not yet assigned by the database) and
     /// are ordered identically to the input `chunks` slice.
     ///
+    /// `user_id` attributes the batch's metered token usage to the acting user
+    /// when known (P14-T1); `None` records the event tenant-only.
+    ///
     /// # Errors
     ///
     /// Returns an error if any batch's embedding call fails, if the backend returns
@@ -116,6 +120,7 @@ impl ChunkEmbedder {
         &self,
         chunks: Vec<TextChunk>,
         tenant_id: i64,
+        user_id: Option<i64>,
         document_id: i64,
         local_only: bool,
     ) -> anyhow::Result<Vec<Chunk>> {
@@ -125,7 +130,13 @@ impl ChunkEmbedder {
 
         let texts: Vec<String> = chunks.iter().map(|c| c.content.clone()).collect();
         let vectors = self
-            .batch_embed(&texts, EmbedKind::Document, Some(tenant_id), local_only)
+            .batch_embed(
+                &texts,
+                EmbedKind::Document,
+                Some(tenant_id),
+                user_id,
+                local_only,
+            )
             .await?;
 
         anyhow::ensure!(
@@ -167,7 +178,7 @@ impl ChunkEmbedder {
         names: &[String],
         local_only: bool,
     ) -> anyhow::Result<Vec<Vec<f32>>> {
-        self.batch_embed(names, EmbedKind::Document, None, local_only)
+        self.batch_embed(names, EmbedKind::Document, None, None, local_only)
             .await
     }
 
@@ -190,6 +201,7 @@ impl ChunkEmbedder {
             .batch_embed(
                 &[query_text.to_string()],
                 EmbedKind::Query,
+                None,
                 None,
                 local_only,
             )
@@ -215,6 +227,7 @@ impl ChunkEmbedder {
         texts: &[String],
         kind: EmbedKind,
         tenant_id: Option<i64>,
+        user_id: Option<i64>,
         local_only: bool,
     ) -> anyhow::Result<Vec<Vec<f32>>> {
         // Apply the query instruction prefix (Qwen3-Embedding format) for queries only.
@@ -239,11 +252,12 @@ impl ChunkEmbedder {
                 .await
                 .context("failed to embed batch")?;
 
-            // Meter this batch's token usage to the tenant (BUG-BILL-03). Only
+            // Meter this batch's token usage to the tenant (BUG-BILL-03),
+            // attributed to the acting user when known (P14-T1). Only
             // tenant-attributable calls (document embedding during ingest) are
             // metered; query embedding passes `None`.
             if let Some(tid) = tenant_id {
-                self.meter(tid, &resp.usage).await;
+                self.meter(tid, user_id, &resp.usage).await;
             }
 
             for (i, vector) in resp.vectors.into_iter().enumerate() {
@@ -341,7 +355,12 @@ mod tests {
 
         let input = vec![tc("hello", 0, 1, 1)];
         let chunks = embedder
-            .embed_chunks(input, 42 /* tenant */, 7 /* doc */, false)
+            .embed_chunks(
+                input, 42,   /* tenant */
+                None, /* user */
+                7,    /* doc */
+                false,
+            )
             .await
             .unwrap();
 
@@ -366,14 +385,40 @@ mod tests {
         let embedder = embedder.with_usage_recorder(recorder.clone() as Arc<dyn UsageRecorder>);
 
         let input = vec![tc("hello", 0, 1, 1)];
-        embedder.embed_chunks(input, 42, 7, false).await.unwrap();
+        embedder
+            .embed_chunks(input, 42, Some(99), 7, false)
+            .await
+            .unwrap();
         mock.shutdown().await;
 
         let events = recorder.events.lock().unwrap();
         assert_eq!(events.len(), 1, "one embed batch should be metered");
         assert_eq!(events[0].tenant_id, 42);
+        // P14-T1: the acting user is attributed on the metered event.
+        assert_eq!(events[0].user_id, Some(99));
         assert_eq!(events[0].role, Role::Embed);
         assert_eq!(events[0].model, "bge-m3");
+    }
+
+    #[tokio::test]
+    async fn embed_chunks_without_user_records_tenant_only() {
+        // P14-T1: when no acting user is supplied, the metered event still
+        // records the tenant but leaves user_id NULL (e.g. background reembed).
+        let (embedder, mock) = embedder_with_mock(MOCK_DIM).await;
+        let recorder = Arc::new(CapturingRecorder::default());
+        let embedder = embedder.with_usage_recorder(recorder.clone() as Arc<dyn UsageRecorder>);
+
+        let input = vec![tc("hello", 0, 1, 1)];
+        embedder
+            .embed_chunks(input, 42, None, 7, false)
+            .await
+            .unwrap();
+        mock.shutdown().await;
+
+        let events = recorder.events.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].tenant_id, 42);
+        assert_eq!(events[0].user_id, None);
     }
 
     #[tokio::test]
@@ -396,7 +441,10 @@ mod tests {
     #[tokio::test]
     async fn embed_chunks_empty_input() {
         let (embedder, mock) = embedder_with_mock(MOCK_DIM).await;
-        let result = embedder.embed_chunks(vec![], 1, 1, false).await.unwrap();
+        let result = embedder
+            .embed_chunks(vec![], 1, None, 1, false)
+            .await
+            .unwrap();
         assert!(result.is_empty());
         mock.shutdown().await;
     }
@@ -412,7 +460,10 @@ mod tests {
             file_id: 10,
             ts_offset: Some(15.5),
         }];
-        let chunks = embedder.embed_chunks(input, 1, 1, false).await.unwrap();
+        let chunks = embedder
+            .embed_chunks(input, 1, None, 1, false)
+            .await
+            .unwrap();
         assert_eq!(chunks[0].ts_offset, Some(15.5));
 
         mock.shutdown().await;
@@ -424,7 +475,10 @@ mod tests {
         let (embedder, mock) = embedder_with_mock(512).await;
 
         let input = vec![tc("hello", 0, 1, 1)];
-        let err = embedder.embed_chunks(input, 1, 1, false).await.unwrap_err();
+        let err = embedder
+            .embed_chunks(input, 1, None, 1, false)
+            .await
+            .unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("dimension mismatch"),
@@ -478,7 +532,7 @@ mod tests {
         assert_eq!(text_chunks.len(), 1);
 
         let embedded = embedder
-            .embed_chunks(text_chunks, 1, 99, false)
+            .embed_chunks(text_chunks, 1, None, 99, false)
             .await
             .unwrap();
         assert_eq!(embedded.len(), 1);
@@ -600,7 +654,7 @@ mod tests {
         let (embedder, mock) = embedder_with_mock(MOCK_DIM).await;
 
         let chunks = embedder
-            .embed_chunks(vec![tc("document content", 0, 1, 1)], 1, 1, false)
+            .embed_chunks(vec![tc("document content", 0, 1, 1)], 1, None, 1, false)
             .await
             .unwrap();
         assert_eq!(chunks.len(), 1);

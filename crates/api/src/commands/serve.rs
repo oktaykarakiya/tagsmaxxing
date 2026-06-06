@@ -39,7 +39,9 @@ use kb_scheduler::Pool;
 use kb_scheduler::Reloader;
 use kb_store::ROUTING_CHANNEL;
 use kb_store::api_token_store::InMemoryApiTokenStore;
-use kb_store::{EMBED_DIM, LocalBlob, PgRoutingNotifier, PgSessionStore, PgStore};
+use kb_store::{
+    BufferedUsageRecorder, EMBED_DIM, LocalBlob, PgRoutingNotifier, PgSessionStore, PgStore,
+};
 use tracing::{info, warn};
 
 use crate::cli::ServeArgs;
@@ -252,10 +254,19 @@ pub async fn run_serve(args: &ServeArgs) -> anyhow::Result<()> {
 
     // ── Build pipeline components ───────────────────────────────────────────
     // The tagger and embedder meter each model call's token usage into
-    // usage_events via the store (BUG-BILL-03).
+    // usage_events via the store (BUG-BILL-03). Metering is routed through a
+    // fail-open, async BufferedUsageRecorder (P14-T1) so a slow or failing
+    // usage sink can never block — or abort — an ingest; events are drained to
+    // the PgStore on a background task that is joined at shutdown.
+    let (usage_recorder, usage_flush_handle) = BufferedUsageRecorder::start(
+        Arc::clone(&pg_store) as Arc<dyn kb_core::usage::UsageRecorder>,
+        kb_store::buffered_recorder::DEFAULT_CAPACITY,
+    );
+    let usage_recorder: Arc<dyn kb_core::usage::UsageRecorder> = Arc::new(usage_recorder);
+
     let tagger = Arc::new(
         JsonSchemaTagger::new(llm_factory(), DEFAULT_CHAT_MODEL.into())
-            .with_usage_recorder(Arc::clone(&pg_store) as Arc<dyn kb_core::usage::UsageRecorder>),
+            .with_usage_recorder(Arc::clone(&usage_recorder)),
     );
 
     let embed_llm = Arc::new(llm_factory());
@@ -265,7 +276,7 @@ pub async fn run_serve(args: &ServeArgs) -> anyhow::Result<()> {
             DEFAULT_EMBED_MODEL.into(),
             EMBED_DIM,
         )
-        .with_usage_recorder(Arc::clone(&pg_store) as Arc<dyn kb_core::usage::UsageRecorder>),
+        .with_usage_recorder(Arc::clone(&usage_recorder)),
     );
     let canonicalizer = Arc::new(
         TagCanonicalizer::new(
@@ -274,7 +285,7 @@ pub async fn run_serve(args: &ServeArgs) -> anyhow::Result<()> {
             DEFAULT_EMBED_MODEL.into(),
             TAG_MERGE_THRESHOLD,
         )
-        .with_usage_recorder(Arc::clone(&pg_store) as Arc<dyn kb_core::usage::UsageRecorder>),
+        .with_usage_recorder(Arc::clone(&usage_recorder)),
     );
 
     let reranker = Arc::new(LlamaReranker::new(
@@ -495,6 +506,12 @@ pub async fn run_serve(args: &ServeArgs) -> anyhow::Result<()> {
     // Wait for background tasks to drain.
     let _ = tokio::time::timeout(Duration::from_secs(10), janitor_handle).await;
     let _ = tokio::time::timeout(Duration::from_secs(10), health_handle).await;
+
+    // Give the usage-recorder flush task a moment to drain any buffered events
+    // (P14-T1). It runs continuously during operation, so the buffer is near-
+    // empty here; it only fully returns once every sender (held inside the
+    // router/AppState) is dropped, so this is a best-effort timed join.
+    let _ = tokio::time::timeout(Duration::from_secs(5), usage_flush_handle).await;
 
     info!("server shut down cleanly");
     Ok(())

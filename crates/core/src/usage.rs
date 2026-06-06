@@ -6,6 +6,22 @@ use serde::{Deserialize, Serialize};
 
 use crate::role::Role;
 
+/// Who a metered model call is attributed to (P14-T1).
+///
+/// Carries the owning `tenant_id` plus the optional acting `user_id`. Threaded
+/// from the request (`AuthUser`) or a job (`Job::created_by`) through the
+/// ingest pipeline into the metering components so each [`UsageEvent`] is
+/// stamped with both. `user_id` is `None` for system/maintenance work and for
+/// paths where no user is attributable (e.g. query embedding on the search
+/// path before that is wired).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Attribution {
+    /// Owning tenant.
+    pub tenant_id: i64,
+    /// Acting user, if attributable.
+    pub user_id: Option<i64>,
+}
+
 /// One model call's usage, written to `usage_events`. Drives capacity planning, per-tenant
 /// quotas, and — for priced remote backends — spend (plan §15).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

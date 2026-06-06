@@ -11,6 +11,10 @@ pub struct TagInput {
     /// Owning tenant, used to attribute the tagging model call's token usage to
     /// the right tenant in `usage_events` (BUG-BILL-03).
     pub tenant_id: i64,
+    /// Acting user, used to attribute the tagging call's token usage to a
+    /// specific user in `usage_events` (P14-T1). `None` for system/background
+    /// tagging where no user is attributable.
+    pub user_id: Option<i64>,
     /// Combined extracted text across all member pages.
     pub text: String,
     /// The user's note/description (typed or voice-transcribed); strongly drives tags.
