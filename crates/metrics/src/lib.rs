@@ -837,6 +837,11 @@ mod tests {
         let text = render();
         assert!(text.contains("kb_queue_depth 42"));
         assert!(text.contains("kb_queue_oldest_job_age_secs 300"));
+        // Exposition metadata for the oldest-job-age gauge (P14-T9). Asserted
+        // here, alongside the single writer of this global unlabelled gauge, so a
+        // second test does not race the exact-value assertion above.
+        assert!(text.contains("# HELP kb_queue_oldest_job_age_secs"));
+        assert!(text.contains("# TYPE kb_queue_oldest_job_age_secs gauge"));
     }
 
     #[test]

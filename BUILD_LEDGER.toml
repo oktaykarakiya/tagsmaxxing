@@ -1526,9 +1526,9 @@ description = "C2: revive runtime gauges. Map DegradationState -> kb_subsystem_d
 depends_on = []
 plan_sections = ["15", "22"]
 acceptance = "the three dead gauges show live values on /metrics; unit+collector tests; just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "Three dead runtime gauges revived from live state in metrics_collector. DegradationState gained is_subsystem_degraded(&str) (also resolves the non-role 'blob-store'). PgStore::oldest_queued_job_age_secs (DB-side EXTRACT(EPOCH ...) age, 0.0 on empty). The collector now threads Arc<DegradationState> + Arc<InflightLimiter> (cloned in serve.rs BEFORE they move into AppState, so it reads the same live state the request path mutates — no snapshot); publish_runtime_state emits kb_subsystem_degraded{subsystem} (1/0 per subsystem) + kb_inflight_ingest (limiter.in_flight()) before the DB block (stay fresh when DB down), and collect_runtime publishes kb_queue_oldest_job_age_secs. (Helper is record_degradation, not record_subsystem_degraded.) 5 files; unit + collector + #[ignore] pg tests. just ci green (76.61%)."
 
 [[task]]
 id = "P14-T10"

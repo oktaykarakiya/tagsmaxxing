@@ -115,6 +115,38 @@ impl PgStore {
         Ok(count)
     }
 
+    /// Age in **seconds** of the oldest job still waiting to be claimed
+    /// (`status = 'queued'`), or `0.0` when no job is queued (P14-T9, C2).
+    ///
+    /// This is the source for the `kb_queue_oldest_job_age_secs` gauge: the
+    /// periodic metrics collector calls it each tick and publishes the result.
+    /// Only `'queued'` rows are considered — a `'running'` job has already been
+    /// claimed (its wait is over), and `'failed'` rows are awaiting a retry
+    /// *backoff* rather than queue capacity, so neither belongs in a
+    /// "head-of-line wait" gauge. The age is computed entirely in the database
+    /// as `now() - MIN(created_at)` so it is unaffected by any client/server
+    /// clock skew; `EXTRACT(EPOCH …)` yields fractional seconds as `f64`.
+    /// `MIN` over an empty set is `NULL`, which `COALESCE` maps to `0`, so an
+    /// empty queue reports `0.0` (never negative). Uses the admin pool (`jobs`
+    /// is queried cross-tenant for this platform-wide gauge).
+    ///
+    /// # Errors
+    /// Returns an error if the database is not connected or the query fails.
+    pub async fn oldest_queued_job_age_secs(&self) -> anyhow::Result<f64> {
+        let pool = self.pool()?;
+        let age: f64 = sqlx::query_scalar(
+            "SELECT COALESCE(EXTRACT(EPOCH FROM (now() - MIN(created_at))), 0)::double precision \
+             FROM jobs WHERE status = 'queued'",
+        )
+        .fetch_one(&pool)
+        .await
+        .context("failed to query oldest queued job age for metric")?;
+        // Clamp tiny negatives that could arise from sub-millisecond clock
+        // adjustments between the row insert and `now()`; the gauge is a
+        // non-negative age.
+        Ok(age.max(0.0))
+    }
+
     /// Fetch a single tenant by id — the caller's **own** tenant.
     ///
     /// A tenant `Owner` is the administrator of their own workspace, **not** a
@@ -1015,5 +1047,75 @@ mod tests {
         assert_eq!(cloned.id, info.id);
         assert_eq!(cloned.slug, info.slug);
         assert_eq!(cloned.name, info.name);
+    }
+
+    // ── oldest_queued_job_age_secs (P14-T9) ───────────────────────────────────
+
+    #[tokio::test]
+    async fn oldest_queued_job_age_secs_errors_before_connect() {
+        let store = test_store();
+        let err = store.oldest_queued_job_age_secs().await.unwrap_err();
+        assert!(
+            err.to_string().contains("not connected"),
+            "expected 'not connected' error, got: {err}"
+        );
+    }
+
+    // ── DB integration test (#[ignore]) ───────────────────────────────────────
+
+    /// Seed `'queued'` jobs at known ages plus a non-`'queued'` distractor, then
+    /// assert `oldest_queued_job_age_secs` returns the age of the *oldest queued*
+    /// row (UTC/age math), and `0.0` when the queue is empty.
+    #[ignore = "requires Podman + Postgres; run with --ignored"]
+    #[tokio::test]
+    async fn oldest_queued_job_age_secs_reports_head_of_line_wait() {
+        let db = kb_testsupport::fresh_db().await.unwrap();
+        let store = PgStore::new(&db.admin_url);
+        store.connect().await.unwrap();
+        let pool = store.pool().unwrap();
+
+        let tenant_id = store.create_tenant("age-t", "Age Tenant").await.unwrap();
+
+        // Empty queue → exactly 0.0.
+        let empty = store.oldest_queued_job_age_secs().await.unwrap();
+        assert_eq!(empty, 0.0, "empty queue must report 0.0, got {empty}");
+
+        // Oldest queued job: created 600s ago.
+        sqlx::query(
+            "INSERT INTO jobs (tenant_id, kind, status, created_at) \
+             VALUES ($1, 'ingest', 'queued', now() - interval '600 seconds')",
+        )
+        .bind(tenant_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        // A newer queued job: created 60s ago (must NOT win MIN).
+        sqlx::query(
+            "INSERT INTO jobs (tenant_id, kind, status, created_at) \
+             VALUES ($1, 'ingest', 'queued', now() - interval '60 seconds')",
+        )
+        .bind(tenant_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        // An even older but NON-queued (running) job: 9999s ago. Excluded — its
+        // head-of-line wait is over, so it must not skew the gauge.
+        sqlx::query(
+            "INSERT INTO jobs (tenant_id, kind, status, created_at) \
+             VALUES ($1, 'ingest', 'running', now() - interval '9999 seconds')",
+        )
+        .bind(tenant_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let age = store.oldest_queued_job_age_secs().await.unwrap();
+        // ≈600s; allow generous slack for query latency. Crucially it is between
+        // the two queued ages and far below the excluded 9999s running job.
+        assert!(
+            (590.0..=620.0).contains(&age),
+            "oldest queued age should be ~600s (the queued head of line, not the \
+             9999s running job nor the 60s newer queued job), got {age}"
+        );
     }
 }

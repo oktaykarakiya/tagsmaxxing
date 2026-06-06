@@ -116,6 +116,21 @@ impl DegradationState {
             _ => false,
         }
     }
+
+    /// Returns `true` when the named subsystem is degraded.
+    ///
+    /// Unlike [`is_role_degraded`](Self::is_role_degraded) this also resolves the
+    /// non-role `"blob-store"` subsystem, so the metrics collector can publish a
+    /// `0`/`1` gauge for **every** name in
+    /// [`degraded_subsystems`](Self::degraded_subsystems) uniformly. Unknown
+    /// names return `false`.
+    #[must_use]
+    pub fn is_subsystem_degraded(&self, subsystem: &str) -> bool {
+        match subsystem {
+            "blob-store" => self.blob_store_degraded.load(Ordering::Acquire),
+            other => self.is_role_degraded(other),
+        }
+    }
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
@@ -187,6 +202,47 @@ mod tests {
     fn is_role_degraded_unknown_returns_false() {
         let ds = DegradationState::default();
         assert!(!ds.is_role_degraded("nonexistent"));
+    }
+
+    #[test]
+    fn is_subsystem_degraded_covers_blob_store_and_roles() {
+        let ds = DegradationState::default();
+        // All healthy initially.
+        for name in ["blob-store", "embed", "text", "vision", "code", "rerank"] {
+            assert!(
+                !ds.is_subsystem_degraded(name),
+                "{name} should start healthy"
+            );
+        }
+        // blob-store is NOT a role, so is_role_degraded can't see it but
+        // is_subsystem_degraded must.
+        ds.blob_store_degraded.store(true, Ordering::Release);
+        assert!(ds.is_subsystem_degraded("blob-store"));
+        assert!(!ds.is_role_degraded("blob-store"));
+        // A role flag flows through the role path.
+        ds.set_role_degraded("embed", true);
+        assert!(ds.is_subsystem_degraded("embed"));
+        // Unknown name is false.
+        assert!(!ds.is_subsystem_degraded("nope"));
+    }
+
+    #[test]
+    fn is_subsystem_degraded_matches_degraded_subsystems_list() {
+        // Every name degraded_subsystems() can emit must be resolvable by
+        // is_subsystem_degraded — guards the collector's static name list.
+        let ds = DegradationState::default();
+        ds.blob_store_degraded.store(true, Ordering::Release);
+        ds.set_role_degraded("embed", true);
+        ds.set_role_degraded("text", true);
+        ds.set_role_degraded("vision", true);
+        ds.set_role_degraded("code", true);
+        ds.set_role_degraded("rerank", true);
+        for name in ds.degraded_subsystems() {
+            assert!(
+                ds.is_subsystem_degraded(name),
+                "degraded_subsystems() emitted {name} but is_subsystem_degraded says healthy"
+            );
+        }
     }
 
     #[test]

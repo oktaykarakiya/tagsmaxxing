@@ -384,6 +384,11 @@ pub async fn run_serve(args: &ServeArgs) -> anyhow::Result<()> {
     // `AppState` below (BUG-OBS-06: the collector reads global queue depth and
     // per-tenant storage usage each tick).
     let collector_pg_store = Arc::clone(&pg_store);
+    // Likewise clone the in-flight limiter for the collector before it is moved
+    // into `AppState` (P14-T9): the collector publishes its `in_flight()` count
+    // as `kb_inflight_ingest`, reading the same shared limiter the ingest path
+    // acquires permits from.
+    let collector_inflight = Arc::clone(&inflight_limiter);
 
     // Stripe client (P11-T2): optional, gated on STRIPE_SECRET_KEY env var.
     let stripe_client: Option<Arc<dyn stripe_client::StripeClient>> =
@@ -437,10 +442,18 @@ pub async fn run_serve(args: &ServeArgs) -> anyhow::Result<()> {
     // ── Start metrics collector ─────────────────────────────────────────────
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let collector_pool = backend_pool.clone();
+    // The collector also publishes the in-memory runtime gauges (P14-T9): the
+    // per-subsystem degraded flags and the in-flight ingest count. Both handles
+    // were cloned above (`collector_inflight`, and `degradation` survives its
+    // `.clone()` into AppState), so the collector reads the *same* live state the
+    // request path mutates.
+    let collector_degradation = Arc::clone(&degradation);
     tokio::spawn(async move {
         metrics_collector::start_collector(
             collector_pool,
             collector_pg_store,
+            collector_degradation,
+            collector_inflight,
             Duration::from_secs(30),
             shutdown_rx,
         )

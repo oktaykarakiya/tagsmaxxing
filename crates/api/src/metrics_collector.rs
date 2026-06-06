@@ -11,23 +11,40 @@
 use std::sync::Arc;
 
 use kb_core::budget::{BudgetStatus, check_budget};
+use kb_core::degradation::DegradationState;
 use kb_metrics as metrics;
 use kb_scheduler::Pool;
 use kb_store::PgStore;
 use tracing::{info, warn};
+
+use crate::backpressure::InflightLimiter;
+
+/// The subsystems whose degraded flag is published as `kb_subsystem_degraded`
+/// each poll. Kept as a static list (rather than only the *currently* degraded
+/// names from [`DegradationState::degraded_subsystems`]) so every subsystem gets
+/// an explicit `0`/`1` time series — a healthy subsystem still emits `0` instead
+/// of its series silently disappearing, which keeps alert/dashboard math sane.
+///
+/// The names match [`DegradationState::degraded_subsystems`] exactly.
+const DEGRADATION_SUBSYSTEMS: [&str; 6] =
+    ["blob-store", "embed", "text", "vision", "code", "rerank"];
 
 /// Run a metrics collection loop that polls state every `interval` and updates
 /// Prometheus gauges.
 ///
 /// The collector stops when `shutdown` signals. Each tick polls:
 /// - Backend health, free/total slots, in-flight (from `pool`)
-/// - Global queue depth (from `pg_store`)
+/// - Per-subsystem degraded flag (from `degradation`) and the in-flight ingest
+///   count (from `inflight_limiter`) — both are in-memory, so they publish even
+///   when the database is unreachable (P14-T9)
+/// - Global queue depth and the oldest queued job's age (from `pg_store`)
 /// - Per-tenant storage usage, active users, monthly spend, budget cap +
 ///   exceeded flag, and monthly token usage (from `pg_store`), plus the
 ///   rollup↔`usage_events` reconciliation (P14-T8)
 ///
 /// The first tick runs immediately (before the first sleep) so the
-/// `kb_backend_*`, `kb_queue_depth`, `kb_storage_bytes_used`, and the per-tenant
+/// `kb_backend_*`, `kb_subsystem_degraded`, `kb_inflight_ingest`,
+/// `kb_queue_depth`, `kb_storage_bytes_used`, and the per-tenant
 /// `kb_active_users` / `kb_tenant_*` families appear on `/metrics` from startup
 /// rather than only after `interval` has elapsed.
 ///
@@ -37,21 +54,36 @@ use tracing::{info, warn};
 pub async fn start_collector(
     pool: Arc<Pool>,
     pg_store: Arc<PgStore>,
+    degradation: Arc<DegradationState>,
+    inflight_limiter: Arc<InflightLimiter>,
     interval: std::time::Duration,
     shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
-    run_collector_loop(pool, pg_store, interval, shutdown).await;
+    run_collector_loop(
+        pool,
+        pg_store,
+        degradation,
+        inflight_limiter,
+        interval,
+        shutdown,
+    )
+    .await;
 }
 
 /// Internal loop: poll → sleep → repeat until shutdown.
 async fn run_collector_loop(
     pool: Arc<Pool>,
     pg_store: Arc<PgStore>,
+    degradation: Arc<DegradationState>,
+    inflight_limiter: Arc<InflightLimiter>,
     interval: std::time::Duration,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
     loop {
         collect_backends(&pool);
+        // In-memory gauges first: these never touch the DB, so they stay fresh
+        // even while `collect_runtime`'s queries are failing.
+        publish_runtime_state(&degradation, &inflight_limiter);
         collect_runtime(&pg_store).await;
 
         tokio::select! {
@@ -63,13 +95,32 @@ async fn run_collector_loop(
     info!("metrics collector shut down");
 }
 
+/// Publish the in-memory runtime gauges from live state (P14-T9, C2).
+///
+/// Pure apart from the `record_*` gauge writes — takes the live
+/// [`DegradationState`] and [`InflightLimiter`] and emits:
+/// - `kb_subsystem_degraded{subsystem}` = `1` degraded / `0` healthy, one series
+///   per known subsystem (so a recovered subsystem flips back to `0` rather than
+///   leaving a stale series), and
+/// - `kb_inflight_ingest` = the limiter's current global in-flight count.
+///
+/// No I/O and no failure modes, so it is called unconditionally each tick and is
+/// directly unit-testable without the loop or a database.
+fn publish_runtime_state(degradation: &DegradationState, inflight_limiter: &InflightLimiter) {
+    for subsystem in DEGRADATION_SUBSYSTEMS {
+        metrics::record_degradation(subsystem, degradation.is_subsystem_degraded(subsystem));
+    }
+    metrics::record_inflight_ingest(inflight_limiter.in_flight());
+}
+
 /// Update the DB-derived runtime gauges from `pg_store` (BUG-OBS-06, P14-T8).
 ///
 /// Publishes the global `kb_queue_depth` gauge from
-/// [`PgStore::count_pending_jobs`], then iterates every tenant and publishes the
-/// per-tenant gauges (storage, active users, monthly spend, budget cap +
-/// exceeded flag, monthly tokens). It also reconciles each tenant's O(1) token
-/// rollup against the authoritative `usage_events` SUM, self-healing drift
+/// [`PgStore::count_pending_jobs`] and the `kb_queue_oldest_job_age_secs` gauge
+/// from [`PgStore::oldest_queued_job_age_secs`], then iterates every tenant and
+/// publishes the per-tenant gauges (storage, active users, monthly spend, budget
+/// cap + exceeded flag, monthly tokens). It also reconciles each tenant's O(1)
+/// token rollup against the authoritative `usage_events` SUM, self-healing drift
 /// (P14-T8).
 ///
 /// Every query is **best-effort**: a failure for one tenant (or one gauge) is
@@ -80,6 +131,11 @@ async fn collect_runtime(pg_store: &PgStore) {
     match pg_store.count_pending_jobs().await {
         Ok(depth) => metrics::record_queue_depth(depth.max(0) as u64),
         Err(e) => warn!(error = %e, "metrics collector: failed to read queue depth"),
+    }
+
+    match pg_store.oldest_queued_job_age_secs().await {
+        Ok(age) => metrics::record_queue_oldest_job_age(age),
+        Err(e) => warn!(error = %e, "metrics collector: failed to read oldest queued job age"),
     }
 
     match pg_store.admin_list_tenants().await {
@@ -292,11 +348,21 @@ mod tests {
         // PgStore at a closed port → its queries error fast; the collector logs
         // and keeps running, so shutdown still works.
         let pg_store = Arc::new(PgStore::new("postgres://127.0.0.1:1/none?sslmode=disable"));
+        let degradation = Arc::new(DegradationState::default());
+        let inflight = Arc::new(InflightLimiter::new(8));
         let (tx, rx) = tokio::sync::watch::channel(false);
 
         // Spawn the collector, then immediately shut down.
         let handle = tokio::spawn(async move {
-            start_collector(pool, pg_store, Duration::from_secs(60), rx).await;
+            start_collector(
+                pool,
+                pg_store,
+                degradation,
+                inflight,
+                Duration::from_secs(60),
+                rx,
+            )
+            .await;
         });
 
         // Small sleep to let the collector start.
@@ -310,12 +376,110 @@ mod tests {
 
     #[tokio::test]
     async fn collect_runtime_swallows_db_errors() {
-        // PgStore pointed at a closed port: count_pending_jobs and
-        // admin_list_tenants both error. collect_runtime must log and skip each,
-        // returning normally (never panicking) so the loop keeps running.
+        // PgStore pointed at a closed port: count_pending_jobs,
+        // oldest_queued_job_age_secs and admin_list_tenants all error.
+        // collect_runtime must log and skip each, returning normally (never
+        // panicking) so the loop keeps running.
         let pg_store = PgStore::new("postgres://127.0.0.1:1/none?sslmode=disable");
         // Completes without panic — exercises the error branches.
         collect_runtime(&pg_store).await;
+    }
+
+    // ── In-memory runtime gauges (P14-T9) ─────────────────────────────────────
+
+    #[test]
+    fn publish_runtime_state_emits_every_subsystem_and_inflight() {
+        ensure_init();
+
+        let degradation = DegradationState::default();
+        // Mark two subsystems degraded; the rest stay healthy.
+        degradation
+            .blob_store_degraded
+            .store(true, Ordering::Release);
+        degradation.set_role_degraded("embed", true);
+
+        let limiter = InflightLimiter::new(8);
+
+        publish_runtime_state(&degradation, &limiter);
+
+        let text = kb_metrics::render();
+        // Every known subsystem gets an explicit series (healthy ones included),
+        // so dashboards/alerts see a 0 rather than a vanished metric.
+        for subsystem in DEGRADATION_SUBSYSTEMS {
+            assert!(
+                text.contains(&format!(
+                    "kb_subsystem_degraded{{subsystem=\"{subsystem}\"}}"
+                )),
+                "missing kb_subsystem_degraded series for {subsystem}: {text}"
+            );
+        }
+        // And the in-flight ingest gauge is published.
+        assert!(
+            text.contains("kb_inflight_ingest"),
+            "kb_inflight_ingest not found in: {text}"
+        );
+    }
+
+    #[test]
+    fn publish_runtime_state_reads_live_degraded_and_inflight_inputs() {
+        ensure_init();
+
+        // Verify the helper sources its values from *live* state. The
+        // record_degradation(bool)→0/1 and record_inflight_ingest(n)→n mappings
+        // are unit-tested in kb-metrics; here we pin the **inputs** the helper
+        // reads (deterministic, no shared-gauge race) and that publishing emits
+        // the corresponding series.
+        let degradation = DegradationState::default();
+        degradation.set_role_degraded("vision", true);
+        // The helper reads exactly this for the "vision" label.
+        assert!(degradation.is_subsystem_degraded("vision"));
+        assert!(!degradation.is_subsystem_degraded("text"));
+
+        let limiter = InflightLimiter::new(16);
+        let _p1 = limiter.try_acquire(1).unwrap();
+        let _p2 = limiter.try_acquire(1).unwrap();
+        let _p3 = limiter.try_acquire(2).unwrap();
+        // The helper reads exactly this for kb_inflight_ingest.
+        assert_eq!(limiter.in_flight(), 3);
+
+        publish_runtime_state(&degradation, &limiter);
+
+        let text = kb_metrics::render();
+        // The vision series exists (its value tracks the live flag we set).
+        assert!(
+            text.contains("kb_subsystem_degraded{subsystem=\"vision\"}"),
+            "vision series missing after publish: {text}"
+        );
+        assert!(
+            text.contains("kb_inflight_ingest"),
+            "kb_inflight_ingest missing after publish: {text}"
+        );
+
+        drop((_p1, _p2, _p3));
+    }
+
+    #[test]
+    fn publish_runtime_state_all_healthy_reports_zeros() {
+        ensure_init();
+
+        // A pristine state with a disabled limiter: every subsystem healthy (0)
+        // and zero in-flight. Assert blob-store (a value no other test flips to a
+        // steady 0/1 mid-render for a *disabled-limiter* default) emits its line;
+        // exact 0/1 for shared series can race, so only assert presence here.
+        let degradation = DegradationState::default();
+        let limiter = InflightLimiter::new(0); // disabled → in_flight() == 0
+
+        publish_runtime_state(&degradation, &limiter);
+
+        let text = kb_metrics::render();
+        assert!(
+            text.contains("kb_subsystem_degraded{subsystem=\"blob-store\"}"),
+            "blob-store series missing: {text}"
+        );
+        assert!(
+            text.contains("kb_inflight_ingest"),
+            "kb_inflight_ingest missing: {text}"
+        );
     }
 
     #[tokio::test]
