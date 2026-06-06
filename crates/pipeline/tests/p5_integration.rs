@@ -104,6 +104,8 @@ impl Reranker for PassThroughReranker {
         docs: &[String],
         _local_only: bool,
         _priority: i32,
+        _tenant_id: i64,
+        _user_id: Option<i64>,
     ) -> anyhow::Result<Vec<f32>> {
         Ok(docs.iter().map(|_| 1.0).collect())
     }
@@ -363,6 +365,7 @@ async fn e2e_multi_tenant_ingest_and_search_isolation() {
     let hits_a = retrieval
         .retrieve(
             infra.tenant_a,
+            None,
             &Query {
                 text: "quantum".into(),
                 filters: QueryFilters::default(),
@@ -390,6 +393,7 @@ async fn e2e_multi_tenant_ingest_and_search_isolation() {
     let hits_b = retrieval
         .retrieve(
             infra.tenant_b,
+            None,
             &Query {
                 text: "ocean".into(),
                 filters: QueryFilters::default(),
@@ -414,6 +418,7 @@ async fn e2e_multi_tenant_ingest_and_search_isolation() {
     let hits_a2 = retrieval
         .retrieve(
             infra.tenant_a,
+            None,
             &Query {
                 text: "ocean".into(),
                 filters: QueryFilters::default(),

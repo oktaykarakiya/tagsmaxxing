@@ -288,10 +288,10 @@ pub async fn run_serve(args: &ServeArgs) -> anyhow::Result<()> {
         .with_usage_recorder(Arc::clone(&usage_recorder)),
     );
 
-    let reranker = Arc::new(LlamaReranker::new(
-        Arc::clone(&embed_llm),
-        DEFAULT_RERANK_MODEL.into(),
-    ));
+    let reranker = Arc::new(
+        LlamaReranker::new(Arc::clone(&embed_llm), DEFAULT_RERANK_MODEL.into())
+            .with_usage_recorder(Arc::clone(&usage_recorder)),
+    );
 
     // ── Blob store ──────────────────────────────────────────────────────────
     let blob: Arc<dyn Blob> = Arc::new(LocalBlob::new("kb-blobs".into(), "default".into()));

@@ -134,7 +134,6 @@ struct OpenAiRerankResult {
 struct OpenAiRerankResp {
     results: Vec<OpenAiRerankResult>,
     #[serde(default)]
-    #[allow(dead_code)]
     usage: Option<OpenAiUsage>,
 }
 
@@ -390,6 +389,11 @@ impl LlamaClient {
     /// more results than input documents, an error is returned — the backend must
     /// return exactly one score per document.
     ///
+    /// Returns the order-aligned scores alongside the backend's reported token
+    /// [`Usage`], when present. The ettin reranker reports no `usage` block, in
+    /// which case `None` is returned — callers metering the call (P14-T2) record
+    /// a zero-token [`Role::Rerank`] event so the call is still counted.
+    ///
     /// # Errors
     ///
     /// - [`LlmError::Scheduler`] — `pool.acquire` failed (no backend / timeout).
@@ -403,7 +407,7 @@ impl LlamaClient {
         documents: &[String],
         local_only: bool,
         priority: i32,
-    ) -> Result<Vec<f32>, LlmError> {
+    ) -> Result<(Vec<f32>, Option<Usage>), LlmError> {
         let body = OpenAiRerankBody {
             model,
             query,
@@ -422,6 +426,11 @@ impl LlamaClient {
             )));
         }
 
+        let usage = raw.usage.map(|u| Usage {
+            prompt_tokens: u.prompt_tokens,
+            completion_tokens: u.completion_tokens,
+        });
+
         // Sort by index so output is aligned with input order.
         let mut scored: Vec<(u32, f32)> = raw
             .results
@@ -429,7 +438,7 @@ impl LlamaClient {
             .map(|r| (r.index, r.relevance_score))
             .collect();
         scored.sort_by_key(|(i, _)| *i);
-        Ok(scored.into_iter().map(|(_, s)| s).collect())
+        Ok((scored.into_iter().map(|(_, s)| s).collect(), usage))
     }
 
     // ── failover core ───────────────────────────────────────────────────
@@ -1239,7 +1248,7 @@ mod tests {
             "doc b".to_string(),
             "doc c".to_string(),
         ];
-        let scores = client
+        let (scores, _usage) = client
             .rerank("model", "query", &documents, false, 0)
             .await
             .unwrap();
@@ -1248,6 +1257,31 @@ mod tests {
         assert!((scores[0] - 1.0_f32).abs() < 0.01);
         assert!((scores[1] - 0.9_f32).abs() < 0.01);
         assert!((scores[2] - 0.8_f32).abs() < 0.01);
+
+        mock.shutdown().await;
+    }
+
+    /// The rerank call surfaces the backend's reported token usage (P14-T2):
+    /// the mock returns a `usage` block with `prompt_tokens: 10`, which must be
+    /// returned alongside the scores so the search read path can meter it.
+    #[tokio::test]
+    async fn rerank_surfaces_usage() {
+        let mock = MockBackend::start().await;
+        let base_url = mock.url("/v1");
+        let backend = Arc::new(test_backend("mock-1", base_url, vec![Role::Rerank], 0, 2));
+        let pool = Pool::new(vec![backend], Duration::from_secs(5));
+        let client = LlamaClient::new(pool, Client::new(), 2, 3, Duration::from_millis(200));
+
+        let documents = vec!["a".to_string(), "b".to_string()];
+        let (scores, usage) = client
+            .rerank("model", "query", &documents, false, 0)
+            .await
+            .unwrap();
+        assert_eq!(scores.len(), 2);
+        let usage = usage.expect("mock backend reports a rerank usage block");
+        assert_eq!(usage.prompt_tokens, 10);
+        // The mock omits completion_tokens → defaults to 0.
+        assert_eq!(usage.completion_tokens, 0);
 
         mock.shutdown().await;
     }
@@ -1263,7 +1297,7 @@ mod tests {
         let client = LlamaClient::new(pool, Client::new(), 2, 3, Duration::from_millis(200));
 
         let documents = vec!["a".to_string(), "b".to_string(), "c".to_string()];
-        let scores = client
+        let (scores, _usage) = client
             .rerank("model", "query", &documents, false, 0)
             .await
             .unwrap();
@@ -1282,7 +1316,7 @@ mod tests {
         let client = LlamaClient::new(pool, Client::new(), 2, 3, Duration::from_millis(200));
 
         let documents: Vec<String> = vec![];
-        let scores = client
+        let (scores, _usage) = client
             .rerank("model", "query", &documents, false, 0)
             .await
             .unwrap();
@@ -1347,7 +1381,7 @@ mod tests {
         mock1.scenario().lock().await.rerank = ResponseMode::ServerError;
 
         let documents = vec!["doc a".to_string()];
-        let scores = client
+        let (scores, _usage) = client
             .rerank("model", "query", &documents, false, 0)
             .await
             .unwrap();

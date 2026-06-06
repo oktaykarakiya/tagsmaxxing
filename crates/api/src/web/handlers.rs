@@ -526,7 +526,10 @@ pub async fn search_submit(
         top_k: 20, // web UI shows more results
     };
 
-    let hits = match retrieval.retrieve(auth_user.tenant_id, &query, false).await {
+    let hits = match retrieval
+        .retrieve(auth_user.tenant_id, Some(auth_user.user_id), &query, false)
+        .await
+    {
         Ok(h) => h,
         Err(e) => {
             tracing::warn!(error = %e, "search failed");
@@ -924,6 +927,8 @@ mod tests {
                 _docs: &[String],
                 _local_only: bool,
                 _priority: i32,
+                _tenant_id: i64,
+                _user_id: Option<i64>,
             ) -> anyhow::Result<Vec<f32>> {
                 Ok(self.scores.clone())
             }

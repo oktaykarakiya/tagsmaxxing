@@ -1449,9 +1449,9 @@ description = "A2: meter the search read path. Give RetrievalPipeline a UsageRec
 depends_on = ["P14-T1"]
 plan_sections = ["8", "15"]
 acceptance = "a search records usage_events rows (Embed + Rerank) attributed to tenant+user; unit+integration tests; just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "Search read path metered. RetrievalPipeline::retrieve gained user_id, threaded to embed_query (now passes Some(tenant_id)+user_id; was unmetered) and rerank. LlamaReranker gained usage_recorder + meter() (Role::Rerank, best-effort; records a zero-token row when the backend reports no usage so the call is counted). LlamaClient::rerank now returns (Vec<f32>, Option<Usage>) — surfaced the previously dead_code usage block. Reranker trait method gained tenant_id+user_id (7 mock impls updated). serve.rs wires the A1 BufferedUsageRecorder into the reranker. search.rs/web pass auth_user.user_id; CLI passes None. just ci green (cov 76.94%; reranker 99.1%, client 96.8%, embedder 98.2%, retrieval 97.6%)."
 
 [[task]]
 id = "P14-T3"

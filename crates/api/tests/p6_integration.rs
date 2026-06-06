@@ -112,6 +112,8 @@ impl Reranker for PassThroughReranker {
         docs: &[String],
         _local_only: bool,
         _priority: i32,
+        _tenant_id: i64,
+        _user_id: Option<i64>,
     ) -> anyhow::Result<Vec<f32>> {
         Ok(docs.iter().map(|_| 1.0).collect())
     }
@@ -356,6 +358,7 @@ async fn e2e_cli_ingest_and_search_roundtrip() {
     let hits = retrieval
         .retrieve(
             infra.tenant_a,
+            None,
             &Query {
                 text: "command-line interface".into(),
                 filters: QueryFilters::default(),

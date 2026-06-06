@@ -26,8 +26,9 @@ pub async fn run_search(
     tenant_id: i64,
 ) -> anyhow::Result<()> {
     let query = build_query(args);
+    // CLI/system search: no attributable acting user (P14-T2).
     let hits = pipeline
-        .retrieve(tenant_id, &query, false)
+        .retrieve(tenant_id, None, &query, false)
         .await
         .context("search pipeline failed")?;
 

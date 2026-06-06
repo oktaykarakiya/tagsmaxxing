@@ -8,7 +8,10 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use kb_core::provider::Usage;
 use kb_core::reranker::Reranker;
+use kb_core::role::Role;
+use kb_core::usage::{UsageEvent, UsageRecorder};
 
 use crate::client::LlamaClient;
 
@@ -27,7 +30,9 @@ use crate::client::LlamaClient;
 /// # use kb_core::reranker::Reranker;
 /// # async fn example(client: Arc<LlamaClient>) -> anyhow::Result<()> {
 /// let reranker = LlamaReranker::new(client, "bge-reranker-v2-m3".into());
-/// let scores = reranker.rerank("query", &["doc1".into(), "doc2".into()], false, 0).await?;
+/// let scores = reranker
+///     .rerank("query", &["doc1".into(), "doc2".into()], false, 0, 1, None)
+///     .await?;
 /// # Ok(())
 /// # }
 /// ```
@@ -36,6 +41,9 @@ pub struct LlamaReranker {
     client: Arc<LlamaClient>,
     /// The model id sent in the rerank request body.
     model: String,
+    /// Optional sink for per-call token usage (P14-T2). When set, each rerank
+    /// call on the search read path is metered to the searching tenant+user.
+    usage_recorder: Option<Arc<dyn UsageRecorder>>,
 }
 
 /// Max characters of each document sent to the cross-encoder reranker.
@@ -72,7 +80,48 @@ impl LlamaReranker {
     /// The `client` is shared across all calls and manages pool acquisition and
     /// failover internally.
     pub fn new(client: Arc<LlamaClient>, model: String) -> Self {
-        Self { client, model }
+        Self {
+            client,
+            model,
+            usage_recorder: None,
+        }
+    }
+
+    /// Attach a [`UsageRecorder`] so each rerank call's token usage is metered
+    /// into `usage_events` on the search read path (P14-T2).
+    #[must_use]
+    pub fn with_usage_recorder(mut self, recorder: Arc<dyn UsageRecorder>) -> Self {
+        self.usage_recorder = Some(recorder);
+        self
+    }
+
+    /// Meter one rerank call's token usage to `tenant_id`, attributed to
+    /// `user_id` when known (best-effort, P14-T2).
+    ///
+    /// A no-op when no [`UsageRecorder`] is attached. When the backend reports
+    /// no `usage` (e.g. the ettin reranker), a zero-token event is still
+    /// recorded so the call is counted. Recording failures are logged and
+    /// swallowed — metering must never fail a rerank call.
+    async fn meter(&self, tenant_id: i64, user_id: Option<i64>, usage: Option<&Usage>) {
+        let Some(recorder) = &self.usage_recorder else {
+            return;
+        };
+        let event = UsageEvent {
+            id: 0,
+            tenant_id,
+            user_id,
+            model: self.model.clone(),
+            role: Role::Rerank,
+            backend_id: None,
+            prompt_tokens: usage.map(|u| u.prompt_tokens as i32),
+            completion_tokens: usage.map(|u| u.completion_tokens as i32),
+            latency_ms: None,
+            cost_micros: None,
+            created_at: chrono::Utc::now(),
+        };
+        if let Err(e) = recorder.record_usage(&event).await {
+            tracing::warn!(error = %e, tenant_id, "reranker: failed to meter usage event");
+        }
     }
 }
 
@@ -84,6 +133,10 @@ impl Reranker for LlamaReranker {
     /// handles pool acquisition, failover, and circuit-breaking. The returned
     /// `Vec<f32>` has the same length as `docs` and is order-aligned.
     ///
+    /// `tenant_id` and `user_id` attribute the call's token usage on the search
+    /// read path (P14-T2): a [`Role::Rerank`] usage event is recorded for the
+    /// tenant, stamped with the acting user when known. Metering is best-effort.
+    ///
     /// # Errors
     ///
     /// Returns an error if the backend call fails, the response length does not
@@ -94,6 +147,8 @@ impl Reranker for LlamaReranker {
         docs: &[String],
         local_only: bool,
         priority: i32,
+        tenant_id: i64,
+        user_id: Option<i64>,
     ) -> anyhow::Result<Vec<f32>> {
         // Guard against pathological, non-chunk inputs overflowing the reranker's
         // token window (which would 500 the backend and trip its circuit breaker,
@@ -104,10 +159,16 @@ impl Reranker for LlamaReranker {
             .iter()
             .map(|d| truncate_chars(d, MAX_RERANK_DOC_CHARS).to_owned())
             .collect();
-        Ok(self
+        let (scores, usage) = self
             .client
             .rerank(&self.model, query, &docs, local_only, priority)
-            .await?)
+            .await?;
+
+        // Meter the call to the searching tenant+user (P14-T2). Recorded even
+        // when the backend reports no token usage so the call is still counted.
+        self.meter(tenant_id, user_id, usage.as_ref()).await;
+
+        Ok(scores)
     }
 }
 
@@ -158,7 +219,10 @@ mod tests {
         mock.scenario().lock().await.rerank_content = Some(vec![0.95, 0.42, 0.73]);
 
         let docs: Vec<String> = ["a", "b", "c"].map(String::from).to_vec();
-        let scores = reranker.rerank("query", &docs, false, 0).await.unwrap();
+        let scores = reranker
+            .rerank("query", &docs, false, 0, 1, None)
+            .await
+            .unwrap();
 
         assert_eq!(scores.len(), 3);
         assert!((scores[0] - 0.95_f32).abs() < 0.0001);
@@ -174,7 +238,10 @@ mod tests {
         let (reranker, mock) = reranker_with_one_backend(2).await;
 
         let docs: Vec<String> = vec![];
-        let scores = reranker.rerank("query", &docs, false, 0).await.unwrap();
+        let scores = reranker
+            .rerank("query", &docs, false, 0, 1, None)
+            .await
+            .unwrap();
         assert!(scores.is_empty());
 
         mock.shutdown().await;
@@ -227,7 +294,10 @@ mod tests {
         mock.scenario().lock().await.rerank_content = Some(vec![0.5]);
 
         let docs: Vec<String> = ["a", "b", "c"].map(String::from).to_vec();
-        let err = reranker.rerank("query", &docs, false, 0).await.unwrap_err();
+        let err = reranker
+            .rerank("query", &docs, false, 0, 1, None)
+            .await
+            .unwrap_err();
         let msg = format!("{err}");
         assert!(
             msg.contains("length mismatch"),
@@ -244,7 +314,10 @@ mod tests {
         mock.scenario().lock().await.rerank = ResponseMode::ServerError;
 
         let docs: Vec<String> = ["a"].map(String::from).to_vec();
-        let err = reranker.rerank("query", &docs, false, 0).await.unwrap_err();
+        let err = reranker
+            .rerank("query", &docs, false, 0, 1, None)
+            .await
+            .unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("500") || msg.contains("failed"), "{msg}");
 
@@ -274,7 +347,7 @@ mod tests {
         mock.scenario().lock().await.rerank_content = Some(vec![0.99]);
         let docs: Vec<String> = ["test"].map(String::from).to_vec();
         let scores = reranker
-            .rerank("query text", &docs, false, 0)
+            .rerank("query text", &docs, false, 0, 1, None)
             .await
             .unwrap();
         assert_eq!(scores, vec![0.99_f32]);
@@ -292,13 +365,98 @@ mod tests {
         mock.scenario().lock().await.rerank_content = Some(vec![0.10, 0.90, 0.50]);
 
         let docs: Vec<String> = ["first", "second", "third"].map(String::from).to_vec();
-        let scores = reranker.rerank("q", &docs, false, 0).await.unwrap();
+        let scores = reranker
+            .rerank("q", &docs, false, 0, 1, None)
+            .await
+            .unwrap();
 
         assert_eq!(scores.len(), 3);
         // Position 0 → score for "first", position 1 → "second", etc.
         assert!((scores[0] - 0.10).abs() < 0.0001);
         assert!((scores[1] - 0.90).abs() < 0.0001);
         assert!((scores[2] - 0.50).abs() < 0.0001);
+
+        mock.shutdown().await;
+    }
+
+    // ── metering (P14-T2) ────────────────────────────────────────────────
+
+    /// A [`UsageRecorder`] capturing events for assertions (P14-T2).
+    #[derive(Default)]
+    struct CapturingRecorder {
+        events: std::sync::Mutex<Vec<UsageEvent>>,
+    }
+
+    #[async_trait::async_trait]
+    impl UsageRecorder for CapturingRecorder {
+        async fn record_usage(&self, event: &UsageEvent) -> anyhow::Result<()> {
+            self.events.lock().unwrap().push(event.clone());
+            Ok(())
+        }
+    }
+
+    /// A successful rerank meters a `Role::Rerank` usage event attributed to the
+    /// searching tenant+user, carrying the backend's reported token usage.
+    #[tokio::test]
+    async fn rerank_meters_usage_to_tenant_and_user() {
+        let (reranker, mock) = reranker_with_one_backend(2).await;
+        let recorder = Arc::new(CapturingRecorder::default());
+        let reranker = reranker.with_usage_recorder(recorder.clone() as Arc<dyn UsageRecorder>);
+        mock.scenario().lock().await.rerank_content = Some(vec![0.5, 0.4]);
+
+        let docs: Vec<String> = ["a", "b"].map(String::from).to_vec();
+        let _ = reranker
+            .rerank("query", &docs, false, 0, 42, Some(99))
+            .await
+            .unwrap();
+        mock.shutdown().await;
+
+        let events = recorder.events.lock().unwrap();
+        assert_eq!(events.len(), 1, "one rerank call should be metered");
+        assert_eq!(events[0].tenant_id, 42);
+        assert_eq!(events[0].user_id, Some(99));
+        assert_eq!(events[0].role, Role::Rerank);
+        assert_eq!(events[0].model, "mock-rerank-model");
+        // The mock backend reports prompt_tokens: 10 in its rerank usage block.
+        assert_eq!(events[0].prompt_tokens, Some(10));
+    }
+
+    /// A system/CLI search (no acting user) still meters the tenant but leaves
+    /// `user_id` NULL.
+    #[tokio::test]
+    async fn rerank_without_user_records_tenant_only() {
+        let (reranker, mock) = reranker_with_one_backend(2).await;
+        let recorder = Arc::new(CapturingRecorder::default());
+        let reranker = reranker.with_usage_recorder(recorder.clone() as Arc<dyn UsageRecorder>);
+        mock.scenario().lock().await.rerank_content = Some(vec![0.5]);
+
+        let docs: Vec<String> = ["a"].map(String::from).to_vec();
+        let _ = reranker
+            .rerank("query", &docs, false, 0, 7, None)
+            .await
+            .unwrap();
+        mock.shutdown().await;
+
+        let events = recorder.events.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].tenant_id, 7);
+        assert_eq!(events[0].user_id, None);
+        assert_eq!(events[0].role, Role::Rerank);
+    }
+
+    /// With no recorder attached, reranking does not attempt to meter (no panic,
+    /// scores returned as normal).
+    #[tokio::test]
+    async fn rerank_without_recorder_is_noop() {
+        let (reranker, mock) = reranker_with_one_backend(2).await;
+        mock.scenario().lock().await.rerank_content = Some(vec![0.9]);
+
+        let docs: Vec<String> = ["a"].map(String::from).to_vec();
+        let scores = reranker
+            .rerank("query", &docs, false, 0, 1, Some(2))
+            .await
+            .unwrap();
+        assert_eq!(scores, vec![0.9_f32]);
 
         mock.shutdown().await;
     }

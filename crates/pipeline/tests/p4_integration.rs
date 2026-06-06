@@ -83,6 +83,8 @@ mod tests {
             docs: &[String],
             _local_only: bool,
             _priority: i32,
+            _tenant_id: i64,
+            _user_id: Option<i64>,
         ) -> anyhow::Result<Vec<f32>> {
             Ok(docs.iter().map(|_| 1.0).collect())
         }
@@ -371,6 +373,7 @@ mod tests {
         let hits = pipeline
             .retrieve(
                 1,
+                None,
                 &Query {
                     text: "Zephyr".to_string(),
                     filters: QueryFilters::default(),
@@ -462,6 +465,7 @@ mod tests {
         let hits = pipeline
             .retrieve(
                 1,
+                None,
                 &Query {
                     text: "cryptographic".to_string(),
                     filters: QueryFilters::default(),
@@ -484,6 +488,7 @@ mod tests {
         let all_hits = pipeline
             .retrieve(
                 1,
+                None,
                 &Query {
                     text: "flibbertigibbet".to_string(),
                     filters: QueryFilters::default(),
@@ -563,6 +568,7 @@ mod tests {
         let hits = pipeline
             .retrieve(
                 1,
+                None,
                 &Query {
                     text: String::new(), // vector-only + tag filter
                     filters: QueryFilters {
@@ -591,6 +597,7 @@ mod tests {
         let empty = pipeline
             .retrieve(
                 1,
+                None,
                 &Query {
                     text: String::new(),
                     filters: QueryFilters {
@@ -644,8 +651,8 @@ mod tests {
             top_k: 10,
         };
 
-        let hits1 = pipeline.retrieve(1, &query, false).await.unwrap();
-        let hits2 = pipeline.retrieve(1, &query, false).await.unwrap();
+        let hits1 = pipeline.retrieve(1, None, &query, false).await.unwrap();
+        let hits2 = pipeline.retrieve(1, None, &query, false).await.unwrap();
 
         assert_eq!(
             hits1.len(),
@@ -720,6 +727,7 @@ mod tests {
         let hits = pipeline
             .retrieve(
                 1,
+                None,
                 &Query {
                     text: "hash functions".to_string(),
                     filters: QueryFilters::default(),
@@ -789,6 +797,7 @@ mod tests {
         let hits = pipeline
             .retrieve(
                 1,
+                None,
                 &Query {
                     text: "Rust programming".to_string(),
                     filters: QueryFilters::default(),
@@ -855,6 +864,7 @@ mod tests {
         let hits = pipeline
             .retrieve(
                 1,
+                None,
                 &Query {
                     text: String::new(),
                     filters: QueryFilters::default(),
@@ -908,6 +918,7 @@ mod tests {
         let hits = pipeline
             .retrieve(
                 1,
+                None,
                 &Query {
                     text: "document".to_string(),
                     filters: QueryFilters::default(),
@@ -928,6 +939,7 @@ mod tests {
         let empty = pipeline
             .retrieve(
                 1,
+                None,
                 &Query {
                     text: "document".to_string(),
                     filters: QueryFilters::default(),

@@ -49,6 +49,8 @@ mod tests {
             docs: &[String],
             _local_only: bool,
             _priority: i32,
+            _tenant_id: i64,
+            _user_id: Option<i64>,
         ) -> anyhow::Result<Vec<f32>> {
             Ok(docs.iter().map(|_| 1.0).collect())
         }
@@ -207,6 +209,7 @@ mod tests {
             let hits = pipeline
                 .retrieve(
                     1, // tenant_id
+                    None,
                     &Query {
                         text: query.text.clone(),
                         filters: QueryFilters::default(),

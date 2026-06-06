@@ -164,7 +164,7 @@ pub async fn search(
     };
 
     let hits = retrieval
-        .retrieve(auth_user.tenant_id, &query, false)
+        .retrieve(auth_user.tenant_id, Some(auth_user.user_id), &query, false)
         .await
         .map_err(|e| {
             tracing::warn!(error = %e, "search failed");
@@ -302,6 +302,8 @@ mod tests {
             _docs: &[String],
             _local_only: bool,
             _priority: i32,
+            _tenant_id: i64,
+            _user_id: Option<i64>,
         ) -> anyhow::Result<Vec<f32>> {
             Ok(self.scores.to_vec())
         }

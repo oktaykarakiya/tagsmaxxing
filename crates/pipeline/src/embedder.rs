@@ -188,6 +188,10 @@ impl ChunkEmbedder {
     /// (BGE-M3 / Qwen3-Embedding models apply a different prompt prefix for
     /// queries vs. stored documents).
     ///
+    /// The query embedding is metered to `tenant_id` on the search read path
+    /// (P14-T2), attributed to the searching `user_id` when known (`None` for
+    /// system/CLI searches). Metering is best-effort — see [`meter`](Self::meter).
+    ///
     /// # Errors
     ///
     /// Returns an error if the embedding call fails or the returned vector's
@@ -195,14 +199,16 @@ impl ChunkEmbedder {
     pub async fn embed_query(
         &self,
         query_text: &str,
+        tenant_id: i64,
+        user_id: Option<i64>,
         local_only: bool,
     ) -> anyhow::Result<Vec<f32>> {
         let vectors = self
             .batch_embed(
                 &[query_text.to_string()],
                 EmbedKind::Query,
-                None,
-                None,
+                Some(tenant_id),
+                user_id,
                 local_only,
             )
             .await?;
@@ -253,9 +259,10 @@ impl ChunkEmbedder {
                 .context("failed to embed batch")?;
 
             // Meter this batch's token usage to the tenant (BUG-BILL-03),
-            // attributed to the acting user when known (P14-T1). Only
-            // tenant-attributable calls (document embedding during ingest) are
-            // metered; query embedding passes `None`.
+            // attributed to the acting user when known (P14-T1/P14-T2). Both
+            // document embedding (ingest) and query embedding (search read path)
+            // are tenant-attributable and pass `Some(tenant_id)`; tag-name
+            // embedding passes `None` and is not metered.
             if let Some(tid) = tenant_id {
                 self.meter(tid, user_id, &resp.usage).await;
             }
@@ -422,20 +429,46 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn embed_query_is_not_metered() {
-        // Query embedding (search path) is not tenant-attributed here, so it
-        // must NOT record a usage event even when a recorder is attached.
+    async fn embed_query_meters_usage_to_tenant_and_user() {
+        // P14-T2: query embedding on the search read path IS tenant-attributed
+        // and records an Embed usage event stamped with the searching user.
         let (embedder, mock) = embedder_with_mock(MOCK_DIM).await;
         let recorder = Arc::new(CapturingRecorder::default());
         let embedder = embedder.with_usage_recorder(recorder.clone() as Arc<dyn UsageRecorder>);
 
-        embedder.embed_query("a search query", false).await.unwrap();
-
-        assert!(
-            recorder.events.lock().unwrap().is_empty(),
-            "query embedding must not be metered"
-        );
+        embedder
+            .embed_query("a search query", 42, Some(99), false)
+            .await
+            .unwrap();
         mock.shutdown().await;
+
+        let events = recorder.events.lock().unwrap();
+        assert_eq!(events.len(), 1, "query embedding should be metered");
+        assert_eq!(events[0].tenant_id, 42);
+        assert_eq!(events[0].user_id, Some(99));
+        assert_eq!(events[0].role, Role::Embed);
+        assert_eq!(events[0].model, "bge-m3");
+    }
+
+    #[tokio::test]
+    async fn embed_query_without_user_records_tenant_only() {
+        // P14-T2: a system/CLI search (no acting user) still meters the tenant
+        // but leaves user_id NULL.
+        let (embedder, mock) = embedder_with_mock(MOCK_DIM).await;
+        let recorder = Arc::new(CapturingRecorder::default());
+        let embedder = embedder.with_usage_recorder(recorder.clone() as Arc<dyn UsageRecorder>);
+
+        embedder
+            .embed_query("a search query", 7, None, false)
+            .await
+            .unwrap();
+        mock.shutdown().await;
+
+        let events = recorder.events.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].tenant_id, 7);
+        assert_eq!(events[0].user_id, None);
+        assert_eq!(events[0].role, Role::Embed);
     }
 
     #[tokio::test]
@@ -640,7 +673,7 @@ mod tests {
         let (embedder, mock) = embedder_with_mock(MOCK_DIM).await;
 
         let vec = embedder
-            .embed_query("paraphrased query text", false)
+            .embed_query("paraphrased query text", 1, None, false)
             .await
             .unwrap();
         assert_eq!(vec.len(), MOCK_DIM);

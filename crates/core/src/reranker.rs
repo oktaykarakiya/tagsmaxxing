@@ -16,6 +16,13 @@ pub trait Reranker: Send + Sync {
     /// only (plan §26.6, P9-T9). When `true`, the call must not reach a remote
     /// provider. The scheduler enforces this at acquire time.
     ///
+    /// `tenant_id` and `user_id` attribute the rerank call's token usage on the
+    /// search read path (P14-T2). Implementations that meter (e.g. the
+    /// llama.cpp-backed reranker) record a [`Role::Rerank`](crate::role::Role)
+    /// usage event for the owning tenant, stamped with the acting user when
+    /// known (`None` for system/CLI searches). Metering is best-effort and must
+    /// never fail the rerank call.
+    ///
     /// # Errors
     /// Returns an error if the backend call fails. On success the output length equals
     /// `docs.len()`.
@@ -25,5 +32,7 @@ pub trait Reranker: Send + Sync {
         docs: &[String],
         local_only: bool,
         priority: i32,
+        tenant_id: i64,
+        user_id: Option<i64>,
     ) -> anyhow::Result<Vec<f32>>;
 }
