@@ -45,6 +45,7 @@ use kb_store::PgStore;
 use crate::backpressure::InflightLimiter;
 use crate::middleware::{
     auth_middleware, cors_layer, http_metrics_middleware, login_rate_limit_middleware,
+    request_id_middleware,
 };
 use crate::stripe_client::StripeClient;
 
@@ -403,8 +404,11 @@ pub fn build_router(state: AppState) -> Router {
     // Merge public + protected API + Web UI, attach shared state.
     // The degradation middleware wraps the entire router so every
     // response carries X-Degraded when applicable.
-    // The CORS layer is outermost — it must intercept OPTIONS preflight
-    // requests before they reach any route-level middleware (auth, etc.).
+    // The CORS layer intercepts OPTIONS preflight requests before they reach
+    // any route-level middleware (auth, etc.).
+    // The request-id layer is outermost so every request (including CORS
+    // preflights and degradation handling) runs inside the correlation span
+    // and carries `request_id` in its logs (plan §18, P14-T11).
     public
         .merge(api)
         .merge(web)
@@ -416,6 +420,8 @@ pub fn build_router(state: AppState) -> Router {
             degradation_middleware::degradation_middleware,
         ))
         .layer(cors_layer())
+        // Outermost: stamp/propagate the correlation id and open the request span.
+        .layer(from_fn(request_id_middleware))
         .with_state(state)
 }
 

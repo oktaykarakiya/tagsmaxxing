@@ -28,6 +28,18 @@
 //! [`login_rate_limit_middleware`] protects `POST /auth/login` against brute-force
 //! attacks. It tracks attempts per client IP in a fixed window (5 attempts per 60 s)
 //! and returns `429 Too Many Requests` with a `Retry-After` header when exceeded.
+//!
+//! # Request correlation (plan §18, P14-T11)
+//!
+//! [`request_id_middleware`] runs **outermost** on every request. It adopts an
+//! incoming `X-Request-Id` header (or mints a fresh UUID v4 when absent), runs the
+//! inner stack inside a [`request_span`](kb_logging::request_span) so every
+//! downstream tracing event carries the `request_id` field, and echoes the id back
+//! on the response. Once [`auth_middleware`] resolves an [`AuthUser`], it nests a
+//! [`tenant_span`](kb_logging::tenant_span) inside the request span so handler logs
+//! additionally carry `tenant_id` + `user_id`. Both use
+//! [`tracing::Instrument`]`::instrument` (not `Span::enter`) so the span follows the
+//! request future across `.await` points.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -40,13 +52,102 @@ use axum::extract::State;
 use axum::http::Method;
 use axum::http::Request;
 use axum::http::StatusCode;
+use axum::http::{HeaderName, HeaderValue};
 use axum::middleware::Next;
 use axum::response::Response;
 
 use tower_http::cors::{Any, CorsLayer};
+use tracing::Instrument;
 
 use crate::AppState;
 use crate::AuthUser;
+
+/// The HTTP header carrying the per-request correlation id (read on the way in,
+/// echoed on the way out).
+const REQUEST_ID_HEADER: &str = "x-request-id";
+
+/// Maximum accepted length of an inbound `X-Request-Id`.
+///
+/// A client-supplied id is echoed into logs and the response header, so it is
+/// bounded to keep log lines and headers small; anything longer (or not valid
+/// header-safe ASCII) is discarded in favour of a freshly minted UUID.
+const MAX_REQUEST_ID_LEN: usize = 200;
+
+// ── Request correlation id (plan §18, P14-T11) ───────────────────────────────────
+
+/// Resolve the correlation id for a request: adopt a sane inbound
+/// `X-Request-Id`, otherwise mint a fresh UUID v4.
+///
+/// An inbound id is accepted only when it is non-empty, at most
+/// [`MAX_REQUEST_ID_LEN`] bytes, and entirely visible ASCII (no spaces or
+/// control characters) so it is safe to place verbatim into a response header
+/// and structured log line. Any other input — including a missing or
+/// non-ASCII header — yields a freshly generated id, so every request always
+/// gets a usable, header-safe id.
+fn resolve_request_id(headers: &axum::http::HeaderMap) -> String {
+    if let Some(raw) = headers.get(REQUEST_ID_HEADER).and_then(|v| v.to_str().ok()) {
+        let candidate = raw.trim();
+        if !candidate.is_empty()
+            && candidate.len() <= MAX_REQUEST_ID_LEN
+            && candidate.bytes().all(|b| b.is_ascii_graphic() || b == b' ')
+            && !candidate.contains(' ')
+        {
+            return candidate.to_owned();
+        }
+    }
+    uuid::Uuid::new_v4().to_string()
+}
+
+/// Axum middleware: attach a correlation id to every request.
+///
+/// This layer is mounted **outermost** so it sees every request before any
+/// other middleware. It [`resolve_request_id`]s a correlation id (adopting a
+/// caller-supplied `X-Request-Id` or minting a UUID v4), then runs the inner
+/// stack inside a [`request_span`](kb_logging::request_span) via
+/// [`tracing::Instrument`] — *not* `Span::enter()`, which would not stay
+/// attached across the inner `.await`. As a result, every tracing event emitted
+/// while handling the request carries the `request_id` field. Finally the id is
+/// echoed back on the response as `X-Request-Id` so clients (and proxies) can
+/// correlate their call with server logs.
+pub async fn request_id_middleware(request: Request<axum::body::Body>, next: Next) -> Response {
+    let request_id = resolve_request_id(request.headers());
+    let span = kb_logging::request_span(&request_id);
+
+    // `.instrument(span)` keeps the span entered across every `.await` inside
+    // the inner stack (handlers, auth, DB calls). A bare `span.enter()` guard
+    // would be dropped at the first await and lose the correlation field.
+    let mut response = next.run(request).instrument(span).await;
+
+    // Echo the id back so callers can correlate. A resolved id is always
+    // header-safe (graphic ASCII, no spaces), so this never fails in practice;
+    // fall back silently rather than poison the response on the impossible path.
+    if let Ok(value) = HeaderValue::from_str(&request_id) {
+        response
+            .headers_mut()
+            .insert(HeaderName::from_static(REQUEST_ID_HEADER), value);
+    }
+
+    response
+}
+
+/// Run the inner request future inside a [`tenant_span`](kb_logging::tenant_span)
+/// so downstream handler logs carry `tenant_id` + `user_id`.
+///
+/// Called from [`auth_middleware`] once an [`AuthUser`] has been resolved. The
+/// span is entered via [`tracing::Instrument`] (not `Span::enter()`) so it stays
+/// attached across the handler's `.await` points. Because the request-id layer
+/// runs outermost, this tenant span nests **inside** the active request span, and
+/// events emitted by handlers carry `request_id`, `tenant_id`, and `user_id`
+/// together.
+async fn run_in_tenant_span(
+    user: AuthUser,
+    request: Request<axum::body::Body>,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    let span =
+        kb_logging::tenant_span(&user.tenant_id.to_string(), Some(&user.user_id.to_string()));
+    run_maybe_idempotent(request, next).instrument(span).await
+}
 
 /// Axum middleware: extract and validate the session cookie, injecting
 /// [`AuthUser`] into request extensions on success.
@@ -81,12 +182,13 @@ pub async fn auth_middleware(
             match store.validate_token(&bearer_token).await {
                 Ok(Some(info)) => {
                     let email_verified = info.email_verified;
-                    request.extensions_mut().insert(AuthUser {
+                    let auth_user = AuthUser {
                         tenant_id: info.tenant_id,
                         user_id: info.user_id,
                         role: info.user_role,
                         email_verified,
-                    });
+                    };
+                    request.extensions_mut().insert(auth_user);
                     // Gate API routes on email verification.
                     if !email_verified && is_api_path(request.uri().path()) {
                         return Ok(auth_error_response(
@@ -122,7 +224,7 @@ pub async fn auth_middleware(
                             }
                         }
                     }
-                    let response = run_maybe_idempotent(request, next).await?;
+                    let response = run_in_tenant_span(auth_user, request, next).await?;
                     return Ok(add_private_cache_control_if_html(response));
                 }
                 Ok(None) => {}
@@ -174,12 +276,13 @@ pub async fn auth_middleware(
 
     // Inject the authenticated user into request extensions.
     let email_verified = info.email_verified;
-    request.extensions_mut().insert(AuthUser {
+    let auth_user = AuthUser {
         tenant_id: info.tenant_id,
         user_id: info.user_id,
         role: info.user_role,
         email_verified,
-    });
+    };
+    request.extensions_mut().insert(auth_user);
 
     // Slide the session expiry (best-effort — failure does not reject the request).
     if let Err(e) = state.session_store.extend(&token, state.session_ttl).await {
@@ -215,7 +318,7 @@ pub async fn auth_middleware(
         }
     }
 
-    let response = run_maybe_idempotent(request, next).await?;
+    let response = run_in_tenant_span(auth_user, request, next).await?;
     Ok(add_private_cache_control_if_html(response))
 }
 
@@ -2421,5 +2524,193 @@ mod tests {
         assert_ne!(key1, key2);
         assert_eq!(key1, "1:1:x");
         assert_eq!(key2, "2:1:x");
+    }
+
+    // ── request_id_middleware / resolve_request_id ───────────────────────────
+
+    /// Build a `HeaderMap` with a single `X-Request-Id` value.
+    fn headers_with_request_id(value: &'static str) -> axum::http::HeaderMap {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static(REQUEST_ID_HEADER),
+            HeaderValue::from_static(value),
+        );
+        headers
+    }
+
+    #[test]
+    fn resolve_request_id_generates_uuid_when_absent() {
+        let id = resolve_request_id(&axum::http::HeaderMap::new());
+        // A freshly minted id parses as a UUID.
+        assert!(
+            uuid::Uuid::parse_str(&id).is_ok(),
+            "generated id should be a UUID, got {id:?}"
+        );
+    }
+
+    #[test]
+    fn resolve_request_id_generates_distinct_ids() {
+        let a = resolve_request_id(&axum::http::HeaderMap::new());
+        let b = resolve_request_id(&axum::http::HeaderMap::new());
+        assert_ne!(a, b, "two generated ids must differ");
+    }
+
+    #[test]
+    fn resolve_request_id_adopts_valid_inbound() {
+        let headers = headers_with_request_id("client-trace-abc123");
+        assert_eq!(resolve_request_id(&headers), "client-trace-abc123");
+    }
+
+    #[test]
+    fn resolve_request_id_trims_inbound() {
+        let headers = headers_with_request_id("  trimmed-id  ");
+        assert_eq!(resolve_request_id(&headers), "trimmed-id");
+    }
+
+    #[test]
+    fn resolve_request_id_rejects_empty_inbound() {
+        let headers = headers_with_request_id("   ");
+        // Blank → mint a fresh UUID instead.
+        let id = resolve_request_id(&headers);
+        assert!(uuid::Uuid::parse_str(&id).is_ok());
+    }
+
+    #[test]
+    fn resolve_request_id_rejects_inbound_with_spaces() {
+        let headers = headers_with_request_id("has internal space");
+        // Internal whitespace is not header/log-safe → mint a fresh UUID.
+        let id = resolve_request_id(&headers);
+        assert!(uuid::Uuid::parse_str(&id).is_ok());
+    }
+
+    #[test]
+    fn resolve_request_id_rejects_overlong_inbound() {
+        // A value longer than MAX_REQUEST_ID_LEN is discarded.
+        let long: &'static str = Box::leak("a".repeat(MAX_REQUEST_ID_LEN + 1).into_boxed_str());
+        let headers = headers_with_request_id(long);
+        let id = resolve_request_id(&headers);
+        assert!(uuid::Uuid::parse_str(&id).is_ok());
+    }
+
+    #[test]
+    fn resolve_request_id_accepts_max_len_inbound() {
+        // Exactly MAX_REQUEST_ID_LEN graphic chars is accepted verbatim.
+        let exact: &'static str = Box::leak("a".repeat(MAX_REQUEST_ID_LEN).into_boxed_str());
+        let headers = headers_with_request_id(exact);
+        assert_eq!(resolve_request_id(&headers).len(), MAX_REQUEST_ID_LEN);
+    }
+
+    /// A bare router carrying only the request-id middleware. The handler echoes
+    /// the value of the active request id by reading nothing — the test asserts
+    /// the response header contract, which is the observable surface.
+    fn request_id_test_router() -> Router {
+        Router::new()
+            .route("/anything", get(|| async { StatusCode::OK }))
+            .layer(axum::middleware::from_fn(request_id_middleware))
+    }
+
+    #[tokio::test]
+    async fn request_id_middleware_generates_header_when_absent() {
+        let router = request_id_test_router();
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/anything")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let id = response
+            .headers()
+            .get(REQUEST_ID_HEADER)
+            .expect("response must carry X-Request-Id")
+            .to_str()
+            .unwrap();
+        assert!(
+            uuid::Uuid::parse_str(id).is_ok(),
+            "generated response id should be a UUID, got {id:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn request_id_middleware_propagates_inbound_header() {
+        let router = request_id_test_router();
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/anything")
+                    .header(REQUEST_ID_HEADER, "incoming-correlation-id")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(REQUEST_ID_HEADER)
+                .and_then(|v| v.to_str().ok()),
+            Some("incoming-correlation-id"),
+            "a valid inbound X-Request-Id must be echoed unchanged"
+        );
+    }
+
+    #[tokio::test]
+    async fn request_id_middleware_replaces_unsafe_inbound_header() {
+        let router = request_id_test_router();
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/anything")
+                    .header(REQUEST_ID_HEADER, "bad id with spaces")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let echoed = response
+            .headers()
+            .get(REQUEST_ID_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .expect("response must still carry a request id");
+        assert_ne!(echoed, "bad id with spaces");
+        assert!(
+            uuid::Uuid::parse_str(echoed).is_ok(),
+            "unsafe inbound id should be replaced by a UUID, got {echoed:?}"
+        );
+    }
+
+    /// The request-id middleware composes with the auth middleware in the real
+    /// nesting order (request-id outermost, auth inner): an authenticated
+    /// request still succeeds and the response carries the correlation header.
+    /// This exercises that `run_in_tenant_span` instruments the inner future
+    /// without altering the response contract.
+    #[tokio::test]
+    async fn request_id_nests_around_auth_middleware() {
+        let state = test_state();
+        let token = create_session(&state, UserRole::Admin).await;
+
+        let router = Router::new()
+            .route("/protected", get(protected_handler))
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                auth_middleware,
+            ))
+            .layer(axum::middleware::from_fn(request_id_middleware))
+            .with_state(state);
+
+        let response = router.oneshot(request_with_cookie(&token)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            response.headers().get(REQUEST_ID_HEADER).is_some(),
+            "the outer request-id layer must stamp the response even when auth runs inside it"
+        );
     }
 }

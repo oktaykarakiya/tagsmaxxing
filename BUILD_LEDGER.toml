@@ -1548,9 +1548,9 @@ description = "C4: request correlation. Add a request-id middleware and call the
 depends_on = []
 plan_sections = ["18", "15"]
 acceptance = "every request log line carries request_id+tenant_id (+user_id when authed); middleware test; just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "request_id_middleware (middleware.rs) is mounted outermost in build_router: resolve_request_id adopts a sane inbound X-Request-Id (non-empty, <=200B, graphic-ASCII no-space) else mints a uuid v4 (reused the existing workspace uuid dep, added uuid={workspace=true} to crates/api/Cargo.toml), runs the inner stack via next.run(req).instrument(request_span(&id)) (tracing::Instrument, NOT span.enter — stays attached across awaits) so every event carries request_id, and echoes X-Request-Id on the response. auth_middleware now wraps run_maybe_idempotent in run_in_tenant_span (tenant_span(tenant_id, Some(user_id)).instrument()) on BOTH the Bearer and cookie paths, nesting inside the request span so handler logs also carry tenant_id+user_id. 18 new tests (8 resolve_request_id pure-logic incl. empty/whitespace/overlong/max-len, 4 oneshot header-contract incl. generate-when-absent/echo-inbound/replace-unsafe/nest-around-auth). 3 files (api lib.rs router wiring, middleware.rs, Cargo.toml). just ci green (cov 76.74% total, middleware.rs 93.61% lines)."
 
 [[task]]
 id = "P14-T12"
