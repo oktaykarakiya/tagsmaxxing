@@ -196,6 +196,66 @@ async fn admin_quota_override_takes_precedence() {
         .expect("15 MB should pass after clearing override");
 }
 
+/// Real Postgres: an admin token override enforces a budget on a **grandfathered
+/// (no-plan)** tenant (P14-T14).
+///
+/// A grandfathered tenant is otherwise unlimited (no `plan_id`), but the override
+/// takes precedence in `resolve_effective_quotas`, so setting
+/// `quota_override_tokens` installs a hard token cap with no plan involved — the
+/// behavior the limits-e2e harness depends on to provoke a `429`.
+#[tokio::test]
+#[ignore]
+async fn token_override_enforces_grandfathered_tenant() {
+    let store = connected_store().await;
+
+    let tenant_id = store
+        .create_tenant("gf-override", "Grandfathered Override")
+        .await
+        .expect("create_tenant");
+
+    // No plan assigned → grandfathered → unlimited tokens to start.
+    let (_, eff_tokens, plan_code, _) = store
+        .resolve_effective_quotas(tenant_id)
+        .await
+        .expect("resolve");
+    assert_eq!(plan_code, None, "tenant must be grandfathered (no plan)");
+    assert_eq!(eff_tokens, None, "grandfathered → unlimited tokens");
+
+    // Super-admin clamps the token budget to 1000 (no plan touched).
+    store
+        .set_admin_quota_override(tenant_id, None, Some(1000), 42)
+        .await
+        .expect("set token override");
+
+    // The override is now the effective budget — even with no plan.
+    let (_, eff_tokens, plan_code, _) = store
+        .resolve_effective_quotas(tenant_id)
+        .await
+        .expect("resolve after override");
+    assert_eq!(plan_code, None, "still no plan after override");
+    assert_eq!(
+        eff_tokens,
+        Some(1000),
+        "override must install a token budget on a no-plan tenant"
+    );
+
+    // And enforcement uses it: 1500 tokens exceed the 1000 override.
+    let err = store
+        .check_plan_token_budget(tenant_id, 1500)
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("token quota exceeded"),
+        "1000-token override must reject 1500 tokens, got: {err}"
+    );
+
+    // 500 tokens fit under the 1000 override.
+    store
+        .check_plan_token_budget(tenant_id, 500)
+        .await
+        .expect("500 tokens fit under the 1000 override");
+}
+
 /// Real Postgres: max_users enforcement (free plan → max 1 user).
 #[tokio::test]
 #[ignore]

@@ -1581,9 +1581,9 @@ description = "E1: provisioning hook + dedicated test account. Admin endpoint PO
 depends_on = ["P14-T4"]
 plan_sections = ["29"]
 acceptance = "admin can shrink a tenant's caps via the endpoint (admin-only, audited); fixture provisions+resets the limits-e2e account; unit+integration tests; just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "Admin endpoint POST /admin/tenants/:id/quota-override (handlers/admin_quota.rs) gated by require_super_admin -> is_platform_admin_tenant (only the platform/bootstrap tenant may mutate other tenants' quotas; fail-closed on DB error), 403 non-admin / 404 unknown tenant, audited via set_admin_quota_override. quota_override_tokens enforces a budget EVEN on a grandfathered (no-plan) tenant (override precedence — proven by token_override_enforces_grandfathered_tenant). Python e2e: lib/limits.py provision_limits_account (signup limits-e2e tenant, clamp ~1MB/~1000 tokens via the endpoint, reset_usage helper) + conftest limits_account fixture + api_client.set_quota_override. 6 unit + 1 #[ignore] pg test. Integrated onto feat via cherry-pick (worktree built on pre-P14 c3871bc; its standalone just ci failed ONLY on A1's already-fixed fmt/clippy drift, not E1's code — cargo test passed 2896/0). just ci re-verified green on feat."
 
 [[task]]
 id = "P14-T15"

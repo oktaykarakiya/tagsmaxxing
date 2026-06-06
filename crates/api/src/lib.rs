@@ -385,6 +385,13 @@ pub fn build_router(state: AppState) -> Router {
             "/billing/portal",
             get(handlers::billing::get_portal).post(handlers::billing::post_portal),
         )
+        // Super-admin quota override (P14-T14): JSON, no CSRF (matches the
+        // `/api`-style surface); gated to the platform operator's tenant inside
+        // the handler. Lets the operator/harness clamp any tenant's caps.
+        .route(
+            "/admin/tenants/{id}/quota-override",
+            post(handlers::admin_quota::set_quota_override),
+        )
         .layer(DefaultBodyLimit::max(
             handlers::ingest::MAX_PAYLOAD_BYTES as usize,
         ))

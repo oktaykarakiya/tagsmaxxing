@@ -1,5 +1,6 @@
 //! Axum request handlers, organized by domain.
 //!
+//! * [`admin_quota`] — super-admin quota-override endpoint (P14-T14).
 //! * [`api_tokens`] — create, list, revoke API tokens (Bearer auth).
 //! * [`auth`] — login, register, logout.
 //! * [`billing`] — Stripe Checkout integration (P11-T2).
@@ -8,6 +9,7 @@
 //! * [`documents`] — document detail + file download.
 //! * [`jobs`] — job status lookup.
 
+pub mod admin_quota;
 pub mod api_tokens;
 pub mod auth;
 pub mod billing;

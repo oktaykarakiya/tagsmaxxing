@@ -133,6 +133,32 @@ class ApiClient:
             raise ApiError(f"document fetch failed: {r.status_code} {r.text}")
         return r.json()
 
+    # ── Admin (super-admin only) ──────────────────────────────────────────────────
+    def set_quota_override(
+        self,
+        tenant_id: int,
+        *,
+        quota_override_bytes: int | None = None,
+        quota_override_tokens: int | None = None,
+    ) -> dict[str, Any]:
+        """Set a tenant's admin quota override (``POST /admin/tenants/:id/quota-override``).
+
+        Super-admin only (the caller must be logged in as an Owner/Admin of the
+        platform operator's bootstrap tenant). ``None`` fields clear that
+        dimension's override. Raises :class:`ApiError` on a non-200 response so
+        gating failures surface loudly.
+        """
+        r = self._c.post(
+            f"/admin/tenants/{tenant_id}/quota-override",
+            json={
+                "quota_override_bytes": quota_override_bytes,
+                "quota_override_tokens": quota_override_tokens,
+            },
+        )
+        if r.status_code != 200:
+            raise ApiError(f"set_quota_override failed: {r.status_code} {r.text}")
+        return r.json()
+
     # ── Health ────────────────────────────────────────────────────────────────────
     def health(self) -> httpx.Response:
         """Return the raw `/health` response (200 only when the stack is ready)."""

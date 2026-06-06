@@ -84,6 +84,33 @@ def admin_creds() -> tuple[str, str, str]:
 
 
 @pytest.fixture
+def limits_account():
+    """A provisioned low-cap *limits-e2e* tenant for quota-enforcement tests (P14-T14).
+
+    Signs up a dedicated tenant + Owner, clamps its storage/token caps via the
+    super-admin quota-override endpoint, logs its client in, and resets its usage
+    so the test starts clean. Exposes :class:`lib.limits.LimitsAccount` (with a
+    ``client`` and a ``reset_usage()`` helper). Reused by the upcoming E2/E3 tests.
+
+    Requires the app's Postgres container for the DB-backed usage reset (the same
+    ``podman exec … psql`` path the other black-box tests use); skips cleanly when
+    that container is unavailable so the fixture never errors a run.
+    """
+    from lib import limits
+
+    try:
+        account = limits.provision_limits_account()
+    except (RuntimeError, FileNotFoundError) as exc:
+        # podman/psql or the app's DB container is unavailable in this environment.
+        pytest.skip(f"limits_account unavailable (DB/podman): {exc}")
+    account.reset_usage()
+    try:
+        yield account
+    finally:
+        account.client.close()
+
+
+@pytest.fixture
 def judge():
     """The DeepSeek LLM-as-judge module; skips the test if no API key is configured."""
     from lib import judge as _judge
