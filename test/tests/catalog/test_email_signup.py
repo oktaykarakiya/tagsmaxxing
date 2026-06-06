@@ -581,23 +581,26 @@ def test_full_user_journey_signup_verify_upload(page):
 
     # The progress area appears; wait for completion.
     # With inline processing the JS receives a document_id and redirects
-    # directly to /documents/:id.  Allow up to 120 s for the pipeline.
-    try:
-        page.wait_for_url("**/documents/*", timeout=120_000)
-    except Exception:
-        # Fallback: the JS may have redirected to /search instead.
-        # Check the progress area for an error before asserting.
-        if page.locator("#progress-error:not(.hidden)").count():
-            detail = page.locator("#progress-detail").text_content() or ""
-            progress = page.locator("#progress-text").text_content() or ""
+    # directly to /documents/:id.  Use a poll loop with page.evaluate() to
+    # avoid the greenlet hang that wait_for_url can trigger on slow pages.
+    deadline = time.monotonic() + 120
+    while time.monotonic() < deadline:
+        try:
+            current_url = page.evaluate("() => window.location.href")
+        except Exception:
+            time.sleep(2)
+            continue
+        if "/documents/" in str(current_url) or "/search" in str(current_url):
+            break
+        time.sleep(5)
+    else:
+        # Fallback: check if we landed somewhere valid.
+        current_url = page.url
+        if "/documents/" not in current_url and "/search" not in current_url:
             pytest.fail(
-                f"Browser upload failed: progress={progress!r} detail={detail!r}"
+                f"after upload the browser should land on /documents/:id or /search; "
+                f"got {current_url}"
             )
-        # Redirected to /search — still a successful upload.
-        assert "/search" in page.url, (
-            f"after upload the browser should land on /documents/:id or /search; "
-            f"got {page.url}"
-        )
 
     # ── 6. Verify the document exists and is ready ──────────────────────────────
     # Extract document id from the URL if we landed on a document page.
