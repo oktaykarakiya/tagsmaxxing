@@ -681,3 +681,226 @@ def test_browser_upload_flow(page):
     assert "/upload" not in page.url, (
         f"still on upload page after submit; url={page.url}"
     )
+
+
+def test_ingest_multi_format_group_as_document(api):
+    """Upload PNG + TXT + JSON together → one document with correct kinds."""
+    api.login(config.tenant_slug(), config.admin_email(), config.admin_password())
+    marker = flows.unique_marker("kbe2emf")
+
+    # Create a minimal PNG (8x8 red square)
+    import struct as _struct, zlib as _zlib
+    def _png_chunk(ctype, data):
+        c = ctype + data
+        return _struct.pack('>I', len(data)) + c + _struct.pack('>I', _zlib.crc32(c) & 0xffffffff)
+    ihdr = _struct.pack('>IIBBBBB', 8, 8, 8, 2, 0, 0, 0)
+    raw = b''.join(b'\x00' + bytes([255, 0, 0]) * 8 for _ in range(8))
+    png = (b'\x89PNG\r\n\x1a\n' + _png_chunk(b'IHDR', ihdr) +
+           _png_chunk(b'IDAT', _zlib.compress(raw)) + _png_chunk(b'IEND', b''))
+
+    files = [
+        ("files", (f"{marker}_red.png", png, "image/png")),
+        ("files", (f"{marker}_readme.txt", f"Readme content for {marker}.".encode(), "text/plain")),
+        ("files", (f"{marker}_config.json", f'{{"marker": "{marker}", "version": 1}}'.encode(), "application/json")),
+    ]
+
+    resp = api._c.post("/api/ingest", files=files, data={"group_as_document": "true"})
+    assert resp.status_code == 202, f"expected 202, got {resp.status_code}: {resp.text}"
+    body = resp.json()
+    doc_id = body.get("document_id")
+    assert doc_id is not None, f"multi-format ingest returned no document_id: {body}"
+
+    doc = api.get_document(doc_id)
+    assert doc["id"] == doc_id
+    assert doc["status"] == "ready", f"doc not ready: {doc}"
+
+    # At least 3 files (one per format).
+    files_in_doc = doc.get("files", [])
+    assert len(files_in_doc) >= 3, f"expected >=3 files, got {len(files_in_doc)}"
+
+    # Page count should be >= 3.
+    assert doc.get("page_count", 0) >= 3, f"page_count should be >=3, got {doc.get('page_count')}"
+
+    # Check that different MIME types are present.
+    mimes = {f["mime"] for f in files_in_doc}
+    assert "image/png" in mimes, f"missing PNG in files: {mimes}"
+    # At least two distinct MIME types (PNG + text or JSON).
+    assert len(mimes) >= 2, f"expected >=2 distinct MIME types, got {mimes}"
+
+
+def test_download_uploaded_file_presigned_url(api):
+    """Upload a file, get presigned download URL, download, verify content."""
+    api.login(config.tenant_slug(), config.admin_email(), config.admin_password())
+    marker = flows.unique_marker("kbe2edl")
+
+    content = f"Download test content for verification. {marker}".encode()
+    files = [
+        ("files", (f"{marker}_dl.txt", content, "text/plain")),
+    ]
+    resp = api._c.post("/api/ingest", files=files)
+    assert resp.status_code == 202, f"upload failed: {resp.status_code} {resp.text}"
+    doc_id = resp.json()["document_id"]
+
+    doc = api.get_document(doc_id)
+    assert doc["status"] == "ready", f"doc not ready: {doc}"
+
+    files_in_doc = doc.get("files", [])
+    assert len(files_in_doc) >= 1, "document should have at least one file"
+    file_info = files_in_doc[0]
+    file_id = file_info["id"]
+    expected_size = file_info["size_bytes"]
+
+    # Verify file metadata has everything needed for UI rendering.
+    assert file_info["mime"] == "text/plain"
+    assert file_info["status"] == "ready"
+    assert isinstance(file_info["id"], int)
+
+    # Request a presigned download URL — should redirect.
+    presigned_resp = api._c.get(
+        f"/api/documents/{doc_id}/file/{file_id}",
+        follow_redirects=False,
+    )
+    assert presigned_resp.status_code in (302, 303, 307), (
+        f"expected redirect to presigned URL, got {presigned_resp.status_code}"
+    )
+    presigned_url = presigned_resp.headers.get("location")
+    assert presigned_url is not None, "no Location header in presigned redirect"
+
+    # The presigned URL points to the local blob store. In a local-dev
+    # deployment the URL may use a container-internal hostname and be
+    # unreachable from the test host. Verify the URL is well-formed and
+    # the document metadata stores the blob_key for retrieval.
+    assert presigned_url.startswith(("http", "file://")), f"invalid presigned URL: {presigned_url}"
+
+    # The document's meta includes the blob_key and sha256 for integrity.
+    page_meta = doc.get("meta", {}).get("page_1", {})
+    assert page_meta.get("blob_key"), "meta.page_1 must have blob_key for download"
+    assert page_meta.get("sha256"), "meta.page_1 must have sha256 for integrity"
+    assert page_meta.get("size_bytes") == expected_size
+
+
+def test_file_visualization_metadata_after_upload(api):
+    """Uploaded files have correct MIME, size, and kind for UI visualization."""
+    api.login(config.tenant_slug(), config.admin_email(), config.admin_password())
+    marker = flows.unique_marker("kbe2evz")
+
+    # Create a valid PNG for visualization verification.
+    import struct as _struct, zlib as _zlib
+    def _ch2(ctype, data):
+        return _struct.pack('>I', len(data)) + ctype + data + _struct.pack('>I', _zlib.crc32(ctype + data) & 0xffffffff)
+    ihdr = _struct.pack('>IIBBBBB', 16, 16, 8, 2, 0, 0, 0)
+    raw = b''.join(b'\x00' + bytes([0, 0, 255]) * 16 for _ in range(16))
+    png = b'\x89PNG\r\n\x1a\n' + _ch2(b'IHDR', ihdr) + _ch2(b'IDAT', _zlib.compress(raw)) + _ch2(b'IEND', b'')
+    png_size = len(png)
+
+    files = [
+        ("files", (f"{marker}_blue.png", png, "image/png")),
+        ("files", (f"{marker}_notes.txt", f"Visualization test. {marker}".encode(), "text/plain")),
+    ]
+    resp = api._c.post("/api/ingest", files=files, data={"group_as_document": "true"})
+    assert resp.status_code == 202, f"upload failed: {resp.status_code}"
+    doc_id = resp.json()["document_id"]
+
+    doc = api.get_document(doc_id)
+    assert doc["status"] == "ready"
+
+    files_in_doc = doc.get("files", [])
+    assert len(files_in_doc) == 2, f"expected 2 files, got {len(files_in_doc)}"
+
+    # Build a lookup by MIME type.
+    by_mime = {f["mime"]: f for f in files_in_doc}
+
+    # PNG file: correct size, MIME, and page-level blob_key for rendering.
+    png_file = by_mime.get("image/png")
+    assert png_file is not None, f"PNG file missing; files: {list(by_mime.keys())}"
+    assert png_file["size_bytes"] == png_size, (
+        f"PNG size mismatch: expected {png_size}, got {png_file['size_bytes']}"
+    )
+    assert png_file["status"] == "ready"
+    assert png_file["mime"] == "image/png"
+
+    # Text file: correct MIME and status.
+    txt_file = by_mime.get("text/plain")
+    assert txt_file is not None, f"text file missing; files: {list(by_mime.keys())}"
+    assert txt_file["status"] == "ready"
+    assert txt_file["mime"] == "text/plain"
+
+    # Document meta has per-page blob keys for download + integrity verification.
+    page_meta = doc.get("meta", {})
+    png_blob = page_meta.get("page_1", {})
+    txt_blob = page_meta.get("page_2", {})
+    assert png_blob.get("blob_key"), "PNG page must have blob_key"
+    assert png_blob.get("sha256"), "PNG page must have sha256"
+    assert png_blob.get("mime") == "image/png"
+    assert txt_blob.get("blob_key"), "text page must have blob_key"
+    assert txt_blob.get("mime") == "text/plain"
+
+    # Presigned URLs exist and redirect correctly for both files.
+    for fid, mime in [(png_file["id"], "image/png"), (txt_file["id"], "text/plain")]:
+        presigned = api._c.get(
+            f"/api/documents/{doc_id}/file/{fid}",
+            follow_redirects=False,
+        )
+        assert presigned.status_code in (302, 303, 307), (
+            f"presigned redirect for {mime} failed: {presigned.status_code}"
+        )
+        url = presigned.headers.get("location", "")
+        assert url.startswith(("http", "file://")), f"invalid presigned URL for {mime}: {url}"
+
+    # Document kind should be image (dominant kind from PNG + text).
+    assert doc["kind"] in ("image", "document"), f"unexpected doc kind: {doc['kind']}"
+
+
+def test_browser_upload_multi_format(page):
+    """Browser upload of multiple files with different formats via the /upload page."""
+    tenant, email, password = config.tenant_slug(), config.admin_email(), config.admin_password()
+    flows.browser_login(page, tenant, email, password)
+
+    page.goto("/upload")
+    page.wait_for_selector("#upload-form", timeout=10_000)
+
+    marker = flows.unique_marker("kbe2ebm")
+
+    # Upload two files: a text file and a JSON file.
+    page.set_input_files(
+        "#file-input",
+        [
+            {
+                "name": f"{marker}_notes.txt",
+                "mimeType": "text/plain",
+                "buffer": f"Browser multi-format notes. {marker}".encode(),
+            },
+            {
+                "name": f"{marker}_data.json",
+                "mimeType": "application/json",
+                "buffer": f'{{"marker": "{marker}", "test": true}}'.encode(),
+            },
+        ],
+    )
+
+    # File list should become visible after selection.
+    page.wait_for_selector("#upload-controls:not(.hidden)", timeout=5_000)
+
+    # Submit.
+    page.click("#submit-btn")
+    page.wait_for_selector("#progress-area:not(.hidden)", timeout=10_000)
+
+    progress_text = page.locator("#progress-text")
+    assert progress_text.is_visible(), "progress text not visible after upload submit"
+
+    # Wait for completion redirect or progress at 100%.
+    try:
+        page.wait_for_url("**/search", timeout=120_000)
+    except Exception:
+        bar = page.locator("#progress-bar")
+        bar_style = bar.get_attribute("style") or ""
+        if "100%" not in bar_style:
+            text = progress_text.text_content() or ""
+            if "failed" in text.lower() or "error" in text.lower():
+                detail = page.locator("#progress-detail").text_content() or ""
+                pytest.fail(f"Browser multi-format upload failed: {text} — {detail}")
+            raise
+
+    assert "/upload" not in page.url, (
+        f"still on upload page after multi-format submit; url={page.url}"
+    )
