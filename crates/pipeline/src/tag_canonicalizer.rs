@@ -330,13 +330,20 @@ impl TagCanonicalizer {
             // 0. Normalize the raw tag name for deduplication.
             let normalized = normalize_tag_name(raw_tag);
 
-            // 1. Exact alias lookup for the raw form.
+            // 1. Exact alias lookup for the raw form. An alias-cache hit makes
+            //    NO model call, so it neither embeds nor meters — control flow
+            //    returns before the single embed-and-meter step below.
             if let Some(tag_id) = self.store.lookup_alias(tenant_id, raw_tag).await? {
                 tag_ids.push(tag_id);
                 continue;
             }
 
-            // 2. Embed the normalized tag name.
+            // 2. Embed-and-meter ONCE, up front, for every candidate that is not
+            //    an exact alias hit. The similarity-match and new-tag branches
+            //    below both reuse THIS single embedding — neither re-embeds.
+            //    Metering invariant: exactly one Embed usage event is recorded
+            //    per actual embed call (here), so a candidate is metered at most
+            //    once and alias-cache hits are never metered.
             let embedding = self
                 .embed_tag_name(tenant_id, user_id, &normalized, local_only)
                 .await?;
@@ -790,6 +797,69 @@ mod tests {
         assert_eq!(events[0].role, Role::Embed);
         assert_eq!(events[0].tenant_id, 7);
         assert_eq!(events[0].user_id, Some(13));
+    }
+
+    /// P14-T3: the **similarity-match** branch also embeds the candidate tag
+    /// name (to compare against existing tag vectors) and must meter that embed
+    /// exactly once — it is not only the new-tag branch that consumes the model.
+    #[tokio::test]
+    async fn canonicalize_meters_embed_on_similarity_match() {
+        let store = Arc::new(MockTagStore::new());
+        // Seed an existing tag (under the SAME tenant we canonicalize for, 7)
+        // whose embedding the mock will match (cos = 1.0).
+        store.seed_tag(7, "invoice", 5, vec![1.0, 0.0]);
+
+        let (canon, mock) = canonicalizer_with_mock(store.clone()).await;
+        let recorder = Arc::new(CapturingRecorder::default());
+        let canon = canon.with_usage_recorder(recorder.clone() as Arc<dyn UsageRecorder>);
+        // Mock returns [1.0, 0.0] → cos = 1.0 with the seeded tag (≥ threshold),
+        // so this resolves via the similarity-match branch, NOT a new tag.
+        mock.scenario().lock().await.embed_content = Some(vec![vec![1.0, 0.0]]);
+
+        // "bill" is not an alias → it must be embedded, then matched to tag 5.
+        let ids = canon
+            .canonicalize(7, Some(13), &["bill".into()], false)
+            .await
+            .unwrap();
+        assert_eq!(ids, vec![5], "similarity hit resolves to the seeded tag");
+        mock.shutdown().await;
+
+        let events = recorder.events.lock().unwrap();
+        assert_eq!(
+            events.len(),
+            1,
+            "the similarity-match branch must meter its embed exactly once"
+        );
+        assert_eq!(events[0].role, Role::Embed);
+        assert_eq!(events[0].tenant_id, 7);
+        assert_eq!(events[0].user_id, Some(13));
+    }
+
+    /// P14-T3: an exact alias-cache hit makes NO model call and therefore must
+    /// record NO usage event (the embed-and-meter step is skipped entirely).
+    #[tokio::test]
+    async fn canonicalize_alias_cache_hit_meters_nothing() {
+        let store = Arc::new(MockTagStore::new());
+        store.seed_tag(1, "rust", 10, vec![1.0, 0.0]);
+        store.seed_alias(1, "rust-lang", 10);
+
+        let (canon, mock) = canonicalizer_with_mock(store.clone()).await;
+        let recorder = Arc::new(CapturingRecorder::default());
+        let canon = canon.with_usage_recorder(recorder.clone() as Arc<dyn UsageRecorder>);
+
+        // "rust-lang" resolves via the exact alias cache → no embed call.
+        let ids = canon
+            .canonicalize(1, Some(13), &["rust-lang".into()], false)
+            .await
+            .unwrap();
+        assert_eq!(ids, vec![10]);
+        mock.shutdown().await;
+
+        let events = recorder.events.lock().unwrap();
+        assert!(
+            events.is_empty(),
+            "an alias-cache hit makes no model call and must not meter"
+        );
     }
 
     #[tokio::test]

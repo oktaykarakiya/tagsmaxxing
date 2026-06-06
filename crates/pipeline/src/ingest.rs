@@ -331,7 +331,7 @@ impl IngestPipeline {
             && !merged.page_images.is_empty()
         {
             match captioner
-                .describe_many(&merged.page_images, local_only)
+                .describe_many(&merged.page_images, tenant_id, user_id, local_only)
                 .await
             {
                 Ok(caption) if !caption.is_empty() => {

@@ -1460,9 +1460,9 @@ description = "A3: meter vision + close tag-canonicalizer gaps. Add a UsageRecor
 depends_on = ["P14-T1"]
 plan_sections = ["7", "15"]
 acceptance = "every AI call site records usage; a VLM ingest records a Vision usage row; unit tests; just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "VisionCaptioner gained usage_recorder + with_usage_recorder + meter() (Role::Vision, best-effort, zero-token row when backend reports none); describe_image/describe_many take tenant_id+user_id, capture the VLM chat resp.usage, and meter. ingest.rs threads the in-scope tenant_id+user_id into describe_many (no extractor signature change needed — captioning runs inside IngestPipeline::ingest). serve.rs wires the A1 BufferedUsageRecorder into VisionCaptioner. tag_canonicalizer: verified the embed-and-meter was ALREADY correct (unconditional embed up front; embed_tag_name meters internally) — no live double-count/miss; documented the invariant + locked it with 2 tests (one Embed on similarity-match, zero on alias-cache hit). Subagent flagged this non-restructure honestly. just ci green (cov 77.01%; tag_canonicalizer 96.9%, ingest 96.5%). Metering seam (A-phase) COMPLETE: no unmetered AI call remains."
 
 [[task]]
 id = "P14-T4"

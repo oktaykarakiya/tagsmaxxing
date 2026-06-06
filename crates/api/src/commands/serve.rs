@@ -309,10 +309,10 @@ pub async fn run_serve(args: &ServeArgs) -> anyhow::Result<()> {
         CIRCUIT_THRESHOLD,
         Duration::from_secs(COOLDOWN_SECS),
     );
-    let vision_captioner = Arc::new(VisionCaptioner::new(
-        vision_client,
-        DEFAULT_VISION_MODEL.into(),
-    ));
+    let vision_captioner = Arc::new(
+        VisionCaptioner::new(vision_client, DEFAULT_VISION_MODEL.into())
+            .with_usage_recorder(Arc::clone(&usage_recorder)),
+    );
 
     let ingest_pipeline = Arc::new(
         IngestPipeline::new(
