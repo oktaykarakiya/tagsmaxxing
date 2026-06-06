@@ -93,7 +93,10 @@ stack_up() {
     preflight_models
     log "Starting stack ($E2E_HW): postgres, tika, app, caddy + llama-text/embed/rerank + whisper"
   fi
-  "${COMPOSE[@]}" up -d
+  # --force-recreate so a freshly-built kb:latest is ACTUALLY deployed: podman compose
+  # otherwise keeps the old app container running on a same-tag image rebuild, silently
+  # serving the stale binary (new routes/metrics appear absent despite a green build).
+  "${COMPOSE[@]}" up -d --force-recreate
 }
 
 stack_down() {
