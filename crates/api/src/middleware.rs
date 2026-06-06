@@ -406,12 +406,6 @@ impl LoginBruteForceLimiter {
             Ok(())
         }
     }
-
-    /// Clear all tracked attempts (test-only).
-    #[cfg(test)]
-    fn reset(&self) {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).clear();
-    }
 }
 
 /// Resolve the per-IP login attempt cap **at call time** (hot-swappable, plan
@@ -588,12 +582,27 @@ pub async fn login_rate_limit_middleware(
     request: Request<axum::body::Body>,
     next: Next,
 ) -> Result<Response, StatusCode> {
+    login_rate_limit_with(&LOGIN_BRUTE_FORCE_LIMITER, request, next).await
+}
+
+/// Core of [`login_rate_limit_middleware`], parameterized over the limiter
+/// instance so it can be exercised against an isolated, per-caller limiter.
+///
+/// Production wires the process-global [`LOGIN_BRUTE_FORCE_LIMITER`]; tests pass
+/// a freshly-constructed limiter so concurrent cases never share window state.
+/// Behaviour is otherwise identical: non-`POST /auth/login` requests pass
+/// through, and an over-cap client receives `429` with a `Retry-After` header.
+async fn login_rate_limit_with(
+    limiter: &LoginBruteForceLimiter,
+    request: Request<axum::body::Body>,
+    next: Next,
+) -> Result<Response, StatusCode> {
     if request.method() != axum::http::Method::POST || request.uri().path() != "/auth/login" {
         return Ok(next.run(request).await);
     }
 
     let ip = extract_client_ip(&request);
-    match LOGIN_BRUTE_FORCE_LIMITER.check(ip, login_rate_max_attempts()) {
+    match limiter.check(ip, login_rate_max_attempts()) {
         Ok(()) => Ok(next.run(request).await),
         Err(retry_after) => {
             let body = axum::body::Body::from(format!(
@@ -1681,21 +1690,41 @@ mod tests {
 
     /// Build a minimal test router with the login rate limiter applied to
     /// a /auth/login endpoint. The handler returns 200 OK for any POST.
+    ///
+    /// Each call wires a **fresh, router-local** [`LoginBruteForceLimiter`]
+    /// rather than the process-global one. This is what makes the login-route
+    /// tests deterministic under parallel execution: no shared window state and
+    /// no cross-test `reset()` can clobber another test's accumulated attempts,
+    /// so distinct-IP isolation actually holds.
     fn rate_limit_test_router() -> Router {
+        let limiter = Arc::new(LoginBruteForceLimiter::new(Duration::from_secs(60)));
         Router::new()
             .route(
                 "/auth/login",
                 axum::routing::post(|| async { StatusCode::OK }),
             )
-            .layer(axum::middleware::from_fn(login_rate_limit_middleware))
+            .layer(axum::middleware::from_fn(
+                move |req: Request<Body>, next: Next| {
+                    let limiter = Arc::clone(&limiter);
+                    async move { login_rate_limit_with(&limiter, req, next).await }
+                },
+            ))
     }
 
     #[tokio::test]
     async fn middleware_passes_non_login_paths_through() {
-        LOGIN_BRUTE_FORCE_LIMITER.reset();
+        // Router-local limiter (never reaches `.check()` for a non-login path);
+        // using a fresh instance avoids touching the process-global limiter, so
+        // this test cannot clobber another login-route test's window state.
+        let limiter = Arc::new(LoginBruteForceLimiter::new(Duration::from_secs(60)));
         let router = Router::new()
             .route("/other", axum::routing::post(|| async { StatusCode::OK }))
-            .layer(axum::middleware::from_fn(login_rate_limit_middleware));
+            .layer(axum::middleware::from_fn(
+                move |req: Request<Body>, next: Next| {
+                    let limiter = Arc::clone(&limiter);
+                    async move { login_rate_limit_with(&limiter, req, next).await }
+                },
+            ));
 
         let response = router
             .oneshot(
@@ -1712,10 +1741,9 @@ mod tests {
 
     #[tokio::test]
     async fn middleware_rate_limits_login_route() {
-        // Unique source IP isolates this test from other login-route tests that
-        // share the process-global limiter (the default 127.0.0.1 key collides
-        // under parallel execution); a never-before-seen IP starts fresh, so no
-        // global reset() — which would clear other tests' state — is needed.
+        // `rate_limit_test_router` wires a router-local limiter, so this test's
+        // window state is fully isolated from every other test regardless of the
+        // source IP or parallel scheduling.
         let router = rate_limit_test_router();
         let mut statuses = Vec::new();
 
@@ -1951,8 +1979,9 @@ mod tests {
 
     #[tokio::test]
     async fn middleware_includes_retry_after_header() {
-        // Distinct source IP (see middleware_rate_limits_login_route) so this
-        // test's attempts don't collide with other login-route tests.
+        // Router-local limiter (see `rate_limit_test_router`): the exhaust loop
+        // and the over-cap assertion below share isolated state that no sibling
+        // test can clear mid-run, so the final 429 is deterministic.
         let router = rate_limit_test_router();
 
         // Exhaust the limit (default cap 5).
