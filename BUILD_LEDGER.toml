@@ -1515,9 +1515,9 @@ description = "C1: revive per-tenant gauges via the existing metrics_collector (
 depends_on = ["P14-T1"]
 plan_sections = ["15", "26.6"]
 acceptance = "/metrics exposes the revived per-tenant gauges with live values; reconciliation heals injected drift; unit+collector tests; just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "P14-T8: collect_runtime now publishes per-tenant kb_active_users/kb_tenant_spend_monthly_micros/kb_tenant_budget_cents+_exceeded (via shared check_budget) + new kb_tenant_tokens_monthly gauge, all best-effort per tenant; added PgStore::reconcile_month_token_rollup (UTC-month SUM vs O(1) rollup, overwrite-on-drift, returns reconciled value) called from the collector and feeding the token gauge; metrics helper record_tenant_tokens_monthly + #[ignore] PG drift-heal integration test. just ci green (cov 76.61% lines)."
 
 [[task]]
 id = "P14-T9"

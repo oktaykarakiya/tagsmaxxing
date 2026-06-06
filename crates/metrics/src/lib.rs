@@ -20,6 +20,7 @@
 //! - [`record_integrity_scan_result`] — sets the integrity scan result gauges (P8-T10).
 //! - [`record_maintenance_success`] — sets the maintenance success gauge (P8-T11).
 //! - [`record_maintenance_failure`] — sets the maintenance failure gauge (P8-T11).
+//! - [`record_tenant_tokens_monthly`] — sets the per-tenant monthly token-usage gauge (P14-T8).
 //!
 //! # Optional features
 //!
@@ -309,6 +310,10 @@ fn describe_all() {
     metrics::describe_gauge!(
         "kb_tenant_budget_cents",
         "Monthly spend budget in cents (USD) for this tenant"
+    );
+    metrics::describe_gauge!(
+        "kb_tenant_tokens_monthly",
+        "Tokens consumed by this tenant in the current UTC calendar month (from the per-tenant monthly rollup)"
     );
 }
 
@@ -648,6 +653,17 @@ pub fn record_tenant_budget_exceeded(tenant_id: i64, exceeded: bool) {
 pub fn record_tenant_budget_cents(tenant_id: i64, budget_cents: u64) {
     metrics::gauge!("kb_tenant_budget_cents", "tenant_id" => tenant_id.to_string())
         .set(budget_cents as f64);
+}
+
+/// Set the per-tenant monthly token-usage gauge (P14-T8).
+///
+/// `tokens` is the tenant's token total for the current UTC calendar month, read
+/// from the O(1) `tenant_monthly_usage` rollup. Published per poll by the metrics
+/// collector so an operator can graph monthly token consumption per tenant
+/// alongside the spend and budget gauges.
+pub fn record_tenant_tokens_monthly(tenant_id: i64, tokens: u64) {
+    metrics::gauge!("kb_tenant_tokens_monthly", "tenant_id" => tenant_id.to_string())
+        .set(tokens as f64);
 }
 
 // ── Decrypt-access audit metrics (plan §28, P10-T5) ─────────────────────────
@@ -1332,6 +1348,29 @@ mod tests {
         assert!(text.contains("# TYPE kb_tenant_budget_exceeded gauge"));
         assert!(text.contains("# HELP kb_tenant_budget_cents"));
         assert!(text.contains("# TYPE kb_tenant_budget_cents gauge"));
+    }
+
+    // ── Per-tenant monthly token gauge test (P14-T8) ──────────────────────
+
+    #[test]
+    fn tenant_tokens_monthly_gauge_emits_with_label_help_and_type() {
+        let _h = ensure_init();
+        record_tenant_tokens_monthly(1, 4242);
+        record_tenant_tokens_monthly(2, 7);
+
+        let text = render();
+        // Per-tenant label + value.
+        assert!(
+            text.contains("kb_tenant_tokens_monthly{tenant_id=\"1\"} 4242"),
+            "tenant 1 monthly-tokens gauge missing/wrong in: {text}"
+        );
+        assert!(
+            text.contains("kb_tenant_tokens_monthly{tenant_id=\"2\"} 7"),
+            "tenant 2 monthly-tokens gauge missing/wrong in: {text}"
+        );
+        // Exposition HELP/TYPE lines.
+        assert!(text.contains("# HELP kb_tenant_tokens_monthly"));
+        assert!(text.contains("# TYPE kb_tenant_tokens_monthly gauge"));
     }
 
     // ── Decrypt audit metrics tests (P10-T5) ──────────────────────────────

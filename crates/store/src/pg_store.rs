@@ -757,6 +757,17 @@ const MONTHLY_ROLLUP_CURRENT_SQL: &str = "SELECT tokens_used FROM tenant_monthly
      WHERE tenant_id = $1 \
        AND period_month = (date_trunc('month', now() AT TIME ZONE 'UTC'))::date";
 
+/// Overwrite (or create) the current UTC month's rollup row with an authoritative
+/// `tokens_used` value (P14-T8 reconciliation). Unlike the incremental upsert,
+/// this **replaces** the counter rather than adding to it, so a drifted rollup
+/// snaps back to the `usage_events` SUM. `$2` is the authoritative total.
+const MONTHLY_ROLLUP_RECONCILE_SQL: &str = "INSERT INTO tenant_monthly_usage \
+     (tenant_id, period_month, tokens_used, updated_at) \
+     VALUES ($1, (date_trunc('month', now() AT TIME ZONE 'UTC'))::date, $2, now()) \
+     ON CONFLICT (tenant_id, period_month) DO UPDATE \
+     SET tokens_used = EXCLUDED.tokens_used, \
+         updated_at = now()";
+
 /// Sum a tenant's token usage over the **current UTC calendar month** (P14-T4).
 ///
 /// The reconciliation/backstop read behind
@@ -1374,6 +1385,54 @@ impl PgStore {
             .await
             .context("failed to commit get_current_month_token_rollup")?;
         Ok(tokens.unwrap_or(0))
+    }
+
+    /// Reconcile the O(1) monthly token rollup against the authoritative
+    /// `usage_events` SUM for the **current UTC month**, self-healing any drift
+    /// (P14-T8).
+    ///
+    /// The rollup ([`get_current_month_token_rollup`](Self::get_current_month_token_rollup))
+    /// is maintained incrementally inside each [`insert_usage_event`](Self::insert_usage_event)
+    /// transaction, so it can diverge from the truth if a rollup upsert is ever
+    /// skipped (e.g. a future code path, a manual `usage_events` backfill, or a
+    /// partially-applied migration). This method recomputes the authoritative
+    /// total via [`get_token_usage`](Self::get_token_usage) (the UTC-month
+    /// windowed SUM) and, when it differs from the stored rollup, logs a warning
+    /// and overwrites the current month's rollup row to match.
+    ///
+    /// Returns the **reconciled** value (the authoritative SUM), so the caller —
+    /// the periodic metrics collector — can publish it without a second read. It
+    /// is a no-op write when the rollup already agrees. Runs two point reads plus
+    /// at most one upsert, i.e. O(1) per tenant.
+    ///
+    /// # Errors
+    /// Returns an error if the database is not connected or any query fails.
+    pub async fn reconcile_month_token_rollup(&self, tenant_id: i64) -> anyhow::Result<i64> {
+        let authoritative = self.get_token_usage(tenant_id).await?;
+        let rollup = self.get_current_month_token_rollup(tenant_id).await?;
+
+        if authoritative != rollup {
+            tracing::warn!(
+                tenant_id,
+                rollup,
+                authoritative,
+                drift = authoritative - rollup,
+                "monthly token rollup drifted from usage_events SUM; correcting"
+            );
+            let pool = self.app_pool()?;
+            let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
+            sqlx::query(MONTHLY_ROLLUP_RECONCILE_SQL)
+                .bind(tenant_id)
+                .bind(authoritative)
+                .execute(&mut *tx)
+                .await
+                .context("failed to correct monthly token rollup")?;
+            tx.commit()
+                .await
+                .context("failed to commit reconcile_month_token_rollup")?;
+        }
+
+        Ok(authoritative)
     }
 
     /// Atomically upsert a document and all its files, tags, and chunks in one
@@ -3421,6 +3480,31 @@ mod tests {
     }
 
     #[test]
+    fn monthly_rollup_reconcile_sql_replaces_rather_than_adds() {
+        // P14-T8: the reconciliation upsert must OVERWRITE tokens_used with the
+        // authoritative value (EXCLUDED.tokens_used), NOT add to the running
+        // total — otherwise correcting drift would double-count.
+        assert!(MONTHLY_ROLLUP_RECONCILE_SQL.starts_with("INSERT INTO tenant_monthly_usage"));
+        assert!(
+            MONTHLY_ROLLUP_RECONCILE_SQL
+                .contains("date_trunc('month', now() AT TIME ZONE 'UTC'))::date")
+        );
+        assert!(
+            MONTHLY_ROLLUP_RECONCILE_SQL
+                .contains("ON CONFLICT (tenant_id, period_month) DO UPDATE")
+        );
+        // Replacement, not accumulation: must set to EXCLUDED, must NOT add the
+        // existing tenant_monthly_usage.tokens_used.
+        assert!(MONTHLY_ROLLUP_RECONCILE_SQL.contains("SET tokens_used = EXCLUDED.tokens_used"));
+        assert!(
+            !MONTHLY_ROLLUP_RECONCILE_SQL.contains("tenant_monthly_usage.tokens_used +"),
+            "reconcile must replace, not accumulate: {MONTHLY_ROLLUP_RECONCILE_SQL}"
+        );
+        assert!(MONTHLY_ROLLUP_RECONCILE_SQL.contains("$1"));
+        assert!(MONTHLY_ROLLUP_RECONCILE_SQL.contains("$2"));
+    }
+
+    #[test]
     fn token_usage_month_sql_windows_to_current_utc_month() {
         // P14-T4: the reconciliation SUM must be scoped to the current UTC
         // calendar month (not all-time), matching the rollup's bucketing.
@@ -3445,6 +3529,14 @@ mod tests {
         // than panicking (mirrors the other pre-connect guards).
         let store = PgStore::new("postgres://localhost/db");
         assert!(store.get_current_month_token_rollup(1).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn reconcile_month_token_rollup_errors_before_connect() {
+        // P14-T8: reconciliation surfaces a (non-panicking) error before connect
+        // so the collector logs-and-continues rather than aborting the loop.
+        let store = PgStore::new("postgres://localhost/db");
+        assert!(store.reconcile_month_token_rollup(1).await.is_err());
     }
 
     #[tokio::test]

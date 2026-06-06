@@ -518,3 +518,84 @@ async fn get_current_month_token_rollup_reads_running_total() -> anyhow::Result<
 
     Ok(())
 }
+
+/// P14-T8: `reconcile_month_token_rollup` heals drift between the O(1) rollup and
+/// the authoritative `usage_events` SUM for the current UTC month.
+///
+/// Drift is injected by inserting `usage_events` rows **directly** via the
+/// privileged pool (BYPASSRLS), bypassing `insert_usage_event` so the rollup is
+/// never updated. After reconcile, the rollup row must equal the SUM, the call
+/// must return that SUM, and a second reconcile must be a no-op.
+#[tokio::test]
+#[ignore = "requires Podman + image pull; run with --ignored"]
+async fn reconcile_month_token_rollup_heals_injected_drift() -> anyhow::Result<()> {
+    let s = setup_store().await?;
+    let now = Utc::now();
+
+    // One legitimate event through the store → rollup = 15 (10 + 5).
+    s.store
+        .insert_usage_event(&make_usage_event(s.tenant_id, Some(1), 10, 5, now))
+        .await?;
+    assert_eq!(
+        s.store.get_current_month_token_rollup(s.tenant_id).await?,
+        15
+    );
+
+    // Inject drift: two raw usage_events (100 and 40 tokens) inserted straight
+    // into the table, so the rollup does NOT see them. Authoritative SUM is now
+    // 15 + 100 + 40 = 155, but the rollup still reads 15.
+    for prompt in [100_i32, 40_i32] {
+        sqlx::query(
+            "INSERT INTO usage_events \
+             (tenant_id, model, role, prompt_tokens, completion_tokens, created_at) \
+             VALUES ($1, 'raw-seed', 'embed', $2, 0, $3)",
+        )
+        .bind(s.tenant_id)
+        .bind(prompt)
+        .bind(now)
+        .execute(&s.pool)
+        .await?;
+    }
+    assert_eq!(
+        s.store.get_token_usage(s.tenant_id).await?,
+        155,
+        "authoritative SUM should include the raw-seeded events"
+    );
+    assert_eq!(
+        s.store.get_current_month_token_rollup(s.tenant_id).await?,
+        15,
+        "rollup should still be stale before reconcile"
+    );
+
+    // Reconcile: returns the authoritative SUM and corrects the rollup row.
+    let reconciled = s.store.reconcile_month_token_rollup(s.tenant_id).await?;
+    assert_eq!(reconciled, 155, "reconcile returns the authoritative SUM");
+    assert_eq!(
+        s.store.get_current_month_token_rollup(s.tenant_id).await?,
+        155,
+        "rollup must equal the SUM after reconcile"
+    );
+
+    // Exactly one rollup row for the current month (corrected in place, not
+    // duplicated). Read via the privileged pool.
+    let row_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM tenant_monthly_usage WHERE tenant_id = $1")
+            .bind(s.tenant_id)
+            .fetch_one(&s.pool)
+            .await?;
+    assert_eq!(
+        row_count, 1,
+        "reconcile corrects in place, no duplicate row"
+    );
+
+    // Idempotent: a second reconcile with no new drift returns the same value
+    // and leaves the rollup unchanged.
+    let again = s.store.reconcile_month_token_rollup(s.tenant_id).await?;
+    assert_eq!(again, 155);
+    assert_eq!(
+        s.store.get_current_month_token_rollup(s.tenant_id).await?,
+        155
+    );
+
+    Ok(())
+}
