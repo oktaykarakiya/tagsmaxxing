@@ -20,6 +20,23 @@ pub struct ActivityEvent {
     pub description: String,
 }
 
+/// One user's current-month token usage, for the dashboard per-user breakdown
+/// (plan §15/§29, P14-T13).
+///
+/// `user_id` is `None` for the **system bucket** — usage with no attributed user
+/// (background jobs, query embeddings; `usage_events.user_id IS NULL`). The
+/// `email` is then `None` and the UI labels it "System".
+#[derive(Debug, Clone)]
+pub struct UserTokenUsage {
+    /// The attributed user id, or `None` for the system/no-user bucket.
+    pub user_id: Option<i64>,
+    /// The user's email (joined from `users`), or `None` for the system bucket
+    /// or a user row that no longer exists.
+    pub email: Option<String>,
+    /// Sum of `prompt_tokens + completion_tokens` for this user this month.
+    pub total_tokens: i64,
+}
+
 /// A single day's token usage for the daily-breakdown chart.
 #[derive(Debug, Clone)]
 pub struct DailyTokenUsage {
@@ -168,6 +185,56 @@ impl PgStore {
         Ok(total)
     }
 
+    /// Per-user token-usage breakdown for the **current UTC calendar month**.
+    ///
+    /// Sums `prompt_tokens + completion_tokens` from `usage_events` GROUPED BY
+    /// `user_id`, LEFT JOINing `users` for the email. The NULL/system bucket
+    /// (background jobs, query embeddings) is **included** as a row with
+    /// `user_id = None`. Rows are ordered by usage descending so the heaviest
+    /// users appear first.
+    ///
+    /// Uses the app pool + `begin_tenant_tx` so RLS is enforced — only the
+    /// caller's own tenant's events (and users) are visible.
+    ///
+    /// # Errors
+    /// Returns an error if the database is not connected or the query fails.
+    pub async fn get_monthly_token_usage_by_user(
+        &self,
+        tenant_id: i64,
+    ) -> anyhow::Result<Vec<UserTokenUsage>> {
+        let pool = self.app_pool()?;
+        let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
+        // GROUP BY the raw user_id (including NULL → system bucket). LEFT JOIN
+        // users so a deleted user still shows its usage (email NULL). The total
+        // is computed in the aggregate and re-COALESCEd to a non-null BIGINT.
+        let rows: Vec<(Option<i64>, Option<String>, i64)> = sqlx::query_as(
+            "SELECT ue.user_id, u.email, \
+                    COALESCE(SUM(COALESCE(ue.prompt_tokens,0) + COALESCE(ue.completion_tokens,0)), 0)::BIGINT AS total \
+             FROM usage_events ue \
+             LEFT JOIN users u ON u.id = ue.user_id AND u.tenant_id = ue.tenant_id \
+             WHERE ue.tenant_id = $1 \
+               AND date_trunc('month', ue.created_at) = date_trunc('month', now()) \
+             GROUP BY ue.user_id, u.email \
+             ORDER BY total DESC, ue.user_id ASC NULLS LAST",
+        )
+        .bind(tenant_id)
+        .fetch_all(&mut *tx)
+        .await
+        .context("failed to query per-user token usage")?;
+        tx.commit()
+            .await
+            .context("failed to commit get_monthly_token_usage_by_user")?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(user_id, email, total_tokens)| UserTokenUsage {
+                user_id,
+                email,
+                total_tokens,
+            })
+            .collect())
+    }
+
     /// Fetch a daily token-usage breakdown for the current calendar month.
     ///
     /// Returns one row per day (in `YYYY-MM-DD` format) with sums of prompt
@@ -300,6 +367,16 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn get_monthly_token_usage_by_user_errors_before_connect() {
+        let store = test_store();
+        let err = store.get_monthly_token_usage_by_user(1).await.unwrap_err();
+        assert!(
+            err.to_string().contains("not connected"),
+            "expected 'not connected', got: {err}"
+        );
+    }
+
     // ── Pure-logic tests ──────────────────────────────────────────────────────
 
     #[test]
@@ -330,6 +407,29 @@ mod tests {
         assert_eq!(event.kind, cloned.kind);
         assert_eq!(event.description, cloned.description);
         let _dbg = format!("{event:?}");
+    }
+
+    #[test]
+    fn user_token_usage_debug_and_clone() {
+        let usage = UserTokenUsage {
+            user_id: Some(7),
+            email: Some("a@b.com".into()),
+            total_tokens: 1234,
+        };
+        let cloned = usage.clone();
+        assert_eq!(usage.user_id, cloned.user_id);
+        assert_eq!(usage.email, cloned.email);
+        assert_eq!(usage.total_tokens, cloned.total_tokens);
+        let _dbg = format!("{usage:?}");
+
+        // System bucket: no user_id, no email.
+        let system = UserTokenUsage {
+            user_id: None,
+            email: None,
+            total_tokens: 50,
+        };
+        assert!(system.user_id.is_none());
+        assert!(system.email.is_none());
     }
 
     #[test]

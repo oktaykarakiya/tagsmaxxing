@@ -50,7 +50,7 @@ pub use b2_blob::{B2Blob, B2Config};
 pub use blob::LocalBlob;
 pub use blob_cache::BlobCache;
 pub use buffered_recorder::BufferedUsageRecorder;
-pub use dashboard::{ActivityEvent, DailyTokenUsage};
+pub use dashboard::{ActivityEvent, DailyTokenUsage, UserTokenUsage};
 pub use db_routing::{PgRoutingNotifier, ROUTING_CHANNEL};
 pub use encrypted_blob::EncryptedBlob;
 pub use migrations::MIGRATOR;

@@ -82,6 +82,10 @@ pub(crate) struct SearchPage {
     pub selected_tags: String,
     /// Current search results (empty on initial load).
     pub hits: Vec<SearchResultHit>,
+    /// Whether the included results partial should show the degraded notice.
+    /// Always `false` on the initial page (no search has run yet); the HTMX
+    /// fragment re-render carries the real value (P14-T5/P14-T13).
+    pub degraded: bool,
 }
 
 /// A single kind filter checkbox entry in the search sidebar.
@@ -131,6 +135,10 @@ pub(crate) struct SearchResultsPartial {
     pub hits: Vec<SearchResultHit>,
     /// The query that produced these results (for display).
     pub query: String,
+    /// Whether retrieval degraded to keyword-only (the tenant's AI search budget
+    /// was reached, or the embed/rerank backend was unavailable). When `true`,
+    /// the template shows a small "basic results" notice (P14-T5/P14-T13).
+    pub degraded: bool,
 }
 
 // ── Document detail page types (P6-T7) ────────────────────────────────────────────
@@ -536,8 +544,37 @@ pub(crate) struct DashboardPage {
     pub daily_chart_json: String,
     /// Recent activity feed entries (up to 20).
     pub activity_feed: Vec<ActivityFeedEntry>,
+    /// Per-user token-usage breakdown for the current month (P14-T13).
+    /// Empty when there is no attributed usage yet.
+    pub per_user_usage: Vec<UserUsageRow>,
+    /// Non-blocking approaching-limit banners (storage + tokens, P14-T13).
+    /// Empty for grandfathered/unlimited tenants or when below the warn threshold.
+    pub limit_warnings: Vec<LimitWarningBanner>,
     /// Error message (empty when none).
     pub error: String,
+}
+
+/// A single per-user row in the dashboard usage breakdown (P14-T13).
+#[derive(Debug, Clone)]
+pub(crate) struct UserUsageRow {
+    /// Display label: the user's email, or "System" for the no-user bucket.
+    pub label: String,
+    /// Compact token total (e.g. "12.5K").
+    pub tokens_display: String,
+    /// Whether this is the NULL/system bucket (rendered with a muted style).
+    pub is_system: bool,
+}
+
+/// A non-blocking approaching-limit banner shown on the dashboard (P14-T13).
+///
+/// Rendered only for tenants with a finite cap whose usage is at/above the warn
+/// threshold. Grandfathered/unlimited tenants produce none.
+#[derive(Debug, Clone)]
+pub(crate) struct LimitWarningBanner {
+    /// The full user-facing message (e.g. "You've used 85% of your monthly AI budget.").
+    pub message: String,
+    /// Severity: `"warn"` (>=80%, amber) or `"atcap"` (>=100%, red). Drives styling.
+    pub severity: String,
 }
 
 /// A single entry in the dashboard activity feed.

@@ -21,8 +21,12 @@ use axum::response::{Html, IntoResponse, Response};
 use crate::AppState;
 use crate::AuthUser;
 
-use super::handlers_account::{plan_display_name, quota_bar};
-use super::templates::{ActivityFeedEntry, DailyChartPoint, DashboardPage};
+use kb_core::quota::{UsageWarning, usage_warning};
+
+use super::handlers_account::{format_tokens, plan_display_name, quota_bar};
+use super::templates::{
+    ActivityFeedEntry, DailyChartPoint, DashboardPage, LimitWarningBanner, UserUsageRow,
+};
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -74,6 +78,53 @@ fn activity_kind_css(kind: &str) -> &str {
     }
 }
 
+/// Build a non-blocking approaching-limit banner for one finite resource
+/// (P14-T13). Returns `None` when the tenant has no finite cap (grandfathered /
+/// unlimited) or is below the warn threshold — those render nothing.
+///
+/// `noun` is the human-readable resource phrase used in the message, e.g.
+/// `"monthly AI budget"` or `"storage"`. `pct` is the already-computed usage
+/// percentage (capped 0–100) for display.
+fn build_limit_warning(
+    noun: &str,
+    used: i64,
+    cap: Option<i64>,
+    pct: u8,
+) -> Option<LimitWarningBanner> {
+    match usage_warning(used, cap) {
+        UsageWarning::None => None,
+        UsageWarning::Warn => Some(LimitWarningBanner {
+            message: format!("You've used {pct}% of your {noun}."),
+            severity: "warn".into(),
+        }),
+        UsageWarning::AtCap => Some(LimitWarningBanner {
+            message: format!(
+                "You've reached your {noun} limit. New activity may be blocked until it resets or you upgrade."
+            ),
+            severity: "atcap".into(),
+        }),
+    }
+}
+
+/// Map a store-layer per-user usage row to a display row (P14-T13).
+///
+/// The NULL/system bucket (background jobs, query embeddings) is labelled
+/// "System"; otherwise the user's email is shown (falling back to a `user #id`
+/// label if the email is missing, e.g. a since-deleted user).
+fn user_usage_row(row: &kb_store::UserTokenUsage) -> UserUsageRow {
+    let is_system = row.user_id.is_none();
+    let label = match (&row.email, row.user_id) {
+        (Some(email), _) => email.clone(),
+        (None, Some(id)) => format!("user #{id}"),
+        (None, None) => "System".into(),
+    };
+    UserUsageRow {
+        label,
+        tokens_display: format_tokens(row.total_tokens),
+        is_system,
+    }
+}
+
 // ── Handler ────────────────────────────────────────────────────────────────────
 
 /// `GET /dashboard` — the usage dashboard page.
@@ -108,18 +159,28 @@ pub async fn dashboard_page(
         Ok(Some(b)) => plan_display_name(b),
         _ => "Free".into(),
     };
-    let storage_limit = billing
-        .as_ref()
-        .ok()
-        .and_then(|b| b.as_ref())
-        .and_then(|b| b.plan.as_ref())
-        .map(|p| p.quota_bytes);
-    let token_limit = billing
-        .as_ref()
-        .ok()
-        .and_then(|b| b.as_ref())
-        .and_then(|b| b.plan.as_ref())
-        .and_then(|p| p.token_budget);
+    // Effective caps (admin override > plan > unlimited). These are what the
+    // warning banners measure against, so an admin shrink/grant is honoured
+    // (P14-T13). Fall back to plan-only limits if the resolve fails.
+    let (storage_limit, token_limit) = match state
+        .pg_store
+        .resolve_effective_quotas(tenant_id)
+        .await
+    {
+        Ok((eff_bytes, eff_tokens, _plan_code, _upsell)) => (eff_bytes, eff_tokens),
+        Err(e) => {
+            tracing::warn!(error = %e, tenant_id, "failed to resolve effective quotas for dashboard");
+            let plan = billing
+                .as_ref()
+                .ok()
+                .and_then(|b| b.as_ref())
+                .and_then(|b| b.plan.as_ref());
+            (
+                plan.map(|p| p.quota_bytes),
+                plan.and_then(|p| p.token_budget),
+            )
+        }
+    };
 
     // ── Quota bars ───────────────────────────────────────────────────────
     let (storage_used, token_used) = {
@@ -191,6 +252,34 @@ pub async fn dashboard_page(
         })
         .collect();
 
+    // ── Per-user usage breakdown (P14-T13) ───────────────────────────────
+    let per_user_usage = state
+        .pg_store
+        .get_monthly_token_usage_by_user(tenant_id)
+        .await
+        .unwrap_or_default()
+        .iter()
+        .map(user_usage_row)
+        .collect();
+
+    // ── Approaching-limit warnings (P14-T13) ─────────────────────────────
+    // Non-blocking. Only finite caps (plan or admin override) produce a banner;
+    // grandfathered/unlimited tenants (None cap) produce nothing.
+    let mut limit_warnings = Vec::new();
+    if let Some(w) = build_limit_warning(
+        "monthly AI budget",
+        token_used,
+        token_limit,
+        token_bar.percent,
+    ) {
+        limit_warnings.push(w);
+    }
+    if let Some(w) =
+        build_limit_warning("storage", storage_used, storage_limit, storage_bar.percent)
+    {
+        limit_warnings.push(w);
+    }
+
     let page = DashboardPage {
         email_verified: auth_user.email_verified,
         tenant_name,
@@ -203,6 +292,8 @@ pub async fn dashboard_page(
         tag_count,
         daily_chart_json,
         activity_feed,
+        per_user_usage,
+        limit_warnings,
         error: String::new(),
     };
 
@@ -281,6 +372,84 @@ mod tests {
         assert!(css.contains("gray"));
     }
 
+    // ── build_limit_warning (P14-T13) ────────────────────────────────────────
+
+    #[test]
+    fn build_limit_warning_unlimited_is_none() {
+        // No finite cap → no banner, even at huge usage.
+        assert!(build_limit_warning("monthly AI budget", 1_000_000, None, 0).is_none());
+    }
+
+    #[test]
+    fn build_limit_warning_below_threshold_is_none() {
+        // 50% → below the 80% warn threshold.
+        assert!(build_limit_warning("storage", 50, Some(100), 50).is_none());
+    }
+
+    #[test]
+    fn build_limit_warning_warn_band() {
+        let banner =
+            build_limit_warning("monthly AI budget", 85, Some(100), 85).expect("warn banner");
+        assert_eq!(banner.severity, "warn");
+        assert!(banner.message.contains("85%"));
+        assert!(banner.message.contains("monthly AI budget"));
+    }
+
+    #[test]
+    fn build_limit_warning_at_cap() {
+        let banner = build_limit_warning("storage", 100, Some(100), 100).expect("atcap banner");
+        assert_eq!(banner.severity, "atcap");
+        assert!(banner.message.contains("storage"));
+        assert!(banner.message.to_lowercase().contains("limit"));
+    }
+
+    #[test]
+    fn build_limit_warning_over_cap_is_atcap() {
+        let banner = build_limit_warning("storage", 150, Some(100), 100).expect("atcap banner");
+        assert_eq!(banner.severity, "atcap");
+    }
+
+    // ── user_usage_row (P14-T13) ─────────────────────────────────────────────
+
+    #[test]
+    fn user_usage_row_with_email() {
+        let row = kb_store::UserTokenUsage {
+            user_id: Some(7),
+            email: Some("bob@example.com".into()),
+            total_tokens: 12_500,
+        };
+        let out = user_usage_row(&row);
+        assert_eq!(out.label, "bob@example.com");
+        assert_eq!(out.tokens_display, "12.5K");
+        assert!(!out.is_system);
+    }
+
+    #[test]
+    fn user_usage_row_system_bucket() {
+        let row = kb_store::UserTokenUsage {
+            user_id: None,
+            email: None,
+            total_tokens: 300,
+        };
+        let out = user_usage_row(&row);
+        assert_eq!(out.label, "System");
+        assert_eq!(out.tokens_display, "300");
+        assert!(out.is_system);
+    }
+
+    #[test]
+    fn user_usage_row_deleted_user_falls_back_to_id() {
+        // A user_id with no joined email (since-deleted user) → "user #id" label.
+        let row = kb_store::UserTokenUsage {
+            user_id: Some(42),
+            email: None,
+            total_tokens: 5,
+        };
+        let out = user_usage_row(&row);
+        assert_eq!(out.label, "user #42");
+        assert!(!out.is_system);
+    }
+
     // ── Template rendering ───────────────────────────────────────────────────
 
     #[test]
@@ -320,10 +489,28 @@ mod tests {
                     kind_css: "bg-green-100 text-green-800".into(),
                 },
             ],
+            per_user_usage: vec![
+                UserUsageRow {
+                    label: "alice@example.com".into(),
+                    tokens_display: "12.5K".into(),
+                    is_system: false,
+                },
+                UserUsageRow {
+                    label: "System".into(),
+                    tokens_display: "300".into(),
+                    is_system: true,
+                },
+            ],
+            limit_warnings: vec![],
             error: String::new(),
         };
         let html = page.render().expect("dashboard template must render");
         assert!(html.contains("My Workspace"));
+        // Per-user breakdown renders the email, the system bucket, and the section title.
+        assert!(html.contains("Usage by User"));
+        assert!(html.contains("alice@example.com"));
+        assert!(html.contains("12.5K"));
+        assert!(html.contains("System"));
         assert!(html.contains("Pro"));
         assert!(html.contains("2.5 GB"));
         assert!(html.contains("250.0K"));
@@ -359,10 +546,14 @@ mod tests {
             tag_count: 0,
             daily_chart_json: r#"[{"date":"2026-06-01","prompt":100,"completion":50}]"#.into(),
             activity_feed: vec![],
+            per_user_usage: vec![],
+            limit_warnings: vec![],
             error: String::new(),
         };
         let html = page.render().expect("dashboard template must render");
         assert!(html.contains("Verify your email"));
+        // Empty per-user usage shows the friendly placeholder.
+        assert!(html.contains("No attributed AI usage"));
         assert!(html.contains("Free"));
         assert!(html.contains("$0.00"));
     }
@@ -391,12 +582,62 @@ mod tests {
             tag_count: 0,
             daily_chart_json: "[]".into(),
             activity_feed: vec![],
+            per_user_usage: vec![],
+            limit_warnings: vec![],
             error: "Failed to load some data".into(),
         };
         let html = page
             .render()
             .expect("dashboard template must render with error");
         assert!(html.contains("Failed to load some data"));
+    }
+
+    #[test]
+    fn dashboard_page_template_renders_limit_warnings() {
+        let page = DashboardPage {
+            email_verified: true,
+            tenant_name: "T".into(),
+            plan_name: "Free".into(),
+            storage_bar: QuotaBar {
+                label: "Storage".into(),
+                used_display: "9.0 MB".into(),
+                limit_display: "10.0 MB".into(),
+                percent: 90,
+            },
+            token_bar: QuotaBar {
+                label: "Tokens".into(),
+                used_display: "10.0K".into(),
+                limit_display: "10.0K".into(),
+                percent: 100,
+            },
+            spend_display: "$0.00".into(),
+            document_count: 0,
+            file_count: 0,
+            tag_count: 0,
+            daily_chart_json: "[]".into(),
+            activity_feed: vec![],
+            per_user_usage: vec![],
+            limit_warnings: vec![
+                LimitWarningBanner {
+                    message: "You've reached your monthly AI budget limit.".into(),
+                    severity: "atcap".into(),
+                },
+                LimitWarningBanner {
+                    message: "You've used 90% of your storage.".into(),
+                    severity: "warn".into(),
+                },
+            ],
+            error: String::new(),
+        };
+        let html = page.render().expect("render");
+        // At-cap banner → red styling + its message (apostrophe is HTML-escaped by Askama).
+        assert!(html.contains("reached your monthly AI budget limit."));
+        assert!(html.contains("bg-red-50"));
+        // Warn banner → amber styling + its message.
+        assert!(html.contains("used 90% of your storage."));
+        assert!(html.contains("bg-amber-50"));
+        // Both banners link to the plan page.
+        assert!(html.contains("/account/plan"));
     }
 
     #[test]
@@ -423,6 +664,8 @@ mod tests {
             tag_count: 0,
             daily_chart_json: "[]".into(),
             activity_feed: vec![],
+            per_user_usage: vec![],
+            limit_warnings: vec![],
             error: String::new(),
         };
         let html = page.render().expect("render");
@@ -456,6 +699,8 @@ mod tests {
             tag_count: 2,
             daily_chart_json: "[]".into(),
             activity_feed: vec![],
+            per_user_usage: vec![],
+            limit_warnings: vec![],
             error: String::new(),
         };
         let html = page.render().expect("render");

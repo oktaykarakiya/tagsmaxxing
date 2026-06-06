@@ -123,6 +123,67 @@ impl QuotaError {
     }
 }
 
+/// A non-blocking, user-facing warning about how close a tenant is to a finite
+/// usage cap (storage bytes or monthly token budget).
+///
+/// Used by the dashboard (plan §15/§29, P14-T13) to render a gentle banner as a
+/// tenant approaches a limit. It is purely advisory — enforcement is handled
+/// separately by [`check_bytes_quota`] / [`check_token_quota`]. Tenants with no
+/// finite cap (grandfathered / unlimited plans) always resolve to
+/// [`UsageWarning::None`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UsageWarning {
+    /// Below the warning threshold (or unlimited) — render nothing.
+    None,
+    /// At or above the warning threshold (default 80%) but below the cap —
+    /// render a gentle "approaching limit" banner.
+    Warn,
+    /// At or above the cap (100%) — render an "at capacity" banner.
+    AtCap,
+}
+
+/// The percentage of a finite cap at or above which a [`UsageWarning::Warn`] is
+/// raised. Below this, no banner is shown.
+pub const USAGE_WARN_PERCENT: u8 = 80;
+
+/// Classify how close `used` is to an optional finite `cap`, for a non-blocking
+/// dashboard warning banner (plan §15/§29, P14-T13).
+///
+/// Resolution (pure, I/O-free):
+/// - `cap == None` → [`UsageWarning::None`] (grandfathered / unlimited — never warn).
+/// - `cap == Some(0)` → a zero cap is treated as unlimited here (no meaningful
+///   percentage; enforcement, not a warning banner, governs a true zero budget),
+///   so [`UsageWarning::None`].
+/// - `used >= cap` → [`UsageWarning::AtCap`].
+/// - `used * 100 >= cap * USAGE_WARN_PERCENT` → [`UsageWarning::Warn`].
+/// - otherwise → [`UsageWarning::None`].
+///
+/// Negative `used` is clamped to `0`. The comparison uses widened `i128`
+/// arithmetic so it never overflows for any `i64` inputs.
+#[inline]
+pub fn usage_warning(used: i64, cap: Option<i64>) -> UsageWarning {
+    let Some(cap) = cap else {
+        return UsageWarning::None;
+    };
+    if cap <= 0 {
+        // No finite, positive cap to measure against — treat as unlimited for
+        // banner purposes (a genuine 0 budget is surfaced by enforcement, not here).
+        return UsageWarning::None;
+    }
+    let used = used.max(0);
+    if used >= cap {
+        return UsageWarning::AtCap;
+    }
+    // used / cap >= WARN/100  ⇔  used * 100 >= cap * WARN  (widened to avoid overflow).
+    let lhs = i128::from(used) * 100;
+    let rhs = i128::from(cap) * i128::from(USAGE_WARN_PERCENT);
+    if lhs >= rhs {
+        UsageWarning::Warn
+    } else {
+        UsageWarning::None
+    }
+}
+
 /// Resolve the effective storage quota for a tenant, applying admin override precedence.
 ///
 /// When `override_quota` is `Some`, it takes precedence over `plan_quota`.
@@ -568,6 +629,88 @@ mod tests {
     fn resolve_override_zero_is_valid_override() {
         // Admin can set override to 0 (effectively blocking uploads).
         assert_eq!(resolve_effective_quota(Some(100_000_000), Some(0)), Some(0));
+    }
+
+    // ── usage_warning (P14-T13) ──────────────────────────────────────────
+
+    #[test]
+    fn usage_warning_unlimited_is_none() {
+        // No cap → never warn, regardless of usage.
+        assert_eq!(usage_warning(1_000_000_000, None), UsageWarning::None);
+    }
+
+    #[test]
+    fn usage_warning_below_threshold_is_none() {
+        // 79% of 100 → below the 80% threshold.
+        assert_eq!(usage_warning(79, Some(100)), UsageWarning::None);
+        assert_eq!(usage_warning(0, Some(100)), UsageWarning::None);
+    }
+
+    #[test]
+    fn usage_warning_at_threshold_warns() {
+        // Exactly 80% → Warn (inclusive lower bound).
+        assert_eq!(usage_warning(80, Some(100)), UsageWarning::Warn);
+    }
+
+    #[test]
+    fn usage_warning_between_threshold_and_cap_warns() {
+        // 80..=99% → Warn.
+        assert_eq!(usage_warning(85, Some(100)), UsageWarning::Warn);
+        assert_eq!(usage_warning(99, Some(100)), UsageWarning::Warn);
+    }
+
+    #[test]
+    fn usage_warning_at_cap_is_atcap() {
+        // Exactly at the cap → AtCap.
+        assert_eq!(usage_warning(100, Some(100)), UsageWarning::AtCap);
+    }
+
+    #[test]
+    fn usage_warning_over_cap_is_atcap() {
+        // Over the cap (post-downgrade or bounded overshoot) → AtCap.
+        assert_eq!(usage_warning(150, Some(100)), UsageWarning::AtCap);
+    }
+
+    #[test]
+    fn usage_warning_zero_cap_is_none() {
+        // A zero cap has no meaningful percentage; enforcement governs it, so no banner.
+        assert_eq!(usage_warning(0, Some(0)), UsageWarning::None);
+        assert_eq!(usage_warning(5, Some(0)), UsageWarning::None);
+    }
+
+    #[test]
+    fn usage_warning_negative_used_clamped_to_none() {
+        // Defensive: negative usage is clamped to 0 → None.
+        assert_eq!(usage_warning(-50, Some(100)), UsageWarning::None);
+    }
+
+    #[test]
+    fn usage_warning_large_values_no_overflow() {
+        // Near-i64::MAX values must not overflow the *100 widening.
+        let cap = i64::MAX;
+        assert_eq!(usage_warning(0, Some(cap)), UsageWarning::None);
+        assert_eq!(usage_warning(cap, Some(cap)), UsageWarning::AtCap);
+        // ~81% of i64::MAX → Warn (well above the 80% threshold; the *100 widening
+        // must not overflow). A value just below the cap stays under AtCap.
+        let eighty_one = ((i128::from(cap) * 81) / 100) as i64;
+        assert_eq!(usage_warning(eighty_one, Some(cap)), UsageWarning::Warn);
+    }
+
+    #[test]
+    fn usage_warning_realistic_token_budget() {
+        // 10K-token free budget: 7_999 below, 8_000 warn, 10_000 at-cap.
+        assert_eq!(usage_warning(7_999, Some(10_000)), UsageWarning::None);
+        assert_eq!(usage_warning(8_000, Some(10_000)), UsageWarning::Warn);
+        assert_eq!(usage_warning(10_000, Some(10_000)), UsageWarning::AtCap);
+    }
+
+    #[test]
+    fn usage_warning_is_copy_and_eq() {
+        let w = usage_warning(90, Some(100));
+        let copy = w;
+        assert_eq!(w, copy);
+        assert_eq!(w, UsageWarning::Warn);
+        assert_ne!(UsageWarning::None, UsageWarning::AtCap);
     }
 
     // ── check_user_limit ─────────────────────────────────────────────────

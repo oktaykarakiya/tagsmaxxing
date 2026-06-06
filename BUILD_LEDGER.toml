@@ -1570,9 +1570,9 @@ description = "D2: in-app per-user view + approaching-limit warnings in handlers
 depends_on = ["P14-T1", "P14-T4"]
 plan_sections = ["15", "29"]
 acceptance = "dashboard shows per-user usage + approaching-limit warning; degraded-search banner; unit/handler tests; just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "Pure threshold logic kb_core::quota::usage_warning(used, Option<cap>) -> UsageWarning{None,Warn(>=80%),AtCap(>=100%)} (USAGE_WARN_PERCENT=80, i128-widened, unlimited/zero-cap/negative all None); 11 unit tests for <80/80-99/>=100/unlimited/overflow. Per-user query PgStore::get_monthly_token_usage_by_user (dashboard.rs): current-UTC-month SUM(prompt+completion) GROUP BY user_id, LEFT JOIN users for email, INCLUDES the NULL/system bucket, ORDER BY total DESC; +UserTokenUsage type (exported). Dashboard handler now resolves EFFECTIVE caps (resolve_effective_quotas: admin-override > plan > unlimited) and renders a per-user list + non-blocking warn/at-cap banners (build_limit_warning, user_usage_row — both unit-tested; system bucket→'System', deleted user→'user #id'); grandfathered/unlimited show nothing. Degraded-search notice: SearchResultsPartial/SearchPage gain `degraded` (set from SearchMode::Keyword in web search_submit); search_results.html shows 'Basic results — AI search budget reached' (B2 X-Search-Mode header retained). Templates edited: dashboard.html, search_results.html, search.html only (base.html/_macros.html untouched per concurrent-edit constraint; banners inlined). Tests: +usage_warning(11)/build_limit_warning(5)/user_usage_row(3)/dashboard render(per-user+warnings)/search degraded render(2) + 1 store error-before-connect + 1 #[ignore] pg dashboard_pg.rs (2 cases: grouping+system-bucket+ordering, month-scoping). just ci green (cov 76.73% >=76; one transient kb-scheduler::health cov-instrumentation flake cleared on rerun, passes in isolation, unrelated to this task)."
 
 [[task]]
 id = "P14-T14"

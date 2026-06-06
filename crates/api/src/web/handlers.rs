@@ -429,6 +429,7 @@ pub async fn search_page(State(state): State<Arc<AppState>>) -> Result<Response,
         kind_filters,
         selected_tags: String::new(),
         hits: Vec::new(),
+        degraded: false,
     };
 
     let mut resp = render_ok(&page);
@@ -460,6 +461,7 @@ pub async fn search_submit(
         let partial = SearchResultsPartial {
             hits: Vec::new(),
             query: form.q,
+            degraded: false,
         };
         return render_template(&partial, status);
     }
@@ -471,6 +473,7 @@ pub async fn search_submit(
         let partial = SearchResultsPartial {
             hits: Vec::new(),
             query: query_text,
+            degraded: false,
         };
         return render_ok(&partial);
     }
@@ -483,6 +486,7 @@ pub async fn search_submit(
             let partial = SearchResultsPartial {
                 hits: Vec::new(),
                 query: query_text,
+                degraded: false,
             };
             return render_template(&partial, StatusCode::INTERNAL_SERVER_ERROR);
         }
@@ -561,6 +565,7 @@ pub async fn search_submit(
             let partial = SearchResultsPartial {
                 hits: Vec::new(),
                 query: query_text,
+                degraded: false,
             };
             return render_template(&partial, StatusCode::INTERNAL_SERVER_ERROR);
         }
@@ -580,9 +585,14 @@ pub async fn search_submit(
         })
         .collect();
 
+    // Render an in-page "basic results" notice when retrieval degraded to keyword-only
+    // (AI search budget reached / backend down), in addition to the X-Search-Mode header
+    // for HTMX/JS consumers (P14-T5/P14-T13).
+    let degraded = matches!(mode, kb_pipeline::SearchMode::Keyword);
     let partial = SearchResultsPartial {
         hits: result_hits,
         query: query_text,
+        degraded,
     };
 
     // Signal the degrade/hybrid mode to the client. The header lets the UI show a "basic
@@ -1600,6 +1610,68 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 
+    // ── Degraded-search notice (P14-T5/P14-T13) ─────────────────────────────
+
+    /// When `degraded` is true, the results fragment renders the "Basic results"
+    /// notice — both with hits and on the empty-results branch.
+    #[test]
+    fn search_results_partial_renders_degraded_notice() {
+        // With hits.
+        let with_hits = SearchResultsPartial {
+            hits: vec![SearchResultHit {
+                document_id: 1,
+                score: 0.5,
+                title: Some("Doc".into()),
+                snippet: "snip".into(),
+                file_id: 1,
+                page_no: None,
+                ts_offset: None,
+                kind: None,
+            }],
+            query: "q".into(),
+            degraded: true,
+        };
+        let html = with_hits.render().expect("render");
+        assert!(
+            html.contains("Basic results") && html.contains("AI search budget reached"),
+            "degraded fragment must show the basic-results notice; got: {html}"
+        );
+
+        // Empty results + degraded → still shows the notice above the empty state.
+        let empty = SearchResultsPartial {
+            hits: vec![],
+            query: "q".into(),
+            degraded: true,
+        };
+        let html = empty.render().expect("render");
+        assert!(html.contains("Basic results"));
+        assert!(html.contains("No results found"));
+    }
+
+    /// When `degraded` is false (the normal hybrid path), no notice is rendered.
+    #[test]
+    fn search_results_partial_hides_notice_when_not_degraded() {
+        let partial = SearchResultsPartial {
+            hits: vec![SearchResultHit {
+                document_id: 1,
+                score: 0.9,
+                title: Some("Doc".into()),
+                snippet: "snip".into(),
+                file_id: 1,
+                page_no: None,
+                ts_offset: None,
+                kind: None,
+            }],
+            query: "q".into(),
+            degraded: false,
+        };
+        let html = partial.render().expect("render");
+        assert!(
+            !html.contains("Basic results"),
+            "hybrid fragment must NOT show the degraded notice"
+        );
+    }
+
     #[tokio::test]
     async fn search_submit_with_results_returns_fragment() {
         let hits = vec![
@@ -2359,6 +2431,7 @@ mod tests {
             kind_filters: build_kind_filters(&[]),
             selected_tags: String::new(),
             hits: Vec::new(),
+            degraded: false,
         };
         let html = page.render().expect("search template must render");
 
