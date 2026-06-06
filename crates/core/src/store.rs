@@ -41,4 +41,23 @@ pub trait Store: Send + Sync {
         query: &Query,
         query_embedding: &[f32],
     ) -> anyhow::Result<Vec<Hit>>;
+
+    /// Run **keyword-only** (lexical) search — the RLS-safe degrade path for when a
+    /// tenant is over its monthly token budget or the embed/rerank backend is
+    /// unavailable (plan §8, §13, §29; P14-T5).
+    ///
+    /// Unlike [`Store::hybrid_search`], this takes **no query embedding**: it runs only
+    /// the lexical (`ts_rank` on `tsv`) query, rolls the matching chunks up to documents,
+    /// and truncates to `query.top_k`. There is no vector query, no RRF fusion, and no
+    /// rerank — so it requires no AI backend and is never metered.
+    ///
+    /// `tenant_id` is required for the same reason as [`Store::hybrid_search`]: the
+    /// implementation MUST set the `app.current_tenant` Postgres GUC (inside the same
+    /// tenant transaction) before querying, so Row-Level Security scopes results to this
+    /// tenant exactly like hybrid search (plan §13). It applies the identical
+    /// kind/tag/date filters carried by `query`.
+    ///
+    /// # Errors
+    /// Returns an error if the database operation fails.
+    async fn keyword_search(&self, tenant_id: i64, query: &Query) -> anyhow::Result<Vec<Hit>>;
 }

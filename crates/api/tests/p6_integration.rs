@@ -355,7 +355,7 @@ async fn e2e_cli_ingest_and_search_roundtrip() {
 
     // ── 3. Search: use the retrieval pipeline to find the document ────────────
     let retrieval = build_retrieval_pipeline(&infra);
-    let hits = retrieval
+    let (hits, _mode) = retrieval
         .retrieve(
             infra.tenant_a,
             None,
@@ -365,6 +365,7 @@ async fn e2e_cli_ingest_and_search_roundtrip() {
                 top_k: 10,
             },
             false,
+            false, // degrade
         )
         .await
         .unwrap();

@@ -7,13 +7,18 @@ use std::sync::Arc;
 
 use axum::Extension;
 use axum::extract::{Query, State};
-use axum::http::StatusCode;
-use axum::response::Json;
+use axum::http::{HeaderValue, StatusCode};
+use axum::response::{IntoResponse, Json, Response};
 use kb_core::query::{Query as SearchQuery, QueryFilters};
+use kb_pipeline::SearchMode;
 use serde::{Deserialize, Serialize};
 
 use crate::AppState;
 use crate::AuthUser;
+
+/// Response header naming which search path produced the results (P14-T5):
+/// `hybrid` (full AI path) or `keyword` (degraded lexical-only path).
+const SEARCH_MODE_HEADER: &str = "X-Search-Mode";
 
 // ── Request / response types ───────────────────────────────────────────────────
 
@@ -72,6 +77,10 @@ pub struct SearchResponse {
     query: String,
     /// Number of results returned.
     count: usize,
+    /// Which search path produced these results: `"hybrid"` (full AI path) or
+    /// `"keyword"` (degraded lexical-only path — tenant over its AI budget or the
+    /// embed/rerank backend was unavailable). Mirrors the `X-Search-Mode` header (P14-T5).
+    mode: String,
 }
 
 /// Error response.
@@ -102,16 +111,17 @@ pub async fn search(
     State(state): State<Arc<AppState>>,
     Extension(auth_user): Extension<AuthUser>,
     Query(params): Query<SearchParams>,
-) -> Result<(StatusCode, Json<SearchResponse>), (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
     // ── Handle empty query ───────────────────────────────────────────────────
     if params.q.trim().is_empty() {
-        return Ok((
-            StatusCode::OK,
-            Json(SearchResponse {
+        return Ok(search_ok(
+            SearchResponse {
                 hits: Vec::new(),
                 query: params.q.clone(),
                 count: 0,
-            }),
+                mode: SearchMode::Hybrid.as_str().to_string(),
+            },
+            SearchMode::Hybrid,
         ));
     }
 
@@ -152,6 +162,15 @@ pub async fn search(
         internal_error(anyhow::anyhow!("search: retrieval pipeline not configured"))
     })?;
 
+    // ── Budget gate → degrade (NOT reject) ───────────────────────────────────
+    // If the tenant has already met/exceeded its monthly token budget, search must NOT
+    // 429 — it degrades to the keyword-only (lexical) path (P14-T5).
+    let budget = state
+        .pg_store
+        .check_plan_token_budget_rollup(auth_user.tenant_id)
+        .await;
+    let degrade = budget_check_forces_degrade(budget);
+
     // ── Build query + run pipeline ───────────────────────────────────────────
     let query = SearchQuery {
         text: params.q.clone(),
@@ -163,8 +182,14 @@ pub async fn search(
         top_k: limit,
     };
 
-    let hits = retrieval
-        .retrieve(auth_user.tenant_id, Some(auth_user.user_id), &query, false)
+    let (hits, mode) = retrieval
+        .retrieve(
+            auth_user.tenant_id,
+            Some(auth_user.user_id),
+            &query,
+            false,
+            degrade,
+        )
         .await
         .map_err(|e| {
             tracing::warn!(error = %e, "search failed");
@@ -186,14 +211,46 @@ pub async fn search(
         })
         .collect();
 
-    Ok((
-        StatusCode::OK,
-        Json(SearchResponse {
+    Ok(search_ok(
+        SearchResponse {
             hits: response_hits,
             query: params.q,
             count,
-        }),
+            mode: mode.as_str().to_string(),
+        },
+        mode,
     ))
+}
+
+/// Build a `200 OK` JSON search response carrying the `X-Search-Mode` header (P14-T5).
+fn search_ok(body: SearchResponse, mode: SearchMode) -> Response {
+    let mut resp = (StatusCode::OK, Json(body)).into_response();
+    resp.headers_mut()
+        .insert(SEARCH_MODE_HEADER, HeaderValue::from_static(mode.as_str()));
+    resp
+}
+
+/// Decide whether the monthly-token-budget check should force the keyword degrade path
+/// (B2, P14-T5). Search **never rejects** on budget — over-budget tenants degrade.
+///
+/// - `Ok(())` → budget OK → `false` (run the full AI path).
+/// - `Err` carrying a [`QuotaError`](kb_core::quota::QuotaError) (the over-budget signal
+///   from [`check_plan_token_budget_rollup`](kb_store::PgStore::check_plan_token_budget_rollup))
+///   → records a `search_tokens` quota rejection and returns `true` (degrade, NOT 429).
+/// - Any other `Err` (e.g. a transient DB error) → `false`, failing safe to the full path;
+///   the only consequence of misjudging this is which (equally tenant-isolated) path runs.
+pub(crate) fn budget_check_forces_degrade(budget: anyhow::Result<()>) -> bool {
+    match budget {
+        Ok(()) => false,
+        Err(e) if e.downcast_ref::<kb_core::quota::QuotaError>().is_some() => {
+            kb_metrics::record_quota_rejection("search_tokens");
+            true
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "search: token-budget check failed; using full path");
+            false
+        }
+    }
 }
 
 // ── Error helpers ──────────────────────────────────────────────────────────────
@@ -265,16 +322,23 @@ mod tests {
     #[async_trait]
     impl Store for MockStore {
         async fn upsert_file(&self, _rec: &FileRecord) -> anyhow::Result<i64> {
-            anyhow::bail!("mock: only hybrid_search is used")
+            anyhow::bail!("mock: only search is used")
         }
         async fn upsert_chunks(&self, _file_id: i64, _chunks: &[Chunk]) -> anyhow::Result<()> {
-            anyhow::bail!("mock: only hybrid_search is used")
+            anyhow::bail!("mock: only search is used")
         }
         async fn hybrid_search(
             &self,
             _tenant_id: i64,
             _query: &Query,
             _query_embedding: &[f32],
+        ) -> anyhow::Result<Vec<Hit>> {
+            Ok(self.hits.to_vec())
+        }
+        async fn keyword_search(
+            &self,
+            _tenant_id: i64,
+            _query: &Query,
         ) -> anyhow::Result<Vec<Hit>> {
             Ok(self.hits.to_vec())
         }
@@ -358,6 +422,28 @@ mod tests {
 
         let pipeline = RetrievalPipeline::new(embedder, store, reranker);
         (pipeline, mock)
+    }
+
+    /// Build a pipeline whose embedder has NO backends, so the full path's `embed_query`
+    /// fails with a backend-unavailable error and `retrieve` falls back to keyword-only.
+    /// The `MockStore` returns `hits` from `keyword_search`. No mock HTTP server needed.
+    fn build_degrading_pipeline(hits: Vec<Hit>) -> RetrievalPipeline {
+        use kb_llm::LlamaClient;
+        use kb_scheduler::Pool;
+        use reqwest::Client;
+
+        let pool = Pool::new(vec![], Duration::from_millis(50));
+        let llm = Arc::new(LlamaClient::new(
+            pool,
+            Client::new(),
+            0,
+            0,
+            Duration::from_millis(50),
+        ));
+        let embedder = Arc::new(ChunkEmbedder::new(llm, "test-model".into(), 3));
+        let store: Arc<dyn Store> = Arc::new(MockStore::new(hits));
+        let reranker: Arc<dyn Reranker> = Arc::new(MockReranker::new(vec![]));
+        RetrievalPipeline::new(embedder, store, reranker)
     }
 
     fn test_state() -> Arc<AppState> {
@@ -489,6 +575,12 @@ mod tests {
 
         let response = router.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+        // Full AI path → hybrid mode is signalled in the header.
+        assert_eq!(
+            response.headers().get("X-Search-Mode").unwrap(),
+            "hybrid",
+            "successful AI search must report hybrid mode"
+        );
 
         let body = axum::body::to_bytes(response.into_body(), 4096)
             .await
@@ -497,11 +589,66 @@ mod tests {
 
         assert_eq!(result["count"], 2);
         assert_eq!(result["query"], "test query");
+        assert_eq!(result["mode"], "hybrid");
         assert_eq!(result["hits"][0]["document_id"], 10); // higher rerank score (0.95) first
         assert_eq!(result["hits"][1]["document_id"], 20);
         assert_eq!(result["hits"][0]["page_no"], 1);
 
         mock.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn degraded_search_returns_keyword_mode_not_429() {
+        // The embedder has no backends → the full path's embed fails → retrieve falls back
+        // to keyword-only. The handler must answer 200 with X-Search-Mode: keyword (search
+        // NEVER 429s — it degrades). This also covers the budget-degrade signalling shape,
+        // since both routes converge on SearchMode::Keyword.
+        let hits = vec![make_hit(5, 0.5, "lexical match", 50, 1)];
+        let pipeline = build_degrading_pipeline(hits);
+
+        let session_store: Arc<dyn SessionStore> = Arc::new(InMemorySessionStore::new());
+        let pg_store = Arc::new(PgStore::new("postgres://localhost/test?sslmode=disable"));
+        let state = Arc::new(
+            AppState::new(
+                session_store,
+                pg_store,
+                Some(Duration::from_secs(DEFAULT_SESSION_TTL_SECS)),
+                false,
+            )
+            .with_retrieval_pipeline(Arc::new(pipeline)),
+        );
+
+        let token = state
+            .session_store
+            .create(1, 42, UserRole::Member, true, Duration::from_secs(3600))
+            .await
+            .unwrap();
+        let router = search_router(state);
+
+        let request = axum::http::Request::builder()
+            .method(Method::GET)
+            .uri("/api/search?q=anything")
+            .header("Cookie", format!("__Host-session={token}"))
+            .body(Body::empty())
+            .unwrap();
+
+        let response = router.oneshot(request).await.unwrap();
+        // NOT 429 — search degrades, it does not reject.
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_ne!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            response.headers().get("X-Search-Mode").unwrap(),
+            "keyword",
+            "degraded search must report keyword mode"
+        );
+
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(result["mode"], "keyword");
+        assert_eq!(result["count"], 1);
+        assert_eq!(result["hits"][0]["document_id"], 5);
     }
 
     #[tokio::test]
@@ -673,6 +820,49 @@ mod tests {
         let (status, body) = internal_error(anyhow::anyhow!("pipeline error"));
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(body.error, "internal_error");
+    }
+
+    // ── Budget → degrade gate (B2, P14-T5) ───────────────────────────────────
+
+    #[test]
+    fn budget_ok_does_not_degrade() {
+        assert!(!budget_check_forces_degrade(Ok(())));
+    }
+
+    #[test]
+    fn budget_quota_error_forces_degrade() {
+        // An over-budget tenant surfaces a QuotaError::TokensExceeded → degrade (NOT 429).
+        let err = anyhow::Error::new(kb_core::quota::QuotaError::TokensExceeded {
+            current: 10_000,
+            additional: 1,
+            total: 10_001,
+            limit: 10_000,
+            plan_code: Some("free".into()),
+            upsell_plan_code: Some("pro".into()),
+        });
+        assert!(
+            budget_check_forces_degrade(Err(err)),
+            "over-budget tenant must degrade to keyword-only"
+        );
+    }
+
+    #[test]
+    fn budget_other_error_does_not_degrade() {
+        // A transient DB error is not a quota signal → fail safe to the full path.
+        let err = anyhow::anyhow!("database connection reset");
+        assert!(!budget_check_forces_degrade(Err(err)));
+    }
+
+    #[test]
+    fn search_mode_field_serializes() {
+        let resp = SearchResponse {
+            hits: Vec::new(),
+            query: "q".into(),
+            count: 0,
+            mode: SearchMode::Keyword.as_str().to_string(),
+        };
+        let v = serde_json::to_value(&resp).unwrap();
+        assert_eq!(v["mode"], "keyword");
     }
 
     // ── SearchParams deserialization tests ──────────────────────────────────

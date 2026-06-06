@@ -74,7 +74,7 @@ pub use restore_test::{
     build_check_constraint_query, build_row_count_query, check_backup_staleness, parse_row_counts,
     process_restore_test_job, run_restore_test, should_run_now,
 };
-pub use retrieval::RetrievalPipeline;
+pub use retrieval::{RetrievalPipeline, SearchMode};
 pub use tag_store::TagStore;
 pub use thumbnail::{
     FfmpegThumbnailer, ThumbnailConfig, ThumbnailGenerator, ThumbnailOutput, VideoThumbnailer,

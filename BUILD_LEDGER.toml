@@ -1482,9 +1482,9 @@ description = "B2: token budget on search -> RLS-safe keyword degrade. retrieve(
 depends_on = ["P14-T4"]
 plan_sections = ["8", "13", "29"]
 acceptance = "over-budget search returns keyword-only (not 500) with X-Search-Mode header; lexical path enforces tenant isolation (cross-tenant negative test passes); unit+integration tests; just ci green. CHECKPOINT: human review (tenant isolation + billing)."
-status = "todo"
+status = "done"
 checkpoint = true
-notes = ""
+notes = "CHECKPOINT APPROVED by user 2026-06-06. Store::keyword_search added (kb-core trait + PgStore). run_keyword_search opens the SAME begin_tenant_tx(app_pool, tenant_id) as run_hybrid_search (RLS via app.current_tenant under the NOBYPASSRLS kb_app role), reuses execute_keyword_query + identical push_filters (kinds/tags/dates), document_rollup + truncate(top_k) + same snippet decrypt (shared ranked_rows_to_chunk_hits helper); NO vector/RRF/rerank. RetrievalPipeline::retrieve gained degrade:bool + returns (Vec<Hit>, SearchMode{Hybrid,Keyword}); is_backend_unavailable falls back to keyword-only ONLY for transient LlmError (Scheduler/AllFailed/Http/AllCooldown) — config faults (e.g. dim mismatch) propagate. Handlers pre-check check_plan_token_budget_rollup → over-budget => degrade (search NEVER 429s); X-Search-Mode: keyword|hybrid header + JSON mode field; the keyword path makes no AI calls (unmetered). Cross-tenant negative tests (hybrid_search.rs::keyword_search_is_tenant_isolated_cross_tenant + cross_tenant_isolation_pg.rs::keyword_search_is_tenant_scoped) seed A+B with the same keyword and assert only-own-tenant both directions — PASS against real pgvector (Podman lane). 13 files. just ci green (cov 80.26%)."
 
 [[task]]
 id = "P14-T6"

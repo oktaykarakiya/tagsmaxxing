@@ -869,6 +869,19 @@ impl Store for PgStore {
     ) -> anyhow::Result<Vec<Hit>> {
         crate::hybrid_search::run_hybrid_search(self, tenant_id, query, query_embedding).await
     }
+
+    /// Keyword-only (lexical) search — the RLS-safe degrade path (plan §8, §29, P14-T5).
+    ///
+    /// Runs ONLY the lexical query inside the SAME `begin_tenant_tx` (so RLS scopes it to
+    /// `tenant_id` identically to [`hybrid_search`](Self::hybrid_search)), with the same
+    /// kind/tag/date filters, then rolls up to documents and truncates to `query.top_k`.
+    /// No embedding, no RRF, no rerank.
+    ///
+    /// # Errors
+    /// Returns an error if the database is not connected or the keyword query fails.
+    async fn keyword_search(&self, tenant_id: i64, query: &Query) -> anyhow::Result<Vec<Hit>> {
+        crate::hybrid_search::run_keyword_search(self, tenant_id, query).await
+    }
 }
 
 // ── Tag canonicalization methods (plan §6.5, P3-T3) ───────────────────────────

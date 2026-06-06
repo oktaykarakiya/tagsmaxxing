@@ -206,7 +206,7 @@ mod tests {
         let mut all_retrieved: Vec<Vec<i64>> = Vec::with_capacity(queries.len());
 
         for query in &queries {
-            let hits = pipeline
+            let (hits, _mode) = pipeline
                 .retrieve(
                     1, // tenant_id
                     None,
@@ -216,6 +216,7 @@ mod tests {
                         top_k: 10,
                     },
                     false,
+                    false, // degrade
                 )
                 .await
                 .unwrap();

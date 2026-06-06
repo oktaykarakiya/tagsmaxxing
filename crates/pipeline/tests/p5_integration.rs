@@ -362,7 +362,7 @@ async fn e2e_multi_tenant_ingest_and_search_isolation() {
 
     // ── Tenant A searches for "quantum" → finds own doc ────────────────────
     let retrieval = build_retrieval_pipeline(&infra);
-    let hits_a = retrieval
+    let (hits_a, _mode) = retrieval
         .retrieve(
             infra.tenant_a,
             None,
@@ -372,6 +372,7 @@ async fn e2e_multi_tenant_ingest_and_search_isolation() {
                 top_k: 10,
             },
             false,
+            false, // degrade
         )
         .await
         .unwrap();
@@ -390,7 +391,7 @@ async fn e2e_multi_tenant_ingest_and_search_isolation() {
     );
 
     // ── Tenant B searches for "ocean" → finds own doc ──────────────────────
-    let hits_b = retrieval
+    let (hits_b, _mode) = retrieval
         .retrieve(
             infra.tenant_b,
             None,
@@ -400,6 +401,7 @@ async fn e2e_multi_tenant_ingest_and_search_isolation() {
                 top_k: 10,
             },
             false,
+            false, // degrade
         )
         .await
         .unwrap();
@@ -415,7 +417,7 @@ async fn e2e_multi_tenant_ingest_and_search_isolation() {
     );
 
     // ── Cross-tenant: Tenant A searches for "ocean" → nothing ──────────────
-    let hits_a2 = retrieval
+    let (hits_a2, _mode) = retrieval
         .retrieve(
             infra.tenant_a,
             None,
@@ -425,6 +427,7 @@ async fn e2e_multi_tenant_ingest_and_search_isolation() {
                 top_k: 10,
             },
             false,
+            false, // degrade
         )
         .await
         .unwrap();

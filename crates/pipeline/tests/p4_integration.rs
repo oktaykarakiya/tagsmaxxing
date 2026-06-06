@@ -370,7 +370,7 @@ mod tests {
         let (pipeline, mock) = build_retrieval_pipeline(store_arc).await;
 
         // Query with the distinctive keyword "Zephyr".
-        let hits = pipeline
+        let (hits, _mode) = pipeline
             .retrieve(
                 1,
                 None,
@@ -380,6 +380,7 @@ mod tests {
                     top_k: 10,
                 },
                 false,
+                false, // degrade
             )
             .await
             .unwrap();
@@ -462,7 +463,7 @@ mod tests {
         let (pipeline, mock) = build_retrieval_pipeline(store_arc).await;
 
         // Query for "cryptographic" → should favour doc 1.
-        let hits = pipeline
+        let (hits, _mode) = pipeline
             .retrieve(
                 1,
                 None,
@@ -472,6 +473,7 @@ mod tests {
                     top_k: 10,
                 },
                 false,
+                false, // degrade
             )
             .await
             .unwrap();
@@ -485,7 +487,7 @@ mod tests {
 
         // Query for a word matching neither document — vector search still
         // returns results (all chunks share the same embedding).
-        let all_hits = pipeline
+        let (all_hits, _mode) = pipeline
             .retrieve(
                 1,
                 None,
@@ -495,6 +497,7 @@ mod tests {
                     top_k: 10,
                 },
                 false,
+                false, // degrade
             )
             .await
             .unwrap();
@@ -565,7 +568,7 @@ mod tests {
         let (pipeline, mock) = build_retrieval_pipeline(store_arc).await;
 
         // Filter for "finance" tag.
-        let hits = pipeline
+        let (hits, _mode) = pipeline
             .retrieve(
                 1,
                 None,
@@ -578,6 +581,7 @@ mod tests {
                     top_k: 10,
                 },
                 false,
+                false, // degrade
             )
             .await
             .unwrap();
@@ -594,7 +598,7 @@ mod tests {
         }
 
         // Filter for a non-existent tag → empty results.
-        let empty = pipeline
+        let (empty, _mode) = pipeline
             .retrieve(
                 1,
                 None,
@@ -607,6 +611,7 @@ mod tests {
                     top_k: 10,
                 },
                 false,
+                false, // degrade
             )
             .await
             .unwrap();
@@ -651,8 +656,14 @@ mod tests {
             top_k: 10,
         };
 
-        let hits1 = pipeline.retrieve(1, None, &query, false).await.unwrap();
-        let hits2 = pipeline.retrieve(1, None, &query, false).await.unwrap();
+        let (hits1, _m1) = pipeline
+            .retrieve(1, None, &query, false, false)
+            .await
+            .unwrap();
+        let (hits2, _m2) = pipeline
+            .retrieve(1, None, &query, false, false)
+            .await
+            .unwrap();
 
         assert_eq!(
             hits1.len(),
@@ -724,7 +735,7 @@ mod tests {
 
         let (pipeline, mock) = build_retrieval_pipeline(store_arc).await;
 
-        let hits = pipeline
+        let (hits, _mode) = pipeline
             .retrieve(
                 1,
                 None,
@@ -734,6 +745,7 @@ mod tests {
                     top_k: 10,
                 },
                 false,
+                false, // degrade
             )
             .await
             .unwrap();
@@ -794,7 +806,7 @@ mod tests {
 
         let (pipeline, mock) = build_retrieval_pipeline(store_arc).await;
 
-        let hits = pipeline
+        let (hits, _mode) = pipeline
             .retrieve(
                 1,
                 None,
@@ -804,6 +816,7 @@ mod tests {
                     top_k: 10,
                 },
                 false,
+                false, // degrade
             )
             .await
             .unwrap();
@@ -861,7 +874,7 @@ mod tests {
         let (pipeline, mock) = build_retrieval_pipeline(store_arc).await;
 
         // Empty query text → keyword search skipped, vector only.
-        let hits = pipeline
+        let (hits, _mode) = pipeline
             .retrieve(
                 1,
                 None,
@@ -871,6 +884,7 @@ mod tests {
                     top_k: 10,
                 },
                 false,
+                false, // degrade
             )
             .await
             .unwrap();
@@ -915,7 +929,7 @@ mod tests {
         let (pipeline, mock) = build_retrieval_pipeline(store_arc).await;
 
         // Request only 2 results.
-        let hits = pipeline
+        let (hits, _mode) = pipeline
             .retrieve(
                 1,
                 None,
@@ -925,6 +939,7 @@ mod tests {
                     top_k: 2,
                 },
                 false,
+                false, // degrade
             )
             .await
             .unwrap();
@@ -936,7 +951,7 @@ mod tests {
         );
 
         // top_k=0 returns empty (handled before any DB query).
-        let empty = pipeline
+        let (empty, _mode) = pipeline
             .retrieve(
                 1,
                 None,
@@ -946,6 +961,7 @@ mod tests {
                     top_k: 0,
                 },
                 false,
+                false, // degrade
             )
             .await
             .unwrap();

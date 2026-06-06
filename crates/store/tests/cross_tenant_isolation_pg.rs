@@ -581,6 +581,111 @@ async fn each_tenant_only_sees_own_data_in_search() -> anyhow::Result<()> {
     Ok(())
 }
 
+// ── Test 5b: Keyword-only (degrade path) search isolation ──────────────────────
+//
+// §31.5 checkpoint proof for B2 (P14-T5): the new lexical-only `Store::keyword_search`
+// — the path used when a tenant is over its AI budget or the embed/rerank backend is
+// down — MUST be tenant-isolated exactly like hybrid search. Both tenants seed a
+// document containing the SAME distinctive keyword; each tenant's `keyword_search` must
+// return ONLY its own document and NEVER the other's. This is the definitive RLS proof
+// for the degrade path.
+
+/// Tenant A and tenant B each own a document containing the identical distinctive keyword
+/// "quokka". `keyword_search` for A returns only A's document (never B's), and vice-versa.
+#[tokio::test]
+#[ignore = "requires Podman + image pull; run with --ignored"]
+async fn keyword_search_is_tenant_scoped() -> anyhow::Result<()> {
+    let s = setup_two_tenants().await?;
+
+    // Tenant A: document whose chunk contains "quokka".
+    let doc_a = insert_id_as(
+        &s.app_pool,
+        s.tenant_a,
+        &format!(
+            "INSERT INTO documents (tenant_id, title, kind, status) \
+             VALUES ({}, 'A Quokka Doc', 'document', 'ready') RETURNING id",
+            s.tenant_a
+        ),
+    )
+    .await;
+    let file_a = s
+        .store
+        .upsert_file(&make_file_rec(s.tenant_a, doc_a, 1, "kw-a"))
+        .await?;
+    s.store
+        .upsert_chunks(
+            file_a,
+            &[make_chunk(
+                s.tenant_a,
+                doc_a,
+                file_a,
+                0,
+                "the quokka belongs to tenant A",
+            )],
+        )
+        .await?;
+
+    // Tenant B: a DIFFERENT document whose chunk contains the SAME word "quokka".
+    let doc_b = insert_id_as(
+        &s.app_pool,
+        s.tenant_b,
+        &format!(
+            "INSERT INTO documents (tenant_id, title, kind, status) \
+             VALUES ({}, 'B Quokka Doc', 'document', 'ready') RETURNING id",
+            s.tenant_b
+        ),
+    )
+    .await;
+    let file_b = s
+        .store
+        .upsert_file(&make_file_rec(s.tenant_b, doc_b, 1, "kw-b"))
+        .await?;
+    s.store
+        .upsert_chunks(
+            file_b,
+            &[make_chunk(
+                s.tenant_b,
+                doc_b,
+                file_b,
+                0,
+                "the quokka belongs to tenant B",
+            )],
+        )
+        .await?;
+
+    let q = Query {
+        text: "quokka".to_string(),
+        filters: QueryFilters::default(),
+        top_k: 10,
+    };
+
+    // Tenant A's keyword_search returns ONLY tenant A's document.
+    let hits_a = s.store.keyword_search(s.tenant_a, &q).await?;
+    let ids_a: Vec<i64> = hits_a.iter().map(|h| h.document_id).collect();
+    assert!(
+        ids_a.contains(&doc_a),
+        "tenant A must find its own 'quokka' document via keyword_search"
+    );
+    assert!(
+        !ids_a.contains(&doc_b),
+        "RLS violated: tenant A's keyword_search returned tenant B's document"
+    );
+
+    // Tenant B's keyword_search returns ONLY tenant B's document.
+    let hits_b = s.store.keyword_search(s.tenant_b, &q).await?;
+    let ids_b: Vec<i64> = hits_b.iter().map(|h| h.document_id).collect();
+    assert!(
+        ids_b.contains(&doc_b),
+        "tenant B must find its own 'quokka' document via keyword_search"
+    );
+    assert!(
+        !ids_b.contains(&doc_a),
+        "RLS violated: tenant B's keyword_search returned tenant A's document"
+    );
+
+    Ok(())
+}
+
 // ── Test 6: Transactional ingest isolation ────────────────────────────────────
 
 /// `transactional_ingest` upserts a document as tenant A → tenant B cannot see any of the

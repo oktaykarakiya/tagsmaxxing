@@ -97,28 +97,7 @@ pub(crate) async fn run_hybrid_search(
         .map(|c| (c.chunk_id, c))
         .collect();
 
-    let chunk_hits: Vec<ChunkHit> = {
-        let mut hits = Vec::with_capacity(fused.len());
-        for (chunk_id, score) in &fused {
-            if let Some(row) = chunk_map.get(chunk_id) {
-                let snippet = store
-                    .decrypt_chunk_content(tenant_id, row.content_enc.as_deref(), &row.content)
-                    .await;
-                hits.push(ChunkHit {
-                    chunk_id: row.chunk_id,
-                    document_id: row.document_id,
-                    score: *score,
-                    file_id: row.file_id,
-                    page_no: row.page_no,
-                    ts_offset: row.ts_offset,
-                    snippet,
-                    title: row.title.clone(),
-                    kind: row.kind.clone(),
-                });
-            }
-        }
-        hits
-    };
+    let chunk_hits = ranked_rows_to_chunk_hits(store, tenant_id, &fused, &chunk_map).await;
 
     // Roll up to one Hit per document, keeping best chunk's provenance.
     let mut hits = document_rollup(&chunk_hits);
@@ -127,6 +106,105 @@ pub(crate) async fn run_hybrid_search(
     hits.truncate(query.top_k);
 
     Ok(hits)
+}
+
+/// Execute the **keyword-only** (lexical) search path — the RLS-safe degrade used when a
+/// tenant is over budget or the embed/rerank backend is unavailable (plan §8, §29, P14-T5).
+///
+/// This is structurally a slice of [`run_hybrid_search`]: it opens the **same**
+/// `begin_tenant_tx` on the kb_app pool (so the `app.current_tenant` GUC drives RLS),
+/// runs **only** [`execute_keyword_query`] with the identical [`push_filters`]
+/// (kinds/tags/dates), then rolls the matching chunks up to documents and truncates to
+/// `query.top_k`, decrypting snippets exactly as [`run_hybrid_search`] does. There is no
+/// vector query, no RRF fusion, and no rerank.
+///
+/// Because lexical relevance order from `ORDER BY ts_rank(...) DESC` already ranks the
+/// rows, position in the returned `Vec` is the rank — we synthesise a descending score
+/// from that rank so `document_rollup` keeps each document's best (earliest) chunk.
+///
+/// # Errors
+/// Returns an error if the database is not connected, tag resolution fails, or the
+/// keyword query fails.
+pub(crate) async fn run_keyword_search(
+    store: &PgStore,
+    tenant_id: i64,
+    query: &Query,
+) -> anyhow::Result<Vec<Hit>> {
+    // Edge case: top_k of 0.
+    if query.top_k == 0 {
+        return Ok(Vec::new());
+    }
+
+    // IDENTICAL RLS setup to run_hybrid_search: one tenant transaction on the kb_app pool
+    // so the `app.current_tenant` GUC set by begin_tenant_tx scopes the keyword query to
+    // this tenant under the non-BYPASSRLS role (P6-T14, plan §13).
+    let pool = store.app_pool()?;
+    let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
+
+    // Same tag-filter resolution + short-circuit as hybrid search.
+    let tag_ids = if !query.filters.tags.is_empty() {
+        resolve_tag_ids_for_filter(&mut tx, &query.filters.tags).await?
+    } else {
+        Vec::new()
+    };
+    if !query.filters.tags.is_empty() && tag_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let kw_chunks = execute_keyword_query(&mut tx, query, &tag_ids).await?;
+    tx.commit()
+        .await
+        .context("failed to commit keyword_search transaction")?;
+
+    // The DB returns rows in descending ts_rank order, so position == rank. Synthesise a
+    // strictly-decreasing score from the rank so document_rollup keeps the best chunk per
+    // document (mirrors how RRF scores feed rollup in hybrid search).
+    let ranked: Vec<(i64, f32)> = kw_chunks
+        .iter()
+        .enumerate()
+        .map(|(rank, c)| (c.chunk_id, 1.0 / (rank as f32 + 1.0)))
+        .collect();
+
+    let chunk_map: HashMap<i64, &ChunkRow> = kw_chunks.iter().map(|c| (c.chunk_id, c)).collect();
+
+    let chunk_hits = ranked_rows_to_chunk_hits(store, tenant_id, &ranked, &chunk_map).await;
+
+    let mut hits = document_rollup(&chunk_hits);
+    hits.truncate(query.top_k);
+
+    Ok(hits)
+}
+
+/// Map ranked `(chunk_id, score)` pairs back to [`ChunkHit`]s, decrypting each winning
+/// chunk's snippet under the tenant DEK. Rows whose `chunk_id` is absent from `chunk_map`
+/// are silently dropped (they may have been filtered by another tenant's RLS). Shared by
+/// the hybrid and keyword-only paths so snippet decryption is identical (P14-T5).
+async fn ranked_rows_to_chunk_hits(
+    store: &PgStore,
+    tenant_id: i64,
+    ranked: &[(i64, f32)],
+    chunk_map: &HashMap<i64, &ChunkRow>,
+) -> Vec<ChunkHit> {
+    let mut hits = Vec::with_capacity(ranked.len());
+    for (chunk_id, score) in ranked {
+        if let Some(row) = chunk_map.get(chunk_id) {
+            let snippet = store
+                .decrypt_chunk_content(tenant_id, row.content_enc.as_deref(), &row.content)
+                .await;
+            hits.push(ChunkHit {
+                chunk_id: row.chunk_id,
+                document_id: row.document_id,
+                score: *score,
+                file_id: row.file_id,
+                page_no: row.page_no,
+                ts_offset: row.ts_offset,
+                snippet,
+                title: row.title.clone(),
+                kind: row.kind.clone(),
+            });
+        }
+    }
+    hits
 }
 
 // ── Tag resolution ────────────────────────────────────────────────────────────
@@ -1174,5 +1252,216 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+
+    // ── keyword_search (lexical degrade path, P14-T5) ───────────────────────
+
+    /// `keyword_search` returns lexical matches and respects kind/tag/date filters,
+    /// using NO embedding (it is the keyword-only degrade path).
+    #[ignore]
+    #[tokio::test]
+    async fn keyword_search_returns_lexical_matches_and_respects_filters() {
+        with_connected_store(|store| async move {
+            let pool = store.pool()?;
+
+            // Doc 1: a "document" containing the distinctive word "marmot".
+            let (doc_id, file_id) = create_test_document(&pool, "document", "").await?;
+            create_chunk(
+                &pool,
+                doc_id,
+                file_id,
+                0,
+                "a curious marmot on the ridge",
+                &spike_vector(0),
+                Some(1),
+                None,
+            )
+            .await?;
+
+            // Doc 2: an "image" also containing "marmot" — used to prove the kind filter bites.
+            let (img_id, img_file) = create_test_document(&pool, "image", "").await?;
+            create_chunk(
+                &pool,
+                img_id,
+                img_file,
+                0,
+                "marmot photo at dawn",
+                &spike_vector(0),
+                Some(1),
+                None,
+            )
+            .await?;
+
+            // Plain keyword search finds both documents (lexical match, no vector).
+            let q = Query {
+                text: "marmot".to_string(),
+                filters: QueryFilters::default(),
+                top_k: 10,
+            };
+            let hits = store.keyword_search(1, &q).await?;
+            let ids: Vec<i64> = hits.iter().map(|h| h.document_id).collect();
+            assert!(
+                ids.contains(&doc_id),
+                "keyword_search should match the document"
+            );
+            assert!(
+                ids.contains(&img_id),
+                "keyword_search should match the image"
+            );
+
+            // Kind filter (image only) restricts results to the image document.
+            let q_kind = Query {
+                text: "marmot".to_string(),
+                filters: QueryFilters {
+                    kinds: vec![DocKind::Image],
+                    ..Default::default()
+                },
+                top_k: 10,
+            };
+            let hits_kind = store.keyword_search(1, &q_kind).await?;
+            assert!(
+                !hits_kind.is_empty(),
+                "kind-filtered keyword search should match"
+            );
+            for h in &hits_kind {
+                assert_eq!(
+                    h.document_id, img_id,
+                    "kind filter must exclude the non-image doc"
+                );
+            }
+
+            // A non-matching query returns nothing.
+            let q_none = Query {
+                text: "wolverine".to_string(),
+                filters: QueryFilters::default(),
+                top_k: 10,
+            };
+            let hits_none = store.keyword_search(1, &q_none).await?;
+            assert!(hits_none.is_empty(), "no lexical match → empty results");
+
+            // Empty query text → no keyword signal → empty (mirrors hybrid's keyword arm).
+            let q_empty = Query {
+                text: String::new(),
+                filters: QueryFilters::default(),
+                top_k: 10,
+            };
+            let hits_empty = store.keyword_search(1, &q_empty).await?;
+            assert!(
+                hits_empty.is_empty(),
+                "empty query → keyword_search returns nothing"
+            );
+
+            Ok(())
+        })
+        .await
+        .unwrap();
+    }
+
+    /// **Cross-tenant negative test for the lexical degrade path (§31.5 RLS proof, P14-T5).**
+    ///
+    /// Two tenants each own a document containing the SAME distinctive keyword. Tenant A's
+    /// `keyword_search` must return ONLY tenant A's document and NEVER tenant B's, and
+    /// vice-versa. The chunks are seeded via the privileged (BYPASSRLS) pool; the assertions
+    /// query through `keyword_search`, which runs inside `begin_tenant_tx` on the kb_app pool
+    /// so Postgres RLS scopes each search to its own tenant.
+    #[ignore]
+    #[tokio::test]
+    async fn keyword_search_is_tenant_isolated_cross_tenant() {
+        // Self-contained two-tenant setup (the shared helper seeds only tenant 1).
+        let db = kb_testsupport::fresh_db().await.unwrap();
+        let store = PgStore::with_roles(&db.admin_url, &db.app_url);
+        store.connect().await.unwrap();
+        let pool = store.pool().unwrap(); // privileged pool — RLS bypassed for seeding.
+
+        // Two tenants.
+        let tenant_a: i64 = sqlx::query_scalar(
+            "INSERT INTO tenants (slug, name) VALUES ('kw-a', 'KW A') RETURNING id",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let tenant_b: i64 = sqlx::query_scalar(
+            "INSERT INTO tenants (slug, name) VALUES ('kw-b', 'KW B') RETURNING id",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        // Seed one document + file + chunk per tenant, both containing "platypus".
+        let seed = |tenant: i64, marker: &'static str| {
+            let pool = pool.clone();
+            async move {
+                let doc_id: i64 = sqlx::query_scalar(
+                    "INSERT INTO documents (tenant_id, title, kind, status) \
+                     VALUES ($1, 'Doc', 'document', 'ready') RETURNING id",
+                )
+                .bind(tenant)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+
+                let n = FILE_SHA_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let mut sha = vec![0u8; 32];
+                sha[..8].copy_from_slice(&n.to_be_bytes());
+                let file_id: i64 = sqlx::query_scalar(
+                    "INSERT INTO files (tenant_id, document_id, page_no, sha256, blob_key, status) \
+                     VALUES ($1, $2, 1, $3, $4, 'ready') RETURNING id",
+                )
+                .bind(tenant)
+                .bind(doc_id)
+                .bind(sha)
+                .bind(format!("t{tenant}/{marker}"))
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+
+                let vec_str = crate::pg_store::format_vector(&vec![0.0f32; crate::EMBED_DIM]);
+                sqlx::query(
+                    "INSERT INTO chunks (tenant_id, document_id, file_id, page_no, idx, content, embedding) \
+                     VALUES ($1, $2, $3, 1, 0, $4, CAST($5 AS vector))",
+                )
+                .bind(tenant)
+                .bind(doc_id)
+                .bind(file_id)
+                .bind(format!("the platypus of {marker}"))
+                .bind(&vec_str)
+                .execute(&pool)
+                .await
+                .unwrap();
+                doc_id
+            }
+        };
+        let doc_a = seed(tenant_a, "tenant-a").await;
+        let doc_b = seed(tenant_b, "tenant-b").await;
+
+        let q = Query {
+            text: "platypus".to_string(),
+            filters: QueryFilters::default(),
+            top_k: 10,
+        };
+
+        // Tenant A sees ONLY its own document.
+        let hits_a = store.keyword_search(tenant_a, &q).await.unwrap();
+        let ids_a: Vec<i64> = hits_a.iter().map(|h| h.document_id).collect();
+        assert!(
+            ids_a.contains(&doc_a),
+            "tenant A must find its own document"
+        );
+        assert!(
+            !ids_a.contains(&doc_b),
+            "RLS violated: tenant A's keyword_search returned tenant B's document"
+        );
+
+        // Tenant B sees ONLY its own document.
+        let hits_b = store.keyword_search(tenant_b, &q).await.unwrap();
+        let ids_b: Vec<i64> = hits_b.iter().map(|h| h.document_id).collect();
+        assert!(
+            ids_b.contains(&doc_b),
+            "tenant B must find its own document"
+        );
+        assert!(
+            !ids_b.contains(&doc_a),
+            "RLS violated: tenant B's keyword_search returned tenant A's document"
+        );
     }
 }

@@ -515,6 +515,16 @@ pub async fn search_submit(
         })
         .unwrap_or_default();
 
+    // ── Budget gate → degrade (NOT reject) ───────────────────────────────────
+    // If the tenant is over its monthly token budget, the web search degrades to the
+    // keyword-only (lexical) path instead of failing — it never rejects the user
+    // (P14-T5). Shares the exact gate logic with the JSON handler.
+    let budget = state
+        .pg_store
+        .check_plan_token_budget_rollup(auth_user.tenant_id)
+        .await;
+    let degrade = crate::handlers::search::budget_check_forces_degrade(budget);
+
     // ── Build query + run pipeline ───────────────────────────────────────────
     let query = kb_core::query::Query {
         text: query_text.clone(),
@@ -526,11 +536,17 @@ pub async fn search_submit(
         top_k: 20, // web UI shows more results
     };
 
-    let hits = match retrieval
-        .retrieve(auth_user.tenant_id, Some(auth_user.user_id), &query, false)
+    let (hits, mode) = match retrieval
+        .retrieve(
+            auth_user.tenant_id,
+            Some(auth_user.user_id),
+            &query,
+            false,
+            degrade,
+        )
         .await
     {
-        Ok(h) => h,
+        Ok(out) => out,
         Err(e) => {
             tracing::warn!(error = %e, "search failed");
             let partial = SearchResultsPartial {
@@ -560,7 +576,18 @@ pub async fn search_submit(
         query: query_text,
     };
 
-    render_ok(&partial)
+    // Signal the degrade/hybrid mode to the client. The header lets the UI show a "basic
+    // results (AI budget reached)" hint without changing the compiled template (P14-T5).
+    with_search_mode_header(render_ok(&partial), mode)
+}
+
+/// Stamp the `X-Search-Mode` header (`hybrid` / `keyword`) onto a search response (P14-T5).
+fn with_search_mode_header(mut resp: Response, mode: kb_pipeline::SearchMode) -> Response {
+    resp.headers_mut().insert(
+        "X-Search-Mode",
+        axum::http::HeaderValue::from_static(mode.as_str()),
+    );
+    resp
 }
 
 // ── GET /upload ─────────────────────────────────────────────────────────────────
@@ -951,6 +978,13 @@ mod tests {
                 _tenant_id: i64,
                 _query: &kb_core::query::Query,
                 _query_embedding: &[f32],
+            ) -> anyhow::Result<Vec<kb_core::query::Hit>> {
+                Ok(self.hits.clone())
+            }
+            async fn keyword_search(
+                &self,
+                _tenant_id: i64,
+                _query: &kb_core::query::Query,
             ) -> anyhow::Result<Vec<kb_core::query::Hit>> {
                 Ok(self.hits.clone())
             }

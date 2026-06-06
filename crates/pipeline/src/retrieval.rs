@@ -15,8 +15,56 @@ use std::sync::Arc;
 use kb_core::query::{Hit, Query};
 use kb_core::reranker::Reranker;
 use kb_core::store::Store;
+use kb_llm::LlmError;
 
 use crate::embedder::ChunkEmbedder;
+
+/// Which search path actually produced a result set (plan §8, §29, P14-T5).
+///
+/// Surfaced to callers so the API layer can stamp the `X-Search-Mode` response header
+/// and render a "basic results" notice when the AI-augmented path was skipped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchMode {
+    /// The full path ran: query embedding → hybrid (vector + keyword) search → rerank.
+    Hybrid,
+    /// The keyword-only (lexical) degrade path ran: no embedding, no rerank. Triggered
+    /// when the caller forced `degrade` (e.g. tenant over its token budget) or the
+    /// embed/rerank backend was unavailable and search fell back instead of erroring.
+    Keyword,
+}
+
+impl SearchMode {
+    /// The lowercase wire string for the `X-Search-Mode` header (`"hybrid"` / `"keyword"`).
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Hybrid => "hybrid",
+            Self::Keyword => "keyword",
+        }
+    }
+}
+
+/// Whether an error from `embed_query`/`rerank` means the AI backend is unavailable and
+/// search should degrade to keyword-only rather than fail (plan §29, P14-T5).
+///
+/// Returns `true` only for transport/capacity failures surfaced as a [`LlmError`] in the
+/// error chain — no healthy backend, all retries failed, cooldown, or an HTTP transport
+/// error. A *configuration* fault such as an embedding **dimension mismatch** is NOT a
+/// backend-availability problem: it is not a `LlmError`, so it propagates as a real error
+/// (a silent keyword degrade would mask a deploy mistake).
+fn is_backend_unavailable(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        cause.downcast_ref::<LlmError>().is_some_and(|e| {
+            matches!(
+                e,
+                LlmError::Scheduler(_)
+                    | LlmError::AllFailed { .. }
+                    | LlmError::Http(_)
+                    | LlmError::AllCooldown(_)
+            )
+        })
+    })
+}
 
 /// The retrieval pipeline orchestrator (plan §8, §10).
 ///
@@ -63,28 +111,84 @@ impl RetrievalPipeline {
         }
     }
 
-    /// Run the full 4-step retrieval flow for a single query.
+    /// Run the retrieval flow for a single query, returning the ranked [`Hit`]s **and the
+    /// [`SearchMode`] that produced them** (plan §8, §29; P14-T5).
     ///
-    /// `tenant_id` is passed through to [`Store::hybrid_search`] so the
-    /// implementation can set the `app.current_tenant` Postgres GUC for
-    /// Row-Level Security enforcement (plan §13, P5-T1).
+    /// `tenant_id` is passed through to [`Store::hybrid_search`] /
+    /// [`Store::keyword_search`] so the implementation can set the `app.current_tenant`
+    /// Postgres GUC for Row-Level Security enforcement (plan §13, P5-T1). Both search
+    /// paths are tenant-isolated by RLS identically.
     ///
-    /// `user_id` attributes the read path's metered model calls — the query
-    /// embedding and the rerank — to the searching user (P14-T2); `None` records
-    /// them tenant-only (system/CLI searches).
+    /// `user_id` attributes the read path's metered model calls — the query embedding and
+    /// the rerank — to the searching user (P14-T2); `None` records them tenant-only
+    /// (system/CLI searches). The keyword degrade path makes **no** model calls, so it is
+    /// never metered.
     ///
+    /// `degrade` forces the keyword-only path. The API layer sets it when the tenant is
+    /// over its monthly token budget (B2, P14-T5) so search **degrades instead of being
+    /// rejected** — it never 429s the user. When `degrade` is `false`, the full path runs,
+    /// but if `embed_query` or `rerank` fails because the **AI backend is unavailable**
+    /// (see [`is_backend_unavailable`]) the call still falls back to keyword-only rather
+    /// than propagating the error.
+    ///
+    /// Full path (`degrade == false`, backends healthy):
     /// 1. Embeds `query.text` with [`EmbedKind::Query`].
     /// 2. Calls [`Store::hybrid_search`] with the query and embedding.
-    /// 3. If results are non-empty, passes the snippet of each hit to the
-    ///    [`Reranker`] and re-scores against the original query text.
-    /// 4. Returns the top `query.top_k` hits ordered by reranker score
-    ///    descending.
+    /// 3. If results are non-empty, reranks the snippets against the query text.
+    /// 4. Returns the top `query.top_k` hits ordered by reranker score, mode [`Hybrid`].
+    ///
+    /// Degrade path (`degrade == true`, or a backend-unavailable fallback):
+    /// 1. Calls [`Store::keyword_search`] (lexical only — no embedding, no rerank).
+    /// 2. Returns its hits, mode [`Keyword`].
+    ///
+    /// [`Hybrid`]: SearchMode::Hybrid
+    /// [`Keyword`]: SearchMode::Keyword
+    /// [`EmbedKind::Query`]: crate::embedder::EmbedKind::Query
     ///
     /// # Errors
     ///
-    /// Returns an error if embedding or search fails. An empty result set
-    /// is not an error — it returns an empty `Vec<Hit>`.
+    /// Returns an error if the keyword search itself fails, or if the full path fails for
+    /// a reason **other** than backend unavailability (e.g. a reranker length mismatch or
+    /// an embedding dimension mismatch). An empty result set is not an error.
     pub async fn retrieve(
+        &self,
+        tenant_id: i64,
+        user_id: Option<i64>,
+        query: &Query,
+        local_only: bool,
+        degrade: bool,
+    ) -> anyhow::Result<(Vec<Hit>, SearchMode)> {
+        // Caller forced the degrade path (e.g. tenant over its token budget): keyword-only,
+        // skipping embed + rerank entirely, so no AI call and no metering.
+        if degrade {
+            let hits = self.store.keyword_search(tenant_id, query).await?;
+            return Ok((hits, SearchMode::Keyword));
+        }
+
+        // Full path; if a backend is unavailable, fall back to keyword-only instead of
+        // erroring (search must remain available).
+        match self.run_hybrid(tenant_id, user_id, query, local_only).await {
+            Ok(hits) => Ok((hits, SearchMode::Hybrid)),
+            Err(e) if is_backend_unavailable(&e) => {
+                tracing::warn!(
+                    error = %e,
+                    "search: AI backend unavailable, degrading to keyword-only"
+                );
+                let hits = self.store.keyword_search(tenant_id, query).await?;
+                Ok((hits, SearchMode::Keyword))
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// The full AI-augmented read path: embed → hybrid search → rerank → top-k.
+    ///
+    /// Split out from [`retrieve`](Self::retrieve) so the caller can cleanly fall back to
+    /// keyword-only when this returns a backend-unavailable error (P14-T5).
+    ///
+    /// # Errors
+    /// Returns an error if embedding, hybrid search, or reranking fails.
+    async fn run_hybrid(
         &self,
         tenant_id: i64,
         user_id: Option<i64>,
@@ -206,16 +310,28 @@ mod tests {
         ) -> anyhow::Result<Vec<Hit>> {
             Ok(self.hits.to_vec())
         }
+
+        async fn keyword_search(
+            &self,
+            _tenant_id: i64,
+            _query: &Query,
+        ) -> anyhow::Result<Vec<Hit>> {
+            Ok(self.hits.to_vec())
+        }
     }
 
-    /// A [`Store`] that records the parameters passed to `hybrid_search` for
-    /// later assertion.
+    /// A [`Store`] that records the parameters passed to `hybrid_search` and tracks which
+    /// search path (`hybrid_search` vs `keyword_search`) was invoked, for later assertion.
     struct RecordingStore {
         /// Hits to return.
         hits: Arc<[Hit]>,
-        /// Captured `(query_text, embedding)` from the last call.
+        /// Captured `(query_text, embedding)` from the last `hybrid_search` call.
         /// Using a `std::sync::Mutex` to allow interior mutability.
         last_call: std::sync::Mutex<Option<(String, Vec<f32>)>>,
+        /// Whether `hybrid_search` was invoked at least once.
+        hybrid_called: std::sync::atomic::AtomicBool,
+        /// Whether `keyword_search` was invoked at least once.
+        keyword_called: std::sync::atomic::AtomicBool,
     }
 
     impl RecordingStore {
@@ -223,6 +339,8 @@ mod tests {
             Self {
                 hits: hits.into(),
                 last_call: std::sync::Mutex::new(None),
+                hybrid_called: std::sync::atomic::AtomicBool::new(false),
+                keyword_called: std::sync::atomic::AtomicBool::new(false),
             }
         }
 
@@ -241,16 +359,25 @@ mod tests {
                 .as_ref()
                 .map(|(_, e)| e.len())
         }
+
+        fn hybrid_was_called(&self) -> bool {
+            self.hybrid_called.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn keyword_was_called(&self) -> bool {
+            self.keyword_called
+                .load(std::sync::atomic::Ordering::SeqCst)
+        }
     }
 
     #[async_trait]
     impl Store for RecordingStore {
         async fn upsert_file(&self, _rec: &FileRecord) -> anyhow::Result<i64> {
-            anyhow::bail!("mock: only hybrid_search is used by RetrievalPipeline")
+            anyhow::bail!("mock: only search paths are used by RetrievalPipeline")
         }
 
         async fn upsert_chunks(&self, _file_id: i64, _chunks: &[Chunk]) -> anyhow::Result<()> {
-            anyhow::bail!("mock: only hybrid_search is used by RetrievalPipeline")
+            anyhow::bail!("mock: only search paths are used by RetrievalPipeline")
         }
 
         async fn hybrid_search(
@@ -259,8 +386,20 @@ mod tests {
             query: &Query,
             query_embedding: &[f32],
         ) -> anyhow::Result<Vec<Hit>> {
+            self.hybrid_called
+                .store(true, std::sync::atomic::Ordering::SeqCst);
             let mut guard = self.last_call.lock().unwrap();
             *guard = Some((query.text.clone(), query_embedding.to_vec()));
+            Ok(self.hits.to_vec())
+        }
+
+        async fn keyword_search(
+            &self,
+            _tenant_id: i64,
+            _query: &Query,
+        ) -> anyhow::Result<Vec<Hit>> {
+            self.keyword_called
+                .store(true, std::sync::atomic::Ordering::SeqCst);
             Ok(self.hits.to_vec())
         }
     }
@@ -457,7 +596,7 @@ mod tests {
         let (pipeline, mock) = build_test_pipeline(store_hits, rerank_scores).await;
         let q = query("test query", 10);
 
-        let results = pipeline.retrieve(1, None, &q, false).await.unwrap();
+        let (results, _mode) = pipeline.retrieve(1, None, &q, false, false).await.unwrap();
 
         assert_eq!(results.len(), 3);
         // Sorted by blended score descending.
@@ -496,7 +635,7 @@ mod tests {
 
         // Request only top-2.
         let q = query("top 2 query", 2);
-        let results = pipeline.retrieve(1, None, &q, false).await.unwrap();
+        let (results, _mode) = pipeline.retrieve(1, None, &q, false, false).await.unwrap();
 
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].document_id, 1);
@@ -514,7 +653,7 @@ mod tests {
         let (pipeline, mock) = build_test_pipeline(store_hits, rerank_scores).await;
         let q = query("query", 0);
 
-        let results = pipeline.retrieve(1, None, &q, false).await.unwrap();
+        let (results, _mode) = pipeline.retrieve(1, None, &q, false, false).await.unwrap();
         assert!(results.is_empty());
 
         mock.shutdown().await;
@@ -527,7 +666,7 @@ mod tests {
         let (pipeline, mock) = build_test_pipeline(vec![], vec![]).await;
         let q = query("nothing matches", 10);
 
-        let results = pipeline.retrieve(1, None, &q, false).await.unwrap();
+        let (results, _mode) = pipeline.retrieve(1, None, &q, false, false).await.unwrap();
         assert!(results.is_empty());
         // Reranker is never called when hits are empty (verified by the
         // MockStore returning empty — if reranker were called with empty docs,
@@ -548,7 +687,7 @@ mod tests {
             build_test_pipeline_with_recording_reranker(store_hits, vec![0.7, 0.3]).await;
 
         let q = query("find me", 10);
-        let _results = pipeline.retrieve(1, None, &q, false).await.unwrap();
+        let (_results, _mode) = pipeline.retrieve(1, None, &q, false, false).await.unwrap();
 
         let docs = pipeline.recording_reranker.last_docs();
         // Verify the reranker received the snippets.
@@ -624,7 +763,10 @@ mod tests {
         let (pipeline, mock) = build_test_pipeline_with_failing_reranker(store_hits).await;
         let q = query("query", 10);
 
-        let err = pipeline.retrieve(1, None, &q, false).await.unwrap_err();
+        let err = pipeline
+            .retrieve(1, None, &q, false, false)
+            .await
+            .unwrap_err();
         assert!(
             err.to_string().contains("simulated reranker failure"),
             "expected reranker failure error, got: {err}"
@@ -693,7 +835,7 @@ mod tests {
             RetrievalPipeline::new(embedder, Arc::clone(&store) as Arc<dyn Store>, reranker);
 
         let q = query("find this text", 10);
-        let _results = pipeline.retrieve(1, None, &q, false).await.unwrap();
+        let (_results, _mode) = pipeline.retrieve(1, None, &q, false, false).await.unwrap();
 
         // Verify the store received the correct query text and embedding.
         assert_eq!(store.last_query_text().as_deref(), Some("find this text"));
@@ -722,7 +864,7 @@ mod tests {
         let (pipeline, mock) = build_test_pipeline(store_hits, rerank_scores).await;
         let q = query("key", 10);
 
-        let results = pipeline.retrieve(1, None, &q, false).await.unwrap();
+        let (results, _mode) = pipeline.retrieve(1, None, &q, false, false).await.unwrap();
         assert_eq!(results.len(), 1);
 
         let hit = &results[0];
@@ -757,7 +899,10 @@ mod tests {
             build_test_pipeline_with_mismatched_reranker(store_hits, rerank_scores).await;
         let q = query("mismatch", 10);
 
-        let err = pipeline.retrieve(1, None, &q, false).await.unwrap_err();
+        let err = pipeline
+            .retrieve(1, None, &q, false, false)
+            .await
+            .unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("reranker returned"),
@@ -818,7 +963,7 @@ mod tests {
         let (pipeline, mock) = build_test_pipeline(store_hits, rerank_scores).await;
         let q = query("tied", 10);
 
-        let results = pipeline.retrieve(1, None, &q, false).await.unwrap();
+        let (results, _mode) = pipeline.retrieve(1, None, &q, false, false).await.unwrap();
         assert_eq!(results.len(), 3);
         // With RRF_BLEND_WEIGHT=0.2 and max_rrf=0.8 (norm=1.25):
         //   doc 10: 0.2*1.0   + 0.8*0.5 = 0.600
@@ -911,5 +1056,150 @@ mod tests {
         );
 
         mock.shutdown().await;
+    }
+
+    // ── Degrade routing + backend-unavailable fallback (B2, P14-T5) ────────
+
+    /// A [`Reranker`] that panics if ever called — proves the rerank step is skipped on
+    /// the keyword degrade path (no AI on that path).
+    struct NeverReranker;
+
+    #[async_trait]
+    impl Reranker for NeverReranker {
+        async fn rerank(
+            &self,
+            _query: &str,
+            _docs: &[String],
+            _local_only: bool,
+            _priority: i32,
+            _tenant_id: i64,
+            _user_id: Option<i64>,
+        ) -> anyhow::Result<Vec<f32>> {
+            panic!("rerank must NOT be called on the keyword degrade path")
+        }
+    }
+
+    /// Build a `ChunkEmbedder` whose scheduler pool has **no backends**, so any
+    /// `embed_query` call fails with `LlmError::Scheduler(NoBackend)` (a
+    /// backend-unavailable error). Used to prove (a) degrade skips embedding entirely and
+    /// (b) the full path falls back to keyword-only when the embed backend is down.
+    fn embedder_with_no_backends() -> Arc<ChunkEmbedder> {
+        use kb_llm::LlamaClient;
+        use kb_scheduler::Pool;
+        use reqwest::Client;
+        use std::time::Duration;
+
+        let pool = Pool::new(vec![], Duration::from_millis(50));
+        let llm = Arc::new(LlamaClient::new(
+            pool,
+            Client::new(),
+            0,
+            0,
+            Duration::from_millis(50),
+        ));
+        Arc::new(ChunkEmbedder::new(llm, "test-model".into(), 3))
+    }
+
+    #[test]
+    fn is_backend_unavailable_true_for_scheduler_error() {
+        use kb_scheduler::AcquireError;
+        let err = anyhow::Error::new(LlmError::Scheduler(AcquireError::NoBackend {
+            role: kb_core::role::Role::Embed,
+        }))
+        .context("failed to embed batch");
+        assert!(is_backend_unavailable(&err));
+    }
+
+    #[test]
+    fn is_backend_unavailable_true_for_all_failed_and_cooldown() {
+        let all_failed = anyhow::Error::new(LlmError::AllFailed {
+            retries: 3,
+            last_error: "connection refused".into(),
+        });
+        assert!(is_backend_unavailable(&all_failed));
+
+        let cooldown =
+            anyhow::Error::new(LlmError::AllCooldown(std::time::Duration::from_secs(30)));
+        assert!(is_backend_unavailable(&cooldown));
+    }
+
+    #[test]
+    fn is_backend_unavailable_false_for_non_llm_error() {
+        // A dimension mismatch is a plain anyhow error (config fault), not a backend
+        // outage — it must propagate, never silently degrade.
+        let err = anyhow::anyhow!("embedding dimension mismatch: expected 512 but got 3");
+        assert!(!is_backend_unavailable(&err));
+    }
+
+    /// `degrade = true` → ONLY `keyword_search` runs; `hybrid_search` is never invoked and
+    /// embedding is skipped (the embedder has no backends, so it would error if touched).
+    /// The returned mode is `Keyword`.
+    #[tokio::test]
+    async fn degrade_true_routes_to_keyword_only_no_embed_no_rerank() {
+        let store = Arc::new(RecordingStore::new(vec![hit(
+            7,
+            0.5,
+            "lexical hit",
+            70,
+            Some(1),
+        )]));
+        let reranker: Arc<dyn Reranker> = Arc::new(NeverReranker);
+        let pipeline = RetrievalPipeline::new(
+            embedder_with_no_backends(),
+            Arc::clone(&store) as Arc<dyn Store>,
+            reranker,
+        );
+
+        let q = query("budget reached", 10);
+        let (hits, mode) = pipeline
+            .retrieve(1, Some(9), &q, false, true)
+            .await
+            .unwrap();
+
+        assert_eq!(mode, SearchMode::Keyword);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].document_id, 7);
+        assert!(
+            store.keyword_was_called(),
+            "keyword_search must be the path taken when degrade=true"
+        );
+        assert!(
+            !store.hybrid_was_called(),
+            "hybrid_search must NOT run when degrade=true"
+        );
+        // NeverReranker did not panic → rerank was skipped, as required.
+    }
+
+    /// When the embed backend is unavailable, the full path FALLS BACK to keyword-only and
+    /// returns results with mode `Keyword` — it does NOT propagate the error.
+    #[tokio::test]
+    async fn backend_unavailable_falls_back_to_keyword() {
+        let store = Arc::new(RecordingStore::new(vec![hit(
+            3,
+            0.4,
+            "fallback hit",
+            30,
+            None,
+        )]));
+        // NeverReranker is safe: on the fallback path the rerank step is never reached
+        // (we bail to keyword-only as soon as embed_query fails).
+        let reranker: Arc<dyn Reranker> = Arc::new(NeverReranker);
+        let pipeline = RetrievalPipeline::new(
+            embedder_with_no_backends(),
+            Arc::clone(&store) as Arc<dyn Store>,
+            reranker,
+        );
+
+        let q = query("anything", 10);
+        // degrade=false: the full path is attempted, embed fails (no backend), fallback.
+        let (hits, mode) = pipeline.retrieve(1, None, &q, false, false).await.unwrap();
+
+        assert_eq!(mode, SearchMode::Keyword, "must degrade, not error");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].document_id, 3);
+        assert!(
+            store.keyword_was_called(),
+            "keyword_search must run as the backend-unavailable fallback"
+        );
     }
 }
