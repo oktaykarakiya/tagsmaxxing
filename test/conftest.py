@@ -36,6 +36,12 @@ def browser_type_launch_args(browser_type_launch_args):
     The upstream ``pytest-playwright`` default does not include sandbox-disabling
     flags. Without them, ``browser_type.launch()`` fails and the entire ``page``
     fixture chain is unavailable, blocking every browser test.
+
+    On AMD/Vulkan systems (Radeon iGPU sharing VRAM with llama-server),
+    ``--disable-gpu`` is required — Chromium's GPU path conflicts with
+    llama.cpp's Vulkan context, causing an indefinite hang on startup.
+    ``--disable-software-rasterizer`` prevents the CPU fallback path from
+    also getting stuck.
     """
     return {
         **browser_type_launch_args,
@@ -43,6 +49,8 @@ def browser_type_launch_args(browser_type_launch_args):
             "--no-sandbox",
             "--disable-setuid-sandbox",
             "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--disable-software-rasterizer",
         ],
     }
 
