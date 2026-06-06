@@ -285,10 +285,19 @@ impl Default for RestoreTest {
 /// intervals for external dependencies.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Degradation {
-    /// Maximum number of concurrent ingest requests before returning 429.
-    /// Set to `0` to disable the limit. Default: 100.
+    /// Maximum number of concurrent ingest requests **across all tenants**
+    /// before returning 429 — the global system ceiling. Set to `0` to disable
+    /// the limit. Default: 100.
     #[serde(default = "default_max_inflight_ingest")]
     pub max_inflight_ingest: u32,
+    /// Maximum concurrent ingest requests a **single tenant** may hold (the
+    /// per-tenant fair-share, plan §22, P14-T7). This bounds a noisy tenant so
+    /// it cannot drain the global pool and `429` everyone else. `0` means
+    /// *auto-derive* it as `max(1, max_inflight_ingest / 4)`, so one tenant gets
+    /// at most a quarter of the global pool. Capped at `max_inflight_ingest`.
+    /// Default: 0 (auto-derive).
+    #[serde(default = "default_per_tenant_max_inflight")]
+    pub per_tenant_max_inflight: u32,
     /// Consecutive failures before the blob-store circuit breaker trips.
     /// Set to `0` to disable. Default: 3.
     #[serde(default = "default_circuit_breaker_threshold")]
@@ -306,6 +315,10 @@ pub struct Degradation {
 const fn default_max_inflight_ingest() -> u32 {
     100
 }
+const fn default_per_tenant_max_inflight() -> u32 {
+    // 0 = auto-derive max(1, max_inflight_ingest / 4) at limiter construction.
+    0
+}
 const fn default_circuit_breaker_threshold() -> u32 {
     3
 }
@@ -320,6 +333,7 @@ impl Default for Degradation {
     fn default() -> Self {
         Self {
             max_inflight_ingest: default_max_inflight_ingest(),
+            per_tenant_max_inflight: default_per_tenant_max_inflight(),
             blob_circuit_breaker_threshold: default_circuit_breaker_threshold(),
             blob_circuit_breaker_cooldown_secs: default_circuit_breaker_cooldown_secs(),
             blob_health_interval_secs: default_blob_health_interval_secs(),
@@ -587,6 +601,7 @@ enabled = true
     fn degradation_defaults() {
         let d = Degradation::default();
         assert_eq!(d.max_inflight_ingest, 100);
+        assert_eq!(d.per_tenant_max_inflight, 0); // 0 = auto-derive
         assert_eq!(d.blob_circuit_breaker_threshold, 3);
         assert_eq!(d.blob_circuit_breaker_cooldown_secs, 30);
         assert_eq!(d.blob_health_interval_secs, 15);
@@ -597,6 +612,7 @@ enabled = true
         let toml_str = r#"
 [degradation]
 max_inflight_ingest = 50
+per_tenant_max_inflight = 8
 blob_circuit_breaker_threshold = 5
 blob_circuit_breaker_cooldown_secs = 60
 blob_health_interval_secs = 10
@@ -604,6 +620,7 @@ blob_health_interval_secs = 10
         let cfg: Config = toml::from_str(toml_str).expect("parse should succeed");
         let d = &cfg.degradation;
         assert_eq!(d.max_inflight_ingest, 50);
+        assert_eq!(d.per_tenant_max_inflight, 8);
         assert_eq!(d.blob_circuit_breaker_threshold, 5);
         assert_eq!(d.blob_circuit_breaker_cooldown_secs, 60);
         assert_eq!(d.blob_health_interval_secs, 10);

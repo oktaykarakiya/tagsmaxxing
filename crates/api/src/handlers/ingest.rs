@@ -120,11 +120,14 @@ pub async fn ingest(
         ));
     }
 
-    // ── Backpressure: acquire an in-flight slot or return 429 (P8-T9) ──────────
-    // The permit (OwnedSemaphorePermit) is RAII-held for the entire handler;
-    // it is dropped at function exit, releasing the slot back to the pool.
+    // ── Backpressure: acquire an in-flight slot or return 429 (P8-T9, P14-T7) ──
+    // Per-tenant fair-share: the permit is granted only when BOTH this tenant's
+    // own budget AND the global pool have capacity, so a single noisy tenant
+    // (bounded to per_tenant_max_inflight) cannot drain the pool and 429 other
+    // tenants. The Permit is RAII-held for the entire handler and dropped at
+    // function exit, releasing both the per-tenant and global slot.
     let _permit = if let Some(limiter) = &state.inflight_limiter {
-        match limiter.try_acquire() {
+        match limiter.try_acquire(auth_user.tenant_id) {
             Some(permit) => Some(permit),
             None => {
                 kb_metrics::record_ingest_throttled();

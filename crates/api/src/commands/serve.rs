@@ -363,11 +363,16 @@ pub async fn run_serve(args: &ServeArgs) -> anyhow::Result<()> {
 
     // ── Degradation state (P8-T9) ────────────────────────────────────────────
     let degradation = Arc::new(DegradationState::default());
-    let inflight_limiter = Arc::new(InflightLimiter::new(
+    // Global ceiling + per-tenant fair-share (P14-T7). A per_tenant value of 0
+    // tells the limiter to auto-derive max(1, global / 4), so a single tenant
+    // can hold at most a quarter of the global pool and cannot 429 everyone.
+    let inflight_limiter = Arc::new(InflightLimiter::with_per_tenant(
         cfg.degradation.max_inflight_ingest as usize,
+        cfg.degradation.per_tenant_max_inflight as usize,
     ));
     info!(
         max_inflight_ingest = cfg.degradation.max_inflight_ingest,
+        per_tenant_max_inflight = inflight_limiter.per_tenant_max(),
         blob_circuit_threshold = cfg.degradation.blob_circuit_breaker_threshold,
         blob_circuit_cooldown_secs = cfg.degradation.blob_circuit_breaker_cooldown_secs,
         "degradation state initialised"

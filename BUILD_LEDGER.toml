@@ -1504,9 +1504,9 @@ description = "B4: per-tenant backpressure fairness. Make ingest in-flight limit
 depends_on = []
 plan_sections = ["22"]
 acceptance = "one tenant saturating ingest does not 429 a second tenant; global ceiling still honored; unit tests; just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "Per-tenant fair-share ingest backpressure. InflightLimiter reworked: global Arc<Semaphore>(max_inflight_ingest) + lazy per-tenant Arc<Semaphore> map (std Mutex+HashMap, no new dep). try_acquire(tenant_id) takes the PER-TENANT permit FIRST (a saturated tenant returns None without consuming a global permit), then the global permit; RAII Permit holds both and drop releases both (no leak on a partial acquire — the early `?` return drops the per-tenant permit). per_tenant_max_inflight config knob (default 0 -> auto max(1, global/4)=25 at the default; clamp 1..=global), resolved at construction in serve.rs. handlers/ingest.rs passes auth_user.tenant_id (web upload doesn't consult the limiter). Fairness test saturated_tenant_cannot_starve_another (global=10/pt=2: A saturates its 2, A's 3rd -> None, B still acquires) + global-ceiling + release-both + default-math; 11 deterministic tests. 4 files. just ci green (cov 80.18%)."
 
 [[task]]
 id = "P14-T8"
