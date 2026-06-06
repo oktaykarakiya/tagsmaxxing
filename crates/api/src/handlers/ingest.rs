@@ -156,6 +156,7 @@ pub async fn ingest(
     {
         // Check if this is a QuotaError → 413 with upsell.
         if let Some(qe) = e.downcast_ref::<kb_core::quota::QuotaError>() {
+            kb_metrics::record_quota_rejection("storage");
             let message = quota_error_response(qe);
             return Err((
                 StatusCode::PAYLOAD_TOO_LARGE,
@@ -167,6 +168,36 @@ pub async fn ingest(
         }
         // Otherwise it's a database error.
         tracing::error!(error = %e, "ingest: storage quota check failed");
+        return Err(internal_error(e));
+    }
+
+    // ── Monthly token-budget check (plan-driven, P14-T4) ────────────────────
+    // UX-first hard block: if the tenant has ALREADY met or exceeded its
+    // monthly token budget (read from the O(1) rollup, not a SUM), reject the
+    // *next* ingest with 429 + upsell. The job that crossed the budget already
+    // ran to completion — only subsequent ingests are blocked (bounded
+    // overshoot, see PgStore::check_plan_token_budget_rollup). No pre-extraction
+    // token estimate is made here, by design: estimating would falsely reject
+    // large media uploads whose transcribed token count is small. Per-job
+    // overshoot is instead bounded by the storage quota checked just above.
+    if let Err(e) = state
+        .pg_store
+        .check_plan_token_budget_rollup(auth_user.tenant_id)
+        .await
+    {
+        if let Some(qe) = e.downcast_ref::<kb_core::quota::QuotaError>() {
+            kb_metrics::record_quota_rejection("tokens");
+            let message = quota_error_response(qe);
+            return Err((
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(ErrorResponse {
+                    error: "token_budget_exceeded".into(),
+                    message,
+                }),
+            ));
+        }
+        // Otherwise it's a database error.
+        tracing::error!(error = %e, "ingest: token budget check failed");
         return Err(internal_error(e));
     }
 
@@ -496,25 +527,64 @@ fn internal_error(e: impl std::fmt::Display) -> (StatusCode, Json<ErrorResponse>
 ///
 /// Upload-validation rejections — empty, oversized, disallowed-type, or
 /// unsafe-named bytes — are **client** errors the caller can fix, so they become
-/// `400 Bad Request`. Everything else (blob store, DB, pipeline faults) is an
-/// internal `500`. Without this downcast, every validation rejection surfaced as
-/// a `500` because only `QuotaError` (→ `413`, above) was special-cased.
+/// `400 Bad Request`. A [`QuotaError`](kb_core::quota::QuotaError) is mapped by
+/// kind: [`StorageExceeded`](kb_core::quota::QuotaError::StorageExceeded) →
+/// `413 Payload Too Large`, [`TokensExceeded`](kb_core::quota::QuotaError::TokensExceeded)
+/// → `429 Too Many Requests` (both with an upsell message, P14-T4). Everything
+/// else (blob store, DB, pipeline faults) is an internal `500`. Without this
+/// downcast, every validation rejection surfaced as a `500`.
 pub(crate) fn map_ingest_error(e: anyhow::Error) -> (StatusCode, Json<ErrorResponse>) {
     if let Some(rejected) = e.downcast_ref::<security::UploadRejected>() {
         tracing::warn!(error = %rejected, "ingest: rejected upload (400)");
         return bad_request("invalid_upload", &rejected.to_string());
     }
     if let Some(qe) = e.downcast_ref::<kb_core::quota::QuotaError>() {
-        tracing::warn!(error = %qe, "ingest: quota exceeded (413)");
-        return (
-            StatusCode::PAYLOAD_TOO_LARGE,
-            Json(ErrorResponse {
-                error: "quota_exceeded".into(),
-                message: quota_error_response(qe),
-            }),
-        );
+        return quota_error_to_response(qe);
     }
     internal_error(e)
+}
+
+/// Map a [`QuotaError`](kb_core::quota::QuotaError) to its HTTP response,
+/// dispatching on the exhausted limit (P14-T4):
+/// - [`StorageExceeded`](kb_core::quota::QuotaError::StorageExceeded) →
+///   `413 Payload Too Large` (`storage_quota_exceeded`),
+/// - [`TokensExceeded`](kb_core::quota::QuotaError::TokensExceeded) →
+///   `429 Too Many Requests` (`token_budget_exceeded`),
+/// - [`UserLimitExceeded`](kb_core::quota::QuotaError::UserLimitExceeded) →
+///   `403 Forbidden` (`user_limit_exceeded`).
+///
+/// Each response body carries the limit detail plus an upsell suggestion. The
+/// matching `kb_quota_rejections_total{limit=…}` counter is incremented so the
+/// rejection is observable regardless of which path produced the error.
+pub(crate) fn quota_error_to_response(
+    qe: &kb_core::quota::QuotaError,
+) -> (StatusCode, Json<ErrorResponse>) {
+    use kb_core::quota::QuotaError;
+    let message = quota_error_response(qe);
+    let (status, limit, error_code) = match qe {
+        QuotaError::StorageExceeded { .. } => (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "storage",
+            "storage_quota_exceeded",
+        ),
+        QuotaError::TokensExceeded { .. } => (
+            StatusCode::TOO_MANY_REQUESTS,
+            "tokens",
+            "token_budget_exceeded",
+        ),
+        QuotaError::UserLimitExceeded { .. } => {
+            (StatusCode::FORBIDDEN, "users", "user_limit_exceeded")
+        }
+    };
+    tracing::warn!(error = %qe, status = %status, "ingest: quota exceeded");
+    kb_metrics::record_quota_rejection(limit);
+    (
+        status,
+        Json(ErrorResponse {
+            error: error_code.into(),
+            message,
+        }),
+    )
 }
 
 /// Build a `429 Too Many Requests` error tuple without headers.
@@ -896,7 +966,9 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(body.error, "invalid_upload");
 
-        // A typed QuotaError maps to 413 (so web + JSON callers agree).
+        // A typed storage QuotaError maps to 413 (so web + JSON callers agree).
+        // The error code is `storage_quota_exceeded`, matching the inline
+        // pre-enqueue storage check on both the JSON and web upload paths.
         let quota = anyhow::Error::new(kb_core::quota::QuotaError::StorageExceeded {
             current: 100,
             additional: 10,
@@ -907,11 +979,76 @@ mod tests {
         });
         let (status, body) = map_ingest_error(quota);
         assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
-        assert_eq!(body.error, "quota_exceeded");
+        assert_eq!(body.error, "storage_quota_exceeded");
 
         // An untyped error (e.g. a DB fault) still maps to 500.
         let (status, _) = map_ingest_error(anyhow::anyhow!("db connection lost"));
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn quota_error_to_response_maps_each_limit() {
+        use kb_core::quota::QuotaError;
+
+        // Storage → 413.
+        let storage = QuotaError::StorageExceeded {
+            current: 100,
+            additional: 10,
+            total: 110,
+            limit: 50,
+            plan_code: Some("free".into()),
+            upsell_plan_code: Some("pro".into()),
+        };
+        let (status, body) = quota_error_to_response(&storage);
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(body.error, "storage_quota_exceeded");
+
+        // Tokens → 429 (the P14-T4 mapping), with the upsell appended.
+        let tokens = QuotaError::TokensExceeded {
+            current: 10_000,
+            additional: 1,
+            total: 10_001,
+            limit: 10_000,
+            plan_code: Some("free".into()),
+            upsell_plan_code: Some("pro".into()),
+        };
+        let (status, body) = quota_error_to_response(&tokens);
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(body.error, "token_budget_exceeded");
+        assert!(
+            body.message.contains("token quota exceeded")
+                && body.message.contains("Upgrade from free to pro"),
+            "429 body must carry the limit detail + upsell: {}",
+            body.message
+        );
+
+        // User limit → 403.
+        let users = QuotaError::UserLimitExceeded {
+            current: 5,
+            limit: 5,
+            plan_code: Some("free".into()),
+            upsell_plan_code: Some("team".into()),
+        };
+        let (status, body) = quota_error_to_response(&users);
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body.error, "user_limit_exceeded");
+    }
+
+    #[test]
+    fn map_ingest_error_routes_tokens_to_429() {
+        // A TokensExceeded surfacing through the generic mapper must become 429,
+        // not 413 (P14-T4) — storage stays 413, asserted above.
+        let tokens = anyhow::Error::new(kb_core::quota::QuotaError::TokensExceeded {
+            current: 10_000,
+            additional: 1,
+            total: 10_001,
+            limit: 10_000,
+            plan_code: None,
+            upsell_plan_code: None,
+        });
+        let (status, body) = map_ingest_error(tokens);
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(body.error, "token_budget_exceeded");
     }
 
     // ── throttled_error tests ────────────────────────────────────────────────

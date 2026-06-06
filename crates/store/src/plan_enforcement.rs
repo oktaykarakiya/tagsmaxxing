@@ -222,10 +222,15 @@ impl PgStore {
     /// Check whether adding `additional_tokens` would exceed the tenant's
     /// plan-driven token budget (including admin overrides).
     ///
-    /// Resolves the plan + overrides, queries current usage across all
-    /// `usage_events`, and delegates to [`kb_core::quota::check_token_quota`]
+    /// Resolves the plan + overrides, queries current usage via
+    /// [`get_token_usage`](PgStore::get_token_usage) (a `SUM` over the current
+    /// UTC calendar month), and delegates to [`kb_core::quota::check_token_quota`]
     /// for the pure math. The returned [`QuotaError`] carries the current plan
     /// code and an upsell suggestion when the tenant has a plan.
+    ///
+    /// This is the **reconciliation / backstop** read. The hot ingest path uses
+    /// [`check_plan_token_budget_rollup`](PgStore::check_plan_token_budget_rollup),
+    /// which reads the pre-aggregated O(1) monthly rollup instead of a `SUM`.
     ///
     /// # Errors
     /// - Returns a [`QuotaError::TokensExceeded`] if the budget would be
@@ -242,6 +247,63 @@ impl PgStore {
         let current = self.get_token_usage(tenant_id).await?;
 
         quota::check_token_quota(current, eff_tokens, additional_tokens)
+            .map_err(|e| enrich_quota_error(e, plan_code.as_deref(), upsell.as_deref()))?;
+
+        Ok(())
+    }
+
+    /// Enforce the tenant's monthly token budget on the **hot ingest path**,
+    /// reading the O(1) pre-aggregated rollup (P14-T4).
+    ///
+    /// Resolves the effective token budget (plan `token_budget` + admin
+    /// override via [`resolve_effective_quotas`](PgStore::resolve_effective_quotas))
+    /// and compares it against the current UTC-month token total read from
+    /// [`get_current_month_token_rollup`](PgStore::get_current_month_token_rollup)
+    /// — **not** a `SUM` over `usage_events`, so this stays O(1) under load.
+    ///
+    /// Enforcement rule (UX-first hard block): reject when the tenant has
+    /// **already met or exceeded** its budget, i.e. `current_rollup >= budget`.
+    /// A `None` budget (grandfathered / unlimited plan) means **no enforcement**
+    /// — these tenants ingest without a token cap.
+    ///
+    /// The `>= budget` semantic reuses the pure [`kb_core::quota::check_token_quota`]
+    /// math by passing `additional = 1`: that rejects when `rollup + 1 > budget`,
+    /// which is exactly `rollup >= budget`.
+    ///
+    /// ## Bounded overshoot (intentional design — P14-T4)
+    /// This is a **pre-enqueue gate**, checked once before the job runs, and the
+    /// rollup it reads only reflects token usage from *already-completed* calls.
+    /// The job that crosses the budget therefore **runs to completion**; only
+    /// *subsequent* ingests are blocked. This is the deliberate UX-first tradeoff:
+    /// we never abort an in-flight ingest mid-way, and we do **not** pre-estimate
+    /// the job's token cost (a pre-extraction estimate would falsely reject large
+    /// media uploads whose transcribed token count is actually small). The
+    /// per-job overshoot is instead bounded by the storage quota, which the caller
+    /// enforces on the same request and which caps a single upload's size.
+    ///
+    /// # Errors
+    /// - Returns a [`QuotaError::TokensExceeded`] (with plan + upsell context)
+    ///   when the current-month rollup has met or exceeded the budget. The API
+    ///   layer maps this to **429 Too Many Requests** + an upsell message.
+    /// - Returns a generic database error if the budget resolution or rollup
+    ///   read fails.
+    pub async fn check_plan_token_budget_rollup(&self, tenant_id: i64) -> anyhow::Result<()> {
+        let (_eff_bytes, eff_tokens, plan_code, upsell) =
+            self.resolve_effective_quotas(tenant_id).await?;
+
+        // None budget → grandfathered / unlimited → no enforcement.
+        let Some(_budget) = eff_tokens else {
+            return Ok(());
+        };
+
+        // O(1) read of the current UTC-month token total (no SUM on the hot path).
+        let current = self.get_current_month_token_rollup(tenant_id).await?;
+
+        // Reject when current >= budget. `additional = 1` turns the pure
+        // `current + additional > limit` check into `current >= budget`, so a
+        // tenant exactly at the cap is already blocked (the next token would
+        // exceed it). Reuses the shared quota math + error shape.
+        quota::check_token_quota(current, eff_tokens, 1)
             .map_err(|e| enrich_quota_error(e, plan_code.as_deref(), upsell.as_deref()))?;
 
         Ok(())
@@ -610,6 +672,40 @@ mod tests {
             err.to_string().contains("not connected"),
             "expected 'not connected', got: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn check_plan_token_budget_rollup_errors_before_connect() {
+        let store = unconnected_store();
+        let err = store.check_plan_token_budget_rollup(1).await.unwrap_err();
+        assert!(
+            err.to_string().contains("not connected"),
+            "expected 'not connected', got: {err}"
+        );
+    }
+
+    /// The `>= budget` rejection semantic is built on the pure quota math with
+    /// `additional = 1`. This locks that mapping in without a DB: a tenant
+    /// exactly at the cap must be rejected, one token below must pass.
+    #[test]
+    fn rollup_check_rejects_at_or_above_budget_one_below_passes() {
+        // current == budget → reject (rollup + 1 > budget).
+        let at_cap = quota::check_token_quota(100, Some(100), 1);
+        assert!(
+            matches!(at_cap, Err(quota::QuotaError::TokensExceeded { .. })),
+            "rollup exactly at budget must be rejected"
+        );
+
+        // current == budget - 1 → allow (rollup + 1 == budget, not > budget).
+        let one_below = quota::check_token_quota(99, Some(100), 1);
+        assert!(one_below.is_ok(), "one token below budget must pass");
+
+        // current well over budget → reject.
+        let over = quota::check_token_quota(150, Some(100), 1);
+        assert!(matches!(
+            over,
+            Err(quota::QuotaError::TokensExceeded { .. })
+        ));
     }
 
     #[tokio::test]

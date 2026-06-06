@@ -757,6 +757,18 @@ const MONTHLY_ROLLUP_CURRENT_SQL: &str = "SELECT tokens_used FROM tenant_monthly
      WHERE tenant_id = $1 \
        AND period_month = (date_trunc('month', now() AT TIME ZONE 'UTC'))::date";
 
+/// Sum a tenant's token usage over the **current UTC calendar month** (P14-T4).
+///
+/// The reconciliation/backstop read behind
+/// [`PgStore::get_token_usage`]. Windows on `created_at >= date_trunc('month',
+/// now() AT TIME ZONE 'UTC')` so it covers exactly the month the monthly rollup
+/// is bucketed by. `SUM(bigint)` is `NUMERIC` in Postgres, so the result is cast
+/// back to `BIGINT` for sqlx to decode (a tenant's monthly tokens fit in i64).
+const TOKEN_USAGE_MONTH_SQL: &str = "SELECT COALESCE(SUM(COALESCE(prompt_tokens,0) + COALESCE(completion_tokens,0)), 0)::BIGINT \
+     FROM usage_events \
+     WHERE tenant_id = $1 \
+       AND created_at >= date_trunc('month', now() AT TIME ZONE 'UTC')";
+
 // ── Store implementation ─────────────────────────────────────────────────────
 
 #[async_trait]
@@ -1980,26 +1992,30 @@ impl PgStore {
         Ok(total)
     }
 
-    /// Query the current token usage for a tenant (sum of `usage_events.prompt_tokens`
-    /// + `usage_events.completion_tokens`).
+    /// Query a tenant's token usage for the **current UTC calendar month**
+    /// (sum of `usage_events.prompt_tokens` + `usage_events.completion_tokens`
+    /// over rows whose `created_at` falls in the current month).
     ///
-    /// `NULL` token columns are treated as 0 via COALESCE. The sum covers all rows
-    /// recorded so far; a billing-period filter will be added in P11 when billing
-    /// plans are implemented.
+    /// `NULL` token columns are treated as 0 via COALESCE. The window is
+    /// `created_at >= date_trunc('month', now() AT TIME ZONE 'UTC')` — the first
+    /// instant of the current UTC month — matching the `(tenant_id, period_month)`
+    /// key the [`tenant_monthly_usage`](Self::get_current_month_token_rollup)
+    /// rollup is bucketed by (P14-T4). This `SUM` is the **reconciliation /
+    /// backstop** read; the hot enforcement path reads the O(1) rollup instead.
     ///
     /// # Errors
     /// Returns an error if the database is not connected or the query fails.
     pub async fn get_token_usage(&self, tenant_id: i64) -> anyhow::Result<i64> {
         let pool = self.app_pool()?;
         let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
-        let total: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(SUM(COALESCE(prompt_tokens,0) + COALESCE(completion_tokens,0)), 0)::BIGINT \
-             FROM usage_events WHERE tenant_id = $1",
-        )
-        .bind(tenant_id)
-        .fetch_one(&mut *tx)
-        .await
-        .context("failed to query token usage")?;
+        // Window to the current UTC calendar month so this lines up with the
+        // monthly rollup. `now() AT TIME ZONE 'UTC'` yields the UTC wall-clock
+        // timestamp; `date_trunc('month', …)` floors it to the month start.
+        let total: i64 = sqlx::query_scalar(TOKEN_USAGE_MONTH_SQL)
+            .bind(tenant_id)
+            .fetch_one(&mut *tx)
+            .await
+            .context("failed to query token usage")?;
         tx.commit()
             .await
             .context("failed to commit get_token_usage")?;
@@ -3389,6 +3405,25 @@ mod tests {
                 .contains("date_trunc('month', now() AT TIME ZONE 'UTC'))::date")
         );
         assert!(MONTHLY_ROLLUP_CURRENT_SQL.contains("$1"));
+    }
+
+    #[test]
+    fn token_usage_month_sql_windows_to_current_utc_month() {
+        // P14-T4: the reconciliation SUM must be scoped to the current UTC
+        // calendar month (not all-time), matching the rollup's bucketing.
+        assert!(TOKEN_USAGE_MONTH_SQL.contains("FROM usage_events"));
+        assert!(TOKEN_USAGE_MONTH_SQL.contains("SUM("));
+        assert!(TOKEN_USAGE_MONTH_SQL.contains("prompt_tokens"));
+        assert!(TOKEN_USAGE_MONTH_SQL.contains("completion_tokens"));
+        // The defining clause: a current-UTC-month lower bound on created_at.
+        assert!(
+            TOKEN_USAGE_MONTH_SQL
+                .contains("created_at >= date_trunc('month', now() AT TIME ZONE 'UTC')"),
+            "get_token_usage must window to the current UTC month: {TOKEN_USAGE_MONTH_SQL}"
+        );
+        assert!(TOKEN_USAGE_MONTH_SQL.contains("$1"));
+        // Cast back to BIGINT so sqlx can decode the NUMERIC SUM.
+        assert!(TOKEN_USAGE_MONTH_SQL.contains("::BIGINT"));
     }
 
     #[tokio::test]

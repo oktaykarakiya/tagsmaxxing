@@ -12,7 +12,10 @@
 //! ```
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use chrono::Utc;
 use kb_core::quota;
+use kb_core::role::Role;
+use kb_core::usage::UsageEvent;
 use kb_store::PgStore;
 
 /// Helper: create a connected PgStore against a fresh testcontainers Postgres.
@@ -21,6 +24,24 @@ async fn connected_store() -> PgStore {
     let store = PgStore::with_roles(&db.admin_url, &db.app_url);
     store.connect().await.expect("connect");
     store
+}
+
+/// Build a usage event for the current UTC instant with `prompt` tokens, so it
+/// lands in this month's rollup bucket.
+fn usage_event_now(tenant_id: i64, prompt: i32) -> UsageEvent {
+    UsageEvent {
+        id: 0,
+        tenant_id,
+        user_id: None,
+        model: "test-model".into(),
+        role: Role::Embed,
+        backend_id: None,
+        prompt_tokens: Some(prompt),
+        completion_tokens: None,
+        latency_ms: None,
+        cost_micros: None,
+        created_at: Utc::now(),
+    }
 }
 
 /// Real Postgres: check_plan_storage_quota enforces the free plan (50 MB).
@@ -316,4 +337,128 @@ async fn grandfathered_tenant_allows_remote_models() {
         .await
         .expect("check remote models");
     assert!(allowed, "grandfathered tenant must allow remote models");
+}
+
+// ── Rollup-based token-budget enforcement (P14-T4) ───────────────────────────
+
+/// Real Postgres: a tenant whose current-month rollup is at/over the plan's
+/// token budget is rejected by the rollup-based hot-path check, with an upsell.
+#[tokio::test]
+#[ignore]
+async fn token_budget_rollup_rejects_over_budget_tenant() {
+    let store = connected_store().await;
+
+    let tenant_id = store
+        .create_tenant("tok-over", "Token Over Budget")
+        .await
+        .expect("create_tenant");
+
+    // Free plan: 10_000 token budget.
+    let free = store
+        .get_plan_by_code("free")
+        .await
+        .expect("get plan")
+        .expect("free plan exists");
+    store
+        .update_tenant_plan(tenant_id, Some(free.id), None, None, Some("active"), None)
+        .await
+        .expect("assign free plan");
+
+    // Seed the current-month rollup over budget via the production write path.
+    // Two events of 6_000 prompt tokens ⇒ 12_000 this month > 10_000 budget.
+    store
+        .insert_usage_event(&usage_event_now(tenant_id, 6_000))
+        .await
+        .expect("insert usage 1");
+    store
+        .insert_usage_event(&usage_event_now(tenant_id, 6_000))
+        .await
+        .expect("insert usage 2");
+
+    // The O(1) rollup read agrees we are over budget.
+    let rollup = store
+        .get_current_month_token_rollup(tenant_id)
+        .await
+        .expect("rollup");
+    assert_eq!(rollup, 12_000, "rollup should reflect both events");
+
+    // Hot-path enforcement rejects with a TokensExceeded carrying an upsell.
+    let err = store
+        .check_plan_token_budget_rollup(tenant_id)
+        .await
+        .unwrap_err();
+    let quota_err: &quota::QuotaError = err.downcast_ref().expect("should be QuotaError");
+    assert!(
+        matches!(quota_err, quota::QuotaError::TokensExceeded { .. }),
+        "expected TokensExceeded, got: {err}"
+    );
+    let upsell = quota_err.upsell_message().expect("should have upsell");
+    assert!(
+        upsell.contains("Upgrade from free to pro"),
+        "expected free→pro upsell, got: {upsell}"
+    );
+}
+
+/// Real Postgres: a tenant under its monthly token budget passes the
+/// rollup-based check (no usage yet, and partial usage below the cap).
+#[tokio::test]
+#[ignore]
+async fn token_budget_rollup_allows_under_budget_tenant() {
+    let store = connected_store().await;
+
+    let tenant_id = store
+        .create_tenant("tok-under", "Token Under Budget")
+        .await
+        .expect("create_tenant");
+
+    let free = store
+        .get_plan_by_code("free")
+        .await
+        .expect("get plan")
+        .expect("free plan exists");
+    store
+        .update_tenant_plan(tenant_id, Some(free.id), None, None, Some("active"), None)
+        .await
+        .expect("assign free plan");
+
+    // No usage yet → rollup is 0 → must pass.
+    store
+        .check_plan_token_budget_rollup(tenant_id)
+        .await
+        .expect("zero usage must pass");
+
+    // Use 9_999 of the 10_000 budget — still strictly under, so the next
+    // ingest is allowed (boundary: current < budget passes).
+    store
+        .insert_usage_event(&usage_event_now(tenant_id, 9_999))
+        .await
+        .expect("insert usage");
+    store
+        .check_plan_token_budget_rollup(tenant_id)
+        .await
+        .expect("9_999 < 10_000 budget must pass");
+}
+
+/// Real Postgres: a grandfathered tenant (no plan → no budget) is never
+/// rejected by the rollup-based check, regardless of usage.
+#[tokio::test]
+#[ignore]
+async fn token_budget_rollup_grandfathered_unlimited() {
+    let store = connected_store().await;
+
+    let tenant_id = store
+        .create_tenant("tok-gf", "Token Grandfathered")
+        .await
+        .expect("create_tenant");
+
+    // No plan assigned → None budget → unlimited.
+    store
+        .insert_usage_event(&usage_event_now(tenant_id, 1_000_000))
+        .await
+        .expect("insert large usage");
+
+    store
+        .check_plan_token_budget_rollup(tenant_id)
+        .await
+        .expect("grandfathered tenant must never be token-budget rejected");
 }

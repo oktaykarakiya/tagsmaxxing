@@ -1471,9 +1471,9 @@ description = "B1: monthly token budget enforcement on ingest (UX-first hard blo
 depends_on = ["P14-T1"]
 plan_sections = ["29", "26.6"]
 acceptance = "over-budget tenant -> ingest 429 + upsell; under-budget allowed; single huge ingest cannot grossly overshoot; rejection counter increments; unit+integration tests; just ci green. CHECKPOINT: human review (billing/quota)."
-status = "todo"
+status = "done"
 checkpoint = true
-notes = ""
+notes = "CHECKPOINT APPROVED by user 2026-06-06. DESIGN DIVERGENCE (approved): chose UX-first BOUNDED OVERSHOOT over the description's pre-estimate. check_plan_token_budget_rollup reads the O(1) tenant_monthly_usage rollup (NOT a SUM) and rejects when current_month_rollup >= effective_token_budget (via check_token_quota(current, Some(budget), 1)); None/grandfathered budget -> unlimited. NO pre-extraction estimate (would falsely reject large media whose transcribed token count is tiny); the job crossing the budget completes, only the NEXT ingest blocks, per-job overshoot bounded by the already-enforced storage quota (documented at 3 code sites). 429 + upsell at POST /api/ingest and POST /upload; centralized quota_error_to_response (StorageExceeded->413, TokensExceeded->429, UserLimitExceeded->403); aligned storage error code to storage_quota_exceeded (verified no stale refs). get_token_usage now UTC-month-windowed (reconciliation backstop). kb_quota_rejections_total{limit} counter added + emitted. 6 files; unit + 3 #[ignore] pg integ tests. just ci green (cov 80.46%). (Pre-existing flaky middleware test fixed in a separate commit first.)"
 
 [[task]]
 id = "P14-T5"

@@ -663,6 +663,7 @@ pub async fn upload_submit(
             Ok(()) => {}
             Err(e) => {
                 if let Some(qe) = e.downcast_ref::<kb_core::quota::QuotaError>() {
+                    kb_metrics::record_quota_rejection("storage");
                     let msg = crate::handlers::ingest::quota_error_response(qe);
                     return (
                         StatusCode::PAYLOAD_TOO_LARGE,
@@ -674,6 +675,46 @@ pub async fn upload_submit(
                         .into_response();
                 }
                 tracing::error!(error = %e, "upload_submit: storage quota check failed");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({
+                        "error": "internal_error",
+                        "message": "an unexpected error occurred"
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    // ── 4b. Monthly token-budget check (plan-driven, P14-T4) ────────────────
+    // UX-first hard block mirroring POST /api/ingest: if the tenant has already
+    // met or exceeded its monthly token budget (O(1) rollup read), reject the
+    // next upload with 429 + upsell. The job that crossed the budget already ran
+    // to completion; only subsequent uploads are blocked (bounded overshoot —
+    // no pre-extraction token estimate, per-job overshoot bounded by the storage
+    // quota checked above). See PgStore::check_plan_token_budget_rollup.
+    {
+        match state
+            .pg_store
+            .check_plan_token_budget_rollup(auth_user.tenant_id)
+            .await
+        {
+            Ok(()) => {}
+            Err(e) => {
+                if let Some(qe) = e.downcast_ref::<kb_core::quota::QuotaError>() {
+                    kb_metrics::record_quota_rejection("tokens");
+                    let msg = crate::handlers::ingest::quota_error_response(qe);
+                    return (
+                        StatusCode::TOO_MANY_REQUESTS,
+                        Json(serde_json::json!({
+                            "error": "token_budget_exceeded",
+                            "message": msg
+                        })),
+                    )
+                        .into_response();
+                }
+                tracing::error!(error = %e, "upload_submit: token budget check failed");
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(serde_json::json!({

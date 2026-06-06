@@ -291,6 +291,12 @@ fn describe_all() {
         "Number of failed key-unwrap operations (DEK or provider key) — spike signals possible attack or key corruption"
     );
 
+    // Quota rejections (plan §29, P14-T4) — counter, label = limit.
+    metrics::describe_counter!(
+        "kb_quota_rejections_total",
+        "Number of requests rejected because a plan quota was exceeded (label: limit = storage|tokens|users)"
+    );
+
     // Budget / cost tracking (plan §26.6, P9-T10)
     metrics::describe_gauge!(
         "kb_tenant_spend_monthly_micros",
@@ -546,6 +552,19 @@ pub fn record_inflight_ingest(count: usize) {
 /// Call when an ingest request is rejected with 429 due to backpressure.
 pub fn record_ingest_throttled() {
     metrics::counter!("kb_ingest_throttled_total").increment(1);
+}
+
+// ── Quota-rejection metrics (plan §29, P14-T4) ───────────────────────────────────
+
+/// Increment the quota-rejection counter for a given limit.
+///
+/// Call when a request is rejected because a plan quota was exceeded.
+/// `limit` is the quota that was hit — `"tokens"` for the monthly token
+/// budget (429 + upsell), `"storage"` for the storage cap (413 + upsell),
+/// or `"users"` for the per-plan user limit (403 + upsell). Operators can
+/// alert on a rising rate to spot tenants who should be prompted to upgrade.
+pub fn record_quota_rejection(limit: &str) {
+    metrics::counter!("kb_quota_rejections_total", "limit" => limit.to_owned()).increment(1);
 }
 
 // ── Orphan GC metrics (plan §23, P8-T10) ─────────────────────────────────────────────
@@ -1108,6 +1127,50 @@ mod tests {
             text.contains("kb_ingest_throttled_total"),
             "kb_ingest_throttled_total not found in: {text}"
         );
+    }
+
+    #[test]
+    fn quota_rejection_counter_present_and_labelled() {
+        let _h = ensure_init();
+        // Use distinct labels so the lines are unambiguous regardless of what
+        // other tests recorded.
+        record_quota_rejection("tokens");
+        record_quota_rejection("storage");
+
+        let text = render();
+        assert!(
+            text.contains("kb_quota_rejections_total{limit=\"tokens\"}"),
+            "kb_quota_rejections_total tokens line missing in: {text}"
+        );
+        assert!(
+            text.contains("kb_quota_rejections_total{limit=\"storage\"}"),
+            "kb_quota_rejections_total storage line missing in: {text}"
+        );
+    }
+
+    #[test]
+    fn quota_rejection_counter_increments() {
+        let _h = ensure_init();
+        // A label nobody else uses, so the count is exactly what we record.
+        record_quota_rejection("p14t4-unit");
+        record_quota_rejection("p14t4-unit");
+        record_quota_rejection("p14t4-unit");
+
+        let text = render();
+        assert!(
+            text.contains("kb_quota_rejections_total{limit=\"p14t4-unit\"} 3"),
+            "expected count 3 for p14t4-unit label in: {text}"
+        );
+    }
+
+    #[test]
+    fn quota_rejection_has_help_and_type() {
+        let _h = ensure_init();
+        record_quota_rejection("tokens");
+
+        let text = render();
+        assert!(text.contains("# HELP kb_quota_rejections_total"));
+        assert!(text.contains("# TYPE kb_quota_rejections_total counter"));
     }
 
     #[test]
