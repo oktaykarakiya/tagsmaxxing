@@ -1,15 +1,70 @@
-"""Catalog (step-2 stubs) — plan quotas, cost budgets, rate limits.
+"""Catalog — plan quotas, cost budgets, rate limits.
+
+The blocked stubs document gates that were not yet wired; the live tests
+(``test_*_quota_*_metric``) drive the P14 enforcement path end-to-end against a
+dedicated low-cap tenant (the ``limits_account`` fixture, ~1 MB storage / ~1000
+tokens) and assert BOTH the HTTP rejection AND that the matching Prometheus
+rejection counter on the public ``/metrics`` endpoint moved.
 
 List with `pytest --collect-only -m quotas`.
 """
 
 from __future__ import annotations
 
+import re
+
+import httpx
 import pytest
 
 from lib import config, flows
 
 pytestmark = pytest.mark.quotas
+
+# ── /metrics counter-parse helper ────────────────────────────────────────────
+# Shared by the quota-enforcement tests below: scrape the public, unauthenticated
+# /metrics endpoint and read a single Prometheus counter value (optionally
+# label-filtered) so a test can measure the before/after delta of, e.g.,
+# kb_quota_rejections_total{limit="tokens"}.
+
+# A Prometheus data line: name{labels}? value (value may be int/float/exp).
+_METRIC_LINE_RE = re.compile(r"^([A-Za-z_:][\w:]*)(\{[^}]*\})?\s+([0-9eE.+-]+)$")
+
+
+def _metrics_text() -> str:
+    """Fetch the public ``/metrics`` exposition once (no auth; raises on non-200)."""
+    with httpx.Client(
+        base_url=config.base_url(), verify=config.verify_tls(), timeout=20.0
+    ) as c:
+        r = c.get("/metrics")
+        assert r.status_code == 200, f"/metrics not 200: {r.status_code} {r.text[:200]}"
+        return r.text
+
+
+def _counter_value(text: str, name: str, **labels: str) -> float:
+    """Sum the value of every ``name`` sample whose labels are a superset of ``labels``.
+
+    A Prometheus counter family the app has never observed is omitted from
+    ``/metrics`` entirely, so an absent series reads as ``0.0`` — the convention
+    the rest of the harness uses. When ``labels`` are given, only data lines whose
+    label set contains every requested ``key="value"`` pair are counted, so
+    ``kb_quota_rejections_total{limit="tokens"}`` is isolated from the
+    ``limit="storage"`` series sharing the family.
+    """
+    total = 0.0
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        m = _METRIC_LINE_RE.match(line)
+        if not m or m.group(1) != name:
+            continue
+        lbls = m.group(2) or ""
+        if all(f'{k}="{v}"' in lbls for k, v in labels.items()):
+            try:
+                total += float(m.group(3))
+            except ValueError:
+                pass
+    return total
 
 
 @pytest.mark.skip(
@@ -171,3 +226,133 @@ def test_per_user_job_priority(api):
     # also no endpoint to observe which job was claimed first in a multi-tenant
     # contention scenario.
     ...
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Live quota enforcement (P14) — API status + /metrics rejection counter
+#
+# Each test drives the dedicated low-cap tenant (limits_account: ~1 MB storage /
+# ~1000 tokens) into a single quota and asserts (a) the correct HTTP status with
+# the documented error code AND (b) that the matching kb_quota_rejections_total
+# series on the public /metrics endpoint incremented (scraped before/after).
+# Usage is reset between cases via the fixture's reset_usage() so caps trip
+# predictably. A FAILED row here is a real enforcement/observability bug — left
+# failing, never weakened.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def _raw_ingest(client, filename: str, content: bytes, note: str | None = None):
+    """POST one file to ``/api/ingest`` and return the raw response (never raises).
+
+    Unlike :meth:`lib.api_client.ApiClient.ingest_text`, this does not assert a
+    202 — quota tests need to inspect the 413/429 rejection status and body, which
+    the convenience wrapper turns into an exception.
+    """
+    files = [("files", (filename, content, "text/plain"))]
+    data = {"user_note": note} if note else {}
+    return client._c.post("/api/ingest", files=files, data=data)
+
+
+def test_storage_quota_413_increments_rejection_metric(limits_account):
+    """Over-storage ingest → 413 storage_quota_exceeded AND kb_quota_rejections_total{limit=storage} rises.
+
+    The ingest storage check runs before the token check, so a single upload past
+    the tenant's ~1 MB cap deterministically trips storage (P14-T4): 413 Payload
+    Too Large with error ``storage_quota_exceeded`` and an upsell message, and the
+    ``kb_quota_rejections_total{limit="storage"}`` counter increments.
+    """
+    acct = limits_account
+    acct.reset_usage()  # clean slate: rollup + stored bytes at zero
+
+    before = _counter_value(_metrics_text(), "kb_quota_rejections_total", limit="storage")
+
+    # A payload comfortably over the ~1 MB storage cap (well under the 100 MiB
+    # request limit, so it is the plan quota — not the payload limit — that fires).
+    marker = flows.unique_marker("storquota")
+    oversized = (f"storage-quota probe {marker} ".encode() * 70_000)  # ~1.7 MB
+    assert len(oversized) > acct.quota_bytes, "probe must exceed the clamped storage cap"
+    resp = _raw_ingest(acct.client, f"{marker}.txt", oversized)
+
+    assert resp.status_code == 413, (
+        f"over-storage ingest must return 413 Payload Too Large, got "
+        f"{resp.status_code}: {resp.text[:300]}"
+    )
+    body = resp.json()
+    assert body.get("error") == "storage_quota_exceeded", (
+        f"413 body must carry error 'storage_quota_exceeded'; got: {body}"
+    )
+
+    after = _counter_value(_metrics_text(), "kb_quota_rejections_total", limit="storage")
+    assert after > before, (
+        f"kb_quota_rejections_total{{limit=\"storage\"}} did not increment "
+        f"(before={before}, after={after}); the storage 413 path must record the "
+        "rejection so operators can alert on tenants who should upgrade."
+    )
+
+
+def test_token_budget_429_increments_rejection_metric(limits_account):
+    """Over-budget ingest → 429 token_budget_exceeded AND kb_quota_rejections_total{limit=tokens} rises.
+
+    The monthly token budget is a UX-first hard block: once the tenant's rollup
+    has met/exceeded its ~1000-token cap, the *next* ingest is rejected with 429
+    ``token_budget_exceeded`` (P14-T4). We burn budget with successive small text
+    ingests (each far under the 1 MB storage cap, so storage never trips), then
+    confirm the rejection carries the right status/code and that
+    ``kb_quota_rejections_total{limit="tokens"}`` incremented — while the storage
+    series did not move (this case is a token rejection, not a storage one).
+    """
+    acct = limits_account
+    acct.reset_usage()  # rollup back to zero so the cap is crossed by our ingests
+
+    base = _metrics_text()
+    tokens_before = _counter_value(base, "kb_quota_rejections_total", limit="tokens")
+    storage_before = _counter_value(base, "kb_quota_rejections_total", limit="storage")
+
+    # Each real ingest meters tagger + per-chunk embedding tokens; a handful of
+    # modest docs crosses the ~1000-token cap. Keep every payload tiny so storage
+    # stays far under 1 MB and only the token budget can reject. Bounded loop so a
+    # mis-wired budget gate fails fast instead of looping forever.
+    rejection = None
+    accepted = 0
+    for i in range(12):
+        marker = flows.unique_marker("tokquota")
+        # A few sentences → multiple chunks → enough embed+tag tokens to add up.
+        body_text = (
+            f"Token budget probe {i} {marker}. "
+            "Quarterly revenue, invoices, forecasts, vendors, and reconciliation "
+            "notes for the finance archive. " * 8
+        ).encode()
+        assert len(body_text) < acct.quota_bytes, "probe must stay under the storage cap"
+        resp = _raw_ingest(acct.client, f"{marker}.txt", body_text)
+        if resp.status_code == 429:
+            rejection = resp
+            break
+        assert resp.status_code == 202, (
+            f"pre-budget ingest #{i} should be accepted (202); got "
+            f"{resp.status_code}: {resp.text[:300]}"
+        )
+        accepted += 1
+
+    assert rejection is not None, (
+        f"token budget was never enforced after {accepted} accepted ingests under a "
+        f"~{acct.quota_tokens}-token cap; an over-budget tenant's next ingest must "
+        "return 429 token_budget_exceeded."
+    )
+    rbody = rejection.json()
+    assert rbody.get("error") == "token_budget_exceeded", (
+        f"429 body must carry error 'token_budget_exceeded'; got: {rbody}"
+    )
+
+    after = _metrics_text()
+    tokens_after = _counter_value(after, "kb_quota_rejections_total", limit="tokens")
+    storage_after = _counter_value(after, "kb_quota_rejections_total", limit="storage")
+    assert tokens_after > tokens_before, (
+        f"kb_quota_rejections_total{{limit=\"tokens\"}} did not increment "
+        f"(before={tokens_before}, after={tokens_after}); the token 429 path must "
+        "record the rejection."
+    )
+    assert storage_after == storage_before, (
+        f"a token-budget rejection must not touch the storage series "
+        f"(before={storage_before}, after={storage_after}); the counter labels must "
+        "distinguish which quota was hit."
+    )

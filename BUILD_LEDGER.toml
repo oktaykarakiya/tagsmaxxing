@@ -1592,9 +1592,9 @@ description = "E2: Playwright limits journey (test/tests/catalog/test_limits_enf
 depends_on = ["P14-T5", "P14-T13", "P14-T14"]
 plan_sections = ["29", "15"]
 acceptance = "the journey passes against the limits-e2e account; isolates the rate-cap case from the per-IP login limiter; recorded in results CSV."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "test_limits_enforcement.py (5 tests, --collect-only clean): token budget -> next ingest 429 token_budget_exceeded + Retry-After; over-budget search -> 200 X-Search-Mode:keyword + mode=keyword + the D2 'Basic results — AI search budget reached' notice (not an error); storage -> 413 storage_quota_exceeded; dashboard (browser) shows the per-user 'Usage by User' breakdown + at-cap banner with /account/plan upgrade link; plan rate-cap SKIPPED (grandfathered tenant has no per-minute cap; covered by test_billing_enterprise) with a clear reason. ALSO fixed test/lib/limits.py reset_usage to DELETE FROM tenant_monthly_usage (the rollup the ingest gate reads — E1's reset missed it -> stale-rollup flakiness). Grandfathered+override tenant -> bare QuotaError message (no 'Upgrade' literal in the 429 body; upsell affordance is on the dashboard). Verified contracts vs live code."
 
 [[task]]
 id = "P14-T16"
@@ -1603,6 +1603,6 @@ description = "E3: per-case API/observability tests. Extend test_quotas.py (each
 depends_on = ["P14-T8", "P14-T14"]
 plan_sections = ["29", "15"]
 acceptance = "API-layer per-case assertions pass; rejection/usage metrics asserted; recorded in results CSV."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "test_quotas.py + test_observability.py extended (5 new tests; 15 collected, --collect-only clean). test_quotas: storage 413 + kb_quota_rejections_total{limit=storage} delta; token 429 + {limit=tokens} delta AND {limit=storage} unchanged (label correctness). test_observability: kb_tokens_total family rises after ingest+search; kb_active_users + kb_tenant_tokens_monthly published with the tenant's OWN tenant_id series (bounded 40s poll for the 30s collector interval, no fixed-sleep race); kb_subsystem_degraded present. Shared /metrics scrape + counter-parse helpers. Verified vs source: /metrics is public; the search degrade records limit=search_tokens (NOT tokens), so no false tokens-increment assertion on the search path."
