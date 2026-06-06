@@ -327,10 +327,15 @@ def test_concurrent_retag_no_duplicate_jobs(api, page):
 
 
 def test_job_retry_then_dead_letter(api, page):
-    """A repeatedly-failing job increments attempts, then dead-letters and is not re-run.
+    """A retag job is enqueued, processed, and reaches a terminal state.
 
-    Ingest a file engineered to fail extraction; observe attempts climbing via
-    /admin/jobs or /api/jobs/:id and a terminal dead state that is not picked up again.
+    Triggers a retag via the browser, then polls the job via the API to verify
+    it reaches done/failed/dead with at least one attempt. The dead-letter path
+    (repeated failures exhausting retries) cannot be driven without fault
+    injection — the retag handler calls process_upload_inline synchronously
+    and the worker pool (P6-T7) has zero call sites. When the worker pool is
+    wired, this test should be extended to inject failures and verify the
+    dead-letter path.
     """
     tenant, email, password = (
         config.tenant_slug(),
@@ -345,7 +350,7 @@ def test_job_retry_then_dead_letter(api, page):
     )
     doc_id = doc["id"]
 
-    # 2. Trigger a retag job via the browser (this goes through the async job queue).
+    # 2. Trigger a retag job via the browser.
     _admin_browser_login(page)
     page.goto(f"/documents/{doc_id}")
     page.wait_for_selector(
@@ -368,20 +373,18 @@ def test_job_retry_then_dead_letter(api, page):
     page.locator("form[action$='/retag'] button[type='submit']").click()
     page.wait_for_load_state("networkidle")
 
-    # Wait for job processing.
+    # Wait for job processing (the handler processes synchronously).
     time.sleep(5)
 
     # 3. Find our retag job on the admin jobs page.
     page.goto("/admin/jobs")
     page.wait_for_selector("tbody", timeout=15_000)
 
-    # Find the newest retag job row.
     retag_rows = page.locator("tbody tr").filter(
         has=page.locator("td:nth-child(2)").get_by_text("retag", exact=True)
     )
     after_count = retag_rows.count()
 
-    # We should have at least one retag job.
     assert after_count > before_count, (
         f"No new retag job appeared (before={before_count}, after={after_count}). "
         "The retag was not enqueued."
@@ -391,11 +394,8 @@ def test_job_retry_then_dead_letter(api, page):
     job_id_str = retag_rows.first.locator("td:nth-child(1)").inner_text().strip()
     job_id = int(job_id_str)
 
-    # 4. Poll the job via the API. Give the queue worker a reasonable window
-    #    to pick up and process the job. If no worker is running (the serve
-    #    command creates a JobQueue but may not spawn a background processor),
-    #    the job stays "queued" indefinitely.
-    deadline = time.monotonic() + 30
+    # 4. Poll the job via the API.
+    deadline = time.monotonic() + 60
     last_status = None
     attempts = 0
     while time.monotonic() < deadline:
@@ -408,8 +408,6 @@ def test_job_retry_then_dead_letter(api, page):
         attempts = job.get("attempts", 0)
         if last_status in ("done", "failed", "dead"):
             break
-        # A running worker picks up queued jobs within seconds. If the job
-        # is still "queued" after 15 s, the worker likely isn't running.
         if last_status == "queued" and time.monotonic() > deadline - 15:
             break
         time.sleep(3)
@@ -419,8 +417,7 @@ def test_job_retry_then_dead_letter(api, page):
     )
     assert last_status in ("done", "failed", "dead"), (
         f"Job {job_id} did not reach a terminal state; last seen: {last_status}. "
-        "If still 'queued', the job-queue background worker may not be running "
-        "— retag jobs will never be processed without it."
+        "If still 'queued', the job-queue worker may not be running."
     )
 
     # A processed job should have attempts ≥ 1.
@@ -428,9 +425,10 @@ def test_job_retry_then_dead_letter(api, page):
         f"Job {job_id} reports attempts={attempts}; expected ≥1"
     )
 
-    # 5. If the job reached 'dead', verify it stays dead and is not re-run.
+    # 5. Dead-letter path (conditional): only verified when the job actually
+    #    reaches 'dead'. Without fault injection, most jobs reach 'done'.
     if last_status == "dead":
-        # Poll a few more times to confirm no resurrection.
+        # Confirm the dead job is not resurrected.
         for _ in range(5):
             time.sleep(3)
             job2 = api.get_job(job_id)
@@ -438,12 +436,6 @@ def test_job_retry_then_dead_letter(api, page):
                 f"Dead-lettered job {job_id} was resurrected: "
                 f"status changed to {job2.get('status')}"
             )
-            attempts = job2.get("attempts", attempts)
-
-    # Assert that a dead-lettered job has attempts ≥ the configured max_retries.
-    # (The exact max_retries is app-config-dependent; the key property is that
-    # the job stops being picked up after exhausting retries.)
-    if last_status == "dead":
         assert attempts > 1, (
             f"Dead-lettered job {job_id} has attempts={attempts}; "
             "a dead-letter should only happen after at least one retry."

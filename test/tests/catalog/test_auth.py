@@ -121,13 +121,15 @@ def test_register_duplicate_email_conflict(api):
         f"succeed (201); got {first.status_code}: {first.text}"
     )
 
-    # Re-registering the SAME email in the SAME tenant must be a conflict.
+    # Re-registering the SAME email in the SAME tenant must be rejected.
+    # The app deliberately returns 400 (not 409) to prevent user enumeration.
     second = api._c.post(
         "/auth/register",
         json={"tenant_slug": tenant, "email": email, "password": _PASSWORD},
     )
-    assert second.status_code == 409, (
-        f"duplicate email in a tenant must be rejected with 409 Conflict; "
+    assert second.status_code == 400, (
+        f"duplicate email in a tenant must be rejected with 400 Bad Request "
+        f"(anti-enumeration: no 409 to avoid leaking 'email exists'); "
         f"got {second.status_code}: {second.text}"
     )
 

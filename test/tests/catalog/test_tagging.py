@@ -288,6 +288,10 @@ def test_user_locked_tag_preserved_on_retag(api, page):
         f"tags present: {_tag_names(doc)}"
     )
 
+    # Record the number of retag jobs before we submit.
+    before_jobs = api._c.get(f"/api/jobs?kind=retag&document_id={doc_id}")
+    before_job_count = len(before_jobs.json() if before_jobs.status_code == 200 else [])
+
     # Retag via the browser.
     doc = _retag_via_browser_and_wait(api, page, doc_id, tenant, email, password)
 
@@ -297,9 +301,18 @@ def test_user_locked_tag_preserved_on_retag(api, page):
         f"tags present: {_tag_names(doc)}"
     )
 
+    # Verify a retag job was actually created (not a silent no-op).
+    after_jobs = api._c.get(f"/api/jobs?kind=retag&document_id={doc_id}")
+    after_job_count = len(after_jobs.json() if after_jobs.status_code == 200 else [])
+    assert after_job_count > before_job_count, (
+        f"no new retag job was created for document {doc_id} "
+        f"(before={before_job_count}, after={after_job_count}); "
+        f"retag may have silently failed"
+    )
+
 
 def test_retag_regenerates_tags(api, page):
-    """Triggering retag re-runs the tagger + canonicalizer."""
+    """Triggering retag re-runs the tagger + canonicalizer and produces a retag job."""
     tenant, email, password = config.tenant_slug(), config.admin_email(), config.admin_password()
     api.login(tenant, email, password)
 
@@ -308,6 +321,10 @@ def test_retag_regenerates_tags(api, page):
 
     before_tags = _tag_names(doc)
     assert before_tags, f"document {doc_id} has no tags before retag"
+
+    # Record the number of retag jobs before we submit.
+    before_jobs = api._c.get(f"/api/jobs?kind=retag&document_id={doc_id}")
+    before_job_count = len(before_jobs.json() if before_jobs.status_code == 200 else [])
 
     # Retag via the browser.
     doc = _retag_via_browser_and_wait(api, page, doc_id, tenant, email, password)
@@ -320,6 +337,11 @@ def test_retag_regenerates_tags(api, page):
         f"(retag may have failed; before: {before_tags})"
     )
 
-    # The tag set after retag is canonicalized and may differ or be the same
-    # depending on model determinism. We assert the operation ran and produced
-    # tags — structural correctness, not content identity.
+    # Verify a retag job was actually created (not a silent no-op).
+    after_jobs = api._c.get(f"/api/jobs?kind=retag&document_id={doc_id}")
+    after_job_count = len(after_jobs.json() if after_jobs.status_code == 200 else [])
+    assert after_job_count > before_job_count, (
+        f"no new retag job was created for document {doc_id} "
+        f"(before={before_job_count}, after={after_job_count}); "
+        f"retag may have silently failed"
+    )

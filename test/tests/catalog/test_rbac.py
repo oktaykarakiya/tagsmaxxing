@@ -168,9 +168,9 @@ def _recent_audit_actions(admin_dashboard_html: str) -> list[str]:
 def test_admin_role_endpoint_cannot_demote_last_owner(page):
     """Demoting the sole Owner via /admin/users/role is rejected (no lockout).
 
-    Audit: ``admin_change_user_role`` lacks the last-owner guard its
-    ``account_change_role`` twin has. POST ``/admin/users/role`` setting the only
-    Owner to ``member``; assert rejection (409/403) and the user is still Owner.
+    The handler (admin_handlers.rs) now includes a last-owner guard that mirrors
+    the account_change_role twin. POST /admin/users/role setting the only Owner to
+    member; assert rejection (403/409) and the user is still Owner.
     """
     owner = _signup_owner(page)
 
@@ -420,9 +420,9 @@ def test_privileged_action_writes_audit_event(page):
 def test_team_self_service_actions_are_audited(page):
     """Inviting/removing/role-changing via /account/team writes audit events.
 
-    Audit: ``account_*`` team handlers write NO audit event (unlike the /admin
-    equivalents). Perform a team invite via /account/team and assert it produces an
-    audit-log entry — expected to FAIL, surfacing the audit gap.
+    The account_* handlers (handlers_account.rs) now write audit events for
+    invite, change-role, and remove-user actions. Perform a team invite via
+    /account/team and assert it produces an audit-log entry.
     """
     owner = _signup_owner(page)
     marker = flows.unique_marker()

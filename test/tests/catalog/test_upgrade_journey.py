@@ -21,10 +21,10 @@ pytestmark = pytest.mark.billing
 def test_upgrade_cta_starts_checkout_not_405(page):
     """Clicking 'Upgrade' on /account/plan reaches checkout instead of erroring.
 
-    Audit: the CTA is ``<a href="/billing/checkout?plan=pro">`` but the route is
-    POST-only → a GET 405s. As an existing free tenant, click the Upgrade control and
-    assert it does NOT 405 (lands on a Stripe URL / posts correctly) — the entire
-    monetization entry point. Expected to FAIL, surfacing the dead button.
+    The billing router now registers both GET and POST for /billing/checkout
+    (get_checkout + post_checkout). The Upgrade CTA is an <a href> pointing to
+    /billing/checkout?plan=pro which is accepted by the GET handler. This test
+    verifies the monetization entry point is functional for a free tenant.
     """
     tenant, email, password = config.tenant_slug(), config.admin_email(), config.admin_password()
     flows.browser_login(page, tenant, email, password)
@@ -44,18 +44,15 @@ def test_upgrade_cta_starts_checkout_not_405(page):
         f"Upgrade CTA href should point to /billing/checkout, got: {href!r}"
     )
 
-    # Clicking the Upgrade button starts the checkout flow.
-    # The intended contract: navigating to the link target must NOT return
-    # 405 Method Not Allowed.  page.goto() follows the link as a browser
-    # would; its return value carries the main-response status code.
+    # Clicking the Upgrade button navigates to checkout. The GET handler
+    # (get_checkout) either redirects to Stripe, returns 200, or returns
+    # 500 when Stripe is unconfigured. It must NOT return 405 — the route
+    # accepts GET. Any non-405 response means the dead-CTA bug is fixed.
     response = page.goto(href)
     assert response is not None, "navigating to the Upgrade link must produce a response"
     assert response.status != 405, (
         f"Upgrade CTA (href={href!r}) returned 405 Method Not Allowed. "
-        f"The /billing/checkout route is POST-only but the CTA is a plain GET "
-        f"<a href> — the Upgrade button is dead and blocks the monetization "
-        f"entry point. Fix: accept GET /billing/checkout?plan=pro or use a "
-        f"form/POST button with HTMX."
+        f"The /billing/checkout route must accept GET requests."
     )
 
 

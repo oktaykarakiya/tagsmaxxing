@@ -175,8 +175,9 @@ def test_concurrent_searches(api):
             continue
         hits = resp.get("hits", [])
         doc_ids = [h.get("document_id") for h in hits]
-        assert seed_doc.get("id") in doc_ids or len(hits) > 0, (
-            "concurrent search returned no hits for seeded document"
+        assert seed_doc.get("id") in doc_ids, (
+            f"concurrent search returned hits {doc_ids} but the seeded document "
+            f"{seed_doc.get('id')} was missing"
         )
 
 

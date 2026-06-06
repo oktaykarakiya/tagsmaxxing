@@ -291,16 +291,12 @@ def test_decrypt_access_audited(api, page):
         f"decrypt-audit page did not render its heading: {body[:300]}"
     )
 
-    # After ingest + search, there should be decrypt-audit entries.
-    # Either we see rows with operations, or the page is empty (no events yet).
-    # The key assertion: the page loads and is functional. If operations have
-    # been recorded, they appear. The audit infrastructure must be present.
+    # After ingest + search, at least one decrypt-audit operation should be
+    # recorded (unwrap_dek for encryption, or unwrap_provider_key).
+    # If none appear, the audit infrastructure may be broken.
     has_operations = "unwrap_dek" in body.lower() or "unwrap_provider_key" in body.lower()
-    has_success_indicator = "Success" in body or "Failed" in body
-    has_empty_state = "no decrypt" in body.lower()
-
-    assert has_operations or has_success_indicator or has_empty_state, (
-        f"decrypt-audit page structure missing: {body[:500]}"
+    assert has_operations or "no decrypt" in body.lower(), (
+        f"decrypt-audit page has no operations and no empty-state message: {body[:500]}"
     )
 
 
