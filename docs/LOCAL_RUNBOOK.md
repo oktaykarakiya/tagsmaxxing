@@ -137,6 +137,54 @@ podman ps --format '{{.Names}}\t{{.Status}}' | grep local-kb
 
 Open <https://localhost:9443> (self-signed cert) and sign in with `admin@local.kb` / `admin`.
 
+## Observability / single pane
+
+There is **one** observability pane: **Prometheus** scrapes the app's `/metrics` endpoint and
+**Grafana** renders it. Import `crates/metrics/grafana-dashboard.json` (its only `__input` is a
+Prometheus datasource). A single dashboard serves **all tenants** — per-tenant series carry a
+`tenant_id` label rather than a Grafana template variable, so no per-tenant duplication is needed.
+
+Metrics surfaced on the dashboard (all live as of P14; full list + HELP text in
+`crates/metrics/src/lib.rs`):
+
+- **Backend / scheduler:** `kb_backend_healthy`, `kb_backend_free_slots` / `kb_backend_total_slots`,
+  `kb_backend_in_flight`, `kb_queue_depth`, `kb_queue_oldest_job_age_secs`.
+- **Requests:** `kb_requests_total`, `kb_request_duration_seconds`, `kb_request_errors_total`
+  (and the HTTP RED trio `kb_http_requests_total` / `_duration_seconds` / `kb_http_errors_total`).
+- **Per-tenant usage & cost** (label `tenant_id`): `kb_active_users`, `kb_storage_bytes_used`,
+  `kb_tenant_tokens_monthly`, `kb_tenant_spend_monthly_micros`, `kb_tenant_budget_cents`,
+  `kb_tenant_budget_exceeded`.
+- **Tokens metered:** `kb_tokens_total{role,model}`, `kb_metering_write_failures_total`.
+- **Limits / rejections:** `kb_quota_rejections_total{limit}`,
+  `kb_rate_limit_rejections_total{kind}`.
+- **Runtime health:** `kb_subsystem_degraded{subsystem}`, `kb_inflight_ingest`.
+
+**Alerting:** load `prometheus_alerts.yml` via `rule_files:` in `prometheus.yml`. It fires on
+budget ≥ 80% / exceeded, quota- and rate-limit-rejection spikes, subsystem degradation, in-flight
+ingest saturation, and lost metering writes. Validate with
+`promtool check rules prometheus_alerts.yml` (or, without promtool,
+`python3 -c "import yaml; list(yaml.safe_load_all(open('prometheus_alerts.yml')))"`).
+
+### Exact per-USER usage — Grafana Postgres datasource
+
+Per-**user** usage is **intentionally not** a Prometheus label (a `user_id` label would explode
+cardinality). Prometheus is the *ops* pane; for exact per-user accounting add a **second Grafana
+datasource of type PostgreSQL** pointed at the app database and query the `usage_events` table
+(`tenant_id, user_id, model, role, prompt_tokens, completion_tokens, created_at`). Example panel
+query (tokens per user, last 30 days):
+
+```sql
+SELECT user_id,
+       sum(coalesce(prompt_tokens,0) + coalesce(completion_tokens,0)) AS tokens
+FROM   usage_events
+WHERE  created_at >= now() - interval '30 days'
+GROUP  BY user_id
+ORDER  BY tokens DESC;
+```
+
+Use a **read-only** Postgres role for this datasource; it bypasses app-layer RLS, so scope it to
+reporting only. (Aggregated per-tenant rollups also live in `tenant_monthly_usage`.)
+
 ## Teardown
 
 ```bash

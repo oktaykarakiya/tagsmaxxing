@@ -1559,9 +1559,9 @@ description = "D1: complete the single pane. Extend crates/metrics/grafana-dashb
 depends_on = ["P14-T8", "P14-T9", "P14-T10"]
 plan_sections = ["15", "26.6"]
 acceptance = "dashboard JSON valid + panels for the revived metrics; alert rules valid; runbook updated; just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "JSON/YAML/docs only (no Rust; grep confirmed no Rust test depends on these files). grafana-dashboard.json +422 (26 panels, valid JSON): 3 new rows reusing the existing ${DS_PROMETHEUS} datasource + tenant_id label (one dashboard, all tenants) — Tokens&Metering (kb_tenant_tokens_monthly, spend-vs-budget, kb_tokens_total by role, kb_metering_write_failures_total), Limits&Rejections (kb_quota_rejections_total{limit}, kb_rate_limit_rejections_total{kind}), Runtime Health (kb_subsystem_degraded, kb_inflight_ingest, kb_queue_oldest_job_age_secs). prometheus_alerts.yml +84 (new group kb_limits_runtime: QuotaRejectionSpike, RateLimitRejectionSpike, SubsystemDegraded[crit], InflightIngestSaturation, MeteringWriteFailures[crit]; budget 80/100% already present). docs/LOCAL_RUNBOOK.md +48: Observability/single-pane section (Prometheus=pane; import dashboard; load alerts) + Grafana Postgres datasource for exact per-USER usage (per-user intentionally NOT a Prometheus label — cardinality). All metric names cross-checked vs metrics/lib.rs (zero typos)."
 
 [[task]]
 id = "P14-T13"

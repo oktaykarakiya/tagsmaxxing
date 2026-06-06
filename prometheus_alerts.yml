@@ -42,3 +42,87 @@ groups:
             Tenant {{ $labels.tenant_id }} has exceeded its monthly budget.
             Spend: {{ printf "%.2f" (query "kb_tenant_spend_monthly_micros{tenant_id=\"$labels.tenant_id\"}" | first | value | parseFloat / 1000000) }} USD.
             This is a SOFT cap unless TENANT_HARD_BUDGET_CAP=true.
+
+  # Runtime health + limit/quota signals revived in P14 (plan §15). These fire on
+  # the per-second rejection rates and runtime gauges exported by kb-metrics.
+  - name: kb_limits_runtime
+    rules:
+      # ── Quota-rejection spike (plan §29) ──
+      # A sustained rate of plan-quota rejections means tenants are hitting a cap
+      # (storage|tokens|users) — investigate / prompt an upgrade.
+      - alert: QuotaRejectionSpike
+        expr: sum by (limit) (rate(kb_quota_rejections_total[5m])) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+          category: limits
+        annotations:
+          summary: "Quota rejections spiking for limit {{ $labels.limit }}"
+          description: >
+            Plan-quota rejections for limit "{{ $labels.limit }}" are running at
+            {{ printf "%.3f" $value }}/s (5m rate) for over 10m. One or more
+            tenants are repeatedly hitting their {{ $labels.limit }} cap.
+
+      # ── Rate-limit (429) spike (plan §29) ──
+      # Distinguishes abuse (kind=login brute-force) from plan-cap throttling
+      # (kind=plan). A high login rate signals a credential-stuffing attempt.
+      - alert: RateLimitRejectionSpike
+        expr: sum by (kind) (rate(kb_rate_limit_rejections_total[5m])) > 1
+        for: 5m
+        labels:
+          severity: warning
+          category: limits
+        annotations:
+          summary: "429 rate-limit rejections spiking (kind {{ $labels.kind }})"
+          description: >
+            Rate-limit rejections of kind "{{ $labels.kind }}" are running at
+            {{ printf "%.3f" $value }}/s (5m rate) for over 5m.
+            kind=login indicates possible brute-force; kind=plan indicates a
+            tenant is exceeding its per-minute plan cap.
+
+      # ── Subsystem degraded (plan §22) ──
+      - alert: SubsystemDegraded
+        expr: kb_subsystem_degraded > 0
+        for: 2m
+        labels:
+          severity: critical
+          category: availability
+        annotations:
+          summary: "Subsystem {{ $labels.subsystem }} is degraded"
+          description: >
+            The "{{ $labels.subsystem }}" subsystem has reported a degraded state
+            for over 2m. Serving is impaired (e.g. fallbacks / reduced functionality);
+            check the dependency health and circuit-breaker gauges.
+
+      # ── In-flight ingest saturation (plan §22) ──
+      # The ingest concurrency limiter sheds load with 429s near its ceiling; a
+      # sustained high in-flight count means ingest is saturated / backed up.
+      - alert: InflightIngestSaturation
+        expr: kb_inflight_ingest > 16
+        for: 5m
+        labels:
+          severity: warning
+          category: availability
+        annotations:
+          summary: "In-flight ingest saturated"
+          description: >
+            kb_inflight_ingest has stayed above 16 for over 5m (currently
+            {{ $value }}). Ingest is saturated and requests may be throttled
+            (429); check queue depth and oldest-job age.
+
+      # ── Metering write failures (plan §15, §29) ──
+      # Lost usage-accounting writes (fail-open buffer drops or durable-sink
+      # errors). Any sustained rate means usage/billing data is being lost.
+      - alert: MeteringWriteFailures
+        expr: rate(kb_metering_write_failures_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+          category: metering
+        annotations:
+          summary: "Usage-accounting writes are being lost"
+          description: >
+            kb_metering_write_failures_total has been increasing for over 5m
+            ({{ printf "%.3f" $value }}/s). Usage events are being dropped
+            (back-pressured buffer or a broken durable sink) — billing/quota
+            accounting is now under-counting. Investigate the metering drain task.
