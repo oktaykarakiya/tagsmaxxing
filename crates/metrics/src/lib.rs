@@ -21,6 +21,9 @@
 //! - [`record_maintenance_success`] — sets the maintenance success gauge (P8-T11).
 //! - [`record_maintenance_failure`] — sets the maintenance failure gauge (P8-T11).
 //! - [`record_tenant_tokens_monthly`] — sets the per-tenant monthly token-usage gauge (P14-T8).
+//! - [`record_tokens`] — counts tokens at the metering seam, labelled by role + model (P14-T10).
+//! - [`record_metering_write_failure`] — counts lost usage-accounting writes (P14-T10).
+//! - [`record_rate_limit_rejection`] — counts 429 rate-limit rejections by kind (P14-T10).
 //!
 //! # Optional features
 //!
@@ -298,6 +301,24 @@ fn describe_all() {
         "Number of requests rejected because a plan quota was exceeded (label: limit = storage|tokens|users)"
     );
 
+    // Tokens metered (plan §15, §29, P14-T10) — counter, labels = role, model.
+    metrics::describe_counter!(
+        "kb_tokens_total",
+        "Total tokens (prompt + completion) accepted at the metering seam, labelled by role and model — counts every metered AI call (ingest, search, vision)"
+    );
+
+    // Metering write failures (plan §15, §29, P14-T10) — counter, no labels.
+    metrics::describe_counter!(
+        "kb_metering_write_failures_total",
+        "Number of usage-accounting writes lost: fail-open buffer drops (channel full/closed) plus durable-sink write errors in the drain task"
+    );
+
+    // Rate-limit rejections (plan §15, §29, P14-T10) — counter, label = kind.
+    metrics::describe_counter!(
+        "kb_rate_limit_rejections_total",
+        "Number of requests rejected with 429 by a rate limiter (label: kind = plan|login)"
+    );
+
     // Budget / cost tracking (plan §26.6, P9-T10)
     metrics::describe_gauge!(
         "kb_tenant_spend_monthly_micros",
@@ -570,6 +591,52 @@ pub fn record_ingest_throttled() {
 /// alert on a rising rate to spot tenants who should be prompted to upgrade.
 pub fn record_quota_rejection(limit: &str) {
     metrics::counter!("kb_quota_rejections_total", "limit" => limit.to_owned()).increment(1);
+}
+
+// ── Metering-seam counters (plan §15, §29, P14-T10) ──────────────────────────────
+
+/// Add the tokens consumed by one metered AI call to `kb_tokens_total`.
+///
+/// Called at the single metering chokepoint
+/// (`kb_store::BufferedUsageRecorder::record_usage`) as each [`UsageEvent`] is
+/// accepted, so **every** metered call — ingest tagging/embedding, search query
+/// embedding + reranking, and vision captioning — is counted exactly once.
+///
+/// `tokens` is `prompt_tokens + completion_tokens` for the event. `role` is the
+/// model capability (a small fixed enum: `text|vision|code|embed|rerank`) and
+/// `model` is the model id (a small configured set), so label cardinality stays
+/// bounded.
+///
+/// [`UsageEvent`]: kb_core-style usage record carrying role/model/token counts.
+pub fn record_tokens(role: &str, model: &str, tokens: u64) {
+    metrics::counter!(
+        "kb_tokens_total",
+        "role" => role.to_owned(),
+        "model" => model.to_owned()
+    )
+    .increment(tokens);
+}
+
+/// Increment `kb_metering_write_failures_total` — one accounting write was lost.
+///
+/// Called from `kb_store::BufferedUsageRecorder` on a fail-open drop (the bounded
+/// channel was full or the drain task had stopped) and from its drain task when
+/// the inner durable sink returns an error. Both are real "we lost a usage write"
+/// events; a sustained rate signals back-pressure or a broken sink. The metric is
+/// unlabelled — operators alert on its total rate.
+pub fn record_metering_write_failure() {
+    metrics::counter!("kb_metering_write_failures_total").increment(1);
+}
+
+/// Increment `kb_rate_limit_rejections_total` for a 429 from a rate limiter.
+///
+/// `kind` is a fixed string identifying which limiter rejected the request:
+/// `"plan"` for the per-tenant plan per-minute cap, `"login"` for the per-IP
+/// login brute-force limiter. Called from the API middleware at each limiter's
+/// 429 site, so operators can distinguish abuse (login) from plan-cap throttling
+/// (plan) on a single counter.
+pub fn record_rate_limit_rejection(kind: &str) {
+    metrics::counter!("kb_rate_limit_rejections_total", "kind" => kind.to_owned()).increment(1);
 }
 
 // ── Orphan GC metrics (plan §23, P8-T10) ─────────────────────────────────────────────
@@ -1414,5 +1481,81 @@ mod tests {
         let text = render();
         assert!(text.contains("# HELP kb_decrypt_audit_failed_total"));
         assert!(text.contains("# TYPE kb_decrypt_audit_failed_total counter"));
+    }
+
+    // ── Metering-seam counter tests (P14-T10) ─────────────────────────────
+
+    #[test]
+    fn tokens_counter_labelled_by_role_and_model_and_sums_tokens() {
+        let _h = ensure_init();
+        // A label combo nobody else uses so the count is exactly what we add.
+        record_tokens("p14t10-role", "p14t10-model", 30);
+        record_tokens("p14t10-role", "p14t10-model", 12);
+
+        let text = render();
+        assert!(
+            text.contains("kb_tokens_total{role=\"p14t10-role\",model=\"p14t10-model\"} 42"),
+            "expected summed token count 42 for the unique label combo in: {text}"
+        );
+    }
+
+    #[test]
+    fn tokens_counter_has_help_and_type() {
+        let _h = ensure_init();
+        record_tokens("text", "qwen3", 1);
+
+        let text = render();
+        assert!(text.contains("# HELP kb_tokens_total"));
+        assert!(text.contains("# TYPE kb_tokens_total counter"));
+    }
+
+    #[test]
+    fn metering_write_failure_counter_present_and_has_help_and_type() {
+        let _h = ensure_init();
+        record_metering_write_failure();
+
+        let text = render();
+        // Unlabelled counter — assert the family is present as a data line.
+        assert!(
+            text.lines().any(|l| l
+                .trim_start()
+                .starts_with("kb_metering_write_failures_total ")),
+            "kb_metering_write_failures_total data line missing in: {text}"
+        );
+        assert!(text.contains("# HELP kb_metering_write_failures_total"));
+        assert!(text.contains("# TYPE kb_metering_write_failures_total counter"));
+    }
+
+    #[test]
+    fn rate_limit_rejection_counter_labelled_by_kind() {
+        let _h = ensure_init();
+        record_rate_limit_rejection("plan");
+        record_rate_limit_rejection("login");
+
+        let text = render();
+        assert!(
+            text.contains("kb_rate_limit_rejections_total{kind=\"plan\"}"),
+            "kb_rate_limit_rejections_total plan line missing in: {text}"
+        );
+        assert!(
+            text.contains("kb_rate_limit_rejections_total{kind=\"login\"}"),
+            "kb_rate_limit_rejections_total login line missing in: {text}"
+        );
+    }
+
+    #[test]
+    fn rate_limit_rejection_counter_increments_and_has_help_and_type() {
+        let _h = ensure_init();
+        // A kind nobody else uses so the count is exactly what we record.
+        record_rate_limit_rejection("p14t10-kind");
+        record_rate_limit_rejection("p14t10-kind");
+
+        let text = render();
+        assert!(
+            text.contains("kb_rate_limit_rejections_total{kind=\"p14t10-kind\"} 2"),
+            "expected count 2 for p14t10-kind label in: {text}"
+        );
+        assert!(text.contains("# HELP kb_rate_limit_rejections_total"));
+        assert!(text.contains("# TYPE kb_rate_limit_rejections_total counter"));
     }
 }

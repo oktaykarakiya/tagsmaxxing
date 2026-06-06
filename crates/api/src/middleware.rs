@@ -111,6 +111,7 @@ pub async fn auth_middleware(
                                     if let Err(retry_after) =
                                         PLAN_RATE_LIMITER.check(tid, cap as usize)
                                     {
+                                        kb_metrics::record_rate_limit_rejection("plan");
                                         return Ok(rate_limit_response(retry_after));
                                     }
                                 }
@@ -202,6 +203,7 @@ pub async fn auth_middleware(
             match state.pg_store.resolve_rate_cap(tid).await {
                 Ok(Some(cap)) if cap > 0 => {
                     if let Err(retry_after) = PLAN_RATE_LIMITER.check(tid, cap as usize) {
+                        kb_metrics::record_rate_limit_rejection("plan");
                         return Ok(rate_limit_response(retry_after));
                     }
                 }
@@ -605,6 +607,7 @@ async fn login_rate_limit_with(
     match limiter.check(ip, login_rate_max_attempts()) {
         Ok(()) => Ok(next.run(request).await),
         Err(retry_after) => {
+            kb_metrics::record_rate_limit_rejection("login");
             let body = axum::body::Body::from(format!(
                 r#"{{"error":"rate_limited","message":"Too many login attempts. Please try again in {retry_after}s."}}"#
             ));
@@ -1776,6 +1779,56 @@ mod tests {
         assert!(
             statuses.contains(&StatusCode::TOO_MANY_REQUESTS),
             "should contain at least one 429, got: {statuses:?}",
+        );
+    }
+
+    /// Parse the integer value of the `kb_rate_limit_rejections_total{kind="…"}`
+    /// counter from a Prometheus exposition document, returning 0 when the series
+    /// has no data line yet. Lets the login-limiter test take a before/after delta
+    /// of the process-global counter without racing other tests.
+    fn rate_limit_rejection_count(text: &str, kind: &str) -> u64 {
+        let needle = format!("kb_rate_limit_rejections_total{{kind=\"{kind}\"}} ");
+        text.lines()
+            .find_map(|l| l.trim_start().strip_prefix(&needle))
+            .and_then(|v| v.trim().parse::<f64>().ok())
+            .map(|v| v as u64)
+            .unwrap_or(0)
+    }
+
+    #[tokio::test]
+    async fn login_limiter_429_increments_rate_limit_rejections_counter() {
+        // P14-T10: the login brute-force 429 path must bump
+        // kb_rate_limit_rejections_total{kind="login"}. The router-local limiter
+        // keeps the 429 count deterministic; the counter itself is process-global,
+        // so we assert it rises by at least the number of 429s we observe.
+        let _ = kb_metrics::init_metrics();
+        let before = rate_limit_rejection_count(&kb_metrics::render(), "login");
+
+        let router = rate_limit_test_router();
+        let mut rejections = 0u64;
+        for _ in 0..10 {
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/auth/login")
+                        .header("x-forwarded-for", "198.51.100.42")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            if response.status() == StatusCode::TOO_MANY_REQUESTS {
+                rejections += 1;
+            }
+        }
+        assert!(rejections >= 1, "test must produce at least one login 429");
+
+        let after = rate_limit_rejection_count(&kb_metrics::render(), "login");
+        assert!(
+            after >= before + rejections,
+            "login rejection counter must rise by >= the {rejections} 429(s): {before} -> {after}"
         );
     }
 

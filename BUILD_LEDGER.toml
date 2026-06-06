@@ -1537,9 +1537,9 @@ description = "C3: counters at the seam. kb_tokens_total{role,model} (from the m
 depends_on = ["P14-T1", "P14-T4"]
 plan_sections = ["15", "29"]
 acceptance = "counters increment at their call sites; visible on /metrics; unit tests; just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "Three observability counters added (kb_quota_rejections_total was already shipped in B1). kb_tokens_total{role,model} emitted at the single chokepoint BufferedUsageRecorder::record_usage — covers ALL metered AI calls (ingest tagger/embedder/canonicalizer + search embedder/reranker + vision captioner, since serve.rs wires the one buffered recorder into all 5 components). kb_metering_write_failures_total incremented on the fail-open DROP (channel Full/Closed) AND on a drain-task inner.record_usage error. kb_rate_limit_rejections_total{kind=plan|login} at the middleware 429 sites (plan rate cap + login brute-force). 3 files (metrics/lib.rs decls+helpers, buffered_recorder.rs, middleware.rs); 9 tests. just ci green (76.68%)."
 
 [[task]]
 id = "P14-T11"

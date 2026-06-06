@@ -65,6 +65,9 @@ impl BufferedUsageRecorder {
             // Drain until all senders are dropped and the buffer is empty.
             while let Some(event) = rx.recv().await {
                 if let Err(e) = inner.record_usage(&event).await {
+                    // The durable write actually failed — this accounting write
+                    // is lost. Count it alongside the fail-open drops (P14-T10).
+                    kb_metrics::record_metering_write_failure();
                     tracing::warn!(
                         error = %e,
                         tenant_id = event.tenant_id,
@@ -99,10 +102,21 @@ impl UsageRecorder for BufferedUsageRecorder {
     /// incremented and a `warn` is logged, but `Ok(())` is still returned so the
     /// calling request path is unaffected.
     async fn record_usage(&self, event: &UsageEvent) -> anyhow::Result<()> {
+        // Count tokens at this single chokepoint as the event is accepted, so
+        // every metered AI call (ingest, search, vision) is counted regardless
+        // of whether the durable write later drops (P14-T10). The metric tracks
+        // tokens *used*, which is true the moment the call happened.
+        let tokens = event.prompt_tokens.unwrap_or(0).max(0) as u64
+            + event.completion_tokens.unwrap_or(0).max(0) as u64;
+        kb_metrics::record_tokens(event.role.as_str(), &event.model, tokens);
+
         match self.tx.try_send(event.clone()) {
             Ok(()) => Ok(()),
             Err(err) => {
                 let prior = self.dropped.fetch_add(1, Ordering::Relaxed);
+                // A full or closed channel means this accounting write is lost
+                // (fail-open). Record it so operators can alert on lost writes.
+                kb_metrics::record_metering_write_failure();
                 let reason = match err {
                     mpsc::error::TrySendError::Full(_) => "buffer full",
                     mpsc::error::TrySendError::Closed(_) => "drain task stopped",
@@ -176,19 +190,40 @@ mod tests {
     }
 
     fn event(tenant_id: i64, prompt: i32) -> UsageEvent {
+        event_for_model(tenant_id, prompt, 0, "test-model")
+    }
+
+    /// Build a usage event with an explicit model id and prompt/completion split,
+    /// so token-counter tests can isolate a unique `{role,model}` series in the
+    /// process-global metrics recorder.
+    fn event_for_model(tenant_id: i64, prompt: i32, completion: i32, model: &str) -> UsageEvent {
         UsageEvent {
             id: 0,
             tenant_id,
             user_id: Some(9),
-            model: "test-model".into(),
+            model: model.into(),
             role: Role::Embed,
             backend_id: None,
             prompt_tokens: Some(prompt),
-            completion_tokens: Some(0),
+            completion_tokens: Some(completion),
             latency_ms: None,
             cost_micros: None,
             created_at: chrono::Utc::now(),
         }
+    }
+
+    /// Parse the integer value of a single unlabelled counter family from a
+    /// Prometheus exposition document, returning 0 when the family has no data
+    /// line yet. Used to take before/after deltas of the global, label-free
+    /// `kb_metering_write_failures_total` counter without racing parallel tests.
+    fn counter_value(text: &str, name: &str) -> u64 {
+        let prefix = format!("{name} ");
+        text.lines()
+            .map(str::trim_start)
+            .find_map(|l| l.strip_prefix(&prefix))
+            .and_then(|v| v.trim().parse::<f64>().ok())
+            .map(|v| v as u64)
+            .unwrap_or(0)
     }
 
     #[tokio::test]
@@ -292,6 +327,98 @@ mod tests {
             seen.load(Ordering::Relaxed),
             5,
             "drain task must attempt every event despite inner errors"
+        );
+    }
+
+    // ── Metering-seam metric tests (P14-T10) ──────────────────────────────
+
+    #[tokio::test]
+    async fn record_usage_counts_tokens_at_the_seam() {
+        let _ = kb_metrics::init_metrics();
+        let inner = Arc::new(CapturingRecorder::default());
+        let (rec, handle) = BufferedUsageRecorder::start(inner, 16);
+
+        // A model id nobody else uses so the rendered series is exactly ours.
+        // role=embed (event_for_model), prompt 7 + completion 5 = 12 per call.
+        let model = "p14t10-seam-model";
+        rec.record_usage(&event_for_model(1, 7, 5, model))
+            .await
+            .unwrap();
+        rec.record_usage(&event_for_model(1, 3, 0, model))
+            .await
+            .unwrap();
+
+        drop(rec);
+        handle.await.unwrap();
+
+        let text = kb_metrics::render();
+        // Tokens are counted on accept, summed across both calls: 12 + 3 = 15.
+        assert!(
+            text.contains(&format!(
+                "kb_tokens_total{{role=\"embed\",model=\"{model}\"}} 15"
+            )),
+            "expected kb_tokens_total of 15 for {model} in: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn dropped_event_increments_metering_write_failures() {
+        let _ = kb_metrics::init_metrics();
+        let before = counter_value(&kb_metrics::render(), "kb_metering_write_failures_total");
+
+        // Drive the buffer to full with a wedged drain task, exactly like
+        // `drops_on_full_buffer_without_erroring`, then assert the failure
+        // counter advanced by at least the number of drops observed.
+        let release = Arc::new(tokio::sync::Notify::new());
+        let seen = Arc::new(AtomicU64::new(0));
+        let inner = Arc::new(BlockingRecorder {
+            release: release.clone(),
+            seen: seen.clone(),
+        });
+        let (rec, handle) = BufferedUsageRecorder::start(inner, 1);
+
+        for i in 0..100 {
+            rec.record_usage(&event(1, i)).await.unwrap();
+            if rec.dropped_count() > 0 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        let drops = rec.dropped_count();
+        assert!(drops >= 1, "test must observe at least one drop");
+
+        release.notify_waiters();
+        drop(rec);
+        let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
+
+        let after = counter_value(&kb_metrics::render(), "kb_metering_write_failures_total");
+        assert!(
+            after >= before + drops,
+            "metering-write-failures must rise by >= the {drops} drop(s): {before} -> {after}"
+        );
+    }
+
+    #[tokio::test]
+    async fn inner_failure_increments_metering_write_failures() {
+        let _ = kb_metrics::init_metrics();
+        let before = counter_value(&kb_metrics::render(), "kb_metering_write_failures_total");
+
+        // Every durable write fails; the drain task must count each lost write.
+        let seen = Arc::new(AtomicU64::new(0));
+        let inner = Arc::new(FailingRecorder { seen: seen.clone() });
+        let (rec, handle) = BufferedUsageRecorder::start(inner, 16);
+
+        for i in 0..3 {
+            rec.record_usage(&event(1, i)).await.unwrap();
+        }
+        drop(rec);
+        handle.await.unwrap();
+        assert_eq!(seen.load(Ordering::Relaxed), 3, "all 3 must be attempted");
+
+        let after = counter_value(&kb_metrics::render(), "kb_metering_write_failures_total");
+        assert!(
+            after >= before + 3,
+            "metering-write-failures must rise by >= 3 inner failures: {before} -> {after}"
         );
     }
 }
