@@ -141,16 +141,24 @@ class LimitsAccount:
     def reset_usage(self) -> None:
         """Clear this tenant's accrued usage so a case starts from zero.
 
-        Token usage is summed from ``usage_events`` (deleted directly). Storage is
-        summed from ``files``; deleting this tenant's ``documents`` rows cascades
-        (``ON DELETE CASCADE``) to ``files``, ``chunks``, and ``document_tags``, so
-        one delete clears all storage sources. Every delete is scoped by
-        ``tenant_id`` (this tenant only). The quota override is re-asserted in case
-        a prior case cleared or changed it. Idempotent.
+        Token usage has **two** server-side sources that must both be cleared:
+        the authoritative ``usage_events`` rows (what the dashboard sums) **and**
+        the pre-aggregated ``tenant_monthly_usage`` rollup (the O(1) counter the
+        ingest token-budget gate actually reads — see
+        ``PgStore::check_plan_token_budget_rollup``). Deleting only ``usage_events``
+        would leave a stale rollup, so a freshly-reset tenant could still 429 on
+        ingest; we delete both. Storage is summed from ``files``; deleting this
+        tenant's ``documents`` rows cascades (``ON DELETE CASCADE``) to ``files``,
+        ``chunks``, and ``document_tags``, so one delete clears all storage sources.
+        Every delete is scoped by ``tenant_id`` (this tenant only). The quota
+        override is re-asserted in case a prior case cleared or changed it.
+        Idempotent.
         """
         tid = self.tenant_id
-        # Token usage source.
+        # Token usage sources: the event log AND the O(1) monthly rollup that the
+        # ingest budget gate point-selects (clearing only one leaves a stale cap).
         _db_exec(f"DELETE FROM usage_events WHERE tenant_id = {tid}")
+        _db_exec(f"DELETE FROM tenant_monthly_usage WHERE tenant_id = {tid}")
         # Storage source: deleting documents cascades to files/chunks/document_tags.
         _db_exec(f"DELETE FROM documents WHERE tenant_id = {tid}")
         # Re-assert the tiny caps (a previous case may have cleared the override).
