@@ -274,18 +274,34 @@ pub async fn account_page(
         (s, t)
     };
 
-    let storage_limit = billing
-        .as_ref()
-        .ok()
-        .and_then(|b| b.as_ref())
-        .and_then(|b| b.plan.as_ref())
-        .map(|p| p.quota_bytes);
-    let token_limit = billing
-        .as_ref()
-        .ok()
-        .and_then(|b| b.as_ref())
-        .and_then(|b| b.plan.as_ref())
-        .and_then(|p| p.token_budget);
+    // Effective caps (admin override > plan > unlimited) — the same source the
+    // dashboard and enforcement read, so /account agrees with both instead of
+    // advertising the plan value while a tighter/looser admin override is what
+    // actually applies. Fall back to plan-only limits if the resolve fails
+    // (mirror of handlers_dashboard.rs).
+    let (storage_limit, token_limit) = match state
+        .pg_store
+        .resolve_effective_quotas(auth_user.tenant_id)
+        .await
+    {
+        Ok((eff_bytes, eff_tokens, _plan_code, _upsell)) => (eff_bytes, eff_tokens),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                tenant_id = auth_user.tenant_id,
+                "failed to resolve effective quotas for account page"
+            );
+            let plan = billing
+                .as_ref()
+                .ok()
+                .and_then(|b| b.as_ref())
+                .and_then(|b| b.plan.as_ref());
+            (
+                plan.map(|p| p.quota_bytes),
+                plan.and_then(|p| p.token_budget),
+            )
+        }
+    };
 
     let storage_bar = quota_bar("Storage", storage_used, storage_limit, format_bytes);
     let token_bar = quota_bar(

@@ -238,11 +238,14 @@ impl PgStore {
             .collect())
     }
 
-    /// Fetch a daily token-usage breakdown for the current calendar month.
+    /// Fetch a daily token-usage breakdown for the **current UTC calendar month**.
     ///
     /// Returns one row per day (in `YYYY-MM-DD` format) with sums of prompt
-    /// and completion tokens. Only days that have at least one usage event are
-    /// included; chart rendering fills in zero-usage days client-side.
+    /// and completion tokens. Both the day label and the month filter are
+    /// computed in UTC so a boundary-hour event lands in the same day bucket
+    /// it is filtered by, regardless of the server's local timezone. Only days
+    /// that have at least one usage event are included; chart rendering fills
+    /// in zero-usage days client-side.
     ///
     /// Uses the app pool + `begin_tenant_tx`.
     ///
@@ -255,7 +258,7 @@ impl PgStore {
         let pool = self.app_pool()?;
         let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
         let rows: Vec<(String, i64, i64)> = sqlx::query_as(
-            "SELECT to_char(created_at, 'YYYY-MM-DD') AS day, \
+            "SELECT to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day, \
                     COALESCE(SUM(prompt_tokens), 0)::BIGINT, \
                     COALESCE(SUM(completion_tokens), 0)::BIGINT \
              FROM usage_events \
