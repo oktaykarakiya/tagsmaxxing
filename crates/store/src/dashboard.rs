@@ -158,9 +158,12 @@ impl PgStore {
             .collect())
     }
 
-    /// Sum token usage for the **current calendar month**.
+    /// Sum token usage for the **current UTC calendar month**.
     ///
     /// This is the total used against a plan's `token_budget` for the dashboard.
+    /// The UTC window matches the B1 enforcement (`get_token_usage` /
+    /// `tenant_monthly_usage`), so the dashboard figure agrees with what the
+    /// budget gate actually counts even when the server's local timezone is not UTC.
     ///
     /// Uses the app pool + `begin_tenant_tx`.
     ///
@@ -173,7 +176,7 @@ impl PgStore {
             "SELECT COALESCE(SUM(COALESCE(prompt_tokens,0) + COALESCE(completion_tokens,0)), 0)::BIGINT \
              FROM usage_events \
              WHERE tenant_id = $1 \
-               AND date_trunc('month', created_at) = date_trunc('month', now())",
+               AND date_trunc('month', created_at AT TIME ZONE 'UTC') = date_trunc('month', now() AT TIME ZONE 'UTC')",
         )
         .bind(tenant_id)
         .fetch_one(&mut *tx)
@@ -213,7 +216,7 @@ impl PgStore {
              FROM usage_events ue \
              LEFT JOIN users u ON u.id = ue.user_id AND u.tenant_id = ue.tenant_id \
              WHERE ue.tenant_id = $1 \
-               AND date_trunc('month', ue.created_at) = date_trunc('month', now()) \
+               AND date_trunc('month', ue.created_at AT TIME ZONE 'UTC') = date_trunc('month', now() AT TIME ZONE 'UTC') \
              GROUP BY ue.user_id, u.email \
              ORDER BY total DESC, ue.user_id ASC NULLS LAST",
         )
@@ -257,7 +260,7 @@ impl PgStore {
                     COALESCE(SUM(completion_tokens), 0)::BIGINT \
              FROM usage_events \
              WHERE tenant_id = $1 \
-               AND date_trunc('month', created_at) = date_trunc('month', now()) \
+               AND date_trunc('month', created_at AT TIME ZONE 'UTC') = date_trunc('month', now() AT TIME ZONE 'UTC') \
              GROUP BY day \
              ORDER BY day",
         )

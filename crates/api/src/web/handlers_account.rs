@@ -132,10 +132,19 @@ pub(crate) fn plan_display_name(billing: &TenantBilling) -> String {
 }
 
 /// Build a quota bar from current usage and a plan limit.
-pub(crate) fn quota_bar(label: &str, used: i64, limit: Option<i64>) -> QuotaBar {
-    let used_fmt = format_bytes(used);
+pub(crate) fn quota_bar(
+    label: &str,
+    used: i64,
+    limit: Option<i64>,
+    fmt: fn(i64) -> String,
+) -> QuotaBar {
+    // `fmt` formats both the used and limit values so the bar renders in the
+    // metric's own unit — `format_bytes` for storage, `format_tokens` for the
+    // token budget (a token count is NOT bytes; passing format_bytes here is the
+    // bug that rendered "12.5 KB" instead of "12.5K" tokens).
+    let used_fmt = fmt(used);
     let (limit_fmt, pct) = match limit {
-        Some(l) if l > 0 => (format_bytes(l), usage_percent(used, l)),
+        Some(l) if l > 0 => (fmt(l), usage_percent(used, l)),
         _ => ("Unlimited".into(), 0u8),
     };
     QuotaBar {
@@ -278,8 +287,13 @@ pub async fn account_page(
         .and_then(|b| b.plan.as_ref())
         .and_then(|p| p.token_budget);
 
-    let storage_bar = quota_bar("Storage", storage_used, storage_limit);
-    let token_bar = quota_bar("Tokens (this month)", token_used, token_limit);
+    let storage_bar = quota_bar("Storage", storage_used, storage_limit, format_bytes);
+    let token_bar = quota_bar(
+        "Tokens (this month)",
+        token_used,
+        token_limit,
+        format_tokens,
+    );
 
     let page = AccountPage {
         csrf_token: csrf_token.clone(),
@@ -1463,7 +1477,12 @@ mod tests {
 
     #[test]
     fn quota_bar_with_limit() {
-        let bar = quota_bar("Storage", 50 * 1024 * 1024, Some(100 * 1024 * 1024));
+        let bar = quota_bar(
+            "Storage",
+            50 * 1024 * 1024,
+            Some(100 * 1024 * 1024),
+            format_bytes,
+        );
         assert_eq!(bar.label, "Storage");
         assert_eq!(bar.percent, 50);
         assert!(bar.limit_display.contains("MB"));
@@ -1471,28 +1490,52 @@ mod tests {
 
     #[test]
     fn quota_bar_unlimited() {
-        let bar = quota_bar("Storage", 1024 * 1024 * 1024, None);
+        let bar = quota_bar("Storage", 1024 * 1024 * 1024, None, format_bytes);
         assert_eq!(bar.limit_display, "Unlimited");
         assert_eq!(bar.percent, 0);
     }
 
     #[test]
     fn quota_bar_zero_usage_with_limit() {
-        let bar = quota_bar("Tokens", 0, Some(1000));
+        let bar = quota_bar("Tokens", 0, Some(1000), format_tokens);
         assert_eq!(bar.percent, 0);
-        assert_eq!(bar.used_display, "0 B");
+        assert_eq!(bar.used_display, "0");
     }
 
     #[test]
     fn quota_bar_full_usage() {
-        let bar = quota_bar("Tokens", 5000, Some(5000));
+        let bar = quota_bar("Tokens", 5000, Some(5000), format_tokens);
         assert_eq!(bar.percent, 100);
+        assert_eq!(bar.used_display, "5.0K");
     }
 
     #[test]
     fn quota_bar_over_limit_capped() {
-        let bar = quota_bar("Storage", 200 * 1024 * 1024, Some(100 * 1024 * 1024));
+        let bar = quota_bar(
+            "Storage",
+            200 * 1024 * 1024,
+            Some(100 * 1024 * 1024),
+            format_bytes,
+        );
         assert_eq!(bar.percent, 100);
+    }
+
+    #[test]
+    fn quota_bar_tokens_render_in_token_units_not_bytes() {
+        // Regression: the token bar must use format_tokens, not format_bytes —
+        // 12,500 tokens is "12.5K", NOT "12.2 KB" (the original "kb" display bug).
+        let bar = quota_bar(
+            "Tokens (this month)",
+            12_500,
+            Some(1_000_000),
+            format_tokens,
+        );
+        assert_eq!(bar.used_display, "12.5K");
+        assert_eq!(bar.limit_display, "1.0M");
+        assert!(
+            !bar.used_display.contains('B'),
+            "token bar must not render a byte unit"
+        );
     }
 
     // ── billing_badge edge cases ─────────────────────────────────────────

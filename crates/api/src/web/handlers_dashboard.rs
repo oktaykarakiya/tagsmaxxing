@@ -23,7 +23,7 @@ use crate::AuthUser;
 
 use kb_core::quota::{UsageWarning, usage_warning};
 
-use super::handlers_account::{format_tokens, plan_display_name, quota_bar};
+use super::handlers_account::{format_bytes, format_tokens, plan_display_name, quota_bar};
 use super::templates::{
     ActivityFeedEntry, DailyChartPoint, DashboardPage, LimitWarningBanner, UserUsageRow,
 };
@@ -196,8 +196,13 @@ pub async fn dashboard_page(
             .unwrap_or(0);
         (s, t)
     };
-    let storage_bar = quota_bar("Storage", storage_used, storage_limit);
-    let token_bar = quota_bar("Tokens (this month)", token_used, token_limit);
+    let storage_bar = quota_bar("Storage", storage_used, storage_limit, format_bytes);
+    let token_bar = quota_bar(
+        "Tokens (this month)",
+        token_used,
+        token_limit,
+        format_tokens,
+    );
 
     // ── Spend ────────────────────────────────────────────────────────────
     let spend = state
