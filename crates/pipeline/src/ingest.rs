@@ -1460,18 +1460,20 @@ mod tests {
         assert!(is_backend_unavailable(&sched));
 
         // All-cooldown and all-failed are also transient availability failures.
-        assert!(is_backend_unavailable(&anyhow::Error::new(LlmError::AllCooldown(
-            Duration::from_secs(30)
-        ))));
-        assert!(is_backend_unavailable(&anyhow::Error::new(LlmError::AllFailed {
-            retries: 3,
-            last_error: "boom".into(),
-        })));
+        assert!(is_backend_unavailable(&anyhow::Error::new(
+            LlmError::AllCooldown(Duration::from_secs(30))
+        )));
+        assert!(is_backend_unavailable(&anyhow::Error::new(
+            LlmError::AllFailed {
+                retries: 3,
+                last_error: "boom".into(),
+            }
+        )));
 
         // A model-output error (Deserialize) and a plain error stay 500.
-        assert!(!is_backend_unavailable(&anyhow::Error::new(LlmError::Deserialize(
-            "bad json".into()
-        ))));
+        assert!(!is_backend_unavailable(&anyhow::Error::new(
+            LlmError::Deserialize("bad json".into())
+        )));
         assert!(!is_backend_unavailable(&anyhow::anyhow!("disk full")));
     }
 

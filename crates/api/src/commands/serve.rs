@@ -562,7 +562,10 @@ mod tests {
             r
         };
 
-        for status in [StatusCode::TOO_MANY_REQUESTS, StatusCode::SERVICE_UNAVAILABLE] {
+        for status in [
+            StatusCode::TOO_MANY_REQUESTS,
+            StatusCode::SERVICE_UNAVAILABLE,
+        ] {
             let resp = super::ensure_retry_after(make(status)).await;
             assert_eq!(
                 resp.headers()
@@ -579,10 +582,8 @@ mod tests {
 
         // An existing Retry-After is preserved, not overwritten.
         let mut pre = make(StatusCode::SERVICE_UNAVAILABLE);
-        pre.headers_mut().insert(
-            header::RETRY_AFTER,
-            header::HeaderValue::from_static("120"),
-        );
+        pre.headers_mut()
+            .insert(header::RETRY_AFTER, header::HeaderValue::from_static("120"));
         let kept = super::ensure_retry_after(pre).await;
         assert_eq!(
             kept.headers()
