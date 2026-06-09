@@ -67,6 +67,12 @@ pub enum UploadRejected {
 /// extractor dispatch. This is intentionally larger than
 /// [`MAX_TOTAL_UPLOAD_BYTES`] so that a single large file can still be
 /// ingested when uploaded alone.
+///
+/// Note (campaign finding F2): on the HTTP ingest path this per-file cap is
+/// effectively unreachable — the 100 MiB total-multipart cap
+/// ([`MAX_TOTAL_UPLOAD_BYTES`], mirrored by the handler's `MAX_PAYLOAD_BYTES`)
+/// always trips first. It still bounds non-HTTP ingest paths (CLI, folder
+/// watcher) that validate a single file without the multipart total limit.
 pub const MAX_INDIVIDUAL_FILE_BYTES: u64 = 500 * 1024 * 1024;
 
 /// Maximum total bytes in a single multipart upload request: 100 MiB.
