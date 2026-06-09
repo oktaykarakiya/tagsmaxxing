@@ -25,7 +25,7 @@ use axum::response::Json;
 use kb_core::blob::Blob;
 use kb_core::job::JobKind;
 use kb_extract::security;
-use kb_pipeline::ingest::{IngestFile, IngestPipeline};
+use kb_pipeline::ingest::{IngestError, IngestFile, IngestPipeline};
 use kb_pipeline::job_queue::JobQueue;
 use serde::Serialize;
 
@@ -94,6 +94,8 @@ pub(crate) fn quota_error_response(err: &kb_core::quota::QuotaError) -> String {
 /// * `401 Unauthorized` — rejected by middleware before this handler runs.
 /// * `413 Payload Too Large` — total upload exceeds [`MAX_PAYLOAD_BYTES`].
 /// * `429 Too Many Requests` — server at ingest capacity, retry after backoff.
+/// * `503 Service Unavailable` — the model backend is temporarily unavailable
+///   (e.g. the tagger has no healthy backend); retry after `Retry-After` (F4).
 /// * `500 Internal Server Error` — pipeline or store failure.
 pub async fn ingest(
     State(state): State<Arc<AppState>>,
@@ -591,6 +593,22 @@ fn internal_error(e: impl std::fmt::Display) -> (StatusCode, Json<ErrorResponse>
     )
 }
 
+/// Build a `503 Service Unavailable` response for a transient backend outage.
+///
+/// The `detail` is logged but not exposed to the client (it may name internal
+/// roles/backends). The `Retry-After` header is added by the `ensure_retry_after`
+/// middleware (`commands::serve`), so every 503 carries retry guidance.
+fn service_unavailable(detail: impl std::fmt::Display) -> (StatusCode, Json<ErrorResponse>) {
+    tracing::warn!(error = %detail, "ingest: model backend unavailable (503)");
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(ErrorResponse {
+            error: "service_unavailable".into(),
+            message: "the service is temporarily unavailable, please retry shortly".into(),
+        }),
+    )
+}
+
 /// Map an ingest-pipeline error to an HTTP response (BUG-INGEST-06/07).
 ///
 /// Upload-validation rejections — empty, oversized, disallowed-type, or
@@ -608,6 +626,12 @@ pub(crate) fn map_ingest_error(e: anyhow::Error) -> (StatusCode, Json<ErrorRespo
     }
     if let Some(qe) = e.downcast_ref::<kb_core::quota::QuotaError>() {
         return quota_error_to_response(qe);
+    }
+    // A transient model-backend outage (tagger had no healthy backend, etc.) is
+    // a 503 + Retry-After, not a 500 (campaign finding F4): the request is fine,
+    // the service is momentarily unable to process it.
+    if let Some(unavailable) = e.downcast_ref::<IngestError>() {
+        return service_unavailable(unavailable);
     }
     internal_error(e)
 }
@@ -657,8 +681,8 @@ pub(crate) fn quota_error_to_response(
 
 /// Build a `429 Too Many Requests` error tuple without headers.
 ///
-/// The `Retry-After` header is added by the `ensure_retry_after_on_429`
-/// middleware in [`serve`](crate::commands::serve) so that every 429 in
+/// The `Retry-After` header is added by the `ensure_retry_after`
+/// middleware in [`serve`](crate::commands::serve) so that every 429/503 in
 /// the app carries the header.
 fn throttled_error() -> (StatusCode, Json<ErrorResponse>) {
     (
@@ -1149,6 +1173,23 @@ mod tests {
         let (status, body) = quota_error_to_response(&users);
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert_eq!(body.error, "user_limit_exceeded");
+    }
+
+    #[test]
+    fn map_ingest_error_backend_unavailable_is_503() {
+        // F4: a typed BackendUnavailable from the pipeline → 503 (not 500), with
+        // a generic client message (no internal role/backend leak).
+        let e = anyhow::Error::new(IngestError::BackendUnavailable(
+            "scheduler: no healthy backend serves role `text`".into(),
+        ));
+        let (status, body) = map_ingest_error(e);
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body.error, "service_unavailable");
+        assert!(
+            !body.message.contains("text") && !body.message.contains("scheduler"),
+            "503 body must not leak internal backend detail: {}",
+            body.message
+        );
     }
 
     #[test]

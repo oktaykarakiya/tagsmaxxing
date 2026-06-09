@@ -1189,3 +1189,16 @@ severity = "medium"
 status = "done"
 acceptance = "a .docx/.xlsx/.pptx (ZIP + [Content_Types].xml) is detected as its OOXML MIME → DocKind::Document (Tika), not Archive; a .jar (ZIP + META-INF/MANIFEST.MF) is detected as application/java-archive and rejected 400 at the upload edge"
 notes = "Campaign F1+F10. CHECKPOINT (extractor untrusted-bytes boundary) — implemented+tested, surfaced for review, NOT merged to main. tree_magic_mini reports OOXML docs and JARs as plain application/zip, so office docs got DocKind::Archive (wrong kind; Tika still extracted) and minimal JARs were accepted as archives (deny-list bypass). Fix: classify_zip_container(bytes) does a bounded (64 KiB), allocation-free, read-only substring scan for [Content_Types].xml (→ OOXML MIME, disambiguated by word/|xl/|ppt/) and META-INF/MANIFEST.MF (→ application/java-archive, deny-listed). Wired into BOTH detectors that must stay in step: kb_extract::security::detect_upload_mime (the upload-edge allow/deny) AND kb_pipeline::document_builder::detect_mime (the stored DocKind). Pure widening of detection + tightening of the deny path; bytes still cross the sandboxed Tika boundary. Unit tests in both crates; e2e test_ingest_formats jar→400 + docx→document. document_builder.rs is in the ingest_pipeline group (cross-group fix, documented here)."
+
+[[bug]]
+id = "BUG-INGEST-14"
+description = "Non-media ingest returns 500 (not 503) when the LLM tagger backend is unavailable (campaign finding F4)"
+test_names = ["is_backend_unavailable_classifies_llm_errors", "non_media_backend_down_returns_backend_unavailable", "tag_preserves_typed_scheduler_error", "map_ingest_error_backend_unavailable_is_503", "ensure_retry_after_sets_header_on_429_and_503"]
+test_file = "crates/pipeline/src/ingest.rs"
+touches = ["crates/llm/src/tagger.rs", "crates/pipeline/src/ingest.rs", "crates/pipeline/src/lib.rs", "crates/api/src/handlers/ingest.rs", "crates/api/src/commands/serve.rs"]
+conflict_group = "ingest_pipeline"
+depends_on = []
+severity = "medium"
+status = "done"
+acceptance = "when the tagger has no healthy backend, a non-media upload returns 503 service_unavailable + Retry-After (not 500); media still degrades to 202; a genuine internal error still returns 500"
+notes = "Campaign F4. The tagger stringified scheduler errors (anyhow!(\"...: {e}\")) so the typed AcquireError/LlmError was lost, and the non-media pipeline branch returned a generic error → 500 — turning a transient backend outage into a hard failure (the single largest source of campaign test flakiness). Fix (cross-group, sequential): (1) tagger.rs preserves the typed LlmError via anyhow::Error::new(e).context(...) at both chat() call sites; (2) pipeline/ingest.rs adds typed IngestError::BackendUnavailable + is_backend_unavailable(&anyhow::Error) (matches LlmError::Scheduler/AllCooldown/AllFailed) and returns it for non-media tagger outages (media still degrades to default metadata; other errors still 500); (3) handlers/ingest.rs::map_ingest_error downcasts IngestError → 503 service_unavailable with a generic client message (no internal leak); (4) serve.rs ensure_retry_after_on_429 → ensure_retry_after now tags 429 AND 503 with Retry-After:5. Unit tests across kb-llm/kb-pipeline/kb-api. Primary group ingest_pipeline; also touches tagger/api_handlers/serve_config (documented)."

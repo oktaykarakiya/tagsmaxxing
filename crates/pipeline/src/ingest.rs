@@ -96,6 +96,54 @@ pub struct IngestOutput {
     pub chunk_count: usize,
 }
 
+/// A typed ingestion error the API maps to a specific HTTP status.
+///
+/// The pipeline otherwise returns `anyhow::Error` (which the API maps to `500`);
+/// this carries the one case the API must distinguish: a transient model-backend
+/// outage, which becomes `503 Service Unavailable` + `Retry-After` instead of
+/// `500` (campaign finding F4). `kb-pipeline` does not depend on `thiserror`, so
+/// the trait impls are written by hand.
+#[derive(Debug)]
+pub enum IngestError {
+    /// The model backend required to process this ingest was unavailable — no
+    /// healthy backend, capacity exhausted, every retry failed, or every backend
+    /// in circuit-breaker cooldown. Transient: the caller should retry later.
+    BackendUnavailable(String),
+}
+
+impl std::fmt::Display for IngestError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IngestError::BackendUnavailable(msg) => {
+                write!(f, "model backend temporarily unavailable: {msg}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for IngestError {}
+
+/// Returns `true` when the error chain indicates the model backend was
+/// **unavailable** — a transient availability/capacity failure the API should
+/// surface as `503 Service Unavailable` rather than `500` (campaign finding F4).
+///
+/// Recognises the [`kb_llm::LlmError`] variants that mean "the service could not
+/// be reached / had no capacity": a scheduler acquire failure (no healthy
+/// backend, timeout, capacity exhausted, pool closed), every backend failing
+/// across retries, or every backend in cooldown. A genuine model/output error
+/// ([`kb_llm::LlmError::Deserialize`]) or a one-off transport error
+/// ([`kb_llm::LlmError::Http`]) stays a `500`.
+fn is_backend_unavailable(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<kb_llm::LlmError>().is_some_and(|e| {
+        matches!(
+            e,
+            kb_llm::LlmError::Scheduler(_)
+                | kb_llm::LlmError::AllCooldown(_)
+                | kb_llm::LlmError::AllFailed { .. }
+        )
+    })
+}
+
 /// Routes [`DocKind`] → [`Extractor`] implementation.
 ///
 /// The pipeline looks up an extractor for each file's detected kind. Kinds
@@ -384,6 +432,19 @@ impl IngestPipeline {
                 );
                 TagOutput::default()
             }
+            // Non-media: a transient backend-availability failure (no healthy
+            // backend, capacity exhausted, all retries failed / in cooldown) is
+            // not the client's fault — surface it as a typed BackendUnavailable so
+            // the API answers 503 + Retry-After instead of 500 (campaign F4).
+            Err(e) if is_backend_unavailable(&e) => {
+                tracing::warn!(
+                    error = %e,
+                    kind = ?merged.kind,
+                    "tagger backend unavailable; ingest returns 503"
+                );
+                return Err(IngestError::BackendUnavailable(e.to_string()).into());
+            }
+            // Any other non-media tagger error is a genuine internal failure (500).
             Err(e) => return Err(e).context("tagger failed"),
         };
 
@@ -1284,6 +1345,18 @@ mod tests {
         extract_text: &str,
         tag_output: TagOutput,
     ) -> (IngestPipeline, Arc<MockIngestStore>) {
+        let tagger: Arc<dyn Tagger> = Arc::new(MockTagger { output: tag_output });
+        build_pipeline_with_tagger(extract_text, tagger).await
+    }
+
+    /// Like [`build_test_pipeline`] but with a caller-supplied tagger, so tests
+    /// can inject a failing / backend-down tagger to exercise the tagger error
+    /// arms (F4: media degrades, non-media backend-outage → BackendUnavailable,
+    /// other non-media errors → propagate as 500).
+    async fn build_pipeline_with_tagger(
+        extract_text: &str,
+        tagger: Arc<dyn Tagger>,
+    ) -> (IngestPipeline, Arc<MockIngestStore>) {
         use kb_core::role::Role;
         use kb_mock_backend::MockBackend;
         use kb_scheduler::{Pool, test_backend};
@@ -1302,9 +1375,6 @@ mod tests {
                 text: extract_text.to_string(),
             }),
         );
-
-        // Tagger.
-        let tagger: Arc<dyn Tagger> = Arc::new(MockTagger { output: tag_output });
 
         // Mock LLM backend for embedding (tag names + chunk content).
         let mock = MockBackend::start().await;
@@ -1357,6 +1427,124 @@ mod tests {
         std::mem::forget(mock);
 
         (pipeline, ingest_store)
+    }
+
+    // ── F4: backend-unavailable → typed IngestError (API maps to 503) ────────
+
+    /// A tagger that fails with a typed scheduler "no healthy backend" error,
+    /// preserved through the anyhow chain exactly as `JsonSchemaTagger` does.
+    struct BackendDownTagger;
+
+    #[async_trait]
+    impl Tagger for BackendDownTagger {
+        async fn tag(&self, _: &TagInput, _local_only: bool) -> anyhow::Result<TagOutput> {
+            Err(anyhow::Error::new(kb_llm::LlmError::Scheduler(
+                kb_scheduler::AcquireError::NoBackend {
+                    role: kb_core::role::Role::Text,
+                },
+            ))
+            .context("tagger model call failed"))
+        }
+    }
+
+    #[test]
+    fn is_backend_unavailable_classifies_llm_errors() {
+        use kb_llm::LlmError;
+        use kb_scheduler::AcquireError;
+
+        // A scheduler acquire failure, even wrapped in `.context`, is unavailable.
+        let sched = anyhow::Error::new(LlmError::Scheduler(AcquireError::NoBackend {
+            role: kb_core::role::Role::Text,
+        }))
+        .context("tagger model call failed");
+        assert!(is_backend_unavailable(&sched));
+
+        // All-cooldown and all-failed are also transient availability failures.
+        assert!(is_backend_unavailable(&anyhow::Error::new(LlmError::AllCooldown(
+            Duration::from_secs(30)
+        ))));
+        assert!(is_backend_unavailable(&anyhow::Error::new(LlmError::AllFailed {
+            retries: 3,
+            last_error: "boom".into(),
+        })));
+
+        // A model-output error (Deserialize) and a plain error stay 500.
+        assert!(!is_backend_unavailable(&anyhow::Error::new(LlmError::Deserialize(
+            "bad json".into()
+        ))));
+        assert!(!is_backend_unavailable(&anyhow::anyhow!("disk full")));
+    }
+
+    /// Non-media ingest with a backend-down tagger returns the typed
+    /// `IngestError::BackendUnavailable` (→ 503), not a generic 500 (F4).
+    #[tokio::test]
+    async fn non_media_backend_down_returns_backend_unavailable() {
+        let (pipeline, _store) =
+            build_pipeline_with_tagger("some text", Arc::new(BackendDownTagger)).await;
+
+        let files = vec![IngestFile {
+            bytes: b"plain text document body".to_vec(),
+            page_label: None,
+            path: Some("doc.txt".into()),
+        }];
+
+        let err = pipeline
+            .ingest(1, None, files, None, false)
+            .await
+            .unwrap_err();
+        assert!(
+            err.downcast_ref::<IngestError>().is_some(),
+            "non-media backend outage must be a typed IngestError (→503), got: {err:#}"
+        );
+    }
+
+    /// A *non-backend* tagger failure (e.g. invalid model output) still
+    /// propagates as a generic error (→ 500), not `BackendUnavailable`.
+    #[tokio::test]
+    async fn non_media_generic_tagger_error_is_not_backend_unavailable() {
+        let (pipeline, _store) =
+            build_pipeline_with_tagger("some text", Arc::new(FailingTagger)).await;
+
+        let files = vec![IngestFile {
+            bytes: b"plain text document body".to_vec(),
+            page_label: None,
+            path: Some("doc.txt".into()),
+        }];
+
+        let err = pipeline
+            .ingest(1, None, files, None, false)
+            .await
+            .unwrap_err();
+        assert!(
+            err.downcast_ref::<IngestError>().is_none(),
+            "a generic tagger failure must stay a 500, not BackendUnavailable"
+        );
+        assert!(err.to_string().contains("tagger failed"));
+    }
+
+    /// A *media* document degrades gracefully even when the tagger backend is
+    /// down — it ingests with default metadata (Ok), unchanged by F4.
+    #[tokio::test]
+    async fn media_backend_down_degrades_not_error() {
+        let (pipeline, _store) =
+            build_pipeline_with_tagger("ignored", Arc::new(BackendDownTagger)).await;
+
+        // PNG magic → DocKind::Image → media best-effort path; no image extractor
+        // is registered, so extraction yields default and the tagger failure
+        // degrades to default metadata rather than failing the upload.
+        let png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR".to_vec();
+        let files = vec![IngestFile {
+            bytes: png,
+            page_label: None,
+            path: Some("pic.png".into()),
+        }];
+
+        let out = pipeline.ingest(1, None, files, None, false).await;
+        assert!(
+            out.is_ok(),
+            "media must degrade gracefully on a backend-down tagger, got: {:?}",
+            out.err()
+        );
     }
 
     // ── Single text file, happy path ───────────────────────────────────────

@@ -61,16 +61,20 @@ const CIRCUIT_THRESHOLD: u32 = 5;
 /// How long a tripped circuit breaker stays open.
 const COOLDOWN_SECS: u64 = 30;
 
-/// `map_response` middleware: inject a `Retry-After: 5` header on every 429
-/// response produced by the app.
+/// `map_response` middleware: inject a `Retry-After: 5` header on every 429 and
+/// 503 response produced by the app.
 ///
-/// This ensures backpressure rejections, rate-limiters, and any other 429
-/// site automatically carry actionable retry guidance without each handler
-/// having to construct a full `Response` with headers.
-async fn ensure_retry_after_on_429(response: Response) -> Response {
-    if response.status() == StatusCode::TOO_MANY_REQUESTS
-        && !response.headers().contains_key(header::RETRY_AFTER)
-    {
+/// This ensures backpressure rejections (429), backend-unavailable responses
+/// (503, e.g. the tagger has no healthy backend — campaign finding F4),
+/// rate-limiters, and any other such site automatically carry actionable retry
+/// guidance without each handler having to construct a full `Response` with
+/// headers.
+async fn ensure_retry_after(response: Response) -> Response {
+    let retryable = matches!(
+        response.status(),
+        StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE
+    );
+    if retryable && !response.headers().contains_key(header::RETRY_AFTER) {
         let (parts, body) = response.into_parts();
         let mut response = Response::from_parts(parts, body);
         response
@@ -432,12 +436,12 @@ pub async fn run_serve(args: &ServeArgs) -> anyhow::Result<()> {
     // ── Build router ────────────────────────────────────────────────────────
     let router = kb_api::build_router(state);
 
-    // ── Layer: ensure every 429 in the app carries a Retry-After header ───────
+    // ── Layer: ensure every 429/503 in the app carries a Retry-After header ───
     // This is applied as a map_response layer so that any handler or
-    // middleware returning 429 (including the backpressure gate in the
-    // ingest handler) automatically gets the header without each site
-    // having to construct a full Response.
-    let router = router.layer(axum::middleware::map_response(ensure_retry_after_on_429));
+    // middleware returning 429 (the backpressure gate) or 503 (the ingest
+    // handler when the tagger backend is unavailable) automatically gets the
+    // header without each site having to construct a full Response.
+    let router = router.layer(axum::middleware::map_response(ensure_retry_after));
 
     // ── Start metrics collector ─────────────────────────────────────────────
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -543,6 +547,50 @@ mod tests {
     use crate::cli::Cli;
     use crate::cli::Command;
     use clap::Parser;
+
+    /// F4: the retry-after middleware tags both 429 and 503 (and leaves other
+    /// statuses + an existing header untouched).
+    #[tokio::test]
+    async fn ensure_retry_after_sets_header_on_429_and_503() {
+        use axum::body::Body;
+        use axum::http::{StatusCode, header};
+        use axum::response::Response;
+
+        let make = |status: StatusCode| {
+            let mut r = Response::new(Body::empty());
+            *r.status_mut() = status;
+            r
+        };
+
+        for status in [StatusCode::TOO_MANY_REQUESTS, StatusCode::SERVICE_UNAVAILABLE] {
+            let resp = super::ensure_retry_after(make(status)).await;
+            assert_eq!(
+                resp.headers()
+                    .get(header::RETRY_AFTER)
+                    .and_then(|v| v.to_str().ok()),
+                Some("5"),
+                "status {status} must carry Retry-After"
+            );
+        }
+
+        // A 200 OK is untouched.
+        let ok = super::ensure_retry_after(make(StatusCode::OK)).await;
+        assert!(ok.headers().get(header::RETRY_AFTER).is_none());
+
+        // An existing Retry-After is preserved, not overwritten.
+        let mut pre = make(StatusCode::SERVICE_UNAVAILABLE);
+        pre.headers_mut().insert(
+            header::RETRY_AFTER,
+            header::HeaderValue::from_static("120"),
+        );
+        let kept = super::ensure_retry_after(pre).await;
+        assert_eq!(
+            kept.headers()
+                .get(header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok()),
+            Some("120")
+        );
+    }
 
     #[test]
     fn serve_args_default_port_is_none() {

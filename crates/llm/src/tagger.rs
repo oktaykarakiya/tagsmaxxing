@@ -392,7 +392,9 @@ impl Tagger for JsonSchemaTagger {
             .client
             .chat(Role::Text, &self.model, &req, local_only, 0)
             .await
-            .map_err(|e| anyhow::anyhow!("tagger model call failed: {e}"))?;
+            // Preserve the typed LlmError (e.g. Scheduler(NoBackend)) through the
+            // anyhow chain so the API can map "backend unavailable" to 503 (F4).
+            .map_err(|e| anyhow::Error::new(e).context("tagger model call failed"))?;
 
         // Meter the tagging call's token usage to the tenant (BUG-BILL-03),
         // attributed to the acting user when known (P14-T1).
@@ -428,10 +430,11 @@ impl Tagger for JsonSchemaTagger {
                     .client
                     .chat(Role::Text, &self.model, &retry_req, local_only, 0)
                     .await
+                    // Preserve the typed LlmError through the chain (F4 → 503).
                     .map_err(|e| {
-                        anyhow::anyhow!(
-                            "tagger retry model call failed: {e} (first parse error: {first_error})"
-                        )
+                        anyhow::Error::new(e).context(format!(
+                            "tagger retry model call failed (first parse error: {first_error})"
+                        ))
                     })?;
 
                 // Meter the retry call's token usage too (BUG-BILL-03, P14-T1).
@@ -487,6 +490,40 @@ mod tests {
         );
         let tagger = JsonSchemaTagger::new(llm_client, "test-model".to_string());
         (tagger, mock)
+    }
+
+    /// F4: a scheduler "no healthy backend" failure must be preserved as a typed
+    /// [`LlmError`] through `tag()`'s anyhow chain, so the pipeline/API can map it
+    /// to 503 — rather than being flattened to an opaque string (which would
+    /// surface as a 500). Guards against re-introducing the `anyhow!("...: {e}")`
+    /// stringification at the `chat()` call sites.
+    #[tokio::test]
+    async fn tag_preserves_typed_scheduler_error() {
+        // An empty pool → acquire(Role::Text) yields AcquireError::NoBackend.
+        let pool = Pool::new(vec![], Duration::from_secs(5));
+        let client = LlamaClient::new(pool, Client::new(), 0, 0, Duration::from_millis(50));
+        let tagger = JsonSchemaTagger::new(client, "test-model".to_string());
+
+        let input = TagInput {
+            tenant_id: 1,
+            user_id: None,
+            text: "some document text".into(),
+            user_note: None,
+            kind: DocKind::Document,
+            meta: serde_json::Value::Null,
+        };
+
+        let err = tagger.tag(&input, false).await.unwrap_err();
+        let llm = err
+            .downcast_ref::<crate::LlmError>()
+            .expect("typed LlmError must survive tag()'s anyhow chain");
+        assert!(
+            matches!(
+                llm,
+                crate::LlmError::Scheduler(kb_scheduler::AcquireError::NoBackend { .. })
+            ),
+            "expected Scheduler(NoBackend), got: {llm}"
+        );
     }
 
     /// A minimal document input for tests.

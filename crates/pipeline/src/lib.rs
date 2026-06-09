@@ -52,8 +52,8 @@ pub use folder_watcher::{
     matches_ignore_pattern, should_ingest,
 };
 pub use ingest::{
-    ExtractorRouter, IngestFile, IngestOutput, IngestPipeline, IngestStore, RetagStore,
-    process_ingest_job, process_retag_job,
+    ExtractorRouter, IngestError, IngestFile, IngestOutput, IngestPipeline, IngestStore,
+    RetagStore, process_ingest_job, process_retag_job,
 };
 pub use integrity_scan::{
     FileShaRecord, IntegrityScanRunner, process_integrity_scan_job, run_integrity_scan,
