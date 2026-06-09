@@ -148,10 +148,7 @@ pub async fn ingest(
     // ── Parse multipart ──────────────────────────────────────────────────────
     let parsed = parse_multipart(multipart, MAX_PAYLOAD_BYTES)
         .await
-        .map_err(|e| {
-            tracing::warn!(error = %e, "ingest: bad multipart");
-            bad_request("invalid_multipart", &e.to_string())
-        })?;
+        .map_err(multipart_error_to_response)?;
 
     if parsed.files.is_empty() {
         return Err(bad_request("no_files", "at least one file is required"));
@@ -405,6 +402,63 @@ pub(crate) async fn process_upload_inline(
 
 // ── Multipart parsing ──────────────────────────────────────────────────────────
 
+/// Why a multipart upload body could not be parsed.
+///
+/// Distinguishes an over-size body (→ `413 Payload Too Large`) from a malformed
+/// or unreadable one (→ `400 Bad Request`) so [`parse_multipart`] callers can map
+/// the status correctly (campaign finding F3). `kb-api` does not depend on
+/// `thiserror`, so `Display` is implemented by hand.
+#[derive(Debug)]
+pub(crate) enum UploadParseError {
+    /// The upload exceeded the size limit — either the soft payload cap in
+    /// [`parse_multipart`] or axum's [`DefaultBodyLimit`] (which `MultipartError`
+    /// reports as `413`). Maps to `413 Payload Too Large`.
+    TooLarge(String),
+    /// The multipart body was malformed or unreadable. Maps to `400 Bad Request`.
+    Malformed(String),
+}
+
+impl std::fmt::Display for UploadParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            UploadParseError::TooLarge(m) | UploadParseError::Malformed(m) => f.write_str(m),
+        }
+    }
+}
+
+/// Classify an axum [`MultipartError`](axum::extract::multipart::MultipartError)
+/// into an [`UploadParseError`]: a body/length-limit overflow (which axum reports
+/// as `413`) becomes [`UploadParseError::TooLarge`]; anything else is
+/// [`UploadParseError::Malformed`].
+fn classify_multipart_err(e: axum::extract::multipart::MultipartError) -> UploadParseError {
+    if e.status() == StatusCode::PAYLOAD_TOO_LARGE {
+        UploadParseError::TooLarge(e.to_string())
+    } else {
+        UploadParseError::Malformed(e.to_string())
+    }
+}
+
+/// Map an [`UploadParseError`] to a JSON HTTP response: `TooLarge` → `413`
+/// (`payload_too_large`), `Malformed` → `400` (`invalid_multipart`).
+fn multipart_error_to_response(e: UploadParseError) -> (StatusCode, Json<ErrorResponse>) {
+    match e {
+        UploadParseError::TooLarge(msg) => {
+            tracing::warn!(error = %msg, "ingest: upload too large (413)");
+            (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                Json(ErrorResponse {
+                    error: "payload_too_large".into(),
+                    message: msg,
+                }),
+            )
+        }
+        UploadParseError::Malformed(msg) => {
+            tracing::warn!(error = %msg, "ingest: bad multipart (400)");
+            bad_request("invalid_multipart", &msg)
+        }
+    }
+}
+
 /// Parsed multipart upload data.
 pub(crate) struct ParsedUpload {
     /// File contents and metadata.
@@ -421,9 +475,12 @@ pub(crate) struct ParsedUpload {
 /// Parse a multipart form body into [`ParsedUpload`].
 ///
 /// Accumulates file parts into `IngestFile` entries and extracts text fields.
-/// Enforces `max_total_bytes` as a soft payload limit (reading stops early
-/// when the total exceeds the limit, but the entire body has already been
-/// buffered by axum — this is a best-effort gate).
+/// Enforces `max_total_bytes` as a soft payload limit (reading stops early when
+/// the running total exceeds the limit) and surfaces over-size bodies — the soft
+/// cap or axum's [`DefaultBodyLimit`] — as [`UploadParseError::TooLarge`] so the
+/// caller can answer `413 Payload Too Large` rather than `400` (campaign finding
+/// F3). Genuinely malformed/unreadable bodies are [`UploadParseError::Malformed`]
+/// → `400`.
 ///
 /// Extracts the optional `csrf_token` form field for Web UI double-submit
 /// cookie validation. For pure API clients (no form), the field is absent
@@ -431,7 +488,7 @@ pub(crate) struct ParsedUpload {
 pub(crate) async fn parse_multipart(
     mut multipart: Multipart,
     max_total_bytes: u64,
-) -> anyhow::Result<ParsedUpload> {
+) -> Result<ParsedUpload, UploadParseError> {
     let mut files = Vec::new();
     let mut user_note: Option<String> = None;
     let mut group_as_document = false;
@@ -442,7 +499,7 @@ pub(crate) async fn parse_multipart(
         let field = multipart
             .next_field()
             .await
-            .map_err(|e| anyhow::anyhow!("failed to read multipart field: {e}"))?;
+            .map_err(classify_multipart_err)?;
 
         let Some(field) = field else {
             break;
@@ -453,17 +510,13 @@ pub(crate) async fn parse_multipart(
         match name.as_str() {
             "files" => {
                 let file_name = field.file_name().map(|s| s.to_string());
-                let bytes = field
-                    .bytes()
-                    .await
-                    .map_err(|e| anyhow::anyhow!("failed to read file bytes: {e}"))?;
+                let bytes = field.bytes().await.map_err(classify_multipart_err)?;
 
                 total_bytes = total_bytes.saturating_add(bytes.len() as u64);
                 if total_bytes > max_total_bytes {
-                    anyhow::bail!(
-                        "total upload size exceeds limit of {} bytes",
-                        max_total_bytes
-                    );
+                    return Err(UploadParseError::TooLarge(format!(
+                        "total upload size exceeds limit of {max_total_bytes} bytes"
+                    )));
                 }
 
                 files.push(IngestFile {
@@ -473,26 +526,17 @@ pub(crate) async fn parse_multipart(
                 });
             }
             "user_note" => {
-                let text = field
-                    .text()
-                    .await
-                    .map_err(|e| anyhow::anyhow!("failed to read user_note: {e}"))?;
+                let text = field.text().await.map_err(classify_multipart_err)?;
                 if !text.is_empty() {
                     user_note = Some(text);
                 }
             }
             "group_as_document" => {
-                let text = field
-                    .text()
-                    .await
-                    .map_err(|e| anyhow::anyhow!("failed to read group_as_document: {e}"))?;
+                let text = field.text().await.map_err(classify_multipart_err)?;
                 group_as_document = text.trim().eq_ignore_ascii_case("true");
             }
             "csrf_token" => {
-                let text = field
-                    .text()
-                    .await
-                    .map_err(|e| anyhow::anyhow!("failed to read csrf_token: {e}"))?;
+                let text = field.text().await.map_err(classify_multipart_err)?;
                 csrf_token = text;
             }
             _ => {
@@ -886,6 +930,55 @@ mod tests {
 
         assert_eq!(parsed.files.len(), 1);
         assert!(parsed.user_note.is_none());
+    }
+
+    // ── F3: over-size → 413, malformed → 400 ────────────────────────────────
+
+    /// A body whose running file-byte total exceeds the soft cap is classified
+    /// as `TooLarge` (→ 413), not a generic parse error (→ 400).
+    #[tokio::test]
+    async fn parse_multipart_over_soft_cap_is_too_large() {
+        let boundary = "f3boundary";
+        // An 11-byte file with a 4-byte cap → the running total trips the soft cap.
+        let body_bytes = multipart_body(boundary, &[("big.txt", b"hello world")], &[]);
+        let body = Body::from(body_bytes);
+        let content_type = format!("multipart/form-data; boundary={boundary}");
+        let request = axum::http::Request::builder()
+            .method(Method::POST)
+            .uri("/api/ingest")
+            .header("Content-Type", content_type)
+            .body(body)
+            .unwrap();
+        let multipart = <Multipart as FromRequest<()>>::from_request(request, &())
+            .await
+            .unwrap();
+
+        let result = parse_multipart(multipart, 4).await;
+        assert!(
+            matches!(result, Err(UploadParseError::TooLarge(_))),
+            "soft-cap overflow must be TooLarge"
+        );
+    }
+
+    /// The over-size/malformed split maps to the correct status + error code.
+    #[test]
+    fn multipart_error_maps_too_large_to_413_and_malformed_to_400() {
+        let (status, body) =
+            multipart_error_to_response(UploadParseError::TooLarge("too big".into()));
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(body.error, "payload_too_large");
+
+        let (status, body) =
+            multipart_error_to_response(UploadParseError::Malformed("garbage".into()));
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body.error, "invalid_multipart");
+    }
+
+    /// `Display` surfaces the inner message (callers render it to users).
+    #[test]
+    fn upload_parse_error_display_is_inner_message() {
+        assert_eq!(UploadParseError::TooLarge("m1".into()).to_string(), "m1");
+        assert_eq!(UploadParseError::Malformed("m2".into()).to_string(), "m2");
     }
 
     // ── compute_blob_key ────────────────────────────────────────────────────

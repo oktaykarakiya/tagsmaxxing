@@ -40,11 +40,12 @@ files = ["crates/api/src/middleware.rs"]
 
 [[conflict_group]]
 name = "api_handlers"
-description = "JSON API handlers: tokens, errors, jobs, documents"
+description = "JSON API handlers: tokens, errors, jobs, documents, ingest"
 files = [
     "crates/api/src/handlers/auth.rs",
     "crates/api/src/handlers/api_tokens.rs",
     "crates/api/src/handlers/search.rs",
+    "crates/api/src/handlers/ingest.rs",
     "crates/api/src/web/handlers.rs",
 ]
 
@@ -1149,3 +1150,16 @@ severity = "medium"
 status = "done"
 acceptance = "get_monthly_cost and admin_monthly_spend return the correct in-month non-NULL cost_micros sum instead of erroring; the monthly-spend gauge + admin dashboard cost figure populate"
 notes = "Campaign F6. cost_micros is BIGINT, so Postgres SUM() returns NUMERIC; sqlx 0.8 (built without bigdecimal/rust_decimal) decodes NUMERIC as String, so query_scalar::<Option<i64>> failed on every call — masked by .context, flooding the metrics-collector WARN log and breaking the cost gauge + admin dashboard figure. Fix: cast COALESCE(SUM(cost_micros),0)::bigint in both get_monthly_cost (budget.rs) and admin_monthly_spend (admin_queries.rs). Added #[ignore] pg regression test (dashboard_pg.rs::monthly_cost_sums_in_month_non_null_micros) asserting the in-month non-NULL sum, NULL-cost exclusion, prior-month exclusion, and the empty→0 COALESCE path. Added budget.rs to the pg_store conflict group (admin_queries.rs already there)."
+
+[[bug]]
+id = "BUG-INGEST-13"
+description = "Over-size upload body returns 400 instead of 413 Payload Too Large (campaign finding F3)"
+test_names = ["test_bva_just_over_axum_limit_413", "parse_multipart_over_soft_cap_is_too_large", "multipart_error_maps_too_large_to_413_and_malformed_to_400"]
+test_file = "test/tests/catalog/test_ingest_matrix.py"
+touches = ["crates/api/src/handlers/ingest.rs", "crates/api/src/web/handlers.rs"]
+conflict_group = "api_handlers"
+depends_on = []
+severity = "low"
+status = "done"
+acceptance = "a body over the soft payload cap or axum's DefaultBodyLimit returns 413 payload_too_large; a genuinely malformed multipart still returns 400 invalid_multipart"
+notes = "Campaign F3. parse_multipart returned anyhow::Result and every error (the soft-cap bail AND axum's body-limit MultipartError) was mapped to 400 invalid_multipart; 413 is the correct status for an over-size body. Fix: typed UploadParseError { TooLarge -> 413, Malformed -> 400 }; classify_multipart_err uses axum MultipartError::status() (413 on a body/length-limit overflow), the soft-cap path returns TooLarge, and the JSON handler + web upload_submit map the status (add_page renders the message via Display, unchanged). Added handlers/ingest.rs to the api_handlers conflict group. Unit tests cover the soft-cap classification + the status mapping; the e2e test_bva_just_over_axum_limit_413 covers the real axum-413 path."

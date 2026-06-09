@@ -662,11 +662,20 @@ pub async fn upload_submit(
     {
         Ok(p) => p,
         Err(e) => {
+            // Over-size bodies → 413 Payload Too Large; malformed → 400 (F3).
+            let (status, code) = match &e {
+                crate::handlers::ingest::UploadParseError::TooLarge(_) => {
+                    (StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large")
+                }
+                crate::handlers::ingest::UploadParseError::Malformed(_) => {
+                    (StatusCode::BAD_REQUEST, "invalid_multipart")
+                }
+            };
             tracing::warn!(error = %e, "upload_submit: bad multipart");
             return (
-                StatusCode::BAD_REQUEST,
+                status,
                 Json(serde_json::json!({
-                    "error": "invalid_multipart",
+                    "error": code,
                     "message": e.to_string()
                 })),
             )
