@@ -30,7 +30,7 @@ pub struct TagInput {
 /// There is intentionally **no** `category` field: the design uses multi-label canonical tags
 /// rather than one mutually-exclusive bucket (plan §1, §6.5). This corrects the stale §4
 /// sketch that listed `category`. (Recorded in `BUILD_LEDGER.toml`, task `P0-T4`.)
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TagOutput {
     /// A concise generated title for the document.
     pub title: String,

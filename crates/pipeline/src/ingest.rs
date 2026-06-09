@@ -27,7 +27,7 @@ use kb_core::job::Job;
 use kb_core::kind::DocKind;
 use kb_core::status::ProcessingStatus;
 use kb_core::tag::TagSource;
-use kb_core::tagger::{TagInput, Tagger};
+use kb_core::tagger::{TagInput, TagOutput, Tagger};
 use kb_llm::VisionCaptioner;
 
 use crate::chunker::{DEFAULT_CHUNK_SIZE_CHARS, DEFAULT_OVERLAP_CHARS, chunk_text};
@@ -363,7 +363,29 @@ impl IngestPipeline {
             kind: merged.kind,
             meta: merged.merged_meta.clone(),
         };
-        let tag_output = self.tagger.tag(&tag_input, local_only).await?;
+        let tag_output = match self.tagger.tag(&tag_input, local_only).await {
+            Ok(output) => output,
+            // Media documents (image/audio/video) are ingested best-effort:
+            // a tagger failure (backend saturation, transient model error,
+            // json_schema reject on empty text after failed VLM captioning) must
+            // not fail the entire upload. The document is already blob-stored
+            // and its file metadata is searchable; it degrades gracefully with
+            // an empty title/summary/tags. Non-media documents still fail hard.
+            Err(e)
+                if matches!(
+                    merged.kind,
+                    DocKind::Image | DocKind::Audio | DocKind::Video
+                ) =>
+            {
+                tracing::warn!(
+                    error = %e,
+                    kind = ?merged.kind,
+                    "tagger failed for media document; ingesting with default metadata"
+                );
+                TagOutput::default()
+            }
+            Err(e) => return Err(e).context("tagger failed"),
+        };
 
         // 6. Canonicalize tags against the tenant's existing tag set.
         let tag_ids = self

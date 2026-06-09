@@ -71,7 +71,7 @@ pub(crate) fn build_web_router(
     use axum::middleware::from_fn_with_state;
     use axum::routing::{get, post};
 
-    use crate::handlers::ingest::MAX_PAYLOAD_BYTES;
+    use crate::handlers::ingest::{MAX_PAYLOAD_BYTES, MULTIPART_FRAMING_HEADROOM};
     use axum::extract::DefaultBodyLimit;
 
     // Public web routes (no auth required).
@@ -292,7 +292,9 @@ pub(crate) fn build_web_router(
     public
         .merge(protected)
         .merge(admin)
-        .layer(DefaultBodyLimit::max(MAX_PAYLOAD_BYTES as usize))
+        .layer(DefaultBodyLimit::max(
+            (MAX_PAYLOAD_BYTES + MULTIPART_FRAMING_HEADROOM) as usize,
+        ))
         .layer(axum::middleware::from_fn(
             security::security_headers_middleware,
         ))

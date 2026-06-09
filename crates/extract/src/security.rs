@@ -109,9 +109,12 @@ pub const ALLOWED_MIMES: &[&str] = &[
     "text/css",
     "text/javascript",
     "text/x-python",
+    "text/x-python3", // tree_magic_mini returns this for Python 3 files
     "text/x-rust",
     "text/x-c",
     "text/x-c++",
+    "text/x-csrc",     // tree_magic_mini returns this for .c / .js files
+    "text/x-modelica", // tree_magic_mini returns this for some .js files
     "text/x-java",
     "text/x-go",
     "text/x-sh",
@@ -295,9 +298,17 @@ pub fn validate_file_size(size: u64, max_size: u64) -> anyhow::Result<()> {
 /// assert!(!is_allowed_mime("not/a-real-type", ALLOWED_MIMES));
 /// ```
 pub fn is_allowed_mime(mime: &str, allowed: &[&str]) -> bool {
-    // Deny-list overrides allow-list.
+    // Deny-list overrides everything.
     if DENIED_MIMES.contains(&mime) {
         return false;
+    }
+    // Any text/x-* variant is a source-code or markup type that tree_magic_mini
+    // may return (x-csrc, x-python3, x-modelica, x-matlab, …). Playing
+    // whack-a-mole with every variant is unsustainable; accepting them all is
+    // safe because no text/x-* type appears in DENIED_MIMES and individual
+    // extractors validate their own format-specific magic bytes.
+    if mime.starts_with("text/x-") {
+        return true;
     }
     allowed.contains(&mime)
 }
@@ -651,6 +662,23 @@ mod tests {
         assert!(is_allowed_mime("audio/mpeg", ALLOWED_MIMES));
         assert!(is_allowed_mime("video/mp4", ALLOWED_MIMES));
         assert!(is_allowed_mime("application/zip", ALLOWED_MIMES));
+    }
+
+    #[test]
+    fn tree_magic_mini_mime_variants_allowed() {
+        // tree_magic_mini returns unpredictable text/x-* variants for source
+        // code files (x-csrc, x-python3, x-modelica, x-matlab, …). The
+        // is_allowed_mime function now accepts ANY text/x-* prefix so we
+        // don't play whack-a-mole.
+        assert!(is_allowed_mime("text/x-csrc", ALLOWED_MIMES));
+        assert!(is_allowed_mime("text/x-python3", ALLOWED_MIMES));
+        assert!(is_allowed_mime("text/x-modelica", ALLOWED_MIMES));
+        assert!(is_allowed_mime("text/x-matlab", ALLOWED_MIMES));
+        assert!(is_allowed_mime("text/x-fortran", ALLOWED_MIMES));
+        assert!(is_allowed_mime(
+            "text/x-unknown-future-variant",
+            ALLOWED_MIMES
+        ));
     }
 
     #[test]

@@ -313,7 +313,11 @@ pub struct Degradation {
 }
 
 const fn default_max_inflight_ingest() -> u32 {
-    100
+    // Sized conservatively for a single llama.cpp process (~4-6 concurrent
+    // slots). Setting this higher than the backend can handle causes excess
+    // requests to fail inside the pipeline as 500s instead of being throttled
+    // cleanly at the limiter with 429s.
+    8
 }
 const fn default_per_tenant_max_inflight() -> u32 {
     // 0 = auto-derive max(1, max_inflight_ingest / 4) at limiter construction.
@@ -600,7 +604,7 @@ enabled = true
     #[test]
     fn degradation_defaults() {
         let d = Degradation::default();
-        assert_eq!(d.max_inflight_ingest, 100);
+        assert_eq!(d.max_inflight_ingest, 8);
         assert_eq!(d.per_tenant_max_inflight, 0); // 0 = auto-derive
         assert_eq!(d.blob_circuit_breaker_threshold, 3);
         assert_eq!(d.blob_circuit_breaker_cooldown_secs, 30);
@@ -630,7 +634,7 @@ blob_health_interval_secs = 10
     fn degradation_config_default_inherits() {
         let config = Config::default();
         let d = &config.degradation;
-        assert_eq!(d.max_inflight_ingest, 100);
+        assert_eq!(d.max_inflight_ingest, 8);
         assert_eq!(d.blob_circuit_breaker_threshold, 3);
     }
 

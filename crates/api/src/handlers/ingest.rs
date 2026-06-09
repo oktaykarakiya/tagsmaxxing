@@ -57,6 +57,13 @@ pub struct ErrorResponse {
 /// Payload size limit for ingest requests: 100 MiB.
 pub const MAX_PAYLOAD_BYTES: u64 = 100 * 1024 * 1024;
 
+/// Extra headroom on the HTTP body limit for multipart framing overhead
+/// (boundaries, Content-Disposition headers, MIME metadata). The payload
+/// limit is still enforced by [`parse_multipart`]; this headroom only ensures
+/// axum's [`DefaultBodyLimit`] does not reject a request whose *file* bytes
+/// are exactly at [`MAX_PAYLOAD_BYTES`] before the application can parse it.
+pub const MULTIPART_FRAMING_HEADROOM: u64 = 64 * 1024; // 64 KiB
+
 /// Build a user-facing error message from a [`QuotaError`], including an
 /// upsell suggestion when plan context is available (P11-T5).
 pub(crate) fn quota_error_response(err: &kb_core::quota::QuotaError) -> String {
