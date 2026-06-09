@@ -1176,3 +1176,16 @@ severity = "low"
 status = "done"
 acceptance = "when a model-backend role has no healthy backend, /health lists that role name in degradation.subsystems and reports degradation.ok:false (not an empty list with ok:true)"
 notes = "Campaign F7. check_backend_readiness returned only a bool and never recorded WHICH role was down; degradation.subsystems came solely from DegradationState (circuit breakers), which is not set for model-backend roles — so a dead backend showed backends:false with degradation:{ok:true,subsystems:[]}. Fix: new unhealthy_backend_roles(pool) returns the down roles' canonical names (role.as_str(): text/vision/code/embed/rerank); health_handler folds them into degradation.subsystems and derives degradation.ok from the (now backend-inclusive) list. Removed the now-redundant check_backend_readiness; repointed its 4 readiness tests + added 2 for the named-roles helper."
+
+[[bug]]
+id = "BUG-INGEST-15"
+description = "OOXML office docs route to Archive not Document, and minimal JARs bypass the executable deny-list (campaign findings F1, F10) — CHECKPOINT (extractor untrusted-bytes boundary)"
+test_names = ["classify_zip_ooxml_flavours", "jar_marked_zip_is_denied", "ooxml_marked_zip_is_allowed_as_document", "detect_mime_refines_ooxml_zip_to_office_document", "detect_mime_refines_jar_zip_to_java_archive"]
+test_file = "crates/extract/src/security.rs"
+touches = ["crates/extract/src/security.rs", "crates/pipeline/src/document_builder.rs"]
+conflict_group = "extract"
+depends_on = []
+severity = "medium"
+status = "done"
+acceptance = "a .docx/.xlsx/.pptx (ZIP + [Content_Types].xml) is detected as its OOXML MIME → DocKind::Document (Tika), not Archive; a .jar (ZIP + META-INF/MANIFEST.MF) is detected as application/java-archive and rejected 400 at the upload edge"
+notes = "Campaign F1+F10. CHECKPOINT (extractor untrusted-bytes boundary) — implemented+tested, surfaced for review, NOT merged to main. tree_magic_mini reports OOXML docs and JARs as plain application/zip, so office docs got DocKind::Archive (wrong kind; Tika still extracted) and minimal JARs were accepted as archives (deny-list bypass). Fix: classify_zip_container(bytes) does a bounded (64 KiB), allocation-free, read-only substring scan for [Content_Types].xml (→ OOXML MIME, disambiguated by word/|xl/|ppt/) and META-INF/MANIFEST.MF (→ application/java-archive, deny-listed). Wired into BOTH detectors that must stay in step: kb_extract::security::detect_upload_mime (the upload-edge allow/deny) AND kb_pipeline::document_builder::detect_mime (the stored DocKind). Pure widening of detection + tightening of the deny path; bytes still cross the sandboxed Tika boundary. Unit tests in both crates; e2e test_ingest_formats jar→400 + docx→document. document_builder.rs is in the ingest_pipeline group (cross-group fix, documented here)."

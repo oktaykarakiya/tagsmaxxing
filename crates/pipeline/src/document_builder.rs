@@ -211,10 +211,63 @@ fn detect_mime(bytes: &[u8]) -> &'static str {
     let detected = tree_magic_mini::from_u8(bytes);
     // Also recover application/x-riff (tree_magic_mini's result for WAV) so the
     // file routes to DocKind::Audio, matching the upload-edge allow-list.
-    if matches!(detected, "application/octet-stream" | "application/x-riff") {
-        return normalize_octet_stream_magic(bytes);
+    let mime = if matches!(detected, "application/octet-stream" | "application/x-riff") {
+        normalize_octet_stream_magic(bytes)
+    } else {
+        detected
+    };
+    // Refine a bare ZIP into its OOXML office MIME (→ Document/Tika) or a Java
+    // archive (→ application/java-archive), mirroring
+    // kb_extract::security::classify_zip_container so the stored document *kind*
+    // matches the upload-edge detection (campaign findings F1, F10).
+    if mime == "application/zip" {
+        return classify_zip_container(bytes);
     }
-    detected
+    mime
+}
+
+/// Refine a detected `application/zip` container by peeking at its entry names.
+///
+/// `tree_magic_mini` reports OOXML office documents and Java archives as plain
+/// `application/zip`. This scans a bounded prefix (read-only substring match, no
+/// allocation, no ZIP parsing) for `[Content_Types].xml` (OOXML, disambiguated by
+/// the `word/`/`xl/`/`ppt/` part dir) and `META-INF/MANIFEST.MF` (java-archive).
+/// An unmarked ZIP stays `application/zip`.
+///
+/// Mirrors `kb_extract::security::classify_zip_container` (kept in step so the
+/// upload-edge allow-list and this routing agree). JARs are rejected at the
+/// upload edge before this runs; the java-archive arm only keeps the two mirrors
+/// identical.
+fn classify_zip_container(bytes: &[u8]) -> &'static str {
+    const SCAN_LIMIT: usize = 64 * 1024;
+    let window = &bytes[..bytes.len().min(SCAN_LIMIT)];
+
+    if contains_subslice(window, b"[Content_Types].xml") {
+        if contains_subslice(window, b"word/") {
+            return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+        }
+        if contains_subslice(window, b"xl/") {
+            return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+        }
+        if contains_subslice(window, b"ppt/") {
+            return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+        }
+        return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    }
+
+    if contains_subslice(window, b"META-INF/MANIFEST.MF") {
+        return "application/java-archive";
+    }
+
+    "application/zip"
+}
+
+/// Return `true` when `haystack` contains `needle` as a contiguous subslice.
+fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return false;
+    }
+    haystack.windows(needle.len()).any(|w| w == needle)
 }
 
 /// Recover container types that `tree_magic_mini` 3.2.2 misclassifies as
@@ -409,6 +462,38 @@ mod tests {
     fn detects_zip() {
         let zip = b"PK\x03\x04\x00\x00\x00\x00\x00\x00\x00\x00";
         assert_eq!(detect_mime(zip), "application/zip");
+    }
+
+    #[test]
+    fn detect_mime_refines_ooxml_zip_to_office_document() {
+        // A docx is a ZIP with [Content_Types].xml + a word/ part; detect_mime
+        // must refine the bare zip to the OOXML MIME so the stored kind is
+        // Document (Tika), not Archive (campaign finding F1).
+        let mut docx = b"PK\x03\x04".to_vec();
+        docx.extend_from_slice(b"[Content_Types].xml\x00word/document.xml\x00");
+        let mime = detect_mime(&docx);
+        assert_eq!(
+            mime,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        );
+        assert_eq!(mime_to_doc_kind(mime), DocKind::Document);
+    }
+
+    #[test]
+    fn detect_mime_refines_jar_zip_to_java_archive() {
+        // Mirrors the upload-edge classifier; JARs are rejected before this runs,
+        // but the two detectors must stay in step (campaign finding F10).
+        let mut jar = b"PK\x03\x04".to_vec();
+        jar.extend_from_slice(b"META-INF/MANIFEST.MF\x00Main.class\x00");
+        assert_eq!(detect_mime(&jar), "application/java-archive");
+    }
+
+    #[test]
+    fn detect_mime_plain_zip_stays_archive() {
+        let mut zip = b"PK\x03\x04".to_vec();
+        zip.extend_from_slice(b"data/file.bin\x00readme.txt\x00");
+        assert_eq!(detect_mime(&zip), "application/zip");
+        assert_eq!(mime_to_doc_kind("application/zip"), DocKind::Archive);
     }
 
     #[test]

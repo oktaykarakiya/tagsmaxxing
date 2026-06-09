@@ -502,10 +502,79 @@ fn detect_upload_mime(bytes: &[u8]) -> &'static str {
     // Recover from the two "couldn't classify" results: octet-stream and the
     // generic application/x-riff (tree_magic_mini reports the latter for WAV — it
     // sees the RIFF container but not the WAVE form type).
-    if matches!(detected, "application/octet-stream" | "application/x-riff") {
-        return normalize_octet_stream_magic(bytes);
+    let mime = if matches!(detected, "application/octet-stream" | "application/x-riff") {
+        normalize_octet_stream_magic(bytes)
+    } else {
+        detected
+    };
+    // A bare ZIP container is often actually an OOXML office document or a Java
+    // archive — tree_magic_mini reports both as plain `application/zip`. Refine
+    // by peeking at the archive's entry names so office docs route to the Tika
+    // document path with the correct kind, and JARs are denied as executables
+    // rather than silently accepted as archives (campaign findings F1, F10).
+    if mime == "application/zip" {
+        return classify_zip_container(bytes);
     }
-    detected
+    mime
+}
+
+/// Refine a detected `application/zip` container by peeking at its entry names.
+///
+/// `tree_magic_mini` reports OOXML office documents (.docx/.xlsx/.pptx) and Java
+/// archives (.jar) as plain `application/zip` — they are all ZIP containers. This
+/// scans a **bounded** prefix of the bytes (read-only substring match, no
+/// allocation, no ZIP parsing) for the marker entry names that identify them:
+///
+/// - `[Content_Types].xml` (the Open Packaging Convention root part) → the
+///   matching OOXML MIME (disambiguated by the `word/` / `xl/` / `ppt/` part
+///   directory), which is allow-listed and routes to the Tika document extractor.
+/// - `META-INF/MANIFEST.MF` (a Java manifest) → `application/java-archive`, which
+///   is in [`DENIED_MIMES`] and is therefore rejected as an executable.
+///
+/// An unmarked ZIP stays `application/zip`. Detection is by content only, so a
+/// renamed payload cannot bypass the deny path.
+fn classify_zip_container(bytes: &[u8]) -> &'static str {
+    // OPC/JAR markers live in the local file headers near the start of the
+    // archive (the central directory trails at the end, but `[Content_Types].xml`
+    // is the first OPC part and `META-INF/` is written early). A 64 KiB window is
+    // generous and keeps this O(1) on untrusted input.
+    const SCAN_LIMIT: usize = 64 * 1024;
+    let window = &bytes[..bytes.len().min(SCAN_LIMIT)];
+
+    // OOXML first: the OPC requires a `[Content_Types].xml` part. (OOXML never
+    // carries a Java manifest, so this ordering is unambiguous.)
+    if contains_subslice(window, b"[Content_Types].xml") {
+        if contains_subslice(window, b"word/") {
+            return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+        }
+        if contains_subslice(window, b"xl/") {
+            return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+        }
+        if contains_subslice(window, b"ppt/") {
+            return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+        }
+        // An OPC package without a recognised flavour directory — Tika can still
+        // extract it; default to the wordprocessing MIME (Document kind).
+        return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    }
+
+    // JAR: a ZIP carrying a Java manifest is an executable, not a data archive.
+    if contains_subslice(window, b"META-INF/MANIFEST.MF") {
+        return "application/java-archive";
+    }
+
+    "application/zip"
+}
+
+/// Return `true` when `haystack` contains `needle` as a contiguous subslice.
+///
+/// A bounded, allocation-free scan used by [`classify_zip_container`]. An empty
+/// `needle`, or one longer than `haystack`, yields `false`.
+fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return false;
+    }
+    haystack.windows(needle.len()).any(|w| w == needle)
 }
 
 /// Recover a usable MIME type for container formats that `tree_magic_mini` 3.2.2
@@ -1098,6 +1167,109 @@ mod tests {
     fn detect_unknown_falls_to_text_plain() {
         let mime = detect_upload_mime(b"random bytes not matching any magic");
         assert_eq!(mime, "text/plain");
+    }
+
+    // ── classify_zip_container (F1 OOXML routing, F10 JAR deny) ──────────────
+
+    /// Build a fake ZIP-ish blob: PK local-file-header magic + the given marker
+    /// byte strings (each followed by a NUL), enough for the content scan.
+    fn zip_with(markers: &[&[u8]]) -> Vec<u8> {
+        let mut v = b"PK\x03\x04".to_vec();
+        for m in markers {
+            v.extend_from_slice(m);
+            v.push(0);
+        }
+        v
+    }
+
+    #[test]
+    fn classify_zip_ooxml_flavours() {
+        let docx = zip_with(&[b"[Content_Types].xml", b"word/document.xml"]);
+        assert_eq!(
+            classify_zip_container(&docx),
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        );
+        let xlsx = zip_with(&[b"[Content_Types].xml", b"xl/workbook.xml"]);
+        assert_eq!(
+            classify_zip_container(&xlsx),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        );
+        let pptx = zip_with(&[b"[Content_Types].xml", b"ppt/presentation.xml"]);
+        assert_eq!(
+            classify_zip_container(&pptx),
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        );
+    }
+
+    #[test]
+    fn classify_zip_opc_without_flavour_defaults_to_docx() {
+        let opc = zip_with(&[b"[Content_Types].xml"]);
+        assert_eq!(
+            classify_zip_container(&opc),
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        );
+    }
+
+    #[test]
+    fn classify_zip_jar_is_java_archive() {
+        let jar = zip_with(&[b"META-INF/MANIFEST.MF", b"com/x/Main.class"]);
+        assert_eq!(classify_zip_container(&jar), "application/java-archive");
+    }
+
+    #[test]
+    fn classify_zip_plain_stays_zip() {
+        let plain = zip_with(&[b"data/file.bin", b"readme.txt"]);
+        assert_eq!(classify_zip_container(&plain), "application/zip");
+    }
+
+    #[test]
+    fn classify_zip_ooxml_takes_precedence_over_manifest() {
+        // A pathological archive carrying both markers is OOXML (a real OOXML
+        // never carries a Java manifest; the documented order resolves it).
+        let both = zip_with(&[
+            b"[Content_Types].xml",
+            b"word/document.xml",
+            b"META-INF/MANIFEST.MF",
+        ]);
+        assert_eq!(
+            classify_zip_container(&both),
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        );
+    }
+
+    #[test]
+    fn contains_subslice_basics() {
+        assert!(contains_subslice(b"hello world", b"world"));
+        assert!(contains_subslice(b"abc", b"abc"));
+        assert!(!contains_subslice(b"abc", b"abcd"));
+        assert!(!contains_subslice(b"abc", b""));
+        assert!(!contains_subslice(b"", b"x"));
+    }
+
+    /// F10: a JAR (PK magic + Java manifest) is detected as java-archive and
+    /// rejected by `validate_upload` as an executable, not accepted as an archive.
+    #[test]
+    fn jar_marked_zip_is_denied() {
+        let jar = zip_with(&[b"META-INF/MANIFEST.MF", b"com/x/Main.class"]);
+        let err = validate_upload(&jar, Some("app.jar"), MAX_INDIVIDUAL_FILE_BYTES).unwrap_err();
+        match err.downcast_ref::<UploadRejected>() {
+            Some(UploadRejected::DisallowedMime(m)) => {
+                assert_eq!(m, "application/java-archive")
+            }
+            other => panic!("expected DisallowedMime(java-archive), got {other:?}"),
+        }
+    }
+
+    /// F1: an OOXML doc (PK magic + OPC markers) is detected as its office MIME
+    /// (Document/Tika path) and passes `validate_upload`.
+    #[test]
+    fn ooxml_marked_zip_is_allowed_as_document() {
+        let docx = zip_with(&[b"[Content_Types].xml", b"word/document.xml"]);
+        assert_eq!(
+            detect_upload_mime(&docx),
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        );
+        validate_upload(&docx, Some("report.docx"), MAX_INDIVIDUAL_FILE_BYTES).unwrap();
     }
 
     // ── DENIED_MIMES list integrity ────────────────────────────────────────────
