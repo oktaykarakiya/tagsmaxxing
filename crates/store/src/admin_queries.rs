@@ -349,8 +349,12 @@ impl PgStore {
     /// Returns an error if the database is not connected or the query fails.
     pub async fn admin_monthly_spend(&self, tenant_id: i64) -> anyhow::Result<u64> {
         let pool = self.pool()?;
+        // `cost_micros` is BIGINT, so `SUM()` returns NUMERIC, which sqlx 0.8
+        // (no `bigdecimal`/`rust_decimal` feature) cannot decode as `i64`. Cast
+        // back to `bigint` so the `Option<i64>` decode succeeds (mirrors
+        // PgStore::get_monthly_cost).
         let total: Option<i64> = sqlx::query_scalar(
-            "SELECT COALESCE(SUM(cost_micros), 0) \
+            "SELECT COALESCE(SUM(cost_micros), 0)::bigint \
              FROM usage_events \
              WHERE tenant_id = $1 \
                AND cost_micros IS NOT NULL \

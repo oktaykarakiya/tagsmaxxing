@@ -158,3 +158,57 @@ async fn per_user_usage_excludes_other_months() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+/// Insert one `usage_events` row with an explicit `cost_micros` (or NULL) and
+/// `created_at`, via the privileged pool (RLS-bypassing, like the other direct
+/// inserts in this file).
+async fn insert_priced_event(
+    pool: &PgPool,
+    tenant_id: i64,
+    cost_micros: Option<i64>,
+    created_at: DateTime<Utc>,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "INSERT INTO usage_events \
+         (tenant_id, model, role, prompt_tokens, completion_tokens, cost_micros, created_at) \
+         VALUES ($1, 'seed', 'embed', 1, 0, $2, $3)",
+    )
+    .bind(tenant_id)
+    .bind(cost_micros)
+    .bind(created_at)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Regression (F6): `get_monthly_cost` and `admin_monthly_spend` sum the current
+/// month's non-NULL `cost_micros`. Postgres `SUM(BIGINT)` returns NUMERIC, which
+/// sqlx 0.8 (no `bigdecimal`/`rust_decimal` feature) cannot decode as `i64` — so
+/// without the `::bigint` cast in both queries this errored on every call (masked
+/// by `.context`), breaking the monthly-spend gauge and the admin dashboard cost
+/// figure. This test would have caught it: it asserts the queries succeed and
+/// return the correct in-month, non-NULL sum.
+#[tokio::test]
+#[ignore = "requires Podman + image pull; run with --ignored"]
+async fn monthly_cost_sums_in_month_non_null_micros() -> anyhow::Result<()> {
+    let s = setup().await?;
+    let now = Utc::now();
+    let prior_month = now - chrono::Duration::days(40);
+
+    // No events yet → COALESCE(SUM,0)::bigint → 0 (and the query must not error).
+    assert_eq!(s.store.get_monthly_cost(s.tenant_id).await?, 0);
+    assert_eq!(s.store.admin_monthly_spend(s.tenant_id).await?, 0);
+
+    // Two priced calls this month, one free (NULL) call this month, one priced
+    // call in the prior month (excluded by the month filter).
+    insert_priced_event(&s.pool, s.tenant_id, Some(1_500_000), now).await?;
+    insert_priced_event(&s.pool, s.tenant_id, Some(2_500_000), now).await?;
+    insert_priced_event(&s.pool, s.tenant_id, None, now).await?; // free/local
+    insert_priced_event(&s.pool, s.tenant_id, Some(9_000_000), prior_month).await?;
+
+    // Only the two in-month non-NULL rows count: 1.5M + 2.5M = 4.0M micros.
+    assert_eq!(s.store.get_monthly_cost(s.tenant_id).await?, 4_000_000);
+    assert_eq!(s.store.admin_monthly_spend(s.tenant_id).await?, 4_000_000);
+
+    Ok(())
+}

@@ -27,8 +27,14 @@ impl PgStore {
         let mut tx = crate::pg_store::begin_tenant_tx(&pool, tenant_id).await?;
         // Sum only non-NULL cost_micros; NULL rows are free/local calls.
         // Filter to the current calendar month via date_trunc.
+        //
+        // `cost_micros` is BIGINT, so Postgres `SUM()` returns NUMERIC; sqlx 0.8
+        // (built without the `bigdecimal`/`rust_decimal` feature) decodes NUMERIC
+        // as `String`, which would fail an `Option<i64>` decode. Cast the result
+        // back to `bigint` so it decodes as `i64` (a monthly micros total fits an
+        // i64 with room to spare). Without the cast this query errored every call.
         let total: Option<i64> = sqlx::query_scalar(
-            "SELECT COALESCE(SUM(cost_micros), 0) \
+            "SELECT COALESCE(SUM(cost_micros), 0)::bigint \
              FROM usage_events \
              WHERE tenant_id = $1 \
                AND cost_micros IS NOT NULL \
