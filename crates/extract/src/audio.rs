@@ -113,34 +113,51 @@ trait Transcoder: Send + Sync {
 
 /// The production ffmpeg transcoder.
 ///
-/// Spawns `ffmpeg -i pipe:0 -ar 16000 -ac 1 -f wav pipe:1` with the input
-/// bytes fed to stdin and the WAV output read from stdout.
+/// Writes the input to a temp file and runs
+/// `ffmpeg -i <tmp> -ar 16000 -ac 1 -f wav pipe:1` with **stdin closed**, reading
+/// the 16 kHz mono WAV from stdout. (Feeding input via ffmpeg's stdin while only
+/// reading stdout *after* the whole write completes deadlocks once ffmpeg's
+/// ~64 KiB stdout pipe buffer fills — see [`Transcoder::transcode`].)
 #[derive(Debug, Clone, Copy, Default)]
 struct RealFfmpeg;
+
+impl RealFfmpeg {
+    /// Write `input` to a temporary file (deleted on drop) so ffmpeg can read it
+    /// via a path with stdin closed — avoiding the stdin/stdout pipe deadlock.
+    fn temp_file(input: &[u8]) -> anyhow::Result<tempfile::NamedTempFile> {
+        use std::io::Write;
+        let mut tmp = tempfile::NamedTempFile::new()
+            .map_err(|e| anyhow::anyhow!("AudioExtractor: failed to create temp file: {e}"))?;
+        tmp.write_all(input)
+            .map_err(|e| anyhow::anyhow!("AudioExtractor: failed to write temp file: {e}"))?;
+        tmp.flush()
+            .map_err(|e| anyhow::anyhow!("AudioExtractor: failed to flush temp file: {e}"))?;
+        Ok(tmp)
+    }
+}
 
 #[async_trait]
 impl Transcoder for RealFfmpeg {
     async fn transcode(&self, input: &[u8], timeout: Duration) -> anyhow::Result<Vec<u8>> {
-        let mut child = tokio::process::Command::new("ffmpeg")
-            .args([
-                "-i", "pipe:0", "-ar", "16000", "-ac", "1", "-f", "wav", "pipe:1",
-            ])
-            .stdin(std::process::Stdio::piped())
+        // F8: write the input to a temp file and read the transcoded WAV from
+        // stdout with stdin **closed**. The previous approach fed bytes to
+        // ffmpeg's stdin (pipe:0) and only read stdout *after* the entire
+        // `write_all` finished — so once ffmpeg's ~64 KiB stdout pipe buffer
+        // filled, ffmpeg blocked writing output, stopped draining stdin, and the
+        // `write_all` blocked forever (and was outside the timeout). The temp-file
+        // + `stdin(null)` pattern — identical to the video extractor — removes the
+        // write side entirely, and the whole exchange is bounded by `timeout`.
+        let tmp = Self::temp_file(input)?;
+
+        let child = tokio::process::Command::new("ffmpeg")
+            .args(["-i"])
+            .arg(tmp.path())
+            .args(["-ar", "16000", "-ac", "1", "-f", "wav", "pipe:1"])
+            .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
             .map_err(|e| anyhow::anyhow!("AudioExtractor: failed to spawn ffmpeg: {e}"))?;
-
-        // Write input bytes to ffmpeg stdin, then close it so ffmpeg knows
-        // to finish encoding.
-        if let Some(mut stdin) = child.stdin.take() {
-            tokio::io::AsyncWriteExt::write_all(&mut stdin, input)
-                .await
-                .map_err(|e| {
-                    anyhow::anyhow!("AudioExtractor: failed to write to ffmpeg stdin: {e}")
-                })?;
-            // stdin is dropped here → EOF for ffmpeg.
-        }
 
         let output = tokio::time::timeout(timeout, child.wait_with_output())
             .await
@@ -168,8 +185,8 @@ impl Transcoder for RealFfmpeg {
 /// # Pipeline
 ///
 /// 1. **Transcode** — spawns `ffmpeg` to convert any audio format to 16 kHz
-///    mono WAV, feeding input bytes via stdin and capturing stdout. The
-///    subprocess is bounded by a configurable timeout.
+///    mono WAV, reading the input from a temp file (stdin closed) and capturing
+///    stdout. The subprocess is bounded by a configurable timeout.
 /// 2. **Transcribe** — POSTs the WAV to `{base_url}/v1/audio/transcriptions`
 ///    (OpenAI-compatible) with `response_format=verbose_json` to get segments.
 /// 3. **Assemble** — text goes into [`Extracted::text`]; duration and
@@ -1164,5 +1181,60 @@ mod tests {
         assert_eq!(out.text, "trait object works");
 
         mock.shutdown().await;
+    }
+
+    // ── F8: real-ffmpeg deadlock regression ─────────────────────────────────
+
+    /// Build an N-second 16 kHz mono 16-bit PCM WAV (no ffmpeg needed), large
+    /// enough that re-encoding produces well over 64 KiB of output.
+    fn pcm_wav_seconds(secs: u32) -> Vec<u8> {
+        let sample_rate: u32 = 16_000;
+        let n = sample_rate * secs;
+        let data_len = n * 2; // 16-bit mono
+        let mut v = Vec::with_capacity(44 + data_len as usize);
+        v.extend_from_slice(b"RIFF");
+        v.extend_from_slice(&(36 + data_len).to_le_bytes());
+        v.extend_from_slice(b"WAVE");
+        v.extend_from_slice(b"fmt ");
+        v.extend_from_slice(&16u32.to_le_bytes()); // PCM fmt chunk size
+        v.extend_from_slice(&1u16.to_le_bytes()); // audio format = PCM
+        v.extend_from_slice(&1u16.to_le_bytes()); // channels = mono
+        v.extend_from_slice(&sample_rate.to_le_bytes());
+        v.extend_from_slice(&(sample_rate * 2).to_le_bytes()); // byte rate
+        v.extend_from_slice(&2u16.to_le_bytes()); // block align
+        v.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
+        v.extend_from_slice(b"data");
+        v.extend_from_slice(&data_len.to_le_bytes());
+        for i in 0..n {
+            let s = ((i as f32 * 0.1).sin() * 8000.0) as i16;
+            v.extend_from_slice(&s.to_le_bytes());
+        }
+        v
+    }
+
+    /// The real ffmpeg transcoder must handle audio whose transcoded output
+    /// exceeds the ~64 KiB stdout pipe buffer **without deadlocking** (F8). The
+    /// old stdin-pipe code hung here; the temp-file + `stdin(null)` path returns
+    /// well within the timeout. `#[ignore]` because it needs a real ffmpeg binary
+    /// (absent in `just ci`); run with `--ignored` on a host that has ffmpeg.
+    #[tokio::test]
+    #[ignore = "requires a real ffmpeg binary; run with --ignored"]
+    async fn real_ffmpeg_transcodes_large_audio_without_deadlock() {
+        let input = pcm_wav_seconds(3); // ~96 KiB in → > 64 KiB out
+        let ff = RealFfmpeg;
+        // Outer timeout is a safety net so a regression fails fast instead of
+        // hanging the whole test run.
+        let out = tokio::time::timeout(
+            Duration::from_secs(30),
+            ff.transcode(&input, Duration::from_secs(20)),
+        )
+        .await
+        .expect("transcode must not hang (F8 deadlock regression)")
+        .expect("ffmpeg should transcode the WAV");
+        assert!(
+            out.len() > 64 * 1024,
+            "output must exceed the 64 KiB pipe buffer that triggered the deadlock, got {} bytes",
+            out.len()
+        );
     }
 }

@@ -75,13 +75,15 @@ files = [
 
 [[conflict_group]]
 name = "extract"
-description = "File extractors: text, code, Tika, binary, security"
+description = "File extractors: text, code, Tika, binary, security, audio, video"
 files = [
     "crates/extract/src/text.rs",
     "crates/extract/src/binary.rs",
     "crates/extract/src/tika.rs",
     "crates/extract/src/code.rs",
     "crates/extract/src/security.rs",
+    "crates/extract/src/audio.rs",
+    "crates/extract/src/video.rs",
 ]
 
 [[conflict_group]]
@@ -1202,3 +1204,16 @@ severity = "medium"
 status = "done"
 acceptance = "when the tagger has no healthy backend, a non-media upload returns 503 service_unavailable + Retry-After (not 500); media still degrades to 202; a genuine internal error still returns 500"
 notes = "Campaign F4. The tagger stringified scheduler errors (anyhow!(\"...: {e}\")) so the typed AcquireError/LlmError was lost, and the non-media pipeline branch returned a generic error → 500 — turning a transient backend outage into a hard failure (the single largest source of campaign test flakiness). Fix (cross-group, sequential): (1) tagger.rs preserves the typed LlmError via anyhow::Error::new(e).context(...) at both chat() call sites; (2) pipeline/ingest.rs adds typed IngestError::BackendUnavailable + is_backend_unavailable(&anyhow::Error) (matches LlmError::Scheduler/AllCooldown/AllFailed) and returns it for non-media tagger outages (media still degrades to default metadata; other errors still 500); (3) handlers/ingest.rs::map_ingest_error downcasts IngestError → 503 service_unavailable with a generic client message (no internal leak); (4) serve.rs ensure_retry_after_on_429 → ensure_retry_after now tags 429 AND 503 with Retry-After:5. Unit tests across kb-llm/kb-pipeline/kb-api. Primary group ingest_pipeline; also touches tagger/api_handlers/serve_config (documented)."
+
+[[bug]]
+id = "BUG-INGEST-16"
+description = "Audio extractor deadlocks on any real audio — ffmpeg stdin/stdout pipe deadlock hangs ingest + leaks the inflight permit (campaign finding F8) — CHECKPOINT (extractor untrusted-bytes boundary)"
+test_names = ["real_ffmpeg_transcodes_large_audio_without_deadlock"]
+test_file = "crates/extract/src/audio.rs"
+touches = ["crates/extract/src/audio.rs"]
+conflict_group = "extract"
+depends_on = []
+severity = "high"
+status = "done"
+acceptance = "transcoding audio whose re-encoded WAV exceeds the ~64 KiB stdout pipe buffer completes within the timeout instead of hanging; audio ingest no longer wedges or leaks inflight permits"
+notes = "Campaign F8 (HIGH). CHECKPOINT (extractor untrusted-bytes boundary, §31.5) — implemented+tested, committed on the branch for review, NOT merged to main. RealFfmpeg::transcode fed input to ffmpeg's stdin (pipe:0) and only read stdout AFTER write_all finished; once ffmpeg's ~64 KiB stdout pipe filled it blocked writing, stopped draining stdin, and write_all blocked forever (outside the timeout) — so any real audio (>~2 s) hung >200 s and never released its inflight permit. Fix: adopt the video extractor's safe pattern — write input to a tempfile::NamedTempFile and run `ffmpeg -i <tmp> -ar 16000 -ac 1 -f wav pipe:1` with stdin(Stdio::null()), reading stdout under the existing timeout. Added RealFfmpeg::temp_file. Mock-transcoder unit tests unchanged (27 pass); added an #[ignore] real-ffmpeg regression (3 s WAV → >64 KiB out) — verified live on ffmpeg 8.1.1: completes in ~0.14 s (was a >200 s hang). Added audio.rs + video.rs to the extract conflict group."
