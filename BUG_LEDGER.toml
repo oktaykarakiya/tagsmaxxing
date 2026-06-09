@@ -1163,3 +1163,16 @@ severity = "low"
 status = "done"
 acceptance = "a body over the soft payload cap or axum's DefaultBodyLimit returns 413 payload_too_large; a genuinely malformed multipart still returns 400 invalid_multipart"
 notes = "Campaign F3. parse_multipart returned anyhow::Result and every error (the soft-cap bail AND axum's body-limit MultipartError) was mapped to 400 invalid_multipart; 413 is the correct status for an over-size body. Fix: typed UploadParseError { TooLarge -> 413, Malformed -> 400 }; classify_multipart_err uses axum MultipartError::status() (413 on a body/length-limit overflow), the soft-cap path returns TooLarge, and the JSON handler + web upload_submit map the status (add_page renders the message via Display, unchanged). Added handlers/ingest.rs to the api_handlers conflict group. Unit tests cover the soft-cap classification + the status mapping; the e2e test_bva_just_over_axum_limit_413 covers the real axum-413 path."
+
+[[bug]]
+id = "BUG-OBS-09"
+description = "/health reports backends:false without naming the degraded subsystem (campaign finding F7)"
+test_names = ["unhealthy_backend_roles_names_only_the_down_role", "unhealthy_backend_roles_empty_when_all_healthy"]
+test_file = "test/tests/catalog/test_ingest_observability.py"
+touches = ["crates/api/src/lib.rs"]
+conflict_group = "serve_config"
+depends_on = []
+severity = "low"
+status = "done"
+acceptance = "when a model-backend role has no healthy backend, /health lists that role name in degradation.subsystems and reports degradation.ok:false (not an empty list with ok:true)"
+notes = "Campaign F7. check_backend_readiness returned only a bool and never recorded WHICH role was down; degradation.subsystems came solely from DegradationState (circuit breakers), which is not set for model-backend roles — so a dead backend showed backends:false with degradation:{ok:true,subsystems:[]}. Fix: new unhealthy_backend_roles(pool) returns the down roles' canonical names (role.as_str(): text/vision/code/embed/rerank); health_handler folds them into degradation.subsystems and derives degradation.ok from the (now backend-inclusive) list. Removed the now-redundant check_backend_readiness; repointed its 4 readiness tests + added 2 for the named-roles helper."

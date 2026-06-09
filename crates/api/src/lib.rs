@@ -448,24 +448,31 @@ async fn health_handler(
     let db_ok = state.pg_store.is_db_reachable().await;
     let migrations_ok = state.pg_store.are_migrations_applied().await;
 
-    // Check that every configured role has ≥1 healthy backend.
-    let backends_ok = if let Some(pool) = &state.backend_pool {
-        check_backend_readiness(pool)
-    } else {
-        // No backend pool configured — skip the check (e.g. auth-only configs).
-        true
-    };
-
-    // Check degradation state (P8-T9).
-    let degradation_ok = state
-        .degradation
+    // Roles with no healthy backend, named (campaign finding F7). Empty when no
+    // pool is configured (e.g. auth-only configs), so the check is skipped.
+    let unhealthy_roles = state
+        .backend_pool
         .as_ref()
-        .is_none_or(|ds| !ds.is_degraded());
-    let degraded_subsystems = state
+        .map(|pool| unhealthy_backend_roles(pool))
+        .unwrap_or_default();
+    let backends_ok = unhealthy_roles.is_empty();
+
+    // Degraded subsystems = the in-memory DegradationState set (circuit breakers,
+    // P8-T9) ∪ any backend role with no healthy backend (F7), so /health names
+    // *which* subsystem is degraded instead of leaving the list empty.
+    let mut degraded_subsystems = state
         .degradation
         .as_ref()
         .map(|ds| ds.degraded_subsystems())
         .unwrap_or_default();
+    for role in unhealthy_roles {
+        if !degraded_subsystems.contains(&role) {
+            degraded_subsystems.push(role);
+        }
+    }
+    // `degradation.ok` mirrors the (now backend-inclusive) subsystem list, so it
+    // can never read `ok:true` while a subsystem is named.
+    let degradation_ok = degraded_subsystems.is_empty();
 
     let all_ok = db_ok && migrations_ok && backends_ok && degradation_ok;
 
@@ -517,20 +524,28 @@ async fn live_handler() -> (StatusCode, Json<serde_json::Value>) {
     )
 }
 
-/// Returns `true` when every role the pool knows about has at least one healthy
-/// backend.
-fn check_backend_readiness(pool: &kb_scheduler::Pool) -> bool {
+/// Names of the roles the pool serves that currently have **no** healthy backend
+/// — the canonical role names (`"text"`, `"vision"`, `"code"`, `"embed"`,
+/// `"rerank"`), matching the subsystem names published as `kb_subsystem_degraded`.
+///
+/// [`health_handler`] folds these into `degradation.subsystems` so an operator can
+/// see *which* role is down. Without it, a dead backend surfaced only as
+/// `backends:false` while `degradation` reported `{ok:true, subsystems:[]}`
+/// (campaign finding F7).
+fn unhealthy_backend_roles(pool: &kb_scheduler::Pool) -> Vec<&'static str> {
+    let mut out = Vec::new();
     for role in pool.roles() {
-        let healthy_count = pool
+        // Capture the name before `backends_for` consumes `role` by value.
+        let name = role.as_str();
+        let any_healthy = pool
             .backends_for(role)
             .iter()
-            .filter(|b| b.healthy.load(std::sync::atomic::Ordering::Acquire))
-            .count();
-        if healthy_count == 0 {
-            return false;
+            .any(|b| b.healthy.load(std::sync::atomic::Ordering::Acquire));
+        if !any_healthy {
+            out.push(name);
         }
     }
-    true
+    out
 }
 
 // ── Metrics handler ──────────────────────────────────────────────────────────
@@ -679,7 +694,7 @@ mod tests {
             vec![Arc::clone(&b1), Arc::clone(&b2)],
             Duration::from_secs(5),
         );
-        assert!(check_backend_readiness(&pool));
+        assert!(unhealthy_backend_roles(&pool).is_empty());
     }
 
     /// `check_backend_readiness` returns `false` when a role has no healthy backends.
@@ -694,7 +709,7 @@ mod tests {
         ));
         b.healthy.store(false, Ordering::Release);
         let pool = kb_scheduler::Pool::new(vec![Arc::clone(&b)], Duration::from_secs(5));
-        assert!(!check_backend_readiness(&pool));
+        assert!(!unhealthy_backend_roles(&pool).is_empty());
     }
 
     /// `check_backend_readiness` returns `true` when a role has at least one
@@ -720,7 +735,7 @@ mod tests {
             vec![Arc::clone(&healthy), Arc::clone(&unhealthy)],
             Duration::from_secs(5),
         );
-        assert!(check_backend_readiness(&pool));
+        assert!(unhealthy_backend_roles(&pool).is_empty());
     }
 
     /// `check_backend_readiness` with no backends at all returns `true` (no roles
@@ -728,7 +743,51 @@ mod tests {
     #[test]
     fn check_backend_readiness_empty_pool() {
         let pool = kb_scheduler::Pool::new(vec![], Duration::from_secs(5));
-        assert!(check_backend_readiness(&pool));
+        assert!(unhealthy_backend_roles(&pool).is_empty());
+    }
+
+    /// F7: a role with no healthy backend is named (so `/health` can fold it into
+    /// `degradation.subsystems` instead of leaving the list empty).
+    #[test]
+    fn unhealthy_backend_roles_names_only_the_down_role() {
+        let text = Arc::new(test_backend(
+            "t",
+            "http://x:1",
+            vec![kb_core::role::Role::Text],
+            0,
+            1,
+        ));
+        let embed = Arc::new(test_backend(
+            "e",
+            "http://x:2",
+            vec![kb_core::role::Role::Embed],
+            0,
+            1,
+        ));
+        text.healthy.store(false, Ordering::Release);
+        let pool = kb_scheduler::Pool::new(
+            vec![Arc::clone(&text), Arc::clone(&embed)],
+            Duration::from_secs(5),
+        );
+        assert_eq!(
+            unhealthy_backend_roles(&pool),
+            vec!["text"],
+            "only the down role is named; the healthy embed role is not"
+        );
+    }
+
+    /// An all-healthy pool names no degraded subsystem.
+    #[test]
+    fn unhealthy_backend_roles_empty_when_all_healthy() {
+        let text = Arc::new(test_backend(
+            "t",
+            "http://x:1",
+            vec![kb_core::role::Role::Text],
+            0,
+            1,
+        ));
+        let pool = kb_scheduler::Pool::new(vec![Arc::clone(&text)], Duration::from_secs(5));
+        assert!(unhealthy_backend_roles(&pool).is_empty());
     }
 
     /// The health endpoint returns 200 with a properly wired but unconnected DB when
