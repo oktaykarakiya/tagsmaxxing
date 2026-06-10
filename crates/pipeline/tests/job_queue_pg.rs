@@ -251,7 +251,10 @@ async fn claim_returns_next_eligible_job() -> anyhow::Result<()> {
 async fn claim_respects_priority_ordering() -> anyhow::Result<()> {
     let s = setup().await?;
 
-    // Enqueue three jobs with different priorities (lower = preferred).
+    // Enqueue three jobs with different priorities. Since migration 0014
+    // (P9-T12) priority is HIGHER-is-more-urgent: the claim query orders by
+    // effective priority DESC. (This test predated 0014 and was stale — it
+    // asserted the old lower-first semantics; first actually run in P15-T2.)
     let low_id = s
         .queue
         .enqueue(s.tenant_id, None, None, None, JobKind::Ingest, 10)
@@ -265,14 +268,14 @@ async fn claim_respects_priority_ordering() -> anyhow::Result<()> {
         .enqueue(s.tenant_id, None, None, None, JobKind::Ingest, 100)
         .await?;
 
-    // Claim three times — should come out in priority order.
+    // Claim three times — highest priority first.
     let j1 = s.queue.claim().await?.expect("first claim");
     let j2 = s.queue.claim().await?.expect("second claim");
     let j3 = s.queue.claim().await?.expect("third claim");
 
-    assert_eq!(j1.id, low_id, "priority 10 should be first");
+    assert_eq!(j1.id, high_id, "priority 100 (most urgent) should be first");
     assert_eq!(j2.id, mid_id, "priority 50 should be second");
-    assert_eq!(j3.id, high_id, "priority 100 should be third");
+    assert_eq!(j3.id, low_id, "priority 10 should be last");
 
     Ok(())
 }
@@ -563,7 +566,7 @@ async fn worker_pool_processes_all_jobs() -> anyhow::Result<()> {
     let queue = Arc::clone(&s.queue);
     let rx = shutdown_rx.clone();
     let handle = tokio::spawn(async move {
-        run_worker_pool(queue, 3, rx, |_job| async move {
+        run_worker_pool(queue, 3, vec![], rx, |_job| async move {
             // Simulate successful processing.
             Ok(())
         })
@@ -609,7 +612,7 @@ async fn worker_pool_handles_failures_and_retries() -> anyhow::Result<()> {
     let queue = Arc::clone(&s.queue);
     let rx = shutdown_rx.clone();
     let handle = tokio::spawn(async move {
-        run_worker_pool(queue, 1, rx, move |_job| {
+        run_worker_pool(queue, 1, vec![], rx, move |_job| {
             let a = attempts2.clone();
             async move {
                 let n = a.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -678,7 +681,7 @@ async fn worker_pool_graceful_shutdown_does_not_claim_new_jobs() -> anyhow::Resu
 
     let rx = shutdown_rx.clone();
     let handle = tokio::spawn(async move {
-        run_worker_pool(queue, 2, rx, |_job| async move { Ok(()) }).await;
+        run_worker_pool(queue, 2, vec![], rx, |_job| async move { Ok(()) }).await;
     });
 
     handle.await.unwrap();
@@ -715,7 +718,7 @@ async fn worker_pool_respects_concurrency_limit() -> anyhow::Result<()> {
     let queue = Arc::clone(&s.queue);
     let rx = shutdown_rx.clone();
     let handle = tokio::spawn(async move {
-        run_worker_pool(queue, 2, rx, move |_job| {
+        run_worker_pool(queue, 2, vec![], rx, move |_job| {
             let c = Arc::clone(&current2);
             let m = Arc::clone(&max_observed);
             async move {
@@ -811,5 +814,263 @@ async fn failed_job_becomes_claimable_after_backoff() -> anyhow::Result<()> {
     assert_eq!(retry.id, id);
     assert_eq!(retry.attempts, 1);
 
+    Ok(())
+}
+
+// ── lease / reaper / kind filter (P15-T2) ──────────────────────────────────────
+
+/// Fetch a job's lease as (epoch_or_none, locked_by_or_none).
+async fn job_lease(pool: &PgPool, job_id: i64) -> anyhow::Result<(Option<f64>, Option<String>)> {
+    let row: (Option<f64>, Option<String>) = sqlx::query_as(
+        "SELECT EXTRACT(EPOCH FROM lease_expires_at)::float8, locked_by \
+         FROM jobs WHERE id = $1",
+    )
+    .bind(job_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(row)
+}
+
+/// Force a running job's lease into the past (simulates a crashed worker).
+async fn expire_lease(pool: &PgPool, job_id: i64) -> anyhow::Result<()> {
+    sqlx::query("UPDATE jobs SET lease_expires_at = now() - interval '5 seconds' WHERE id = $1")
+        .bind(job_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires Podman + image pull; run with --ignored"]
+async fn claim_stamps_lease_and_locked_by() -> anyhow::Result<()> {
+    let s = setup().await?;
+    let id = s
+        .queue
+        .enqueue(s.tenant_id, None, None, None, JobKind::Ingest, 0)
+        .await?;
+
+    let before = now_epoch(&s.pool).await?;
+    let job = s.queue.claim().await?.expect("claimable");
+    assert_eq!(job.id, id);
+
+    let (lease, locked_by) = job_lease(&s.pool, id).await?;
+    let lease = lease.expect("claim must set lease_expires_at");
+    // Default lease is 600 s; allow generous slack for clock movement.
+    assert!(
+        lease > before + 500.0 && lease < before + 700.0,
+        "lease ≈ now+600s, got delta {}",
+        lease - before
+    );
+    assert_eq!(
+        locked_by.as_deref(),
+        Some(s.queue.worker_id()),
+        "claim must stamp the claimant's worker id"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires Podman + image pull; run with --ignored"]
+async fn claim_kinds_filters_kinds() -> anyhow::Result<()> {
+    let s = setup().await?;
+    s.queue
+        .enqueue(s.tenant_id, None, None, None, JobKind::Ingest, 0)
+        .await?;
+    let retag_id = s
+        .queue
+        .enqueue(s.tenant_id, None, None, Some(1), JobKind::Retag, 100)
+        .await?;
+
+    // An ingest-only claimant never receives the (higher-priority) retag job.
+    let job = s
+        .queue
+        .claim_kinds(&[JobKind::Ingest])
+        .await?
+        .expect("ingest job claimable");
+    assert_eq!(job.kind, JobKind::Ingest);
+
+    // No more ingest jobs → None, even though a retag job is eligible.
+    assert!(s.queue.claim_kinds(&[JobKind::Ingest]).await?.is_none());
+
+    // A retag claimant gets it.
+    let job = s
+        .queue
+        .claim_kinds(&[JobKind::Retag])
+        .await?
+        .expect("retag job claimable");
+    assert_eq!(job.id, retag_id);
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires Podman + image pull; run with --ignored"]
+async fn extend_lease_extends_own_running_job_only() -> anyhow::Result<()> {
+    let s = setup().await?;
+    let id = s
+        .queue
+        .enqueue(s.tenant_id, None, None, None, JobKind::Ingest, 0)
+        .await?;
+    let _ = s.queue.claim().await?.expect("claimable");
+
+    // Shrink the lease, then extend — it must move forward again.
+    expire_lease(&s.pool, id).await?;
+    assert!(s.queue.extend_lease(id).await?, "own running job extends");
+    let (lease, _) = job_lease(&s.pool, id).await?;
+    let now = now_epoch(&s.pool).await?;
+    assert!(
+        lease.expect("lease set") > now,
+        "lease moved into the future"
+    );
+
+    // A different worker id cannot extend it.
+    let other = JobQueue::new(s.pool.clone(), 1_000, 3).with_worker_id("other:1");
+    assert!(
+        !other.extend_lease(id).await?,
+        "foreign worker must not extend"
+    );
+
+    // After completion, extension reports false (job no longer ours/running).
+    s.queue.complete(id).await?;
+    assert!(!s.queue.extend_lease(id).await?, "done job must not extend");
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires Podman + image pull; run with --ignored"]
+async fn reaper_requeues_expired_lease_with_backoff() -> anyhow::Result<()> {
+    let s = setup().await?; // max_retries = 3
+    let id = s
+        .queue
+        .enqueue(s.tenant_id, None, None, None, JobKind::Ingest, 0)
+        .await?;
+    let _ = s.queue.claim().await?.expect("claimable");
+    expire_lease(&s.pool, id).await?;
+
+    let reaped = s.queue.reap_expired_leases().await?;
+    assert_eq!(reaped, 1, "exactly the expired job is reaped");
+
+    // Normal fail() accounting applied: failed + attempts=1 + backoff + error.
+    assert_eq!(job_status(&s.pool, id).await?, "failed");
+    assert_eq!(job_attempts(&s.pool, id).await?, 1);
+    let run_after = job_run_after_epoch(&s.pool, id).await?;
+    assert!(
+        run_after > now_epoch(&s.pool).await?,
+        "backoff pushes run_after into the future"
+    );
+    let err: Option<String> = sqlx::query_scalar("SELECT last_error FROM jobs WHERE id = $1")
+        .bind(id)
+        .fetch_one(&s.pool)
+        .await?;
+    assert_eq!(err.as_deref(), Some(kb_pipeline::LEASE_EXPIRED_ERROR));
+
+    // A second pass finds nothing (the job is no longer running) — the
+    // SELECT-then-fail race resolves as a skip, never a double-increment.
+    assert_eq!(s.queue.reap_expired_leases().await?, 0);
+    assert_eq!(job_attempts(&s.pool, id).await?, 1);
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires Podman + image pull; run with --ignored"]
+async fn reaper_dead_letters_at_max_retries() -> anyhow::Result<()> {
+    let s = setup_queue(10, 1).await?; // max_retries = 1: first failure is fatal
+    let id = s
+        .queue
+        .enqueue(s.tenant_id, None, None, None, JobKind::Ingest, 0)
+        .await?;
+    let _ = s.queue.claim().await?.expect("claimable");
+    expire_lease(&s.pool, id).await?;
+
+    assert_eq!(s.queue.reap_expired_leases().await?, 1);
+    assert_eq!(
+        job_status(&s.pool, id).await?,
+        "dead",
+        "retry budget exhausted → dead-letter"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires Podman + image pull; run with --ignored"]
+async fn reaper_ignores_live_leases() -> anyhow::Result<()> {
+    let s = setup().await?;
+    let id = s
+        .queue
+        .enqueue(s.tenant_id, None, None, None, JobKind::Ingest, 0)
+        .await?;
+    let _ = s.queue.claim().await?.expect("claimable");
+
+    // Lease is fresh (now + 600 s) — the reaper must not touch it.
+    assert_eq!(s.queue.reap_expired_leases().await?, 0);
+    assert_eq!(job_status(&s.pool, id).await?, "running");
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires Podman + image pull; run with --ignored"]
+async fn reaped_job_is_reclaimable_after_backoff() -> anyhow::Result<()> {
+    let s = setup_queue(10, 3).await?; // 10 ms base backoff
+    let id = s
+        .queue
+        .enqueue(s.tenant_id, None, None, None, JobKind::Ingest, 0)
+        .await?;
+    let _ = s.queue.claim().await?.expect("claimable");
+    expire_lease(&s.pool, id).await?;
+    assert_eq!(s.queue.reap_expired_leases().await?, 1);
+
+    // Skip the (tiny) backoff deterministically, then re-claim: the fresh
+    // claim stamps a fresh lease — full crashed-worker recovery round trip.
+    sqlx::query("UPDATE jobs SET run_after = now() WHERE id = $1")
+        .bind(id)
+        .execute(&s.pool)
+        .await?;
+    let job = s.queue.claim().await?.expect("reaped job reclaimable");
+    assert_eq!(job.id, id);
+    assert_eq!(job.attempts, 1);
+    let (lease, _) = job_lease(&s.pool, id).await?;
+    assert!(
+        lease.expect("fresh lease") > now_epoch(&s.pool).await?,
+        "re-claim stamps a fresh lease"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires Podman + image pull; run with --ignored"]
+async fn worker_pool_kind_filter_leaves_other_kinds_queued() -> anyhow::Result<()> {
+    let s = setup().await?;
+    s.queue
+        .enqueue(s.tenant_id, None, None, None, JobKind::Ingest, 0)
+        .await?;
+    let email_id = s
+        .queue
+        .enqueue(s.tenant_id, None, None, None, JobKind::SendEmail, 100)
+        .await?;
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let queue = Arc::clone(&s.queue);
+    let handle = tokio::spawn(async move {
+        run_worker_pool(queue, 2, vec![JobKind::Ingest], shutdown_rx, |_job| async {
+            Ok(())
+        })
+        .await;
+    });
+
+    // Wait until the ingest job is done.
+    for _ in 0..50 {
+        if count_jobs(&s.pool, "status", "done").await? == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    shutdown_tx.send(true).ok();
+    handle.await.unwrap();
+
+    assert_eq!(count_jobs(&s.pool, "status", "done").await?, 1);
+    assert_eq!(
+        job_status(&s.pool, email_id).await?,
+        "queued",
+        "the ingest-only pool must never claim a send_email job"
+    );
     Ok(())
 }

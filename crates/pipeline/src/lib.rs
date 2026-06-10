@@ -26,6 +26,7 @@ pub mod folder_watcher;
 pub mod ingest;
 pub mod integrity_scan;
 pub mod job_aging;
+pub mod job_lease;
 pub mod job_queue;
 pub mod maintenance;
 pub mod metadata_merge;
@@ -59,6 +60,7 @@ pub use integrity_scan::{
     FileShaRecord, IntegrityScanRunner, process_integrity_scan_job, run_integrity_scan,
     select_sample, should_run_now as integrity_scan_should_run_now, verify_hash,
 };
+pub use job_lease::{LEASE_EXPIRED_ERROR, run_lease_reaper};
 pub use job_queue::{JobQueue, run_worker_pool};
 pub use maintenance::{
     B2LifecycleHandler, BlobCacheEvictHandler, FakeClock, LogPruneHandler, MaintenanceHandler,

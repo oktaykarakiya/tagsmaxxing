@@ -76,6 +76,20 @@ pub struct JobQueue {
     min_backoff_ms: i64,
     /// Maximum total attempts before a job is dead-lettered.
     max_retries: i32,
+    /// Lease (visibility timeout) granted on claim, in seconds (P15-T2).
+    lease_secs: i64,
+    /// Identity stamped into `jobs.locked_by` on claim (`hostname:pid`).
+    worker_id: String,
+}
+
+/// Default claim lease: 10 minutes — generous for long media transcriptions;
+/// the worker-loop heartbeat extends it every `lease/3` while a job runs.
+const DEFAULT_LEASE_SECS: i64 = 600;
+
+/// Best-effort `hostname:pid` worker identity for `jobs.locked_by`.
+fn default_worker_id() -> String {
+    let host = std::env::var("HOSTNAME").unwrap_or_else(|_| "worker".to_string());
+    format!("{host}:{}", std::process::id())
 }
 
 impl JobQueue {
@@ -86,13 +100,38 @@ impl JobQueue {
     ///
     /// `max_retries` is the number of total attempts allowed. When `attempts` reaches
     /// this value the job is dead-lettered instead of being retried.
+    ///
+    /// The claim lease defaults to 600 s and the worker id to `hostname:pid`;
+    /// override with [`with_lease_secs`](Self::with_lease_secs) /
+    /// [`with_worker_id`](Self::with_worker_id).
     #[must_use]
     pub fn new(pool: PgPool, min_backoff_ms: i64, max_retries: i32) -> Self {
         Self {
             pool,
             min_backoff_ms,
             max_retries,
+            lease_secs: DEFAULT_LEASE_SECS,
+            worker_id: default_worker_id(),
         }
+    }
+
+    /// Set the claim lease (visibility timeout) in seconds (P15-T2).
+    ///
+    /// A claimed job whose lease expires without extension is presumed
+    /// orphaned by a crashed worker and is requeued by the lease reaper
+    /// (`run_lease_reaper`) through the normal retry/backoff accounting.
+    /// Values below 1 are clamped to 1.
+    #[must_use]
+    pub fn with_lease_secs(mut self, lease_secs: i64) -> Self {
+        self.lease_secs = lease_secs.max(1);
+        self
+    }
+
+    /// Set the worker identity stamped into `jobs.locked_by` on claim.
+    #[must_use]
+    pub fn with_worker_id(mut self, worker_id: impl Into<String>) -> Self {
+        self.worker_id = worker_id.into();
+        self
     }
 
     /// The minimum backoff duration in milliseconds configured on this queue.
@@ -105,6 +144,23 @@ impl JobQueue {
     #[must_use]
     pub fn max_retries(&self) -> i32 {
         self.max_retries
+    }
+
+    /// The claim lease (visibility timeout) in seconds.
+    #[must_use]
+    pub fn lease_secs(&self) -> i64 {
+        self.lease_secs
+    }
+
+    /// The worker identity stamped into `jobs.locked_by` on claim.
+    #[must_use]
+    pub fn worker_id(&self) -> &str {
+        &self.worker_id
+    }
+
+    /// Crate-internal pool access for the lease module (`job_lease.rs`).
+    pub(crate) fn pool_ref(&self) -> &PgPool {
+        &self.pool
     }
 
     /// Insert a new queued job row and return its generated id.
@@ -169,20 +225,48 @@ impl JobQueue {
     ///
     /// Returns an error if the database operation fails.
     pub async fn claim(&self) -> anyhow::Result<Option<Job>> {
+        self.claim_kinds(&[]).await
+    }
+
+    /// Atomically claim the next eligible job of one of the given `kinds`.
+    ///
+    /// Identical to [`claim`](Self::claim) but restricted to the listed
+    /// [`JobKind`]s, so a worker pool never claims work it has no handler for
+    /// (e.g. an ingest worker skipping `send_email`/`delete_tenant` jobs,
+    /// P15-T2). An **empty** slice means "any kind" (the [`claim`](Self::claim)
+    /// behavior).
+    ///
+    /// Every claim also takes a **lease**: `lease_expires_at = now() +
+    /// lease_secs` and `locked_by = worker_id`. A worker that crashes stops
+    /// extending its lease, and the lease reaper requeues the job through the
+    /// normal retry accounting (plan §16 visibility timeout).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database operation fails.
+    pub async fn claim_kinds(&self, kinds: &[JobKind]) -> anyhow::Result<Option<Job>> {
         // Single-statement claim with aging (P9-T12):
         // effective_priority = priority + floor(age_seconds / AGING_STEP_SECS).
         // The sub-query locks the chosen row with `FOR UPDATE SKIP LOCKED`,
-        // the outer `UPDATE` flips it to 'running', and `RETURNING` yields
-        // the post-update row.
+        // the outer `UPDATE` flips it to 'running' + stamps the lease, and
+        // `RETURNING` yields the post-update row.
         //
         // We embed the aging step as a literal because it's a compile-time
         // constant and this avoids an extra bound parameter.
-        let row = sqlx::query(&format!(
-            "UPDATE jobs SET status = 'running' \
+        let kind_filter = if kinds.is_empty() {
+            ""
+        } else {
+            "AND kind = ANY($3) "
+        };
+        let sql = format!(
+            "UPDATE jobs SET status = 'running', \
+                    lease_expires_at = now() + make_interval(secs => $1), \
+                    locked_by = $2 \
              WHERE id = ( \
                  SELECT id FROM jobs \
                  WHERE status IN ('queued', 'failed') \
                    AND run_after <= now() \
+                   {kind_filter}\
                  ORDER BY (priority \
                    + FLOOR(EXTRACT(EPOCH FROM (now() - created_at)) / {aging_step})) DESC, \
                           run_after ASC, id ASC \
@@ -192,10 +276,20 @@ impl JobQueue {
              RETURNING id, tenant_id, file_id, document_id, kind, priority, status, attempts, \
                        last_error, run_after, created_at, created_by",
             aging_step = AGING_STEP_SECS
-        ))
-        .fetch_optional(&self.pool)
-        .await
-        .context("failed to claim next job")?;
+        );
+
+        let mut query = sqlx::query(&sql)
+            .bind(self.lease_secs as f64)
+            .bind(&self.worker_id);
+        let kind_strs: Vec<&str> = kinds.iter().map(|k| k.as_str()).collect();
+        if !kinds.is_empty() {
+            query = query.bind(kind_strs);
+        }
+
+        let row = query
+            .fetch_optional(&self.pool)
+            .await
+            .context("failed to claim next job")?;
 
         row.map(|r| row_to_job(&r)).transpose()
     }
@@ -339,9 +433,15 @@ fn row_to_job(row: &PgRow) -> anyhow::Result<Job> {
 /// channel. When shutdown is signaled, workers **stop claiming** new jobs, finish
 /// their current in-flight handler (drain), and exit.
 ///
+/// `kinds` restricts what the pool claims (see [`JobQueue::claim_kinds`]); an
+/// empty `Vec` claims any kind. An ingest worker passes `vec![JobKind::Ingest]`
+/// so it never claims work it has no handler for (P15-T2).
+///
 /// The `handler` receives a claimed [`Job`] and returns `Ok(())` on success or
 /// `Err(String)` on failure. The worker loop automatically calls
-/// [`JobQueue::complete`] or [`JobQueue::fail`] based on the result.
+/// [`JobQueue::complete`] or [`JobQueue::fail`] based on the result, and keeps
+/// the job's **lease** alive while the handler runs by extending it every
+/// `lease/3` seconds (long media jobs outlive a single lease window).
 ///
 /// # Panics
 ///
@@ -349,6 +449,7 @@ fn row_to_job(row: &PgRow) -> anyhow::Result<Job> {
 pub async fn run_worker_pool<F, Fut>(
     queue: Arc<JobQueue>,
     concurrency: usize,
+    kinds: Vec<JobKind>,
     shutdown: tokio::sync::watch::Receiver<bool>,
     handler: F,
 ) where
@@ -358,15 +459,17 @@ pub async fn run_worker_pool<F, Fut>(
     assert!(concurrency > 0, "concurrency must be at least 1");
 
     let handler = Arc::new(handler);
+    let kinds = Arc::new(kinds);
     let mut handles = Vec::with_capacity(concurrency);
 
     for _ in 0..concurrency {
         let q = Arc::clone(&queue);
         let h = Arc::clone(&handler);
+        let k = Arc::clone(&kinds);
         let s = shutdown.clone();
 
         handles.push(tokio::spawn(async move {
-            worker_loop(q, h, s).await;
+            worker_loop(q, h, k, s).await;
         }));
     }
 
@@ -375,10 +478,11 @@ pub async fn run_worker_pool<F, Fut>(
     }
 }
 
-/// Single-worker loop: claim → process → complete / fail → repeat.
+/// Single-worker loop: claim → (heartbeat ‖ process) → complete / fail → repeat.
 async fn worker_loop<F, Fut>(
     queue: Arc<JobQueue>,
     handler: Arc<F>,
+    kinds: Arc<Vec<JobKind>>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) where
     F: Fn(Job) -> Fut + Send + Sync + 'static,
@@ -390,10 +494,38 @@ async fn worker_loop<F, Fut>(
             break;
         }
 
-        match queue.claim().await {
+        match queue.claim_kinds(&kinds).await {
             Ok(Some(job)) => {
                 let job_id = job.id;
-                match handler(job).await {
+
+                // Keep the lease alive while the handler runs. If an extension
+                // reports the job is no longer ours (reaped after a stall), the
+                // heartbeat stops; the handler still finishes, and its
+                // complete()/fail() no-op safely (both are status-guarded —
+                // duplicate completion converges, see transactional_ingest).
+                let hb_queue = Arc::clone(&queue);
+                let (hb_stop, mut hb_stop_rx) = tokio::sync::oneshot::channel::<()>();
+                let heartbeat = tokio::spawn(async move {
+                    let period = Duration::from_secs((hb_queue.lease_secs() / 3).max(1) as u64);
+                    loop {
+                        tokio::select! {
+                            _ = &mut hb_stop_rx => break,
+                            _ = tokio::time::sleep(period) => {
+                                match hb_queue.extend_lease(job_id).await {
+                                    Ok(true) => {}
+                                    Ok(false) => break, // no longer ours
+                                    Err(_) => {}        // transient DB error — retry
+                                }
+                            }
+                        }
+                    }
+                });
+
+                let result = handler(job).await;
+                let _ = hb_stop.send(());
+                let _ = heartbeat.await;
+
+                match result {
                     Ok(()) => {
                         let _ = queue.complete(job_id).await;
                     }

@@ -1636,9 +1636,9 @@ description = "JobQueue: kind-filtered claim + lease + reaper + heartbeat. claim
 depends_on = ["P15-T1"]
 plan_sections = ["16"]
 acceptance = "job_queue_pg.rs extended: expired lease reaped -> failed with backoff; reap at max_retries -> dead; heartbeat keeps a long job alive; kind filter never claims other kinds; two concurrent claimants never double-claim. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "claim() kept as claim-any delegating to new claim_kinds(&[JobKind]) (empty = any) — avoids churning ~15 existing call sites; both stamp lease_expires_at = now()+make_interval(secs) + locked_by (worker_id = hostname:pid, with_lease_secs/with_worker_id builders, default 600s). extend_lease guarded by status='running' AND locked_by=self. reap_expired_leases: lock-free candidate SELECT (LIMIT 50) then delegates each to the EXISTING fail() — fail()'s row lock + running-check makes races resolve as skips (verified: second pass reaps 0, attempts not double-incremented). run_lease_reaper loop + per-job heartbeat (lease/3) in worker_loop; complete()/fail() status guards make duplicate completion after a reap converge. New job_lease.rs (file-cap split, pool_ref() pub(crate) accessor). run_worker_pool gains kinds param. FOUND+FIXED 2 latent pre-existing defects: (1) claim_respects_priority_ordering was STALE since migration 0014 flipped priority to higher-first (asserted lower-first; suite is #[ignore] so it never ran) — aligned with documented semantics; (2) 'send_email' was NEVER added to jobs_kind_check — every production P12-T7 email enqueue would violate the CHECK (latent: e2e runs without SMTP) — migration 0027 admits it. Verified: 29/29 job_queue_pg green via Podman; 3 lease unit tests; just ci green."
 
 [[task]]
 id = "P15-T3"
