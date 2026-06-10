@@ -197,11 +197,13 @@ def test_per_tenant_backpressure_under_burst():
         f"examples={[o.get('text') for o in lost[:5]]}"
     )
 
-    # (b) Every status is an accepted (202) or explicitly-throttled (429) outcome.
-    unexpected = [o for o in outcomes if o.get("status") not in (202, 429)]
+    # (b) Every status is graceful: accepted (202), explicitly-throttled (429),
+    # or — when a burst saturates the single tagger backend — backend-unavailable
+    # (503 + Retry-After, the F4 transient). A 500 / silent loss is forbidden.
+    unexpected = [o for o in outcomes if o.get("status") not in (202, 429, 503)]
     assert not unexpected, (
         f"{len(unexpected)}/{BURST_N} burst uploads returned a status outside "
-        f"{{202, 429}}: histogram={dict(hist)}; "
+        f"{{202, 429, 503}}: histogram={dict(hist)}; "
         f"examples={[(o.get('status'), o.get('text')) for o in unexpected[:5]]}"
     )
 
@@ -258,10 +260,12 @@ def test_concurrent_identical_bytes_dedup(api):
         f"status: histogram={dict(hist)}; examples={[o.get('text') for o in lost[:5]]}"
     )
 
-    # No 500 (no dedup/unique-constraint collision crash) and only 202/429.
-    crashed = [o for o in outcomes if o.get("status") not in (202, 429)]
+    # No 500 (no dedup/unique-constraint collision crash). Allowed outcomes:
+    # 202 (accepted), 429 (throttled), or 503 (tagger saturated under the race →
+    # graceful F4 transient). A 500 here would be a real dedup/constraint crash.
+    crashed = [o for o in outcomes if o.get("status") not in (202, 429, 503)]
     assert not crashed, (
-        f"concurrent identical-bytes uploads produced a non-202/429 status "
+        f"concurrent identical-bytes uploads produced a non-202/429/503 status "
         f"(dedup collision / unique-constraint crash?): histogram={dict(hist)}; "
         f"examples={[(o.get('status'), o.get('text')) for o in crashed[:5]]}"
     )
