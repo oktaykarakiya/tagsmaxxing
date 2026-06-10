@@ -287,6 +287,11 @@ fn normalize_octet_stream_magic(bytes: &[u8]) -> &'static str {
     if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WAVE" {
         return "audio/wav";
     }
+    // RIFF/WEBP image (newer shared-mime DBs drop minimal WebP to
+    // octet-stream — BUG-INGEST-17; kept in step with security.rs).
+    if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        return "image/webp";
+    }
     // `ftyp` (offset 4) is shared across the ISO base-media family; the major
     // brand at offset 8 disambiguates MP4 / QuickTime / 3GP / HEIC / AVIF. Kept
     // in step with `kb_extract::security::normalize_octet_stream_magic`.
@@ -351,6 +356,8 @@ pub(crate) fn mime_to_doc_kind(mime: &str) -> DocKind {
         s if s.starts_with("image/") => DocKind::Image,
         s if s.starts_with("audio/") => DocKind::Audio,
         s if s.starts_with("video/") => DocKind::Video,
+        // tree_magic naming variant of video/x-matroska (BUG-INGEST-17).
+        "application/x-matroska" => DocKind::Video,
         // Known archive MIME types.
         "application/zip"
         | "application/x-tar"
@@ -509,6 +516,14 @@ mod tests {
         wav.extend_from_slice(&[0u8; 4]);
         wav.extend_from_slice(b"WAVE");
         assert_eq!(normalize_octet_stream_magic(&wav), "audio/wav");
+
+        // RIFF/WEBP → image/webp (BUG-INGEST-17 detection drift).
+        let mut webp = b"RIFF".to_vec();
+        webp.extend_from_slice(&[0u8; 4]);
+        webp.extend_from_slice(b"WEBP");
+        assert_eq!(normalize_octet_stream_magic(&webp), "image/webp");
+        // The matroska naming variant routes to Video.
+        assert_eq!(mime_to_doc_kind("application/x-matroska"), DocKind::Video);
 
         let mut mp4 = vec![0u8, 0, 0, 0x14];
         mp4.extend_from_slice(b"ftypisom");

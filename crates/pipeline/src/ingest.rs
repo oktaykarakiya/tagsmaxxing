@@ -815,6 +815,8 @@ fn infer_kind_from_mime(mime: Option<&str>) -> DocKind {
         Some(m) if m.starts_with("image/") => DocKind::Image,
         Some(m) if m.starts_with("audio/") => DocKind::Audio,
         Some(m) if m.starts_with("video/") => DocKind::Video,
+        // tree_magic naming variant of video/x-matroska (BUG-INGEST-17).
+        Some("application/x-matroska") => DocKind::Video,
         // All text/* subtypes route to Document.
         Some(m) if m.starts_with("text/") => DocKind::Document,
         // Known document/office MIME types.
@@ -1127,6 +1129,7 @@ mod tests {
         for mime in &[
             "video/mp4",
             "video/x-matroska",
+            "application/x-matroska", // tree_magic naming variant (BUG-INGEST-17)
             "video/webm",
             "video/ogg",
             "video/quicktime",

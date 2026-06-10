@@ -155,6 +155,7 @@ pub const ALLOWED_MIMES: &[&str] = &[
     // Video
     "video/mp4",
     "video/x-matroska",
+    "application/x-matroska", // tree_magic naming variant of video/x-matroska
     "video/webm",
     "video/ogg",
     "video/quicktime",
@@ -601,6 +602,12 @@ fn normalize_octet_stream_magic(bytes: &[u8]) -> &'static str {
     // RIFF/WAVE audio: `RIFF` then `WAVE` at offset 8 → whisper.
     if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WAVE" {
         return "audio/wav";
+    }
+    // RIFF/WEBP image: `RIFF` then `WEBP` at offset 8. Newer shared-mime DBs
+    // stopped classifying minimal WebP, dropping it to octet-stream
+    // (BUG-INGEST-17 detection drift); the container magic is unambiguous.
+    if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        return "image/webp";
     }
     // ISO base media family: the `ftyp` box type at offset 4 is shared by MP4,
     // QuickTime, 3GP, HEIC/HEIF and AVIF — the *major brand* at offset 8
@@ -1063,6 +1070,17 @@ mod tests {
         wav.extend_from_slice(b"WAVE");
         wav.extend_from_slice(&[0u8; 8]);
         assert_eq!(normalize_octet_stream_magic(&wav), "audio/wav");
+
+        // RIFF/WEBP (newer shared-mime DBs drop minimal WebP to octet-stream —
+        // BUG-INGEST-17 detection drift).
+        let mut webp = b"RIFF".to_vec();
+        webp.extend_from_slice(&[0u8; 4]);
+        webp.extend_from_slice(b"WEBP");
+        webp.extend_from_slice(&[0u8; 8]);
+        assert_eq!(normalize_octet_stream_magic(&webp), "image/webp");
+        assert!(is_allowed_mime("image/webp", ALLOWED_MIMES));
+        // And the matroska naming variant is allow-listed.
+        assert!(is_allowed_mime("application/x-matroska", ALLOWED_MIMES));
 
         let mut mp4 = vec![0u8, 0, 0, 0x14];
         mp4.extend_from_slice(b"ftypisom");

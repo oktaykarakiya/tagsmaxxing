@@ -1151,6 +1151,19 @@ status = "todo"
 acceptance = "with zero DB routes and config [[backend]] entries, tiered acquire resolves the fallback entries to the pool's backends (or the fallback is removed in favour of explicit legacy mode); creating ONE real DB route must not break every other role's acquire"
 notes = "Found by P15-T6's runtime integration test. Chain: Reloader::startup_load(empty DB, Some(cfg)) -> config_backends_to_entries assigns numeric model ids (idx+1) -> Pool::set_routing activates tiered acquire -> tiered::resolve_and_filter keys backends.get(entry.model.id.to_string()) but Pool::new keyed the map by backend.id (the config string id, e.g. 'llama-text') -> zero candidates -> AcquireError::NoBackend for EVERY role. Production serve never notices because PgRoutingNotifier's first wait_for_change returns immediately, the reload loop fetches the EMPTY routes table and calls pool.clear_routing(), dropping the pool back to legacy flat-priority mode milliseconds after startup. Corollary risk: the moment an operator creates one real DB route (e.g. via the providers admin UI), tiered mode activates for ALL roles with only that route resolvable — every other role's acquire breaks. P15 sidesteps it for workers (build_runtime(load_db_routing=false) now skips startup_load entirely, staying in legacy mode); the tiered resolver itself still needs the fix."
 
+[[bug]]
+id = "BUG-INGEST-17"
+description = "shared-mime DB drift in the rebuilt container broke WebP + Matroska uploads: minimal WebP falls to octet-stream (RIFF/WEBP unrecovered) and mkv detects as application/x-matroska (not allow-listed) -> both 400"
+test_names = ["test_format_breadth[image-webp]", "test_format_breadth[video-mkv]", "normalize_octet_stream_magic_recovers_container_types"]
+test_file = "test/tests/catalog/test_ingest_matrix.py"
+touches = ["crates/extract/src/security.rs", "crates/pipeline/src/document_builder.rs", "crates/pipeline/src/ingest.rs"]
+conflict_group = "extract"
+depends_on = []
+severity = "medium"
+status = "done"
+acceptance = "a WebP upload (RIFF/WEBP magic) is accepted as image/webp and an mkv upload is accepted as Video, regardless of which naming variant the host shared-mime database reports"
+notes = "Found during P15-T7 e2e (image rebuilt on a newer Debian base than the campaign's): the container's freedesktop shared-mime DB stopped classifying minimal WebP (-> application/octet-stream) and renamed Matroska to application/x-matroska. Fixes in the established BUG-INGEST-05/x-riff recovery lineage: (1) normalize_octet_stream_magic recovers RIFF+WEBP -> image/webp (already allow-listed) in BOTH security.rs and document_builder.rs (kept in step); (2) application/x-matroska added to ALLOWED_MIMES + mapped to DocKind::Video in mime_to_doc_kind AND infer_kind_from_mime. Pure detection widening — byte-content based, no policy change. Unit tests in all three files."
+
 # ── Upload/ingest campaign findings (docs/analysis/08-upload-campaign-findings.md) ──
 
 [[bug]]
