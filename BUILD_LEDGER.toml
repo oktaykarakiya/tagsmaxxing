@@ -1606,3 +1606,168 @@ acceptance = "API-layer per-case assertions pass; rejection/usage metrics assert
 status = "done"
 checkpoint = false
 notes = "test_quotas.py + test_observability.py extended (5 new tests; 15 collected, --collect-only clean). test_quotas: storage 413 + kb_quota_rejections_total{limit=storage} delta; token 429 + {limit=tokens} delta AND {limit=storage} unchanged (label correctness). test_observability: kb_tokens_total family rises after ingest+search; kb_active_users + kb_tenant_tokens_monthly published with the tenant's OWN tenant_id series (bounded 40s poll for the 30s collector interval, no fixed-sleep race); kb_subsystem_degraded present. Shared /metrics scrape + counter-parse helpers. Verified vs source: /metrics is public; the search degrade records limit=search_tokens (NOT tokens), so no false tokens-increment assertion on the search path."
+# ═══════════════════════════════════════════════════════════════════════════════
+# P15 — ASYNC QUEUED INGESTION WITH DISTRIBUTED HETEROGENEOUS WORKERS
+# Authored 2026-06-10. Replaces inline-synchronous upload processing with a
+# bounded Postgres queue (SKIP LOCKED + lease/visibility timeout, plan §16)
+# drained by N worker processes/machines, each sized by its own per-machine
+# config ([[backend]] slots + [worker] concurrency). Upload returns 202 the
+# moment bytes are stored; 429 only past the queue bound. Decisions (user):
+# shared blobs via S3-compatible (existing B2Blob; MinIO/B2), workers use
+# per-machine config (use_db_routing=false), full build T1–T14, rollback lever
+# ingest.mode = queued|inline (hot-swappable). Walking skeleton = T1–T7.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[[task]]
+id = "P15-T1"
+phase = "P15"
+description = "Store: pending-ingest staging. New crates/store/src/ingest_staging.rs: create_pending_ingest(doc, files) -> {document_id, file_ids, reused} in ONE begin_tenant_tx (reuse transactional_ingest's advisory-lock + exact-file-set reuse lookup so duplicate uploads reuse the doc; envelope-encrypt summary/user_note via a helper extracted from upsert_document); set_document_status(tenant, doc, status) (+files); count_pending_ingest_jobs(tenant) -> (tenant_pending, global_pending) via one count(*) FILTER query. Migration 0026_job_lease.sql: jobs.lease_expires_at TIMESTAMPTZ, jobs.locked_by TEXT, partial index (lease_expires_at) WHERE status='running', partial index (tenant_id) WHERE status IN ('queued','running','failed')."
+depends_on = []
+plan_sections = ["16", "7", "13"]
+acceptance = "#[ignore] pg tests: create_pending_ingest inserts pending doc+files (encrypted cols round-trip); identical re-upload reuses the document (reused=true); counts correct; status transitions work. Before-connect unit tests. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P15-T2"
+phase = "P15"
+description = "JobQueue: kind-filtered claim + lease + reaper + heartbeat. claim(kinds: &[JobKind]) adds AND kind = ANY($1) and sets lease_expires_at = now()+lease, locked_by = worker_id (claim ORDER BY priority+aging untouched); JobQueue::with_lease(pool, backoff, retries, lease_secs, worker_id); extend_lease(); reap_expired_leases() = SELECT running+expired FOR UPDATE SKIP LOCKED then delegate to the EXISTING fail() (reuses retry/backoff/dead accounting verbatim); run_lease_reaper(queue, interval, shutdown); worker loop spawns a per-job heartbeat extending the lease every lease/3 (default lease 600s for long media jobs; extension returning 0 rows = reaped, completion no-ops safely). Split job_lease.rs if job_queue.rs exceeds the file cap."
+depends_on = ["P15-T1"]
+plan_sections = ["16"]
+acceptance = "job_queue_pg.rs extended: expired lease reaped -> failed with backoff; reap at max_retries -> dead; heartbeat keeps a long job alive; kind filter never claims other kinds; two concurrent claimants never double-claim. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P15-T3"
+phase = "P15"
+description = "Pipeline: ingest_into + queued processor. Refactor IngestPipeline::ingest body into ingest_inner(..., existing_doc_id: Option<i64>); public ingest delegates with None; new public ingest_into(tenant, user, document_id, files, user_note, local_only) sets final_doc.id so transactional_ingest takes its existing UPDATE path. New crates/pipeline/src/ingest_worker.rs: process_queued_ingest(pipeline, store, blob, job) -> Result<(),String> — load document (already-ready => Ok idempotent replay), get_files_for_document ordered by page_no, blob.get(blob_key) each -> IngestFile{bytes,page_label,path}, resolve local_only at PROCESSING time (hot-swap rule), call ingest_into. Delete the unused file_id-shaped process_ingest_job."
+depends_on = ["P15-T1"]
+plan_sections = ["16", "7", "10"]
+acceptance = "Unit tests with mock store/blob (happy path; blob-missing -> Err; ready short-circuit). #[ignore] pg integration: pending doc+files -> process -> doc ready, files ready, chunks exist; re-run idempotent (converges, no dupes). just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P15-T4"
+phase = "P15"
+description = "API: shared runtime builder + config sections. Extract serve.rs component wiring (~lines 130-344: PgStore connect, routing reloader, extractors incl Tika/whisper, tagger/embedder/canonicalizer/reranker/vision, usage recorder, blob, job queue, health loop) into crates/api/src/commands/runtime.rs: build_runtime(&AppConfig) -> PipelineRuntime and build_blob(cfg) ([blob] backend=\"local\"|\"s3\"; s3 = existing B2Config/B2Blob wrapped in EncryptedBlob when the KEK env is present; local unchanged). crates/config/src/model.rs: [blob]{backend,local_root,local_prefix,s3 endpoint/region/bucket}, [worker]{enabled=true,concurrency=2,use_db_routing=false,lease_secs=600}, [ingest]{mode=\"queued\",max_pending_per_tenant=200,max_pending_global=2000} with serde-default tests. serve.rs behavior UNCHANGED (pure refactor) + spawn app_config.watch() and store the AppConfig handle in AppState so caps/mode resolve per request."
+depends_on = []
+plan_sections = ["10", "20", "6", "31.4"]
+acceptance = "just ci green proves no drift (pure refactor); config default/override deserialization tests; build_blob unit tests for local + s3(EncryptedBlob-wrapped); serve.rs and runtime.rs under file caps."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P15-T5"
+phase = "P15"
+description = "API: queued upload path + bounded-queue admission + mode flag. handlers/ingest.rs: process_upload_queued = validate -> admission (count_pending_ingest_jobs vs hot-swapped cfg.ingest caps -> 429 error=queue_full with pending counts in body; Retry-After via existing ensure_retry_after middleware) -> blob puts -> create_pending_ingest -> enqueue JobKind::Ingest{document_id, created_by=user} -> 202 {job_id, document_id}. Handler branches on cfg.ingest.mode per request: queued (default, skips InflightLimiter) | inline (existing path verbatim = hot-swappable rollback lever). Same branch in web upload_submit. FIX add_page: stage pending files against the existing document + enqueue with that document_id (closes the existing never-processed-jobs bug). Delete dead process_upload_files."
+depends_on = ["P15-T1", "P15-T3", "P15-T4"]
+plan_sections = ["16", "22", "29"]
+acceptance = "Unit tests: mode branch; queue_full 429 with counts; 202 carries real job_id + document_id; inline tests pinned under mode=inline. add_page enqueues a processable job. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P15-T6"
+phase = "P15"
+description = "Serve: embedded worker pool — walking skeleton complete. When cfg.worker.enabled (default true), serve spawns run_worker_pool (handler dispatches JobKind::Ingest -> process_queued_ingest; other kinds -> fail with 'no handler' note... claim filter prevents claiming them) + run_lease_reaper, both on the existing shutdown watch channel (graceful drain: stop claiming, finish in-flight — already in worker_loop). Single box keeps the old capacity (worker shares the process's model slots)."
+depends_on = ["P15-T2", "P15-T3", "P15-T4"]
+plan_sections = ["16", "10"]
+acceptance = "#[ignore] integration: staged upload against pg + mock backends -> embedded worker processes -> document ready. Manual: compose up, UI upload, progress -> redirect. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P15-T7"
+phase = "P15"
+description = "e2e migration to async semantics. test/lib/flows.py::ingest_and_wait polls get_document until status=='ready' (bounded ~120s, 1s interval; on timeout surface the job state from /api/jobs/:id for diagnosis) — one helper keeps most of the ~20 dependent catalog files green. Sweep + update: test_ingest.py response asserts; test_ingest_concurrency.py 429 semantics (accepts a burst up to the queue cap, 429 queue_full past it; no silent loss); upload-frontend journey; degradation/observability kb_inflight_ingest assumptions. Run the full suite against the queued stack and fix asserts case by case (encode-intent rule: a real app bug found here is recorded, not papered over)."
+depends_on = ["P15-T5", "P15-T6"]
+plan_sections = ["31.3", "16"]
+acceptance = "Full e2e suite vs the queued-mode stack: no new failures vs the pre-P15 baseline beyond the planned semantic updates; upload returns 202 fast; docs transition pending->ready; queue cap -> 429 queue_full + Retry-After."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P15-T8"
+phase = "P15"
+description = "kb worker subcommand (standalone distributed worker). cli.rs Command::Worker(WorkerArgs{config, concurrency: Option<usize>}) + main.rs dispatch + crates/api/src/commands/worker.rs: build_runtime with per-machine config; [worker].use_db_routing=false skips the Reloader DB load so the worker's Pool = its OWN [[backend]] slots (exact per-process enforcement, no over-subscription — heterogeneity = each machine's config.toml); spawn reaper + run_worker_pool(concurrency = --concurrency or cfg); SIGINT/SIGTERM -> drain -> join usage-recorder flush. Document TIKA_URL/WHISPER_URL per-machine reachability in config comments."
+depends_on = ["P15-T6"]
+plan_sections = ["16", "10", "6"]
+acceptance = "CLI parse tests; #[ignore] integration: serve-side worker disabled -> standalone kb worker drains a staged job to ready. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P15-T9"
+phase = "P15"
+description = "Failure UX + tenant retry — CHECKPOINT (§31.5 tenant isolation: the jobs table sits OUTSIDE RLS; every tenant-facing query must carry an explicit tenant_id filter). Worker dead-letter hook: when fail() lands an ingest job in 'dead', set its document (+pending files) status='failed'. POST /api/documents/:id/retry (tenant-scoped, member-allowed): find the doc's latest dead/failed ingest job, reset attempts/status/run_after (admin_retry_job SQL pattern) + document back to 'pending'. Web: failed badge + sanitized last_error + Retry button on document detail."
+depends_on = ["P15-T6"]
+plan_sections = ["16", "13", "31.5"]
+acceptance = "Cross-tenant NEGATIVE suite green (retry/status of another tenant's doc/job -> 404; no information leak); dead job -> document failed -> retry -> reprocessed to ready. STOP for human sign-off before proceeding."
+status = "todo"
+checkpoint = true
+notes = ""
+
+[[task]]
+id = "P15-T10"
+phase = "P15"
+description = "Tenant jobs API + async UI polish. GET /api/jobs?status=&limit= wrapping the already-tenant-filtered admin_list_jobs for the caller's tenant. upload.html: keep pollJobStatus as the primary path; on done redirect to /documents/{document_id} (id known from the 202; today's fallback redirects to /search); on failed show inline error + link to the (failed) document. Document detail auto-refreshes while pending (CSP-safe fetch polling; the existing 'processing' badge branches light up via handler-derived presentation status pending->processing, failed->error). Browse list shows status chips. Nav 'processing N' indicator fed by the jobs endpoint."
+depends_on = ["P15-T5", "P15-T9"]
+plan_sections = ["12", "16"]
+acceptance = "Playwright journey: upload -> progress bar -> redirect to document -> badge flips processing->ready without manual refresh; failed doc shows error + working retry; jobs list endpoint tenant-scoped (negative test). just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P15-T11"
+phase = "P15"
+description = "Shared blobs end-to-end (S3-compatible: MinIO/B2). Compose override adds a MinIO service; [blob] backend=\"s3\" config exercised; EncryptedBlob wrap when KEK present; verify presigned/download + thumbnail paths through the Blob trait against MinIO. Document loudly: multi-machine workers REQUIRE s3 mode (LocalBlob = single box only)."
+depends_on = ["P15-T4"]
+plan_sections = ["20"]
+acceptance = "Existing b2_integration tests pass against MinIO (S3_TEST_*); one e2e smoke with the MinIO override: upload -> worker (s3 blob) -> ready -> download OK. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P15-T12"
+phase = "P15"
+description = "compose: worker service + scaling + runbooks. worker service = same image, command [\"worker\",...], no ports, depends_on postgres healthy, same hardening, stop_grace_period 90s (drain + lease). .env.example keys. Notes: podman compose up --scale worker=N; per-machine heterogeneous deployment = each machine runs the image with ITS OWN config.toml ([[backend]] slots + [worker] concurrency) against the shared Postgres + S3. Commented optional PgBouncer block + connection math (each proc <=10+10 conns; LISTEN/NOTIFY and SKIP LOCKED pooling caveats — routing notifier needs a direct connection). Update docs/LOCAL_RUNBOOK.md + docs/DR_RUNBOOK.md (living-runbook rule)."
+depends_on = ["P15-T8", "P15-T11"]
+plan_sections = ["14", "16", "20"]
+acceptance = "podman compose config valid; smoke: --scale worker=2 drains a burst; kill one worker mid-job -> reaper requeues -> the other completes. Runbooks updated."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P15-T13"
+phase = "P15"
+description = "Queue/worker metrics. kb_job_duration_seconds{kind,outcome} histogram (worker loop), kb_jobs_running gauge, kb_job_leases_reaped_total counter (reaper), kb_queue_full_rejections_total counter (admission). metrics_collector publishes the running count; alert rules for queue depth / oldest-age (gauges already exist) + reaped-lease spike. Per-tenant pending gauge deliberately SKIPPED (label cardinality) — the 429 body carries the counts."
+depends_on = ["P15-T6"]
+plan_sections = ["15"]
+acceptance = "Unit gauge/counter tests (existing kb-metrics pattern); test_ingest_observability.py asserts the new families move across an upload burst. just ci green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P15-T14"
+phase = "P15"
+description = "Docs + close-out. ARCHITECTURE/README: queued-ingestion section (flow diagram, statuses, lease semantics), rollback drill (hot-swap ingest.mode=inline), heterogeneous-worker deployment guide. Final full just ci + complete e2e regression vs the pre-P15 baseline (no-new-failures rule); record results CSVs."
+depends_on = ["P15-T7", "P15-T10", "P15-T12", "P15-T13"]
+plan_sections = ["31.2", "31.6"]
+acceptance = "just ci green; full e2e: zero new failures vs baseline; docs merged; every P15 task done with notes."
+status = "todo"
+checkpoint = false
+notes = ""
