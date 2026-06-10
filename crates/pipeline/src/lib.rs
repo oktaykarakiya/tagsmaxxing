@@ -24,6 +24,7 @@ pub mod eval;
 pub mod export;
 pub mod folder_watcher;
 pub mod ingest;
+pub mod ingest_worker;
 pub mod integrity_scan;
 pub mod job_aging;
 pub mod job_lease;
@@ -54,7 +55,10 @@ pub use folder_watcher::{
 };
 pub use ingest::{
     ExtractorRouter, IngestError, IngestFile, IngestOutput, IngestPipeline, IngestStore,
-    RetagStore, process_ingest_job, process_retag_job,
+    RetagStore, process_retag_job,
+};
+pub use ingest_worker::{
+    QueuedIngestInputs, QueuedIngestStore, load_queued_ingest_inputs, process_queued_ingest,
 };
 pub use integrity_scan::{
     FileShaRecord, IntegrityScanRunner, process_integrity_scan_job, run_integrity_scan,

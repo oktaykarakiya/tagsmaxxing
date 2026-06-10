@@ -1647,9 +1647,9 @@ description = "Pipeline: ingest_into + queued processor. Refactor IngestPipeline
 depends_on = ["P15-T1"]
 plan_sections = ["16", "7", "10"]
 acceptance = "Unit tests with mock store/blob (happy path; blob-missing -> Err; ready short-circuit). #[ignore] pg integration: pending doc+files -> process -> doc ready, files ready, chunks exist; re-run idempotent (converges, no dupes). just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "ingest()/ingest_into() delegate to private ingest_inner(existing_doc_id: Option<i64>); the only body change is final_doc.id = existing_doc_id.unwrap_or(document.id) -> the store's explicit-id UPDATE path. New ingest_worker.rs: QueuedIngestStore trait (get_document/get_files_for_document; impl for PgStore) + load_queued_ingest_inputs (ALL orchestration logic, unit-testable: no-document_id/not-found/ready-short-circuit/no-files/blob-missing/local_only = doc-flag OR plan-gate resolved at processing time) + thin process_queued_ingest. Deleted the unused file_id-shaped process_ingest_job (+2 stale tests; payload gap made it unusable). MockIngestStore now captures doc.id so tests pin the id threading (queued=staged id, inline=0). Verified: 7 worker unit tests + 3 ingest_into tests; #[ignore] queued_ingest_pg green vs real pgvector (staged->claim->process->ready w/ chunks; staged file row updated IN PLACE not duplicated; user_note survives; replay short-circuits; no dup document). just ci green."
 
 [[task]]
 id = "P15-T4"

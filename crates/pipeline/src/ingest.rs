@@ -23,7 +23,6 @@ use kb_core::chunk::Chunk;
 use kb_core::document::Document;
 use kb_core::extractor::{Extracted, Extractor, RawFile};
 use kb_core::file::FileRecord;
-use kb_core::job::Job;
 use kb_core::kind::DocKind;
 use kb_core::status::ProcessingStatus;
 use kb_core::tag::TagSource;
@@ -239,9 +238,11 @@ impl IngestPipeline {
 
     /// Run the full 8-step ingestion flow synchronously (not via job queue).
     ///
-    /// Callers that want async processing should enqueue a job and use
-    /// [`process_ingest_job`] as the handler with
-    /// [`run_worker_pool`](crate::run_worker_pool).
+    /// Callers that want async processing should stage a pending document,
+    /// enqueue a job carrying its id, and use
+    /// [`process_queued_ingest`](crate::ingest_worker::process_queued_ingest)
+    /// as the handler with [`run_worker_pool`](crate::run_worker_pool) — the
+    /// worker then finalizes via [`ingest_into`](Self::ingest_into).
     ///
     /// `user_id` attributes every metered model call made during this ingest
     /// (tagging, tag-name embedding, chunk embedding) to the acting user in
@@ -261,6 +262,59 @@ impl IngestPipeline {
         files: Vec<IngestFile>,
         user_note: Option<String>,
         local_only: bool,
+    ) -> anyhow::Result<IngestOutput> {
+        self.ingest_inner(tenant_id, user_id, files, user_note, local_only, None)
+            .await
+    }
+
+    /// Run the full ingestion flow **into an existing document id** — the
+    /// queued-worker finalize path (P15-T3, plan §16).
+    ///
+    /// `document_id` must be a previously staged `pending` document (see
+    /// `PgStore::create_pending_ingest`); the final transactional write then
+    /// takes the store's explicit-id UPDATE path, flipping the staged rows to
+    /// `ready` in place. Re-running with the same inputs converges to the same
+    /// state, so worker retries and duplicate completions are idempotent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `document_id` is not positive or any pipeline step
+    /// fails (the final transactional write is atomic).
+    pub async fn ingest_into(
+        &self,
+        tenant_id: i64,
+        user_id: Option<i64>,
+        document_id: i64,
+        files: Vec<IngestFile>,
+        user_note: Option<String>,
+        local_only: bool,
+    ) -> anyhow::Result<IngestOutput> {
+        anyhow::ensure!(
+            document_id > 0,
+            "ingest_into requires a positive document_id (got {document_id})"
+        );
+        self.ingest_inner(
+            tenant_id,
+            user_id,
+            files,
+            user_note,
+            local_only,
+            Some(document_id),
+        )
+        .await
+    }
+
+    /// Shared 8-step flow. `existing_doc_id` selects the finalize target:
+    /// `None` lets the store create/reuse a document (inline path); `Some(id)`
+    /// finalizes the staged pending document with that id (queued path).
+    async fn ingest_inner(
+        &self,
+        tenant_id: i64,
+        user_id: Option<i64>,
+        files: Vec<IngestFile>,
+        user_note: Option<String>,
+        local_only: bool,
+        existing_doc_id: Option<i64>,
     ) -> anyhow::Result<IngestOutput> {
         anyhow::ensure!(!files.is_empty(), "at least one file is required");
 
@@ -488,9 +542,10 @@ impl IngestPipeline {
         }
 
         // 8. Transactional ingest: upsert document + files + tags + chunks
-        //    in one atomic transaction.
+        //    in one atomic transaction. A staged (queued-path) document id
+        //    routes the store to its explicit-id UPDATE path (P15-T3).
         let final_doc = Document {
-            id: document.id,
+            id: existing_doc_id.unwrap_or(document.id),
             tenant_id,
             title: Some(tag_output.title),
             summary: Some(tag_output.summary),
@@ -514,61 +569,6 @@ impl IngestPipeline {
             chunk_count,
         })
     }
-}
-
-// ── Job-queue integration ───────────────────────────────────────────────────
-
-/// Process a single ingest job through the pipeline.
-///
-/// Designed to be used with [`run_worker_pool`](crate::run_worker_pool) as the
-/// job handler. The caller provides a `resolve_files` closure that converts a
-/// job's `(tenant_id, file_id)` into the actual [`IngestFile`]s (typically by
-/// reading file bytes from the blob store and looking up metadata in the
-/// database).
-///
-/// # Errors
-///
-/// Returns `Err(String)` if the file resolution fails or the pipeline returns
-/// an error. The string is stored in `jobs.last_error` by the worker pool.
-///
-/// # Examples
-///
-/// ```no_run
-/// # use std::sync::Arc;
-/// # use kb_pipeline::ingest::{IngestPipeline, IngestFile, process_ingest_job};
-/// # use kb_core::job::Job;
-/// # async fn example(pipeline: Arc<IngestPipeline>, job: Job) {
-/// let result = process_ingest_job(&pipeline, &job, |_tenant_id, _file_id| {
-///     Box::pin(async {
-///         // Read bytes from blob store, create IngestFiles...
-///         Ok(vec![IngestFile {
-///             bytes: vec![],
-///             page_label: None,
-///             path: None,
-///         }])
-///     })
-/// }).await;
-/// # }
-/// ```
-pub async fn process_ingest_job<F, Fut>(
-    pipeline: &IngestPipeline,
-    job: &Job,
-    resolve_files: F,
-) -> Result<IngestOutput, String>
-where
-    F: FnOnce(i64, Option<i64>) -> Fut,
-    Fut: std::future::Future<Output = anyhow::Result<Vec<IngestFile>>>,
-{
-    let files = resolve_files(job.tenant_id, job.file_id)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    // Attribute the ingest's model-call usage to the user who enqueued the job
-    // (P14-T1); `created_by` is `None` for system-enqueued jobs.
-    pipeline
-        .ingest(job.tenant_id, job.created_by, files, None, false)
-        .await
-        .map_err(|e| e.to_string())
 }
 
 // ── Retag pipeline ────────────────────────────────────────────────────────────
@@ -853,7 +853,6 @@ mod tests {
 
     use kb_core::chunk::Chunk;
     use kb_core::extractor::PageImage;
-    use kb_core::job::{Job, JobKind, JobStatus};
     use kb_core::tagger::TagOutput;
 
     use super::*;
@@ -877,6 +876,9 @@ mod tests {
         /// Status (`as_str`) of every file in the most recent call, so tests can
         /// assert the pipeline finishes a file's lifecycle (Pending → Ready).
         file_statuses: Mutex<Vec<String>>,
+        /// `doc.id` of every call — asserts the queued path threads the staged
+        /// document id into the final write (P15-T3), while inline passes 0.
+        doc_ids: Mutex<Vec<i64>>,
     }
 
     impl MockIngestStore {
@@ -885,6 +887,7 @@ mod tests {
                 doc_id: AtomicI64::new(doc_id),
                 calls: Mutex::new(Vec::new()),
                 file_statuses: Mutex::new(Vec::new()),
+                doc_ids: Mutex::new(Vec::new()),
             }
         }
 
@@ -919,6 +922,7 @@ mod tests {
                 .iter()
                 .map(|f| f.status.as_str().to_string())
                 .collect();
+            self.doc_ids.lock().unwrap().push(doc.id);
             Ok(self.doc_id.load(Ordering::SeqCst))
         }
     }
@@ -2110,59 +2114,70 @@ mod tests {
         std::mem::forget(mock);
     }
 
-    // ── process_ingest_job ─────────────────────────────────────────────────
+    // ── ingest_into (queued-path finalize, P15-T3) ─────────────────────────
 
+    /// `ingest_into` threads the staged document id into the final
+    /// transactional write (the store's explicit-id UPDATE path).
     #[tokio::test]
-    async fn process_ingest_job_success() {
+    async fn ingest_into_threads_existing_document_id() {
         let (pipeline, store) = build_test_pipeline(
-            "job test content",
+            "queued doc content",
             TagOutput {
-                title: "Job Doc".into(),
-                summary: "Created via job.".into(),
-                tags: vec!["job".into()],
+                title: "Queued Doc".into(),
+                summary: "Finalized by a worker.".into(),
+                tags: vec!["queued".into()],
             },
         )
         .await;
 
-        let job = Job {
-            id: 100,
-            tenant_id: 1,
-            file_id: Some(200),
-            document_id: None,
-            kind: JobKind::Ingest,
-            priority: 10,
-            status: JobStatus::Running,
-            attempts: 0,
-            last_error: None,
-            run_after: chrono::Utc::now(),
-            created_at: chrono::Utc::now(),
-            created_by: None,
-        };
+        let files = vec![IngestFile {
+            bytes: b"queued file body".to_vec(),
+            page_label: None,
+            path: Some("doc.txt".into()),
+        }];
 
-        let test_bytes = b"job-processed content".to_vec();
+        pipeline
+            .ingest_into(1, Some(7), 4242, files, Some("note".into()), false)
+            .await
+            .unwrap();
 
-        let output = process_ingest_job(&pipeline, &job, |_tenant_id, _file_id| {
-            let b = test_bytes.clone();
-            Box::pin(async move {
-                Ok(vec![IngestFile {
-                    bytes: b,
-                    page_label: None,
-                    path: Some("job-file.txt".into()),
-                }])
-            })
-        })
-        .await
-        .unwrap();
-
-        assert_eq!(output.document_id, 42);
-        assert_eq!(output.tag_ids.len(), 1);
         assert_eq!(store.call_count(), 1);
+        assert_eq!(
+            store.doc_ids.lock().unwrap().as_slice(),
+            &[4242],
+            "the staged document id must reach transactional_ingest"
+        );
     }
 
+    /// The inline path (no staged id) still hands the store `id = 0` so it
+    /// creates/reuses the document itself.
     #[tokio::test]
-    async fn process_ingest_job_resolver_error() {
-        let (pipeline, _store) = build_test_pipeline(
-            "irrelevant",
+    async fn inline_ingest_passes_zero_document_id() {
+        let (pipeline, store) = build_test_pipeline(
+            "inline doc content",
+            TagOutput {
+                title: "Inline".into(),
+                summary: "s".into(),
+                tags: vec![],
+            },
+        )
+        .await;
+
+        let files = vec![IngestFile {
+            bytes: b"inline file body".to_vec(),
+            page_label: None,
+            path: Some("doc.txt".into()),
+        }];
+        pipeline.ingest(1, None, files, None, false).await.unwrap();
+
+        assert_eq!(store.doc_ids.lock().unwrap().as_slice(), &[0]);
+    }
+
+    /// A non-positive document id is rejected before any work happens.
+    #[tokio::test]
+    async fn ingest_into_rejects_non_positive_id() {
+        let (pipeline, store) = build_test_pipeline(
+            "x",
             TagOutput {
                 title: "T".into(),
                 summary: "S".into(),
@@ -2171,31 +2186,20 @@ mod tests {
         )
         .await;
 
-        let job = Job {
-            id: 101,
-            tenant_id: 1,
-            file_id: None,
-            document_id: None,
-            kind: JobKind::Ingest,
-            priority: 10,
-            status: JobStatus::Running,
-            attempts: 0,
-            last_error: None,
-            run_after: chrono::Utc::now(),
-            created_at: chrono::Utc::now(),
-            created_by: None,
-        };
-
-        let err = process_ingest_job(&pipeline, &job, |_tenant_id, _file_id| {
-            Box::pin(async { anyhow::bail!("file not found in blob store") })
-        })
-        .await
-        .unwrap_err();
-
+        let files = vec![IngestFile {
+            bytes: b"y".to_vec(),
+            page_label: None,
+            path: None,
+        }];
+        let err = pipeline
+            .ingest_into(1, None, 0, files, None, false)
+            .await
+            .unwrap_err();
         assert!(
-            err.contains("file not found in blob store"),
-            "expected resolver error, got: {err}"
+            err.to_string().contains("positive document_id"),
+            "got: {err}"
         );
+        assert_eq!(store.call_count(), 0, "no store write on rejection");
     }
 
     // ── MockIngestStore tests ──────────────────────────────────────────────
