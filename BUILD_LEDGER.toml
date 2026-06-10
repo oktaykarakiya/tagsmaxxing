@@ -1625,9 +1625,9 @@ description = "Store: pending-ingest staging. New crates/store/src/ingest_stagin
 depends_on = []
 plan_sections = ["16", "7", "13"]
 acceptance = "#[ignore] pg tests: create_pending_ingest inserts pending doc+files (encrypted cols round-trip); identical re-upload reuses the document (reused=true); counts correct; status transitions work. Before-connect unit tests. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "ingest_staging.rs: create_pending_ingest reuses transactional_ingest's advisory lock + exact-file-set lookup verbatim (made ingest_advisory_key + get_or_create_tenant_dek pub(crate)); persists user_note(+enc when KEK) AND local_only at staging (NOTE: the ready-path UPDATE never writes local_only — staging is now the only writer, strictly better fidelity); files staged with the same (tenant_id,sha256,document_id) ON CONFLICT target as finalize so re-staging updates rows in place. set_document_status aligns files but never downgrades 'ready'. count_pending_ingest_jobs = one count(*) FILTER on the admin pool over the new jobs_tenant_pending partial index. Migration 0026: lease_expires_at + locked_by + jobs_running_lease + jobs_tenant_pending partial indexes. Verified: 4 #[ignore] pg tests green against real pgvector via Podman (create/reuse/transitions/counts incl. lease cols); 5 before-connect unit tests; just ci green."
 
 [[task]]
 id = "P15-T2"

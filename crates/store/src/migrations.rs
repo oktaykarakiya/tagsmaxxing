@@ -16,11 +16,11 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
-    /// All twenty-five migrations are present, in version order (1–25).
+    /// All twenty-six migrations are present, in version order (1–26).
     #[test]
     fn embeds_the_schema_migrations() {
         let versions: Vec<i64> = MIGRATOR.iter().map(|m| m.version).collect();
-        assert_eq!(versions, (1..=25).collect::<Vec<i64>>());
+        assert_eq!(versions, (1..=26).collect::<Vec<i64>>());
     }
 
     /// Forward-only and monotonic: no down/reversible scripts, strictly increasing versions,

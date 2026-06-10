@@ -354,7 +354,10 @@ impl PgStore {
     /// # Errors
     /// Returns an error if no KEK is configured (column encryption disabled), the
     /// database is not connected, or any crypto operation fails.
-    async fn get_or_create_tenant_dek(&self, tenant_id: i64) -> anyhow::Result<[u8; 32]> {
+    pub(crate) async fn get_or_create_tenant_dek(
+        &self,
+        tenant_id: i64,
+    ) -> anyhow::Result<[u8; 32]> {
         let kek = self.kek().ok_or_else(|| {
             anyhow::anyhow!("KEK not configured — cannot encrypt/decrypt columns")
         })?;
@@ -664,7 +667,7 @@ pub(crate) async fn begin_tenant_tx(
 /// any order) serialize on `pg_advisory_xact_lock` while unrelated uploads lock on different keys
 /// and never contend. Key collisions only cause rare, harmless extra serialization — never
 /// incorrectness.
-fn ingest_advisory_key(tenant_id: i64, file_shas: &[&[u8]]) -> i64 {
+pub(crate) fn ingest_advisory_key(tenant_id: i64, file_shas: &[&[u8]]) -> i64 {
     file_shas
         .iter()
         .fold(tenant_id.rotate_left(32), |acc, sha| {
