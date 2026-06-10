@@ -17,8 +17,10 @@ pub mod email_jobs;
 pub mod handlers;
 pub mod metrics_collector;
 pub mod middleware;
+pub mod runtime;
 pub mod stripe_client;
 pub mod web;
+pub mod worker_pool;
 
 use std::sync::Arc;
 use std::time::Duration;

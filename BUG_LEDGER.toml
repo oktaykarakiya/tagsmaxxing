@@ -1138,6 +1138,19 @@ status = "done"
 acceptance = "test_upgrade_cta_starts_checkout_not_405 passes"
 notes = "Added GET /billing/checkout?plan=... handler (get_checkout) that delegates to shared checkout_handler alongside existing post_checkout. Registered GET route in both app router (lib.rs) and test router. Added 5 unit tests covering unauthenticated, empty plan, missing plan, DB unreachable, and missing Stripe client."
 
+[[bug]]
+id = "BUG-SCHED-03"
+description = "Config-fallback routing table is unresolvable — tiered acquire looks up pool backends by numeric model.id but the pool keys them by config backend id; production is only saved by the reload loop immediately clearing the table against the empty DB routes table"
+test_names = ["embedded_workers_drain_staged_upload_to_ready"]
+test_file = "crates/api/tests/queued_worker_pg.rs"
+touches = ["crates/scheduler/src/tiered.rs", "crates/scheduler/src/routing_reload.rs", "crates/scheduler/src/pool.rs"]
+conflict_group = "scheduler"
+depends_on = []
+severity = "high"
+status = "todo"
+acceptance = "with zero DB routes and config [[backend]] entries, tiered acquire resolves the fallback entries to the pool's backends (or the fallback is removed in favour of explicit legacy mode); creating ONE real DB route must not break every other role's acquire"
+notes = "Found by P15-T6's runtime integration test. Chain: Reloader::startup_load(empty DB, Some(cfg)) -> config_backends_to_entries assigns numeric model ids (idx+1) -> Pool::set_routing activates tiered acquire -> tiered::resolve_and_filter keys backends.get(entry.model.id.to_string()) but Pool::new keyed the map by backend.id (the config string id, e.g. 'llama-text') -> zero candidates -> AcquireError::NoBackend for EVERY role. Production serve never notices because PgRoutingNotifier's first wait_for_change returns immediately, the reload loop fetches the EMPTY routes table and calls pool.clear_routing(), dropping the pool back to legacy flat-priority mode milliseconds after startup. Corollary risk: the moment an operator creates one real DB route (e.g. via the providers admin UI), tiered mode activates for ALL roles with only that route resolvable — every other role's acquire breaks. P15 sidesteps it for workers (build_runtime(load_db_routing=false) now skips startup_load entirely, staying in legacy mode); the tiered resolver itself still needs the fix."
+
 # ── Upload/ingest campaign findings (docs/analysis/08-upload-campaign-findings.md) ──
 
 [[bug]]

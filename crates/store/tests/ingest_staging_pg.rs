@@ -249,3 +249,55 @@ async fn count_pending_ingest_jobs_counts_only_open_ingest() -> anyhow::Result<(
 
     Ok(())
 }
+
+/// `stage_pending_files` (P15-T5, the add-page flow) appends pending file rows
+/// to an existing document and flips it back to pending for re-processing.
+#[tokio::test]
+#[ignore = "requires Podman + image pull; run with --ignored"]
+async fn stage_pending_files_appends_to_existing_document() -> anyhow::Result<()> {
+    let s = setup().await?;
+    let pending = s
+        .store
+        .create_pending_ingest(&doc(s.tenant_id, "base"), &[file(s.tenant_id, 0x66, 1)])
+        .await?;
+    // Simulate a finished first pass.
+    s.store
+        .set_document_status(s.tenant_id, pending.document_id, ProcessingStatus::Ready)
+        .await?;
+
+    // Add a second page.
+    let mut added = file(s.tenant_id, 0x77, 2);
+    added.document_id = pending.document_id;
+    let ids = s
+        .store
+        .stage_pending_files(s.tenant_id, pending.document_id, &[added])
+        .await?;
+    assert_eq!(ids.len(), 1);
+
+    // Document is pending again; both files present; the new one pending.
+    let d = s
+        .store
+        .get_document(s.tenant_id, pending.document_id)
+        .await?
+        .unwrap();
+    assert_eq!(d.status, ProcessingStatus::Pending);
+    let files = s
+        .store
+        .get_files_for_document(s.tenant_id, pending.document_id)
+        .await?;
+    assert_eq!(files.len(), 2, "added page joins the existing one");
+    assert_eq!(files[1].page_no, 2);
+    assert_eq!(files[1].status, ProcessingStatus::Pending);
+
+    // A nonexistent document errors.
+    let mut orphan = file(s.tenant_id, 0x88, 1);
+    orphan.document_id = 999_999;
+    let err = s
+        .store
+        .stage_pending_files(s.tenant_id, 999_999, &[orphan])
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("not found"), "got: {err}");
+
+    Ok(())
+}

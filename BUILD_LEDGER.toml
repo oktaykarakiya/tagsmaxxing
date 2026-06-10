@@ -1680,9 +1680,9 @@ description = "Serve: embedded worker pool — walking skeleton complete. When c
 depends_on = ["P15-T2", "P15-T3", "P15-T4"]
 plan_sections = ["16", "10"]
 acceptance = "#[ignore] integration: staged upload against pg + mock backends -> embedded worker processes -> document ready. Manual: compose up, UI upload, progress -> redirect. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "runtime.rs MOVED from the bin (commands/) into the kb-api LIB (kb_api::runtime) so integration tests can exercise build_runtime (bin modules are unreachable from tests/). New lib module worker_pool.rs: spawn_ingest_workers (run_worker_pool restricted to JobKind::Ingest; handler resolves the plan gate per job via resolve_local_only then process_queued_ingest) + spawn_lease_reaper (30s interval); serve spawns both when [worker].enabled (default), shares the collector's shutdown watch channel, and joins them at shutdown (60s drain window — an overrun job is reclaimed by the reaper on next start). FOUND + RECORDED BUG-SCHED-03 (high, todo): the config-fallback routing table is unresolvable — tiered acquire keys pool backends by numeric model.id while Pool::new keys them by the config backend id; production only works because the reload loop's immediate first pass clears the table against the empty DB routes table (legacy mode). Fixed per-machine mode accordingly: build_runtime(load_db_routing=false) now skips startup_load entirely (legacy flat-priority IS the per-machine mode). Verified: #[ignore] queued_worker_pg green — runtime-built stack (real JsonSchemaTagger/embedder/DocumentExtractor over MockBackend) drains a staged upload to ready+chunks in ~10s, job done, graceful worker+reaper drain; stage_pending_files pg test (T5 carry-over) green; worker_pool drain-on-shutdown unit test; just ci green."
 
 [[task]]
 id = "P15-T7"

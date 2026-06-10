@@ -6,6 +6,5 @@
 //! implementations (plan §31.3).
 
 pub mod ingest;
-pub mod runtime;
 pub mod search;
 pub mod serve;

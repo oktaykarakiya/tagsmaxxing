@@ -163,7 +163,7 @@ pub async fn build_runtime(
         .context("failed to connect to Postgres — is the database running?")?;
 
     // ── Bootstrap first-run seeding ──────────────────────────────────────────
-    kb_api::bootstrap::bootstrap_seed(&pg_store)
+    crate::bootstrap::bootstrap_seed(&pg_store)
         .await
         .context("bootstrap seed failed")?;
 
@@ -178,9 +178,9 @@ pub async fn build_runtime(
 
     // ── Scheduler pool + routing ────────────────────────────────────────────
     let pool = Pool::from_config(&cfg);
-    let reloader = Reloader::new(pool.clone());
 
     if load_db_routing {
+        let reloader = Reloader::new(pool.clone());
         // Startup load: try DB first, fall back to config.toml backends; then
         // spawn the LISTEN/NOTIFY hot-reload loop (plan §26.5, P9-T7).
         let db_entries = pg_store
@@ -216,14 +216,16 @@ pub async fn build_runtime(
         });
         info!("routing hot-reload background task started");
     } else {
-        // Per-machine capacity mode (workers, P15): only this machine's
-        // [[backend]] entries — empty DB entries make startup_load fall back
-        // to the config; no DB-routing reload loop is spawned.
-        reloader
-            .startup_load(Vec::new(), Some(&cfg))
-            .await
-            .context("failed to load per-machine backends from config")?;
-        info!("per-machine backend routing (DB routing table not loaded)");
+        // Per-machine capacity mode (workers, P15): no routing table at all —
+        // the pool stays in legacy flat-priority mode, where acquire works
+        // directly off this machine's [[backend]] entries and their slot
+        // semaphores (exact local enforcement). Deliberately NOT
+        // `startup_load(vec![], Some(&cfg))`: the config-fallback routing
+        // table is unresolvable (its numeric model ids never match the pool's
+        // config-id backend keys — see BUG-SCHED-03), and in serve it only
+        // works because the reload loop's immediate first pass clears it
+        // against the empty DB routes table.
+        info!("per-machine backends (legacy flat-priority; DB routing not loaded)");
     }
 
     let http = reqwest::Client::builder()

@@ -21,11 +21,11 @@ use kb_core::degradation::DegradationState;
 use kb_store::api_token_store::InMemoryApiTokenStore;
 use tracing::{info, warn};
 
-use super::runtime;
 use crate::cli::ServeArgs;
 use kb_api::AppState;
 use kb_api::backpressure::InflightLimiter;
 use kb_api::metrics_collector;
+use kb_api::runtime;
 use kb_api::stripe_client;
 
 /// `map_response` middleware: inject a `Retry-After: 5` header on every 429 and
@@ -180,6 +180,35 @@ pub async fn run_serve(args: &ServeArgs) -> anyhow::Result<()> {
     let public_base_url =
         std::env::var("PUBLIC_BASE_URL").unwrap_or_else(|_| format!("http://0.0.0.0:{bind_port}"));
 
+    // ── Shutdown channel (collector + embedded workers share it) ────────────
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+    // ── Embedded ingest workers + lease reaper (P15-T6, plan §16) ───────────
+    // The single-box default: `kb serve` drains its own queue. Dedicated
+    // worker machines run `kb worker` (P15-T8) and this can be disabled with
+    // [worker] enabled = false. Handles are joined at shutdown (drain).
+    let worker_handles = if cfg.worker.enabled {
+        let workers = kb_api::worker_pool::spawn_ingest_workers(
+            Arc::clone(&job_queue),
+            Arc::clone(&ingest_pipeline),
+            Arc::clone(&pg_store),
+            Arc::clone(&blob),
+            cfg.worker.concurrency.max(1) as usize,
+            shutdown_rx.clone(),
+        );
+        let reaper =
+            kb_api::worker_pool::spawn_lease_reaper(Arc::clone(&job_queue), shutdown_rx.clone());
+        info!(
+            concurrency = cfg.worker.concurrency,
+            lease_secs = cfg.worker.lease_secs,
+            "embedded ingest workers + lease reaper started"
+        );
+        Some((workers, reaper))
+    } else {
+        info!("embedded ingest workers disabled ([worker].enabled = false)");
+        None
+    };
+
     let mut state = AppState {
         session_store,
         pg_store,
@@ -217,7 +246,6 @@ pub async fn run_serve(args: &ServeArgs) -> anyhow::Result<()> {
     let router = router.layer(axum::middleware::map_response(ensure_retry_after));
 
     // ── Start metrics collector ─────────────────────────────────────────────
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let collector_pool = backend_pool.clone();
     // The collector also publishes the in-memory runtime gauges (P14-T9): the
     // per-subsystem degraded flags and the in-flight ingest count. Both handles
@@ -301,6 +329,14 @@ pub async fn run_serve(args: &ServeArgs) -> anyhow::Result<()> {
     // Wait for background tasks to drain.
     let _ = tokio::time::timeout(Duration::from_secs(10), janitor_handle).await;
     let _ = tokio::time::timeout(Duration::from_secs(10), health_handle).await;
+
+    // Embedded workers drain their in-flight jobs (they stopped claiming when
+    // the shutdown channel flipped); a long media job gets a generous window —
+    // if it outlives this, the lease reaper requeues it on the next start.
+    if let Some((workers, reaper)) = worker_handles {
+        let _ = tokio::time::timeout(Duration::from_secs(60), workers).await;
+        let _ = tokio::time::timeout(Duration::from_secs(10), reaper).await;
+    }
 
     // Give the usage-recorder flush task a moment to drain any buffered events
     // (P14-T1). It runs continuously during operation, so the buffer is near-
