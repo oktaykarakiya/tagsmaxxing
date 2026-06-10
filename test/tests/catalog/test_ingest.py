@@ -576,31 +576,39 @@ def test_ingest_idempotent_reupload(api):
 def test_job_status_progression(api):
     """GET /api/jobs/{id} reports queued, then running, then done.
 
-    Uses the Web UI upload path (POST /upload) which enqueues a real async job,
-    because the JSON API ingest path is synchronous (job_id=0 sentinel).
+    Uses the Web UI upload path (POST /upload). When inline processing is active
+    (P14), the return value is job_id=0 (synchronous, already completed) — the
+    test validates that the document was created rather than polling a job queue.
     """
     api.login(config.tenant_slug(), config.admin_email(), config.admin_password())
 
     marker = flows.unique_marker("kbe2ejob")
     content = f"Job progression test. {marker}".encode()
 
-    # Upload through the web endpoint to get a real async job_id.
+    # Upload through the web endpoint.
     upload_resp = _csrf_upload(api, f"{marker}.txt", content, "text/plain")
     job_id = upload_resp.get("job_id")
     assert job_id is not None, f"no job_id in upload response: {upload_resp}"
-    assert job_id != 0, f"expected real (non-zero) job_id, got {job_id}"
 
-    # Poll the job until it reaches a terminal state.
-    job = api.wait_for_job(job_id, timeout=120.0, interval=2.0)
-    status = job.get("status")
-    assert status in ("done", "failed", "dead"), (
-        f"job did not reach a terminal state: {job}"
-    )
-
-    # If the job succeeded, the status should be "done".
-    # If the pipeline errored for any reason, it could be "failed" or "dead" —
-    # that indicates an app bug, but the test correctly exercises the endpoint.
-    assert job.get("id") == job_id, "job id mismatch in response"
+    if job_id == 0:
+        # P14 inline processing: the document was created synchronously.
+        # The job_id sentinel 0 means "completed immediately".
+        doc_id = upload_resp.get("document_id")
+        assert doc_id is not None, (
+            f"inline ingest must return document_id, got: {upload_resp}"
+        )
+        # Verify the document actually exists.
+        doc = api.get_document(doc_id)
+        assert doc is not None, f"document {doc_id} not found after inline ingest"
+        assert doc.get("id") == doc_id
+    else:
+        # Async path: poll the job until it reaches a terminal state.
+        job = api.wait_for_job(job_id, timeout=120.0, interval=2.0)
+        status = job.get("status")
+        assert status in ("done", "failed", "dead"), (
+            f"job did not reach a terminal state: {job}"
+        )
+        assert job.get("id") == job_id, "job id mismatch in response"
 
 
 def test_failed_extraction_marks_job_failed(api):

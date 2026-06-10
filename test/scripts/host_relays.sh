@@ -2,7 +2,8 @@
 # test/scripts/host_relays.sh — manage host-side socat relays for REUSE-HOST-LLAMA
 # mode (E2E_LLAMA=host). The operator's llama.cpp servers listen on the host
 # LOOPBACK (127.0.0.1:8080/8081/8082), which a containerized app on a podman
-# bridge network cannot reach. These relays expose them on 0.0.0.0:9080/9081/9082
+# bridge network cannot reach. These relays expose them on the Podman bridge
+# interface (default: BIND_IP from env, or 0.0.0.0 for backward compat)
 # so the app can reach them via host.containers.internal — WITHOUT restarting or
 # touching the operator's servers.
 #
@@ -20,6 +21,7 @@ RERANK_SRC="${LLAMA_RERANK_HOST_PORT:-8082}"
 RELAYS=("9080:${TEXT_SRC}" "9081:${EMBED_SRC}" "9082:${RERANK_SRC}")
 
 PIDFILE="${E2E_RELAY_PIDFILE:-${TMPDIR:-/tmp}/kb-e2e-host-relays.pids}"
+BIND_IP="${BIND_IP:-0.0.0.0}"  # override to bind to a specific interface (e.g. Podman bridge gateway)
 
 _listening() { ss -tlnH "( sport = :$1 )" 2>/dev/null | grep -q LISTEN; }
 
@@ -31,7 +33,7 @@ start() {
     if _listening "$lp"; then
       echo "  ✓ relay :$lp already listening (reusing)"
     else
-      nohup socat "TCP-LISTEN:${lp},fork,reuseaddr,bind=0.0.0.0" "TCP:127.0.0.1:${tp}" \
+      nohup socat "TCP-LISTEN:${lp},fork,reuseaddr,bind=${BIND_IP}" "TCP:127.0.0.1:${tp}" \
         >/dev/null 2>&1 &
       local pid=$!
       disown "$pid" 2>/dev/null || true

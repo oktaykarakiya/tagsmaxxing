@@ -10,6 +10,7 @@ markers = [
   "judge: uses the DeepSeek LLM-as-judge (network + API key; excluded from the core run)",
   "auth: authentication, sessions, login/logout/registration",
   "ingest: upload + extraction pipeline (text/code/tika/image/audio/video/binary)",
+  "matrix: combinatorial pairwise + boundary-value upload sweep (campaign lane)",
   "search: retrieval, hybrid search, RRF fusion, rerank, deep-links",
   "tagging: LLM tagging + summaries (nondeterministic; usually judged)",
   "isolation: multi-tenant isolation / RLS / cross-tenant negative tests",
