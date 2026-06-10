@@ -1669,9 +1669,9 @@ description = "API: queued upload path + bounded-queue admission + mode flag. ha
 depends_on = ["P15-T1", "P15-T3", "P15-T4"]
 plan_sections = ["16", "22", "29"]
 acceptance = "Unit tests: mode branch; queue_full 429 with counts; 202 carries real job_id + document_id; inline tests pinned under mode=inline. add_page enqueues a processable job. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "process_upload_queued: validate -> bounded-queue admission (count_pending_ingest_jobs vs hot-swapped cfg.ingest caps; typed QueueFull -> 429 queue_full with live tenant/global counts, Retry-After via middleware) -> sanitize note+filenames (mirrors the pipeline so staged rows are Postgres-storable) -> DocumentBuilder build_single/build_multi (sha/blob_key/MIME/kind; doc.local_only = upload-time plan gate) -> blob.put at the records' keys -> create_pending_ingest -> enqueue {document_id, created_by} -> 202 {job_id, document_id}. /api/ingest + web /upload branch per request on cfg.ingest.mode (no app_config -> queued default); queued skips the InflightLimiter (queue caps replace it); inline path kept verbatim as the hot-swap rollback lever. add_page FIXED: new process_add_page_queued stages pending files onto the existing doc (page_no continues; new store method stage_pending_files flips doc back to pending) + enqueues with that document_id — replaces the payload-less never-processed jobs. Deleted process_upload_files (dead). New unit tests: QueueFull display + 429 mapping with counts. NOTE: queued mode treats every upload as one multi-page document, matching the long-standing inline semantics (group_as_document parsed but ignored — documented on the struct). 202-carries-ids + mode-branch end-to-end are pinned by T6's integration + T7 e2e. just ci green (re-verified post-reboot)."
 
 [[task]]
 id = "P15-T6"

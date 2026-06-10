@@ -4,9 +4,12 @@
 //! optional `group_as_document` flag. Each file's bytes are stored in the
 //! blob store and an ingest job is enqueued via the job queue.
 //!
-//! The shared [`process_upload_files`] function is used by both the JSON API
-//! handler and the Web UI upload handler (`POST /upload`), avoiding duplicate
-//! blob-storage + job-enqueue logic.
+//! Two processing modes, selected per request by the hot-swappable
+//! `[ingest].mode` (P15-T5): **queued** (default) stages a pending document +
+//! enqueues a job for background workers and returns immediately; **inline**
+//! runs the full pipeline synchronously (the rollback lever). The shared
+//! helpers ([`process_upload_queued`], [`process_upload_inline`],
+//! [`process_add_page_queued`]) serve both the JSON API and the Web UI.
 //!
 //! # Upload security (plan §17, §31.5)
 //!
@@ -129,13 +132,25 @@ pub async fn ingest(
         ));
     }
 
+    // ── Resolve the ingest mode per request (hot-swappable, P15-T5) ──────────
+    // "queued" (default): stage + enqueue, workers process in the background;
+    // "inline": the previous synchronous path (rollback lever — edit
+    // config.toml, no restart).
+    let ingest_cfg = state
+        .app_config
+        .as_ref()
+        .map(|c| c.current().ingest.clone())
+        .unwrap_or_default();
+    let queued_mode = ingest_cfg.mode != "inline";
+
     // ── Backpressure: acquire an in-flight slot or return 429 (P8-T9, P14-T7) ──
-    // Per-tenant fair-share: the permit is granted only when BOTH this tenant's
-    // own budget AND the global pool have capacity, so a single noisy tenant
-    // (bounded to per_tenant_max_inflight) cannot drain the pool and 429 other
-    // tenants. The Permit is RAII-held for the entire handler and dropped at
-    // function exit, releasing both the per-tenant and global slot.
-    let _permit = if let Some(limiter) = &state.inflight_limiter {
+    // INLINE mode only: the limiter gated the pipeline work that ran inside
+    // this request. In queued mode the request itself is cheap (validate +
+    // blob put + two inserts) and the backlog is bounded by the queue caps
+    // instead (P15-T5).
+    let _permit = if queued_mode {
+        None
+    } else if let Some(limiter) = &state.inflight_limiter {
         match limiter.try_acquire(auth_user.tenant_id) {
             Some(permit) => Some(permit),
             None => {
@@ -222,16 +237,45 @@ pub async fn ingest(
         .blob
         .as_ref()
         .ok_or_else(|| internal_error(anyhow::anyhow!("ingest: blob store not configured")))?;
+
+    // ── Queued mode (default, P15-T5): stage + enqueue, return immediately ───
+    if queued_mode {
+        let job_queue = state
+            .job_queue
+            .as_ref()
+            .ok_or_else(|| internal_error(anyhow::anyhow!("ingest: job queue not configured")))?;
+        let result = process_upload_queued(
+            blob.as_ref(),
+            &state.pg_store,
+            job_queue.as_ref(),
+            &ingest_cfg,
+            auth_user.tenant_id,
+            Some(auth_user.user_id),
+            &parsed,
+            local_only,
+        )
+        .await
+        .map_err(map_ingest_error)?;
+
+        return Ok((
+            StatusCode::ACCEPTED,
+            Json(IngestResponse {
+                job_id: result.job_id,
+                document_id: Some(result.document_id),
+                message: format!(
+                    "upload accepted; document {} queued for processing ({} file(s))",
+                    result.document_id,
+                    parsed.files.len()
+                ),
+            }),
+        ));
+    }
+
+    // ── Inline mode (rollback lever): the synchronous pipeline ───────────────
     let pipeline = state
         .ingest_pipeline
         .as_ref()
         .ok_or_else(|| internal_error(anyhow::anyhow!("ingest: pipeline not configured")))?;
-
-    // ── Process uploads inline through the pipeline ──────────────────────────
-    // Inline processing: store blobs, then feed bytes directly through the
-    // pipeline (extract → tag → embed → store). The job queue exists for
-    // async retry/re-embed/re-tag, but the primary ingest path is synchronous
-    // so uploads complete immediately.
     let result = process_upload_inline(
         blob.as_ref(),
         pipeline.as_ref(),
@@ -262,75 +306,273 @@ pub async fn ingest(
     ))
 }
 
-/// Store file bytes in the blob store and enqueue ingest job(s).
+// ── Queued upload path (P15-T5, plan §16) ───────────────────────────────────
+
+/// The bounded ingest queue is full — admission refused (P15-T5).
 ///
-/// Shared between the JSON API handler and the Web UI upload handler.
-/// This is the core upload processing logic, extracted so both paths can
-/// reuse it without duplication.
+/// Carries the live counts so the 429 body tells the caller how saturated the
+/// queue is. `Retry-After` is added by the `ensure_retry_after` middleware.
+#[derive(Debug)]
+pub(crate) struct QueueFull {
+    /// This tenant's not-yet-done ingest jobs.
+    pub tenant_pending: i64,
+    /// The per-tenant cap that was hit (or would be exceeded).
+    pub tenant_cap: u32,
+    /// All tenants' not-yet-done ingest jobs.
+    pub global_pending: i64,
+    /// The global cap.
+    pub global_cap: u32,
+}
+
+impl std::fmt::Display for QueueFull {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "ingest queue is full (tenant {}/{}, global {}/{}); retry shortly",
+            self.tenant_pending, self.tenant_cap, self.global_pending, self.global_cap
+        )
+    }
+}
+
+impl std::error::Error for QueueFull {}
+
+/// Result from [`process_upload_queued`].
+pub(crate) struct QueuedIngestResult {
+    /// The enqueued ingest job id (pollable at `/api/jobs/:id`).
+    pub job_id: i64,
+    /// The staged (pending) document id.
+    pub document_id: i64,
+}
+
+/// Stage an upload for asynchronous processing (P15-T5, plan §16).
 ///
-/// `created_by` is the id of the user performing the upload (P14-T1); it is
-/// stored on every enqueued job so the resulting model-call usage is attributed
-/// to that user.
+/// The queued-mode upload path: validate → bounded-queue admission → store
+/// blobs → stage a `pending` document + file rows → enqueue an ingest job
+/// carrying the document id. Returns immediately; a worker finalizes the
+/// document to `ready` in the background.
 ///
-/// # Returns
-///
-/// `(first_job_id, file_count)` on success.
+/// Inputs are sanitized exactly like the inline pipeline (control characters
+/// stripped + note bounded, filenames reduced to safe basenames) so the staged
+/// rows are storable and safe; the pipeline re-applies the same sanitizers at
+/// processing time (idempotent).
 ///
 /// # Errors
-///
-/// Returns an error if blob storage or job enqueue fails.
-pub(crate) async fn process_upload_files(
+/// Typed errors the caller maps via [`map_ingest_error`]:
+/// [`security::UploadRejected`] → 400, [`QueueFull`] → 429 `queue_full`;
+/// anything else (blob store, DB) is an internal 500.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn process_upload_queued(
     blob: &dyn Blob,
+    pg_store: &kb_store::PgStore,
     job_queue: &JobQueue,
+    caps: &kb_config::Ingest,
     tenant_id: i64,
-    created_by: Option<i64>,
+    user_id: Option<i64>,
     parsed: &ParsedUpload,
-) -> anyhow::Result<(i64, usize)> {
-    // ── Upload-edge validation (plan §17, §31.5) ────────────────────────────
+    local_only: bool,
+) -> anyhow::Result<QueuedIngestResult> {
+    use anyhow::Context as _;
+    use kb_pipeline::document_builder::{DocumentBuilder, PageInput};
+    use kb_pipeline::ingest::{
+        MAX_USER_NOTE_BYTES, sanitize_filename, strip_control_chars, truncate_to_char_boundary,
+    };
+
+    // ── Validate each file (the §17 upload-edge guards) ─────────────────────
     for f in &parsed.files {
         security::validate_upload(
             &f.bytes,
             f.path.as_deref(),
             security::MAX_INDIVIDUAL_FILE_BYTES,
-        )
-        .map_err(|e| {
-            tracing::warn!(
-                file = f.path.as_deref().unwrap_or("<unknown>"),
-                error = %e,
-                "ingest: upload validation failed"
-            );
-            e.context("upload validation failed")
-        })?;
+        )?;
     }
 
-    // ── Store each file's bytes in the blob store ───────────────────────────
-    for f in &parsed.files {
-        let sha256 = compute_blob_key(&f.bytes);
-        blob.put(&sha256, bytes::Bytes::copy_from_slice(&f.bytes))
-            .await?;
-    }
-
-    // ── Enqueue job(s) ──────────────────────────────────────────────────────
-    // When group_as_document is true, enqueue one job for all files together.
-    // When false, enqueue one job per file (each becomes a 1-page document).
-    let job_id = if parsed.group_as_document {
-        job_queue
-            .enqueue(tenant_id, created_by, None, None, JobKind::Ingest, 100)
-            .await?
-    } else {
-        let mut first_id: Option<i64> = None;
-        for _f in &parsed.files {
-            let id = job_queue
-                .enqueue(tenant_id, created_by, None, None, JobKind::Ingest, 100)
-                .await?;
-            if first_id.is_none() {
-                first_id = Some(id);
-            }
+    // ── Bounded-queue admission (caps hot-swapped per request) ──────────────
+    let (tenant_pending, global_pending) = pg_store.count_pending_ingest_jobs(tenant_id).await?;
+    if tenant_pending >= i64::from(caps.max_pending_per_tenant)
+        || global_pending >= i64::from(caps.max_pending_global)
+    {
+        return Err(QueueFull {
+            tenant_pending,
+            tenant_cap: caps.max_pending_per_tenant,
+            global_pending,
+            global_cap: caps.max_pending_global,
         }
-        first_id.unwrap_or(0)
-    };
+        .into());
+    }
 
-    Ok((job_id, parsed.files.len()))
+    // ── Sanitize note + filenames (mirrors the pipeline; staged rows must be
+    //    Postgres-storable — a NUL in a note would otherwise fail the insert) ─
+    let user_note = parsed.user_note.as_deref().map(|note| {
+        let note = strip_control_chars(note);
+        if note.len() > MAX_USER_NOTE_BYTES {
+            truncate_to_char_boundary(&note, MAX_USER_NOTE_BYTES).to_string()
+        } else {
+            note
+        }
+    });
+    let cleaned: Vec<(Vec<u8>, Option<String>, Option<String>)> = parsed
+        .files
+        .iter()
+        .map(|f| {
+            (
+                f.bytes.clone(),
+                f.page_label.as_deref().and_then(sanitize_filename),
+                f.path.as_deref().and_then(sanitize_filename),
+            )
+        })
+        .collect();
+
+    // ── Build the document + file records (sha256, blob keys, MIME, kind) ───
+    let (mut document, file_records) = if cleaned.len() == 1 {
+        let (bytes, _, path) = &cleaned[0];
+        DocumentBuilder::build_single(tenant_id, bytes, path.as_deref(), user_note.as_deref())
+    } else {
+        let pages: Vec<PageInput<'_>> = cleaned
+            .iter()
+            .map(|(bytes, page_label, path)| PageInput {
+                bytes,
+                page_label: page_label.as_deref(),
+                path: path.as_deref(),
+            })
+            .collect();
+        DocumentBuilder::build_multi(tenant_id, &pages, user_note.as_deref())
+    };
+    // Persist the plan gate resolved at upload; the worker re-resolves at
+    // processing time and ORs the two (the hot-swap rule).
+    document.local_only = local_only;
+
+    // ── Store blobs at the records' content-addressed keys ──────────────────
+    for (record, (bytes, _, _)) in file_records.iter().zip(&cleaned) {
+        blob.put(&record.blob_key, bytes::Bytes::copy_from_slice(bytes))
+            .await
+            .with_context(|| format!("failed to store blob {}", record.blob_key))?;
+    }
+
+    // ── Stage pending rows + enqueue the job ────────────────────────────────
+    let pending = pg_store
+        .create_pending_ingest(&document, &file_records)
+        .await?;
+    let job_id = job_queue
+        .enqueue(
+            tenant_id,
+            user_id,
+            None,
+            Some(pending.document_id),
+            JobKind::Ingest,
+            0,
+        )
+        .await?;
+
+    tracing::info!(
+        tenant_id,
+        document_id = pending.document_id,
+        job_id,
+        files = parsed.files.len(),
+        reused = pending.reused,
+        "upload staged for queued ingestion"
+    );
+
+    Ok(QueuedIngestResult {
+        job_id,
+        document_id: pending.document_id,
+    })
+}
+
+/// Stage additional pages onto an **existing** document and enqueue it for
+/// re-processing (P15-T5; the web "add page" flow — previously this enqueued
+/// payload-less jobs no worker could process).
+///
+/// New file rows are staged `pending` with page numbers continuing after the
+/// document's current pages; the whole document is re-processed by the worker
+/// so its title/summary/tags reflect the updated content.
+///
+/// # Errors
+/// [`security::UploadRejected`] for invalid files (→ 400 via
+/// [`map_ingest_error`]); an error if the document does not exist for the
+/// tenant; blob/DB failures (→ 500).
+pub(crate) async fn process_add_page_queued(
+    blob: &dyn Blob,
+    pg_store: &kb_store::PgStore,
+    job_queue: &JobQueue,
+    tenant_id: i64,
+    user_id: Option<i64>,
+    document_id: i64,
+    parsed: &ParsedUpload,
+) -> anyhow::Result<(i64, usize)> {
+    use anyhow::Context as _;
+    use kb_pipeline::document_builder::{DocumentBuilder, PageInput};
+    use kb_pipeline::ingest::sanitize_filename;
+
+    for f in &parsed.files {
+        security::validate_upload(
+            &f.bytes,
+            f.path.as_deref(),
+            security::MAX_INDIVIDUAL_FILE_BYTES,
+        )?;
+    }
+
+    // The document must exist within the tenant (RLS-scoped read).
+    let existing_files = pg_store
+        .get_files_for_document(tenant_id, document_id)
+        .await?;
+    anyhow::ensure!(
+        pg_store
+            .get_document(tenant_id, document_id)
+            .await?
+            .is_some(),
+        "document {document_id} not found"
+    );
+
+    // Reuse DocumentBuilder's detection (sha256, blob keys, MIME); the built
+    // document itself is discarded — only the file records are staged, with
+    // page numbers continuing after the existing pages.
+    let cleaned: Vec<(Vec<u8>, Option<String>, Option<String>)> = parsed
+        .files
+        .iter()
+        .map(|f| {
+            (
+                f.bytes.clone(),
+                f.page_label.as_deref().and_then(sanitize_filename),
+                f.path.as_deref().and_then(sanitize_filename),
+            )
+        })
+        .collect();
+    let pages: Vec<PageInput<'_>> = cleaned
+        .iter()
+        .map(|(bytes, page_label, path)| PageInput {
+            bytes,
+            page_label: page_label.as_deref(),
+            path: path.as_deref(),
+        })
+        .collect();
+    let (_discarded_doc, mut records) = DocumentBuilder::build_multi(tenant_id, &pages, None);
+    let offset = existing_files.len() as i32;
+    for r in &mut records {
+        r.page_no += offset;
+        r.document_id = document_id;
+    }
+
+    for (record, (bytes, _, _)) in records.iter().zip(&cleaned) {
+        blob.put(&record.blob_key, bytes::Bytes::copy_from_slice(bytes))
+            .await
+            .with_context(|| format!("failed to store blob {}", record.blob_key))?;
+    }
+
+    pg_store
+        .stage_pending_files(tenant_id, document_id, &records)
+        .await?;
+    let job_id = job_queue
+        .enqueue(
+            tenant_id,
+            user_id,
+            None,
+            Some(document_id),
+            JobKind::Ingest,
+            0,
+        )
+        .await?;
+
+    Ok((job_id, records.len()))
 }
 
 /// Result from [`process_upload_inline`].
@@ -466,9 +708,11 @@ pub(crate) struct ParsedUpload {
     /// File contents and metadata.
     pub files: Vec<IngestFile>,
     /// Optional user note.
-    #[allow(dead_code)]
     pub user_note: Option<String>,
-    /// Whether files should be grouped into one document.
+    /// Whether files should be grouped into one document. Parsed for form
+    /// compatibility; both processing paths currently treat every upload as
+    /// one (multi-page) document, matching the long-standing inline behavior.
+    #[allow(dead_code)]
     pub group_as_document: bool,
     /// CSRF token from the form (set by Web UI; empty for API clients).
     pub csrf_token: String,
@@ -632,6 +876,22 @@ pub(crate) fn map_ingest_error(e: anyhow::Error) -> (StatusCode, Json<ErrorRespo
     // the service is momentarily unable to process it.
     if let Some(unavailable) = e.downcast_ref::<IngestError>() {
         return service_unavailable(unavailable);
+    }
+    // The bounded ingest queue is full (P15-T5): 429 queue_full with the live
+    // counts; Retry-After is added by the ensure_retry_after middleware.
+    if let Some(full) = e.downcast_ref::<QueueFull>() {
+        tracing::warn!(
+            tenant_pending = full.tenant_pending,
+            global_pending = full.global_pending,
+            "ingest: queue full (429)"
+        );
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(ErrorResponse {
+                error: "queue_full".into(),
+                message: full.to_string(),
+            }),
+        );
     }
     internal_error(e)
 }
@@ -1190,6 +1450,39 @@ mod tests {
             "503 body must not leak internal backend detail: {}",
             body.message
         );
+    }
+
+    #[test]
+    fn map_ingest_error_queue_full_is_429_with_counts() {
+        // P15-T5: a typed QueueFull from the queued upload path → 429 queue_full
+        // with the live counts in the body (Retry-After added by middleware).
+        let e = anyhow::Error::new(QueueFull {
+            tenant_pending: 200,
+            tenant_cap: 200,
+            global_pending: 950,
+            global_cap: 2000,
+        });
+        let (status, body) = map_ingest_error(e);
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(body.error, "queue_full");
+        assert!(
+            body.message.contains("200/200") && body.message.contains("950/2000"),
+            "queue_full body must carry the counts: {}",
+            body.message
+        );
+    }
+
+    #[test]
+    fn queue_full_display_names_both_bounds() {
+        let msg = QueueFull {
+            tenant_pending: 5,
+            tenant_cap: 10,
+            global_pending: 70,
+            global_cap: 100,
+        }
+        .to_string();
+        assert!(msg.contains("tenant 5/10"), "{msg}");
+        assert!(msg.contains("global 70/100"), "{msg}");
     }
 
     #[test]

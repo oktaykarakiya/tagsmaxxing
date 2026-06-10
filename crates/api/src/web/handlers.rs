@@ -796,6 +796,68 @@ pub async fn upload_submit(
                 .into_response();
         }
     };
+
+    // ── Resolve the remote-models plan gate (P14-T6) ────────────────────────
+    // Per request (hot-swappable): free-plan tenants are forced to local-only
+    // models; pro/team (and grandfathered) tenants may use remote backends.
+    // Fail-closed to local-only on a lookup error (never leaks remote access).
+    let local_only =
+        crate::handlers::resolve_local_only(&state.pg_store, auth_user.tenant_id).await;
+
+    // ── 6. Process the upload — queued (default) or inline (P15-T5) ─────────
+    // Same per-request hot-swappable mode switch as POST /api/ingest.
+    let ingest_cfg = state
+        .app_config
+        .as_ref()
+        .map(|c| c.current().ingest.clone())
+        .unwrap_or_default();
+
+    if ingest_cfg.mode != "inline" {
+        let job_queue = match state.job_queue.as_ref() {
+            Some(q) => q,
+            None => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({
+                        "error": "not_configured",
+                        "message": "job queue not configured"
+                    })),
+                )
+                    .into_response();
+            }
+        };
+        return match crate::handlers::ingest::process_upload_queued(
+            blob.as_ref(),
+            &state.pg_store,
+            job_queue.as_ref(),
+            &ingest_cfg,
+            auth_user.tenant_id,
+            Some(auth_user.user_id),
+            &parsed,
+            local_only,
+        )
+        .await
+        {
+            Ok(result) => (
+                StatusCode::ACCEPTED,
+                Json(serde_json::json!({
+                    "job_id": result.job_id,
+                    "document_id": result.document_id,
+                    "message": format!(
+                        "upload accepted; document {} queued for processing ({} file(s))",
+                        result.document_id,
+                        parsed.files.len()
+                    )
+                })),
+            )
+                .into_response(),
+            // 400 for rejected uploads, 429 queue_full, 413/429 quota — mirrors
+            // POST /api/ingest.
+            Err(e) => crate::handlers::ingest::map_ingest_error(e).into_response(),
+        };
+    }
+
+    // Inline mode (rollback lever): the synchronous pipeline.
     let pipeline = match state.ingest_pipeline.as_ref() {
         Some(p) => p,
         None => {
@@ -809,18 +871,6 @@ pub async fn upload_submit(
                 .into_response();
         }
     };
-
-    // ── Resolve the remote-models plan gate (P14-T6) ────────────────────────
-    // Per request (hot-swappable): free-plan tenants are forced to local-only
-    // models; pro/team (and grandfathered) tenants may use remote backends.
-    // Fail-closed to local-only on a lookup error (never leaks remote access).
-    let local_only =
-        crate::handlers::resolve_local_only(&state.pg_store, auth_user.tenant_id).await;
-
-    // ── 6. Process upload inline (synchronous — no worker pool needed) ──────
-    // Uses the same path as POST /api/ingest: validate → store blobs → pipeline
-    // ingest → return document_id immediately. The job-queue worker pool is not
-    // yet wired (P6-T7), so enqueue-only would leave jobs stuck at "queued".
     match crate::handlers::ingest::process_upload_inline(
         blob.as_ref(),
         pipeline.as_ref(),

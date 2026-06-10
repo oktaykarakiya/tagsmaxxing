@@ -713,11 +713,13 @@ pub async fn add_page(
         }
     };
 
-    match crate::handlers::ingest::process_upload_files(
+    match crate::handlers::ingest::process_add_page_queued(
         blob,
+        &state.pg_store,
         job_queue,
         auth_user.tenant_id,
         Some(auth_user.user_id),
+        doc_id,
         &parsed,
     )
     .await

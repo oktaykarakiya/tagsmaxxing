@@ -198,6 +198,78 @@ impl PgStore {
         })
     }
 
+    /// Stage additional `pending` files against an **existing** document and
+    /// flip the document back to `pending` for re-processing (P15-T5, the web
+    /// "add page" flow). Returns the staged file row ids.
+    ///
+    /// The queued worker then re-processes the whole document (all pages, old
+    /// and new) so the title/summary/tags reflect the updated content.
+    ///
+    /// # Errors
+    /// Returns an error if `files` is empty, the database is not connected, or
+    /// any query fails (the transaction rolls back).
+    pub async fn stage_pending_files(
+        &self,
+        tenant_id: i64,
+        document_id: i64,
+        files: &[FileRecord],
+    ) -> anyhow::Result<Vec<i64>> {
+        anyhow::ensure!(!files.is_empty(), "stage_pending_files: no files");
+        anyhow::ensure!(
+            document_id > 0,
+            "stage_pending_files: document_id must be positive"
+        );
+
+        let pool = self.app_pool()?;
+        let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
+
+        // The whole document is re-processed, so it goes back to pending.
+        let updated = sqlx::query("UPDATE documents SET status='pending' WHERE id=$1")
+            .bind(document_id)
+            .execute(&mut *tx)
+            .await
+            .context("failed to mark document pending for added pages")?;
+        anyhow::ensure!(
+            updated.rows_affected() > 0,
+            "document {document_id} not found for tenant"
+        );
+
+        let mut file_ids = Vec::with_capacity(files.len());
+        for file in files {
+            let fid: i64 = sqlx::query_scalar(
+                "INSERT INTO files (tenant_id,document_id,page_no,page_label,sha256,blob_key,\
+                 path,mime,size_bytes,meta,status,ingested_at) \
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pending',$11) \
+                 ON CONFLICT (tenant_id,sha256,document_id) DO UPDATE SET \
+                 page_no=EXCLUDED.page_no,page_label=EXCLUDED.page_label,\
+                 blob_key=EXCLUDED.blob_key,path=EXCLUDED.path,mime=EXCLUDED.mime,\
+                 size_bytes=EXCLUDED.size_bytes,meta=EXCLUDED.meta,status='pending',\
+                 ingested_at=EXCLUDED.ingested_at \
+                 RETURNING id",
+            )
+            .bind(tenant_id)
+            .bind(document_id)
+            .bind(file.page_no)
+            .bind(&file.page_label)
+            .bind(file.sha256.as_bytes().as_slice())
+            .bind(&file.blob_key)
+            .bind(&file.path)
+            .bind(&file.mime)
+            .bind(file.size_bytes)
+            .bind(&file.meta)
+            .bind(file.ingested_at)
+            .fetch_one(&mut *tx)
+            .await
+            .context("failed to stage added pending file")?;
+            file_ids.push(fid);
+        }
+
+        tx.commit()
+            .await
+            .context("failed to commit stage_pending_files")?;
+        Ok(file_ids)
+    }
+
     /// Set a document's processing status, aligning its files (P15-T1).
     ///
     /// Used by the queued flow's failure/retry transitions: a dead-lettered
