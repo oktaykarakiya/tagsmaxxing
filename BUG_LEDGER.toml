@@ -1164,6 +1164,19 @@ status = "done"
 acceptance = "a WebP upload (RIFF/WEBP magic) is accepted as image/webp and an mkv upload is accepted as Video, regardless of which naming variant the host shared-mime database reports"
 notes = "Found during P15-T7 e2e (image rebuilt on a newer Debian base than the campaign's): the container's freedesktop shared-mime DB stopped classifying minimal WebP (-> application/octet-stream) and renamed Matroska to application/x-matroska. Fixes in the established BUG-INGEST-05/x-riff recovery lineage: (1) normalize_octet_stream_magic recovers RIFF+WEBP -> image/webp (already allow-listed) in BOTH security.rs and document_builder.rs (kept in step); (2) application/x-matroska added to ALLOWED_MIMES + mapped to DocKind::Video in mime_to_doc_kind AND infer_kind_from_mime. Pure detection widening — byte-content based, no policy change. Unit tests in all three files."
 
+[[bug]]
+id = "BUG-INGEST-18"
+description = "tagger prompt embedded UNBOUNDED document text: a ~200 KB doc became a ~27k-token request against an 8k context — strict llama builds reject it (400, job dead-letters) and the old build silently truncated AND segfaulted tokenizing it (F5)"
+test_names = ["test_large_text_document_is_chunked_and_searchable", "tagger_text_cap_bounds_pathological_documents"]
+test_file = "test/tests/catalog/test_ingest_extraction.py"
+touches = ["crates/pipeline/src/ingest.rs"]
+conflict_group = "pipeline"
+depends_on = []
+severity = "high"
+status = "done"
+acceptance = "a 200 KB text document ingests to ready (tagger request fits the serving context) and the marker is searchable; tagger text is capped at MAX_TAGGER_TEXT_BYTES with the VLM caption surviving at the front"
+notes = "Found in P15-T7 when the b9592 llama-server (strict context checks) replaced the crashy 24d2ee0 build: every retry of the large-doc tagging job 400'd ('request (26815 tokens) exceeds the available context size (8192)') and the job dead-lettered. Fix follows the BUG-INGEST-10 user-note precedent: truncate_to_char_boundary(text, MAX_TAGGER_TEXT_BYTES=18 KB) at BOTH TagInput build sites (ingest + retag). 18 KB <= ~6k tokens for dense scripts; prepended VLM captions sit at the front and survive. Tagging quality needs the opening pages, not the full body."
+
 # ── Upload/ingest campaign findings (docs/analysis/08-upload-campaign-findings.md) ──
 
 [[bug]]

@@ -457,10 +457,13 @@ impl IngestPipeline {
         }
 
         // 5. Tag the whole document once over all pages' text + metadata.
+        // The text is capped so the prompt fits the serving context window
+        // (BUG-INGEST-18); a prepended VLM caption sits at the front and
+        // therefore always survives the cut.
         let tag_input = TagInput {
             tenant_id,
             user_id,
-            text: merged.merged_text.clone(),
+            text: truncate_to_char_boundary(&merged.merged_text, MAX_TAGGER_TEXT_BYTES).to_string(),
             user_note: document.user_note.clone(),
             kind: merged.kind,
             meta: merged.merged_meta.clone(),
@@ -677,11 +680,11 @@ pub async fn process_retag_job(
         .await
         .map_err(|e| format!("failed to clear llm tags: {e}"))?;
 
-    // 3. Tag the document.
+    // 3. Tag the document. Text capped to the prompt budget (BUG-INGEST-18).
     let tag_input = TagInput {
         tenant_id,
         user_id,
-        text: document_text.to_string(),
+        text: truncate_to_char_boundary(document_text, MAX_TAGGER_TEXT_BYTES).to_string(),
         user_note: None,
         kind: DocKind::Document,
         meta: serde_json::Value::Null,
@@ -734,6 +737,19 @@ pub async fn process_retag_job(
 /// The limit is generous for a free-text annotation while protecting the
 /// tagger prompt from multi-megabyte payloads.
 pub const MAX_USER_NOTE_BYTES: usize = 10 * 1024;
+
+/// Maximum document text fed into the single per-document tagging call (18 KB).
+///
+/// The tagger prompt must fit the serving model's context window alongside the
+/// system prompt, user note, metadata and the JSON output budget. Unbounded
+/// extracted text (a ~200 KB document is ~27 k tokens) overflows an 8 k-token
+/// context: strict servers reject the request outright, and older llama.cpp
+/// builds silently truncated it instead — either way the surplus text never
+/// usefully reached the model (BUG-INGEST-18). 18 KB is ≤ ~6 k tokens even for
+/// dense scripts, leaving comfortable headroom; tagging quality does not need
+/// more than the document's opening pages (any prepended VLM caption sits at
+/// the front and always survives the cut).
+pub const MAX_TAGGER_TEXT_BYTES: usize = 18 * 1024;
 
 /// Truncate `s` to at most `max_bytes` bytes, landing on a valid UTF-8
 /// character boundary so the result is always well-formed.
@@ -1242,6 +1258,21 @@ mod tests {
     fn truncate_multibyte_char_at_boundary_exact() {
         // "café" = [c][a][f][é (2 bytes)] = 5 bytes. 3 bytes lands at "caf".
         assert_eq!(truncate_to_char_boundary("café", 3), "caf");
+    }
+
+    #[test]
+    fn tagger_text_cap_bounds_pathological_documents() {
+        // BUG-INGEST-18: a ~200 KB single-segment document (~27 k tokens) must
+        // shrink to the tagger prompt budget so the request fits an 8 k-token
+        // serving context instead of being rejected (or silently truncated by
+        // older llama.cpp builds).
+        let huge = "A".repeat(200 * 1024);
+        let capped = truncate_to_char_boundary(&huge, MAX_TAGGER_TEXT_BYTES);
+        assert_eq!(capped.len(), MAX_TAGGER_TEXT_BYTES);
+        // Sanity: the budget stays well under an 8 k-token context even for
+        // dense scripts (~3 bytes/token) once system prompt + output reserve
+        // are accounted for.
+        const { assert!(MAX_TAGGER_TEXT_BYTES / 3 < 7_000) };
     }
 
     #[test]
