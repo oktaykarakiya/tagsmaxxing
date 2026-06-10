@@ -58,6 +58,15 @@ pub struct Config {
     /// Thumbnail generation settings (plan §20, P8-T13).
     #[serde(default, rename = "thumbnail")]
     pub thumbnail: Thumbnail,
+    /// Blob-store backend selection (plan §20, P15-T4).
+    #[serde(default, rename = "blob")]
+    pub blob: BlobConfig,
+    /// Ingest-job worker settings (plan §16, P15-T4).
+    #[serde(default, rename = "worker")]
+    pub worker: Worker,
+    /// Upload-ingestion mode + queue admission bounds (plan §16, P15-T4).
+    #[serde(default, rename = "ingest")]
+    pub ingest: Ingest,
 }
 
 /// Durable-storage configuration.
@@ -341,6 +350,158 @@ impl Default for Degradation {
             blob_circuit_breaker_threshold: default_circuit_breaker_threshold(),
             blob_circuit_breaker_cooldown_secs: default_circuit_breaker_cooldown_secs(),
             blob_health_interval_secs: default_blob_health_interval_secs(),
+        }
+    }
+}
+
+// ── Blob backend (plan §20, P15-T4) ───────────────────────────────────────────
+
+fn default_blob_backend() -> String {
+    "local".to_string()
+}
+fn default_blob_local_root() -> String {
+    "kb-blobs".to_string()
+}
+fn default_blob_local_prefix() -> String {
+    "default".to_string()
+}
+
+/// Blob-store backend selection (plan §20, P15-T4).
+///
+/// `local` (the default) stores blobs on the node's filesystem — fine for a
+/// single box, but **workers on other machines cannot read them**. Multi-machine
+/// deployments must use `s3` (any S3-compatible store: self-hosted MinIO or
+/// Backblaze B2), where every node shares one bucket. Credentials come from the
+/// environment (`B2_KEY_ID` / `B2_APPLICATION_KEY`), never the config file.
+#[derive(Debug, Clone, Deserialize)]
+pub struct BlobConfig {
+    /// Backend kind: `"local"` (node filesystem) or `"s3"` (S3-compatible).
+    #[serde(default = "default_blob_backend")]
+    pub backend: String,
+    /// Root directory for the `local` backend.
+    #[serde(default = "default_blob_local_root")]
+    pub local_root: String,
+    /// Key-namespace prefix for the `local` backend.
+    #[serde(default = "default_blob_local_prefix")]
+    pub local_prefix: String,
+    /// S3-compatible endpoint settings (used when `backend = "s3"`).
+    #[serde(default)]
+    pub s3: S3Blob,
+}
+
+impl Default for BlobConfig {
+    fn default() -> Self {
+        Self {
+            backend: default_blob_backend(),
+            local_root: default_blob_local_root(),
+            local_prefix: default_blob_local_prefix(),
+            s3: S3Blob::default(),
+        }
+    }
+}
+
+/// S3-compatible blob endpoint (MinIO, Backblaze B2, …; plan §20).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct S3Blob {
+    /// Endpoint URL (e.g. `http://minio:9000` or the B2 S3 endpoint).
+    #[serde(default)]
+    pub endpoint: String,
+    /// Region name (MinIO accepts any; B2 wants its bucket region).
+    #[serde(default)]
+    pub region: String,
+    /// Bucket name.
+    #[serde(default)]
+    pub bucket: String,
+}
+
+// ── Worker (plan §16, P15-T4) ─────────────────────────────────────────────────
+
+const fn default_worker_enabled() -> bool {
+    true
+}
+const fn default_worker_concurrency() -> u32 {
+    2
+}
+const fn default_worker_lease_secs() -> u64 {
+    600
+}
+
+/// Ingest-job worker settings (plan §16, P15-T4).
+///
+/// `kb serve` runs an embedded worker pool when `enabled` (single-box default);
+/// dedicated machines run `kb worker` with their own config. `concurrency` is
+/// how many jobs this process works at once — independent of the model slots in
+/// `[[backend]]`, which bound the model calls those jobs make.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Worker {
+    /// Run an embedded worker pool inside `kb serve`.
+    #[serde(default = "default_worker_enabled")]
+    pub enabled: bool,
+    /// Concurrent jobs processed by this worker process.
+    #[serde(default = "default_worker_concurrency")]
+    pub concurrency: u32,
+    /// Load the global DB routing table for model backends. Default **false**
+    /// for exact per-machine capacity: the worker then uses only its own
+    /// `[[backend]]` entries, so its slot semaphores are the sole gate on its
+    /// local model servers (no cross-process over-subscription).
+    #[serde(default)]
+    pub use_db_routing: bool,
+    /// Job lease (visibility timeout) in seconds; a crashed worker's job is
+    /// requeued by the reaper after this long without a heartbeat.
+    #[serde(default = "default_worker_lease_secs")]
+    pub lease_secs: u64,
+}
+
+impl Default for Worker {
+    fn default() -> Self {
+        Self {
+            enabled: default_worker_enabled(),
+            concurrency: default_worker_concurrency(),
+            use_db_routing: false,
+            lease_secs: default_worker_lease_secs(),
+        }
+    }
+}
+
+// ── Ingest mode + queue bounds (plan §16, P15-T4) ────────────────────────────
+
+fn default_ingest_mode() -> String {
+    "queued".to_string()
+}
+const fn default_max_pending_per_tenant() -> u32 {
+    200
+}
+const fn default_max_pending_global() -> u32 {
+    2000
+}
+
+/// Upload-ingestion mode + bounded-queue admission (plan §16, P15-T4).
+///
+/// In `queued` mode (the default) an upload stores its bytes, stages a pending
+/// document, and enqueues a job — returning 202 immediately; background workers
+/// process it. `inline` is the previous synchronous behaviour, kept as a
+/// hot-swappable rollback lever (edit config.toml; no restart). The pending
+/// caps bound the queue: an upload past either cap is rejected 429 `queue_full`
+/// (with Retry-After) instead of growing the backlog without limit.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Ingest {
+    /// `"queued"` (async, default) or `"inline"` (synchronous rollback path).
+    #[serde(default = "default_ingest_mode")]
+    pub mode: String,
+    /// Per-tenant cap on not-yet-done ingest jobs (queued/running/failed).
+    #[serde(default = "default_max_pending_per_tenant")]
+    pub max_pending_per_tenant: u32,
+    /// Global cap on not-yet-done ingest jobs across all tenants.
+    #[serde(default = "default_max_pending_global")]
+    pub max_pending_global: u32,
+}
+
+impl Default for Ingest {
+    fn default() -> Self {
+        Self {
+            mode: default_ingest_mode(),
+            max_pending_per_tenant: default_max_pending_per_tenant(),
+            max_pending_global: default_max_pending_global(),
         }
     }
 }
@@ -698,5 +859,91 @@ sample_pct = 25
         assert_eq!(is.schedule_hour, 6);
         assert_eq!(is.schedule_minute, 15);
         assert_eq!(is.sample_pct, 25);
+    }
+
+    // ── blob / worker / ingest (P15-T4) ────────────────────────────────────
+
+    #[test]
+    fn blob_defaults_are_local() {
+        let b = BlobConfig::default();
+        assert_eq!(b.backend, "local");
+        assert_eq!(b.local_root, "kb-blobs");
+        assert_eq!(b.local_prefix, "default");
+        assert!(b.s3.endpoint.is_empty());
+        // And an empty config inherits the same.
+        let cfg: Config = toml::from_str("").expect("empty config parses");
+        assert_eq!(cfg.blob.backend, "local");
+    }
+
+    #[test]
+    fn blob_s3_overrides_parse() {
+        let toml_str = r#"
+[blob]
+backend = "s3"
+
+[blob.s3]
+endpoint = "http://minio:9000"
+region = "us-east-1"
+bucket = "kb-blobs"
+"#;
+        let cfg: Config = toml::from_str(toml_str).expect("parse should succeed");
+        assert_eq!(cfg.blob.backend, "s3");
+        assert_eq!(cfg.blob.s3.endpoint, "http://minio:9000");
+        assert_eq!(cfg.blob.s3.region, "us-east-1");
+        assert_eq!(cfg.blob.s3.bucket, "kb-blobs");
+    }
+
+    #[test]
+    fn worker_defaults() {
+        let w = Worker::default();
+        assert!(w.enabled, "serve runs an embedded worker by default");
+        assert_eq!(w.concurrency, 2);
+        assert!(
+            !w.use_db_routing,
+            "workers default to their own per-machine backends (exact slot enforcement)"
+        );
+        assert_eq!(w.lease_secs, 600);
+        let cfg: Config = toml::from_str("").expect("empty config parses");
+        assert!(cfg.worker.enabled);
+    }
+
+    #[test]
+    fn worker_overrides_parse() {
+        let toml_str = r#"
+[worker]
+enabled = false
+concurrency = 7
+use_db_routing = true
+lease_secs = 120
+"#;
+        let cfg: Config = toml::from_str(toml_str).expect("parse should succeed");
+        assert!(!cfg.worker.enabled);
+        assert_eq!(cfg.worker.concurrency, 7);
+        assert!(cfg.worker.use_db_routing);
+        assert_eq!(cfg.worker.lease_secs, 120);
+    }
+
+    #[test]
+    fn ingest_defaults_are_queued_and_bounded() {
+        let i = Ingest::default();
+        assert_eq!(i.mode, "queued");
+        assert_eq!(i.max_pending_per_tenant, 200);
+        assert_eq!(i.max_pending_global, 2000);
+        let cfg: Config = toml::from_str("").expect("empty config parses");
+        assert_eq!(cfg.ingest.mode, "queued");
+    }
+
+    #[test]
+    fn ingest_inline_rollback_parses() {
+        let toml_str = r#"
+[ingest]
+mode = "inline"
+max_pending_per_tenant = 10
+max_pending_global = 50
+"#;
+        let cfg: Config = toml::from_str(toml_str).expect("parse should succeed");
+        assert_eq!(cfg.ingest.mode, "inline");
+        assert_eq!(cfg.ingest.max_pending_per_tenant, 10);
+        assert_eq!(cfg.ingest.max_pending_global, 50);
     }
 }

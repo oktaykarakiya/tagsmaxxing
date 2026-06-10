@@ -94,6 +94,7 @@ mod tests {
             email_sender: None,
             email_provider: None,
             api_token_store: None,
+            app_config: None,
         })
     }
 

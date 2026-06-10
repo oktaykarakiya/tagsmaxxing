@@ -1658,9 +1658,9 @@ description = "API: shared runtime builder + config sections. Extract serve.rs c
 depends_on = []
 plan_sections = ["10", "20", "6", "31.4"]
 acceptance = "just ci green proves no drift (pure refactor); config default/override deserialization tests; build_blob unit tests for local + s3(EncryptedBlob-wrapped); serve.rs and runtime.rs under file caps."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "commands/runtime.rs: build_runtime(&AppConfig, load_db_routing) -> PipelineRuntime {pg_store, session_store, backend_pool, blob, ingest_pipeline, retrieval_pipeline, job_queue (lease from [worker].lease_secs), health handles, usage_flush_handle} — verbatim extraction of serve.rs wiring; load_db_routing=false (workers) does startup_load(vec![], Some(&cfg)) = config-only backends, no notifier loop. build_blob: local (LocalBlob, self-encrypts via BLOB_KEK_*) | s3 (B2Blob via BLOB_S3_ACCESS_KEY/SECRET_KEY env + [blob.s3] endpoint/region/bucket, EncryptedBlob-wrapped when a KEK is provisioned) | unknown -> error. Config: [blob]/[worker]{enabled=true,concurrency=2,use_db_routing=false,lease_secs=600}/[ingest]{mode=queued,max_pending_per_tenant=200,max_pending_global=2000} with serde-default + override tests (6 new). AppState gains app_config: Option<AppConfig> (+ with_app_config builder; 4 test literals updated); serve spawns app_config.watch() and keeps the watcher alive, so ingest.mode/caps hot-swap per request. serve.rs slimmed ~200 lines (Stripe client builds its own reqwest client now that the shared one lives in the runtime). NOTE: serve behavior unchanged — DB routing still loaded (true), LocalBlob still the default. Verified: 700 lib + 45 bin tests incl. 3 build_blob; 46 config tests; just ci green."
 
 [[task]]
 id = "P15-T5"

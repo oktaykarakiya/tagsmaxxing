@@ -115,6 +115,11 @@ pub struct AppState {
     /// When `None`, Bearer authentication is disabled (cookie-only mode) and the
     /// /api/tokens CRUD endpoints return 500. Set via [`AppState::with_api_token_store`].
     pub api_token_store: Option<Arc<dyn ApiTokenStore>>,
+    /// Hot-swappable configuration handle (P15-T4). Handlers resolve the
+    /// current ingest mode / queue caps **per request** via
+    /// `app_config.current()` (the hot-swap rule); `None` (tests, auth-only
+    /// configs) falls back to compiled defaults.
+    pub app_config: Option<kb_config::AppConfig>,
 }
 
 impl AppState {
@@ -154,6 +159,7 @@ impl AppState {
             email_sender: None,
             email_provider: None,
             api_token_store: None,
+            app_config: None,
         }
     }
 
@@ -191,7 +197,15 @@ impl AppState {
             email_sender: None,
             email_provider: None,
             api_token_store: None,
+            app_config: None,
         }
+    }
+
+    /// Builder: attach the hot-swappable config handle (P15-T4).
+    #[must_use]
+    pub fn with_app_config(mut self, cfg: kb_config::AppConfig) -> Self {
+        self.app_config = Some(cfg);
+        self
     }
 
     /// Builder: attach the ingest pipeline.
@@ -615,6 +629,7 @@ mod tests {
             email_sender: None,
             email_provider: None,
             api_token_store: None,
+            app_config: None,
         })
     }
 

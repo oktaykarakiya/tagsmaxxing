@@ -9,7 +9,6 @@
 //!
 //! Graceful shutdown is triggered by SIGINT or SIGTERM.
 
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,48 +17,16 @@ use anyhow::Context;
 use axum::http::{StatusCode, header};
 use axum::response::Response;
 use kb_config::AppConfig;
-use kb_core::blob::Blob;
 use kb_core::degradation::DegradationState;
-use kb_core::kind::DocKind;
-use kb_core::session::SessionStore;
-use kb_extract::audio::{AudioExtractor, WhisperConfig};
-use kb_extract::code::CodeExtractor;
-use kb_extract::document::DocumentExtractor;
-use kb_extract::image::ImageExtractor;
-use kb_extract::tika::{TikaConfig, TikaExtractor};
-use kb_extract::video::VideoExtractor;
-use kb_llm::{JsonSchemaTagger, LlamaClient, LlamaReranker, VisionCaptioner};
-use kb_pipeline::embedder::ChunkEmbedder;
-use kb_pipeline::ingest::{ExtractorRouter, IngestPipeline};
-use kb_pipeline::job_queue::JobQueue;
-use kb_pipeline::retrieval::RetrievalPipeline;
-use kb_pipeline::tag_canonicalizer::{TAG_MERGE_THRESHOLD, TagCanonicalizer};
-use kb_scheduler::HealthLoop;
-use kb_scheduler::Pool;
-use kb_scheduler::Reloader;
-use kb_store::ROUTING_CHANNEL;
 use kb_store::api_token_store::InMemoryApiTokenStore;
-use kb_store::{
-    BufferedUsageRecorder, EMBED_DIM, LocalBlob, PgRoutingNotifier, PgSessionStore, PgStore,
-};
 use tracing::{info, warn};
 
+use super::runtime;
 use crate::cli::ServeArgs;
 use kb_api::AppState;
 use kb_api::backpressure::InflightLimiter;
 use kb_api::metrics_collector;
 use kb_api::stripe_client;
-
-/// Default model names for OpenAI-compatible API requests.
-const DEFAULT_CHAT_MODEL: &str = "default";
-const DEFAULT_EMBED_MODEL: &str = "qwen3-embed-4b";
-const DEFAULT_RERANK_MODEL: &str = "default";
-
-/// Number of consecutive failures before a per-backend circuit breaker trips.
-const CIRCUIT_THRESHOLD: u32 = 5;
-
-/// How long a tripped circuit breaker stays open.
-const COOLDOWN_SECS: u64 = 30;
 
 /// `map_response` middleware: inject a `Retry-After: 5` header on every 429 and
 /// 503 response produced by the app.
@@ -128,232 +95,34 @@ pub async fn run_serve(args: &ServeArgs) -> anyhow::Result<()> {
 
     let bind_port = args.port.unwrap_or(cfg.api.port);
 
-    // ── Connect to Postgres ─────────────────────────────────────────────────
-    let pg_store = if cfg.storage.app_postgres_url.is_empty() {
-        anyhow::ensure!(
-            !cfg.storage.postgres_url.is_empty(),
-            "storage.postgres_url is not set in {} — a Postgres database is required",
-            args.config
-        );
-        PgStore::new(&cfg.storage.postgres_url)
-    } else {
-        PgStore::with_roles(&cfg.storage.postgres_url, &cfg.storage.app_postgres_url)
-    };
+    // ── Build the shared processing runtime (P15-T4) ─────────────────────────
+    // Store, scheduler pool + DB routing reload, extractors, tagger/embedder/
+    // canonicalizer/reranker, blob, job queue, usage metering, health loop —
+    // all extracted into runtime::build_runtime so `kb worker` wires the exact
+    // same stack. `true` = serve loads the global DB routing table.
+    let rt = runtime::build_runtime(&app_config, true).await?;
+    let runtime::PipelineRuntime {
+        pg_store,
+        session_store,
+        backend_pool,
+        blob,
+        ingest_pipeline,
+        retrieval_pipeline,
+        job_queue,
+        health_handle,
+        health_shutdown,
+        usage_flush_handle,
+    } = rt;
 
-    pg_store
-        .connect()
-        .await
-        .context("failed to connect to Postgres — is the database running?")?;
-
-    // ── Bootstrap first-run seeding ──────────────────────────────────────────
-    kb_api::bootstrap::bootstrap_seed(&pg_store)
-        .await
-        .context("bootstrap seed failed")?;
-
-    let pg_store = Arc::new(pg_store);
-
-    // ── Session store ───────────────────────────────────────────────────────
-    // Use the admin pool for the sessions table (not tenant-scoped).
-    let session_pool = pg_store
-        .admin_pool()
-        .context("failed to get admin pool for session store")?;
-    let session_store: Arc<dyn SessionStore> = Arc::new(PgSessionStore::new(session_pool));
-
-    // ── Build shared infrastructure ─────────────────────────────────────────
-    let pool = Pool::from_config(&cfg);
-
-    // ── Routing hot-reload (plan §26.5, P9-T7) ────────────────────────────
-    let reloader = Reloader::new(pool.clone());
-
-    // Startup load: try DB first, fall back to config.toml backends.
-    let db_entries = pg_store
-        .get_routing_table()
-        .await
-        .context("failed to load routing table from database")?;
-    reloader
-        .startup_load(db_entries, Some(&cfg))
-        .await
-        .context("failed to perform routing startup load")?;
-
-    // Spawn the hot-reload background loop.
-    let admin_url_fn = {
-        let s = Arc::clone(&pg_store);
-        move || s.admin_url_snapshot()
-    };
-    let notifier = PgRoutingNotifier::new(
-        admin_url_fn,
-        ROUTING_CHANNEL.into(),
-        Duration::from_secs(30), // poll fallback every 30s
-    );
-    let reloader_clone = reloader.clone();
-    let pg_store_clone = Arc::clone(&pg_store);
-    tokio::spawn(async move {
-        if let Err(e) = reloader_clone
-            .run(notifier, move || {
-                let store = Arc::clone(&pg_store_clone);
-                async move { store.get_routing_table().await }
-            })
-            .await
-        {
-            tracing::error!(error = %e, "routing hot-reload loop exited");
+    // Keep the config-file watcher alive for the life of the server so edits
+    // to config.toml (ingest.mode, queue caps, …) hot-swap without a restart.
+    let _config_watcher = match app_config.watch() {
+        Ok(w) => Some(w),
+        Err(e) => {
+            warn!(error = %e, "config file watch unavailable; hot-reload disabled");
+            None
         }
-    });
-    info!("routing hot-reload background task started");
-
-    let http = reqwest::Client::builder()
-        .timeout(Duration::from_secs(120))
-        .build()
-        .context("failed to create HTTP client")?;
-
-    let llm_factory = || {
-        LlamaClient::new(
-            pool.clone(),
-            http.clone(),
-            cfg.scheduler.max_retries,
-            CIRCUIT_THRESHOLD,
-            Duration::from_secs(COOLDOWN_SECS),
-        )
     };
-
-    // ── Build extractor router ──────────────────────────────────────────────
-    // Tika (TIKA_URL, hot-swappable via TikaConfig) reads rich documents (PDF,
-    // MS Office, OpenDocument) and other container formats. The Document
-    // extractor uses native text extraction for plain-text MIME types and falls
-    // back to Tika for binary documents; Archive (incl. OOXML detected as zip,
-    // BUG-INGEST-05) goes straight to Tika.
-    let tika_url =
-        std::env::var("TIKA_URL").unwrap_or_else(|_| "http://localhost:9998".to_string());
-    // One TikaConfig shared (cloned) into both Tika-backed extractors so a
-    // runtime TikaConfig::set_url() reaches both — clones share the inner ArcSwap.
-    let tika_config = TikaConfig::new(tika_url);
-    let mut extractors: ExtractorRouter = HashMap::new();
-    extractors.insert(
-        DocKind::Document,
-        Arc::new(DocumentExtractor::new(TikaExtractor::new(
-            http.clone(),
-            tika_config.clone(),
-        ))),
-    );
-    extractors.insert(DocKind::Code, Arc::new(CodeExtractor));
-    extractors.insert(DocKind::Image, Arc::new(ImageExtractor));
-    extractors.insert(
-        DocKind::Archive,
-        Arc::new(TikaExtractor::new(http.clone(), tika_config)),
-    );
-    // Audio/video: transcode with ffmpeg + transcribe with whisper-server
-    // (OpenAI `/v1/audio/transcriptions`). Without these the files ingest but
-    // their speech is never transcribed and they stay unsearchable. WHISPER_URL
-    // is hot-swappable via the WhisperConfig ArcSwap.
-    let whisper_url =
-        std::env::var("WHISPER_URL").unwrap_or_else(|_| "http://localhost:9000".to_string());
-    let whisper_config = WhisperConfig::new(whisper_url);
-    extractors.insert(
-        DocKind::Audio,
-        Arc::new(AudioExtractor::new(http.clone(), whisper_config.clone())),
-    );
-    extractors.insert(
-        DocKind::Video,
-        Arc::new(VideoExtractor::new(http.clone(), whisper_config)),
-    );
-
-    // ── Build pipeline components ───────────────────────────────────────────
-    // The tagger and embedder meter each model call's token usage into
-    // usage_events via the store (BUG-BILL-03). Metering is routed through a
-    // fail-open, async BufferedUsageRecorder (P14-T1) so a slow or failing
-    // usage sink can never block — or abort — an ingest; events are drained to
-    // the PgStore on a background task that is joined at shutdown.
-    let (usage_recorder, usage_flush_handle) = BufferedUsageRecorder::start(
-        Arc::clone(&pg_store) as Arc<dyn kb_core::usage::UsageRecorder>,
-        kb_store::buffered_recorder::DEFAULT_CAPACITY,
-    );
-    let usage_recorder: Arc<dyn kb_core::usage::UsageRecorder> = Arc::new(usage_recorder);
-
-    let tagger = Arc::new(
-        JsonSchemaTagger::new(llm_factory(), DEFAULT_CHAT_MODEL.into())
-            .with_usage_recorder(Arc::clone(&usage_recorder)),
-    );
-
-    let embed_llm = Arc::new(llm_factory());
-    let embedder = Arc::new(
-        ChunkEmbedder::new(
-            Arc::clone(&embed_llm),
-            DEFAULT_EMBED_MODEL.into(),
-            EMBED_DIM,
-        )
-        .with_usage_recorder(Arc::clone(&usage_recorder)),
-    );
-    let canonicalizer = Arc::new(
-        TagCanonicalizer::new(
-            Arc::clone(&pg_store) as Arc<dyn kb_pipeline::TagStore>,
-            Arc::clone(&embed_llm),
-            DEFAULT_EMBED_MODEL.into(),
-            TAG_MERGE_THRESHOLD,
-        )
-        .with_usage_recorder(Arc::clone(&usage_recorder)),
-    );
-
-    let reranker = Arc::new(
-        LlamaReranker::new(Arc::clone(&embed_llm), DEFAULT_RERANK_MODEL.into())
-            .with_usage_recorder(Arc::clone(&usage_recorder)),
-    );
-
-    // ── Blob store ──────────────────────────────────────────────────────────
-    let blob: Arc<dyn Blob> = Arc::new(LocalBlob::new("kb-blobs".into(), "default".into()));
-
-    // ── Ingest pipeline ─────────────────────────────────────────────────────
-    // VLM captioner for image visual descriptions (best-effort).
-    // Uses a separate LlamaClient with max_retries=0 so VLM-specific failures
-    // (e.g. unsupported image formats, GPU device-lost) do not cascade into
-    // circuit-breaker trips for the `text` role, which shares the same backend.
-    const DEFAULT_VISION_MODEL: &str = "default";
-    let vision_client = LlamaClient::new(
-        pool.clone(),
-        http.clone(),
-        0, // max_retries: must NOT retry — protect the text circuit breaker
-        CIRCUIT_THRESHOLD,
-        Duration::from_secs(COOLDOWN_SECS),
-    );
-    let vision_captioner = Arc::new(
-        VisionCaptioner::new(vision_client, DEFAULT_VISION_MODEL.into())
-            .with_usage_recorder(Arc::clone(&usage_recorder)),
-    );
-
-    let ingest_pipeline = Arc::new(
-        IngestPipeline::new(
-            Arc::clone(&blob),
-            extractors,
-            tagger,
-            canonicalizer,
-            embedder.clone(),
-            Arc::clone(&pg_store) as Arc<dyn kb_pipeline::ingest::IngestStore>,
-        )
-        .with_vision_captioner(vision_captioner),
-    );
-
-    // ── Retrieval pipeline ──────────────────────────────────────────────────
-    let retrieval_pipeline = Arc::new(RetrievalPipeline::new(
-        embedder,
-        Arc::clone(&pg_store) as Arc<dyn kb_core::store::Store>,
-        reranker,
-    ));
-
-    // ── Job queue ───────────────────────────────────────────────────────────
-    let job_queue_pool = pg_store
-        .admin_pool()
-        .context("failed to get admin pool for job queue")?;
-    let job_queue = Arc::new(JobQueue::new(job_queue_pool, 1000, 5));
-
-    // ── Start background health loop ────────────────────────────────────────
-    let all_backends = pool.all_backends();
-    let health_interval = Duration::from_secs(cfg.scheduler.health_interval_secs);
-    let (health_handle, health_shutdown): (
-        tokio::task::JoinHandle<()>,
-        tokio::sync::watch::Sender<()>,
-    ) = HealthLoop::new(all_backends, http.clone(), health_interval).spawn();
-    info!(
-        interval_secs = cfg.scheduler.health_interval_secs,
-        "health loop started"
-    );
 
     // ── Presigned URL TTL (P8-T3) ────────────────────────────────────────────
     let presigned_ttl = {
@@ -383,7 +152,6 @@ pub async fn run_serve(args: &ServeArgs) -> anyhow::Result<()> {
     );
 
     // ── Assemble app state ──────────────────────────────────────────────────
-    let backend_pool = Arc::new(pool);
     // Clone the store for the metrics collector before `pg_store` is moved into
     // `AppState` below (BUG-OBS-06: the collector reads global queue depth and
     // per-tenant storage usage each tick).
@@ -395,9 +163,13 @@ pub async fn run_serve(args: &ServeArgs) -> anyhow::Result<()> {
     let collector_inflight = Arc::clone(&inflight_limiter);
 
     // Stripe client (P11-T2): optional, gated on STRIPE_SECRET_KEY env var.
+    let stripe_http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .context("failed to create Stripe HTTP client")?;
     let stripe_client: Option<Arc<dyn stripe_client::StripeClient>> =
         std::env::var("STRIPE_SECRET_KEY").ok().map(|key| {
-            let client = stripe_client::RealStripeClient::new(key, http.clone());
+            let client = stripe_client::RealStripeClient::new(key, stripe_http);
             Arc::new(client) as Arc<dyn stripe_client::StripeClient>
         });
 
@@ -427,6 +199,7 @@ pub async fn run_serve(args: &ServeArgs) -> anyhow::Result<()> {
         email_sender: Some(Arc::new(kb_core::email::LogEmail)),
         email_provider: Some(Arc::new(kb_core::email::LogEmail)),
         api_token_store: Some(Arc::new(InMemoryApiTokenStore::new())),
+        app_config: Some(app_config.clone()),
     };
     if let Some(ws) = webhook_secret {
         use std::sync::Arc;
