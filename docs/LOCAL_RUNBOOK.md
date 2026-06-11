@@ -21,7 +21,7 @@ re-expose them on `0.0.0.0:9080-9082` and the app config
 
 | Role | Model | Port | How it runs |
 |---|---|---|---|
-| text / vision / code | **Qwen3.6-35B-A3B-VL** (`Qwen3.6-35B-A3B-APEX-I-Compact.gguf` + `mmproj-Qwen3.6-35B-A3B.gguf`) | 8080 | `llama-server`, `--reasoning-budget 0` |
+| text / vision / code | **Qwen3.6-35B-A3B-VL** (`Qwen3.6-35B-A3B-APEX-I-Compact.gguf` + `mmproj-Qwen3.6-35B-A3B.gguf`) | 8080 | **llama.cpp b9592** (`~/.local/lib/llama-b9592/`), `--reasoning-budget 0 --chat-template-kwargs '{"enable_thinking":false}'` |
 | embeddings | **Qwen3-Embedding-4B** (`Qwen3-Embedding-4B-Q4_K_M.gguf`, 2560-dim) | 8081 | `llama-server`, `--embedding --pooling last` |
 | reranker | **ettin-reranker-400m-v1** | 8082 | torch + sentence-transformers sidecar (`tools/ettin-rerank/`) — **not** llama.cpp |
 | transcription (audio/video) | **Whisper large-v3-turbo** (`ggml-large-v3-turbo.bin`) | 8083 | whisper.cpp (CPU); **optional** — only for media ingestion |
@@ -61,33 +61,40 @@ ls models/Qwen3.6-35B-A3B-APEX-I-Compact.gguf models/Qwen3-Embedding-4B-Q4_K_M.g
 
 ## Step 1 — start the host model servers
 
-`llama-server` is the Vulkan llama.cpp build at `~/.local/bin/llama-server` (`-ngl 99` = all layers
-on the Radeon iGPU). Run each in the background; logs go to `/tmp/`.
+**Use the startup script** — it encodes the current binaries and flags (don't
+hand-roll the commands; they drift):
 
 ```bash
 cd ~/Documents/projects/files_organizer
-
-# text / vision / code — Qwen3.6-35B-A3B-VL (reasoning OFF so json_schema tagging works)
-nohup llama-server -ngl 99 --temp 0 -c 8192 --host 127.0.0.1 --port 8080 \
-  -m models/Qwen3.6-35B-A3B-APEX-I-Compact.gguf \
-  --mmproj models/mmproj-Qwen3.6-35B-A3B.gguf --reasoning-budget 0 \
-  >/tmp/llama-text-8080.log 2>&1 & disown
-
-# embeddings — Qwen3-Embedding-4B (2560-dim, last-token pooling)
-nohup llama-server -ngl 99 -c 8192 --host 127.0.0.1 --port 8081 \
-  -m models/Qwen3-Embedding-4B-Q4_K_M.gguf --embedding --pooling last \
-  >/tmp/llama-embed-8081.log 2>&1 & disown
-
-# reranker — ettin sidecar (self-restarting wrapper; defaults to PORT=8082)
-PORT=8082 nohup bash tools/ettin-rerank/run.sh >/dev/null 2>&1 & disown
-
-# (optional) transcription — whisper large-v3-turbo, CPU
-nohup /tmp/whisper.cpp/build/bin/whisper-server -m models/ggml-large-v3-turbo.bin \
-  --host 127.0.0.1 --port 8083 --inference-path /v1/audio/transcriptions -t 6 \
-  >/tmp/whisper-8083.log 2>&1 & disown
+bash scripts/start-models.sh start          # all four servers + relays + fan
+# or: start --no-fan --no-whisper            (no sudo / no audio ingestion)
 ```
 
-Wait for them to load (the 35B takes a minute or two), then sanity-check:
+What it runs (for reference — the script is the source of truth):
+
+- **text/vision/code** (`:8080`) — Qwen3.6-35B-A3B-VL on **llama.cpp b9592**
+  (`~/.local/lib/llama-b9592/llama-server`, `LLAMA_BIN_TEXT`). The old
+  2026-03 build segfaults on this model: its BPE pretokenizer falls back to a
+  std::regex whose recursion overflows the stack on long uniform/symbol runs
+  (that was "F5"). Flags: `--reasoning-budget 0` **and**
+  `--chat-template-kwargs '{"enable_thinking":false}'` (on b9592 the budget
+  alone no longer prevents thinking — without the kwarg, tagger output is
+  empty), plus the default `--reasoning-format` (extraction) so stray think
+  tags never reach `message.content`.
+- **embeddings** (`:8081`) — Qwen3-Embedding-4B on the OLD llama build
+  **on purpose**: vector numerics must stay byte-stable with the 2560-dim
+  embeddings already in Postgres. Don't "upgrade" this one casually.
+- **reranker** (`:8082`) — ettin sidecar (`tools/ettin-rerank/run.sh`).
+- **whisper** (`:8083`, optional) — whisper.cpp large-v3-turbo, CPU.
+
+Then start the **model watchdog** (auto-restarts a dead server within ~10 s
+and preserves its crash log as `/tmp/llama-*-died-<ts>.log`):
+
+```bash
+nohup bash scripts/model-watchdog.sh >>/tmp/model-watchdog.log 2>&1 & disown
+```
+
+Sanity-check:
 
 ```bash
 for p in 8080 8081 8082; do printf 'port %s: ' "$p"; curl -sf "http://127.0.0.1:$p/health" && echo; done
@@ -207,3 +214,41 @@ done
   `--reasoning-budget 0` (Step 1), otherwise `response_format: json_schema` fails.
 - **Whisper missing after reboot** — `/tmp` was wiped; redo the whisper build in Step 0.
 - **Run the e2e suite against this stack:** `E2E_LLAMA=host E2E_RECORD=1 ./test/run.sh pytest tests -m "not judge and not perf"`.
+
+## Queued ingestion ops (P15)
+
+Uploads are **asynchronous**: `POST /api/ingest` / the web upload stages the
+bytes + a `pending` document, enqueues a durable job (Postgres `jobs` table),
+and returns **202 `{job_id, document_id}`** immediately. Background workers
+claim jobs (`FOR UPDATE SKIP LOCKED`, leased + heartbeated) and finalize the
+document to `ready`. The upload page polls the job and lands on the document;
+the document page auto-refreshes while processing; the nav shows a
+"Processing N" chip while work is in flight.
+
+- **Capacity levers (hot-swappable — edit config.toml, no restart):**
+  `[ingest] mode = "queued"|"inline"` (instant rollback lever),
+  `max_pending_per_tenant` / `max_pending_global` (admission caps → 429
+  `queue_full` + Retry-After past them).
+- **Worker capacity (restart to change):** `[worker] concurrency` per process,
+  `[[backend]] slots` per model server. `[worker] min_backoff_ms` (default
+  30 s) spreads the 5-attempt retry budget over ~15 min; deterministic
+  failures (unprocessable bytes) dead-letter on attempt 1.
+- **Same-box scaling:** `podman compose --profile worker up -d --scale worker=N`
+  (dedicated worker containers; the serve process also embeds a pool unless
+  `[worker] enabled = false`).
+- **Multi-machine fleet:** each machine runs `kb worker --config <its own
+  config.toml>` (its `[[backend]]` slots + `[worker] concurrency` = exact
+  per-machine capacity) against the shared Postgres — and **requires
+  `[blob] backend = "s3"`** (MinIO/B2; see `test/compose.minio.yaml`) plus
+  per-machine-reachable `TIKA_URL`/`WHISPER_URL`.
+- **Failure UX:** a job that exhausts retries dead-letters and marks its
+  document **failed**; the document page shows the error and a **Retry**
+  button (`POST /api/documents/:id/retry`). Tenant-visible job states:
+  `GET /api/jobs?status=&limit=`.
+- **Crash recovery:** a killed/hung worker's lease (default 600 s,
+  heartbeat-extended every lease/3) expires and the reaper requeues the job —
+  another worker completes it (verified by SIGKILLing a worker mid-job:
+  attempts +1, different `locked_by`, document `ready`).
+- **Queue triage SQL** (admin):
+  `SELECT status, count(*) FROM jobs GROUP BY 1;` — `dead` rows carry
+  `last_error`; tenant retry resets them, or use the admin jobs panel.

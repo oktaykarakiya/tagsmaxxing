@@ -267,6 +267,32 @@ rm -rf /tmp/kb-restore-test
 On failure: alert on `pgbackrest check` returning non-zero or the restore test failing.
 Monitor: backup freshness (last backup timestamp) and WAL archive lag (pending segments).
 
+## Queued ingestion in disaster recovery (P15)
+
+The ingest **job queue lives in the `jobs` table** — it is part of every
+Postgres backup and restores with the rest of the database. No extra backup
+step is needed for it. Properties that matter during recovery:
+
+- **In-flight at crash time:** jobs that were `running` when the outage hit
+  restore as `running` with an expired lease; the first lease reaper pass
+  (every 30 s on any serve/worker process) requeues them through the normal
+  retry accounting. Nothing is lost, nothing needs manual intervention.
+- **PITR consistency:** a restored point-in-time contains the *matching*
+  document/file/job states (staging writes doc + files + the enqueue in
+  one transaction). A job whose blob upload happened after the restore point
+  will retry, fail on the missing blob (transient class), and either succeed
+  once the blob store is restored or dead-letter for tenant retry — the
+  failure is visible (`failed` document + error + Retry button), never
+  silent.
+- **Blob store (s3 mode):** restore/replicate the bucket independently
+  (B2 versioning / MinIO mirroring). Local mode: `kb-data` volume backups.
+- **Worker fleet after restore:** workers reconnect and drain automatically —
+  they are stateless (all state is Postgres + blobs). Bring up the API node
+  first (it runs migrations), then workers.
+- **Post-restore triage:** `SELECT status, count(*) FROM jobs GROUP BY 1;` —
+  investigate `dead` rows (`last_error`), requeue per tenant via
+  `POST /api/documents/:id/retry` or the admin jobs panel.
+
 ## Common Failure Scenarios
 
 ### Scenario A: Accidental DROP TABLE / bad migration

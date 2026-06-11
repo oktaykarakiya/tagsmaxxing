@@ -1746,9 +1746,9 @@ description = "compose: worker service + scaling + runbooks. worker service = sa
 depends_on = ["P15-T8", "P15-T11"]
 plan_sections = ["14", "16", "20"]
 acceptance = "podman compose config valid; smoke: --scale worker=2 drains a burst; kill one worker mid-job -> reaper requeues -> the other completes. Runbooks updated."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "compose.yaml gains a `worker` service: same image + extractor-sandbox hardening as app (no-new-privileges, cap_drop ALL, 4g limit), command ['worker','--config',...], NO ports, stop_grace_period 90s (> the 60s in-process drain; leftovers lease-reaped), depends_on postgres+tika healthy, BLOB_S3_* env passthrough — gated behind `profiles: [worker]` so the default up is unchanged (serve embeds a pool). Commented PgBouncer block + connection math in-line: <=10+10 conns/process; SESSION pooling REQUIRED for the app (LISTEN/NOTIFY routing reload + advisory-lock dedup are connection-scoped); workers (use_db_routing=false, no LISTEN) can sit behind transaction pooling if needed; SKIP LOCKED pools fine. compose config validates with every overlay combination. LIVE smoke on the e2e stack (temp lease_secs=20 for speed, reverted): (1) `--profile worker up --scale worker=2` -> 12-upload burst drained in ~60s across THREE distinct locked_by identities (embedded pool 5 / worker_1 4 / worker_2 3); (2) kill-recovery: paused the app (frozen heartbeats also exercise lease expiry), worker_2 claimed the job, SIGKILLed mid-flight -> lease expired -> reaper requeued (attempts 0->1) -> worker_1 completed -> document ready, zero loss. Runbooks (living-runbook rule): LOCAL_RUNBOOK Step 1 rewritten around scripts/start-models.sh as the source of truth (b9592 text binary + the F5 segfault story + enable_thinking=false + embed STAYS on the old build for vector stability) + the model-watchdog step + a full 'Queued ingestion ops' section (async semantics, hot-swap levers, scaling, failure UX, crash recovery, triage SQL); DR_RUNBOOK gains 'Queued ingestion in disaster recovery' (jobs restore with Postgres; expired leases self-heal via the reaper; PITR consistency via single-tx staging; blob-store restore independence; stateless workers; post-restore triage). .env.example documents the worker profile + scale command. just ci green."
 
 [[task]]
 id = "P15-T13"
