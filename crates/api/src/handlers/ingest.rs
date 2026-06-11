@@ -885,6 +885,7 @@ pub(crate) fn map_ingest_error(e: anyhow::Error) -> (StatusCode, Json<ErrorRespo
             global_pending = full.global_pending,
             "ingest: queue full (429)"
         );
+        kb_metrics::record_queue_full_rejection();
         return (
             StatusCode::TOO_MANY_REQUESTS,
             Json(ErrorResponse {

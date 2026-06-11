@@ -294,3 +294,50 @@ def test_backend_metrics_exposed_for_ingest(api):
             "for the configured model backends (llama-text/embed/rerank) must be "
             "exposed so ingest backend health/slots/breakers are observable."
         )
+
+
+def test_queue_worker_metrics_move_across_an_upload(api):
+    """The P15-T13 queue/worker families exist and the histogram moves.
+
+    ``kb_jobs_running`` / ``kb_job_leases_reaped_total`` /
+    ``kb_queue_full_rejections_total`` are seeded from boot (an operator's
+    dashboard must never see an absent family). Processing one upload must
+    increase the ``kb_job_duration_seconds`` histogram count for
+    ``kind="ingest"`` — proving the worker loop records processed jobs.
+    """
+    api.login(config.tenant_slug(), config.admin_email(), config.admin_password())
+
+    before = api._c.get("/metrics").text
+    for family in (
+        "kb_jobs_running",
+        "kb_job_leases_reaped_total",
+        "kb_queue_full_rejections_total",
+    ):
+        assert _metric_samples(before, family), (
+            f"missing seeded queue/worker family {family!r} on /metrics"
+        )
+
+    def ingest_done_count(text: str) -> float:
+        total = 0.0
+        for ln in text.splitlines():
+            ln = ln.strip()
+            if (
+                ln.startswith("kb_job_duration_seconds_count")
+                and 'kind="ingest"' in ln
+                and 'outcome="done"' in ln
+            ):
+                total += float(ln.rsplit(" ", 1)[-1])
+        return total
+
+    count_before = ingest_done_count(before)
+
+    marker = flows.unique_marker("qmetrics")
+    resp = api.ingest_text(f"{marker}.txt", f"Queue metrics probe document {marker}.")
+    flows.wait_until_ready(api, resp["document_id"], job_id=resp.get("job_id"))
+
+    after = api._c.get("/metrics").text
+    count_after = ingest_done_count(after)
+    assert count_after > count_before, (
+        f"kb_job_duration_seconds_count{{kind=ingest,outcome=done}} did not "
+        f"increase across a processed upload ({count_before} -> {count_after})"
+    )

@@ -90,6 +90,11 @@ impl JobQueue {
                 }
             }
         }
+        if reaped > 0 {
+            // A reaped lease means a worker crashed or stalled mid-job
+            // (heartbeats stopped) — operators alert on spikes (P15-T13).
+            kb_metrics::record_leases_reaped(u64::from(reaped));
+        }
         Ok(reaped)
     }
 }

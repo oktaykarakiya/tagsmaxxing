@@ -133,6 +133,13 @@ async fn collect_runtime(pg_store: &PgStore) {
         Err(e) => warn!(error = %e, "metrics collector: failed to read queue depth"),
     }
 
+    // Cluster-wide running jobs (P15-T13): the database is the only truthful
+    // source across multiple worker processes.
+    match pg_store.count_running_jobs().await {
+        Ok(n) => metrics::record_jobs_running(n.max(0) as u64),
+        Err(e) => warn!(error = %e, "metrics collector: failed to read running jobs"),
+    }
+
     match pg_store.oldest_queued_job_age_secs().await {
         Ok(age) => metrics::record_queue_oldest_job_age(age),
         Err(e) => warn!(error = %e, "metrics collector: failed to read oldest queued job age"),

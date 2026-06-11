@@ -603,24 +603,36 @@ async fn worker_loop<F, Fut>(
                     }
                 });
 
+                let kind_label = job.kind.as_str().to_owned();
+                let started = std::time::Instant::now();
                 let result = handler(job).await;
                 let _ = hb_stop.send(());
                 let _ = heartbeat.await;
 
-                match result {
+                let outcome = match result {
                     Ok(()) => {
                         let _ = queue.complete(job_id).await;
+                        "done"
                     }
                     Err(e) => {
                         // Deterministic failures skip the retry budget — every
                         // retry would produce the same outcome (P15-T9).
-                        if let Some(msg) = e.strip_prefix(PERMANENT_ERROR_PREFIX) {
-                            let _ = queue.fail_permanent(job_id, msg).await;
+                        let status = if let Some(msg) = e.strip_prefix(PERMANENT_ERROR_PREFIX) {
+                            queue.fail_permanent(job_id, msg).await
                         } else {
-                            let _ = queue.fail(job_id, &e).await;
+                            queue.fail(job_id, &e).await
+                        };
+                        match status {
+                            Ok(JobStatus::Dead) => "dead",
+                            _ => "failed",
                         }
                     }
-                }
+                };
+                kb_metrics::record_job_processed(
+                    &kind_label,
+                    outcome,
+                    started.elapsed().as_secs_f64(),
+                );
             }
             Ok(None) => {
                 // No eligible jobs — wait briefly or bail on shutdown.

@@ -115,6 +115,23 @@ impl PgStore {
         Ok(count)
     }
 
+    /// Count of jobs currently `running` across all tenants (P15-T13).
+    ///
+    /// This is the source for the `kb_jobs_running` gauge: the database is the
+    /// only truthful cross-process view when several worker processes drain
+    /// the same queue. Uses the admin pool (cross-tenant platform gauge).
+    ///
+    /// # Errors
+    /// Returns an error if the database is not connected or the query fails.
+    pub async fn count_running_jobs(&self) -> anyhow::Result<i64> {
+        let pool = self.pool()?;
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs WHERE status = 'running'")
+            .fetch_one(&pool)
+            .await
+            .context("failed to count running jobs for the kb_jobs_running gauge")?;
+        Ok(count)
+    }
+
     /// Age in **seconds** of the oldest job still waiting to be claimed
     /// (`status = 'queued'`), or `0.0` when no job is queued (P14-T9, C2).
     ///

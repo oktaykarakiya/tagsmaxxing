@@ -367,6 +367,13 @@ pub async fn build_runtime(
 
     // ── Backend health loop ─────────────────────────────────────────────────
     let all_backends = pool.all_backends();
+    // Seed kb_circuit_breaker_open closed (0) for every configured backend so
+    // the family is present — and truthful — from boot (P15-T13, the
+    // BUG-OBS-06 family-presence rule). Breakers start closed by definition;
+    // the LLM client updates the gauge on every recorded call thereafter.
+    for backend in &all_backends {
+        kb_metrics::record_circuit_breaker(&backend.id, false);
+    }
     let health_interval = Duration::from_secs(cfg.scheduler.health_interval_secs);
     let (health_handle, health_shutdown) =
         HealthLoop::new(all_backends, http.clone(), health_interval).spawn();

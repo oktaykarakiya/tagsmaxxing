@@ -403,6 +403,13 @@ fn seed_backup_dr_metrics() {
 /// the live queue depth on that first tick.
 fn seed_runtime_metrics() {
     metrics::gauge!("kb_queue_depth").set(0.0);
+    // Queue/worker families (P15-T13): present from boot so dashboards and
+    // alert rules never see an absent family. The duration histogram is NOT
+    // seeded — a synthetic observation would pollute its quantiles; its
+    // family appears with the first processed job.
+    metrics::gauge!("kb_jobs_running").set(0.0);
+    metrics::counter!("kb_job_leases_reaped_total").absolute(0);
+    metrics::counter!("kb_queue_full_rejections_total").absolute(0);
 }
 
 // ── Request-level recording helpers ──────────────────────────────────────────────
@@ -571,6 +578,50 @@ pub fn record_circuit_breaker(dependency: &str, open: bool) {
 /// Set the in-flight ingest gauge.
 pub fn record_inflight_ingest(count: usize) {
     metrics::gauge!("kb_inflight_ingest").set(count as f64);
+}
+
+// ── Queue/worker metrics (plan §16, P15-T13) ─────────────────────────────────────
+
+/// Record one processed queue job in `kb_job_duration_seconds{kind,outcome}`.
+///
+/// Called from the worker loop after the handler + completion bookkeeping.
+/// `kind` is the job kind wire string (`ingest`, `retag`, …); `outcome` is
+/// the job's resulting state: `done`, `failed` (backoff retry scheduled), or
+/// `dead` (terminal). The histogram's `_count` doubles as a processed-jobs
+/// counter per (kind, outcome).
+pub fn record_job_processed(kind: &str, outcome: &str, duration_secs: f64) {
+    metrics::histogram!(
+        "kb_job_duration_seconds",
+        "kind" => kind.to_owned(),
+        "outcome" => outcome.to_owned()
+    )
+    .record(duration_secs);
+}
+
+/// Set the cluster-wide running-jobs gauge (`kb_jobs_running`).
+///
+/// Published by the metrics collector from the database (`status='running'`
+/// count) — the database is the only truthful cross-process source when
+/// multiple workers drain the same queue.
+pub fn record_jobs_running(count: u64) {
+    metrics::gauge!("kb_jobs_running").set(count as f64);
+}
+
+/// Add reaped (expired-lease) jobs to `kb_job_leases_reaped_total`.
+///
+/// Called by the lease reaper after each pass that requeued anything. A spike
+/// means workers are crashing or stalling mid-job (their heartbeats stopped).
+pub fn record_leases_reaped(count: u64) {
+    metrics::counter!("kb_job_leases_reaped_total").increment(count);
+}
+
+/// Increment `kb_queue_full_rejections_total` — an upload was refused 429
+/// `queue_full` by bounded-queue admission (per-tenant or global cap).
+///
+/// Deliberately label-free: a per-tenant label would be unbounded-cardinality;
+/// the 429 response body already carries the tenant's own counts.
+pub fn record_queue_full_rejection() {
+    metrics::counter!("kb_queue_full_rejections_total").increment(1);
 }
 
 /// Increment the throttled-ingest counter.
@@ -893,6 +944,83 @@ mod tests {
                 .any(|l| l.trim_start().starts_with("kb_queue_depth ")),
             "kb_queue_depth must be present after init (seeded): {text}"
         );
+    }
+
+    // ── Queue/worker metrics (P15-T13) ─────────────────────────────────────
+
+    #[test]
+    fn queue_worker_families_seeded_after_init() {
+        // Same BUG-OBS-06 rationale: gauges/counters exist from boot so
+        // dashboards and alert rules never see an absent family.
+        let _h = ensure_init();
+        let text = render();
+        for family in [
+            "kb_jobs_running ",
+            "kb_job_leases_reaped_total ",
+            "kb_queue_full_rejections_total ",
+        ] {
+            assert!(
+                text.lines().any(|l| l.trim_start().starts_with(family)),
+                "{family} must be present after init (seeded): {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn job_duration_histogram_records_labeled_observation() {
+        let _h = ensure_init();
+        record_job_processed("ingest", "done", 1.25);
+        record_job_processed("ingest", "dead", 0.05);
+        let text = render();
+        assert!(
+            text.contains("kb_job_duration_seconds")
+                && text.contains("kind=\"ingest\"")
+                && text.contains("outcome=\"done\"")
+                && text.contains("outcome=\"dead\""),
+            "histogram with kind+outcome labels must render: {text}"
+        );
+    }
+
+    #[test]
+    fn jobs_running_gauge_sets_value() {
+        let _h = ensure_init();
+        record_jobs_running(7);
+        assert!(render().contains("kb_jobs_running 7"));
+        record_jobs_running(0);
+        assert!(render().contains("kb_jobs_running 0"));
+    }
+
+    #[test]
+    fn leases_reaped_counter_accumulates() {
+        let _h = ensure_init();
+        let before = counter_value(&render(), "kb_job_leases_reaped_total");
+        record_leases_reaped(3);
+        let after = counter_value(&render(), "kb_job_leases_reaped_total");
+        assert_eq!(
+            after - before,
+            3,
+            "counter must accumulate by the batch size"
+        );
+    }
+
+    #[test]
+    fn queue_full_rejection_counter_increments() {
+        let _h = ensure_init();
+        let before = counter_value(&render(), "kb_queue_full_rejections_total");
+        record_queue_full_rejection();
+        let after = counter_value(&render(), "kb_queue_full_rejections_total");
+        assert_eq!(after - before, 1);
+    }
+
+    /// Parse a label-free counter's value out of rendered Prometheus text.
+    fn counter_value(text: &str, family: &str) -> i64 {
+        text.lines()
+            .find_map(|l| {
+                let l = l.trim_start();
+                l.strip_prefix(family)
+                    .and_then(|rest| rest.trim().parse::<i64>().ok())
+            })
+            .unwrap_or(0)
     }
 
     #[test]

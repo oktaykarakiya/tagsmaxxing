@@ -126,3 +126,66 @@ groups:
             ({{ printf "%.3f" $value }}/s). Usage events are being dropped
             (back-pressured buffer or a broken durable sink) — billing/quota
             accounting is now under-counting. Investigate the metering drain task.
+
+      # ── Queued ingestion (plan §16, P15-T13) ──
+      # The queue is backing up: more waiting work than workers can drain.
+      # Scale workers (--scale worker=N / another machine) or investigate a
+      # stuck model backend.
+      - alert: IngestQueueDepthHigh
+        expr: kb_queue_depth > 100
+        for: 10m
+        labels:
+          severity: warning
+          category: queue
+        annotations:
+          summary: "Ingest queue depth high"
+          description: >
+            kb_queue_depth has stayed above 100 for over 10m (currently
+            {{ $value }}). Uploads are accepted (until the admission caps) but
+            processing lags; add worker capacity or check model backends.
+
+      # Head-of-line wait: the oldest queued job has waited too long — either
+      # the queue is starved of workers or claims are failing.
+      - alert: IngestQueueOldestJobStale
+        expr: kb_queue_oldest_job_age_secs > 1800
+        for: 5m
+        labels:
+          severity: warning
+          category: queue
+        annotations:
+          summary: "Oldest queued job waiting > 30m"
+          description: >
+            The oldest queued job has been waiting {{ printf "%.0f" $value }}s.
+            Workers may be down, saturated, or failing to claim.
+
+      # Reaped leases mean workers crashed or stalled mid-job (heartbeats
+      # stopped). Occasional singles can be a deploy; a sustained rate is a
+      # crashing worker or a hung model call.
+      - alert: WorkerLeaseReapSpike
+        expr: increase(kb_job_leases_reaped_total[15m]) > 3
+        for: 0m
+        labels:
+          severity: warning
+          category: queue
+        annotations:
+          summary: "Worker leases being reaped"
+          description: >
+            {{ printf "%.0f" $value }} job leases were reaped in 15m — workers
+            are dying or stalling mid-job. Check worker containers/processes
+            and model-server stability.
+
+      # Users are being turned away: bounded-queue admission is rejecting
+      # uploads (429 queue_full). Sustained rejections mean capacity needs to
+      # grow or the caps are mis-tuned.
+      - alert: IngestQueueFullRejections
+        expr: increase(kb_queue_full_rejections_total[10m]) > 10
+        for: 0m
+        labels:
+          severity: warning
+          category: queue
+        annotations:
+          summary: "Uploads rejected: ingest queue full"
+          description: >
+            {{ printf "%.0f" $value }} uploads were refused with 429 queue_full
+            in 10m. Raise [ingest] caps only with matching worker capacity;
+            otherwise scale workers.
