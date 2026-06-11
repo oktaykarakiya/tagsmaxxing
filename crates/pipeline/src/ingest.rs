@@ -320,16 +320,17 @@ impl IngestPipeline {
 
         // Sanitize the user note: strip NUL and other control characters
         // (which a PostgreSQL `text` column cannot store, so they would crash
-        // the transactional ingest with a 500 — BUG-INGEST-11), then bound it to
-        // MAX_USER_NOTE_BYTES to keep multi-megabyte payloads out of the LLM
-        // tagger prompt (BUG-INGEST-10).
+        // the transactional ingest with a 500 — BUG-INGEST-11), then bound it
+        // by bytes (BUG-INGEST-10) AND worst-case tokens (BUG-INGEST-18 —
+        // 10 KB of emoji is ~7 k real tokens, which alone overflows the
+        // tagger's context plan).
         let user_note = user_note.map(|note| {
             let note = strip_control_chars(&note);
-            if note.len() > MAX_USER_NOTE_BYTES {
-                truncate_to_char_boundary(&note, MAX_USER_NOTE_BYTES).to_string()
-            } else {
-                note
-            }
+            truncate_to_token_budget(
+                truncate_to_char_boundary(&note, MAX_USER_NOTE_BYTES),
+                MAX_USER_NOTE_TOKENS,
+            )
+            .to_string()
         });
 
         // Sanitize filenames: neutralise path-traversal sequences in both
@@ -463,7 +464,7 @@ impl IngestPipeline {
         let tag_input = TagInput {
             tenant_id,
             user_id,
-            text: truncate_to_char_boundary(&merged.merged_text, MAX_TAGGER_TEXT_BYTES).to_string(),
+            text: bound_tagger_text(&merged.merged_text).to_string(),
             user_note: document.user_note.clone(),
             kind: merged.kind,
             meta: merged.merged_meta.clone(),
@@ -684,7 +685,7 @@ pub async fn process_retag_job(
     let tag_input = TagInput {
         tenant_id,
         user_id,
-        text: truncate_to_char_boundary(document_text, MAX_TAGGER_TEXT_BYTES).to_string(),
+        text: bound_tagger_text(document_text).to_string(),
         user_note: None,
         kind: DocKind::Document,
         meta: serde_json::Value::Null,
@@ -745,11 +746,27 @@ pub const MAX_USER_NOTE_BYTES: usize = 10 * 1024;
 /// extracted text (a ~200 KB document is ~27 k tokens) overflows an 8 k-token
 /// context: strict servers reject the request outright, and older llama.cpp
 /// builds silently truncated it instead — either way the surplus text never
-/// usefully reached the model (BUG-INGEST-18). 18 KB is ≤ ~6 k tokens even for
-/// dense scripts, leaving comfortable headroom; tagging quality does not need
-/// more than the document's opening pages (any prepended VLM caption sits at
-/// the front and always survives the cut).
+/// usefully reached the model (BUG-INGEST-18). A byte cap alone is NOT enough:
+/// see [`MAX_TAGGER_TEXT_TOKENS`] for the token-inflation half of the bound.
 pub const MAX_TAGGER_TEXT_BYTES: usize = 18 * 1024;
+
+/// Worst-case token budget for the tagger's document text (BUG-INGEST-18).
+///
+/// BPE token counts are not proportional to bytes: ASCII prose runs ~4
+/// bytes/token, but emoji and rare scripts can exceed one token *per byte
+/// pair* — an 18 KB emoji-dense document measured 11.6 k+ real tokens against
+/// an 8 k context. The text is therefore additionally truncated by
+/// [`truncate_to_token_budget`]'s conservative estimate. 4 800 tokens leaves
+/// room in an 8 192-token context for the system prompt (~800), a capped user
+/// note (≤ ~1 500), metadata/wrapping and the JSON output reserve.
+pub const MAX_TAGGER_TEXT_TOKENS: usize = 4_800;
+
+/// Worst-case token budget for the (already byte-capped) tagger user note.
+///
+/// The 10 KB note cap (BUG-INGEST-10) has the same inflation hole as the text
+/// cap: 10 KB of emoji is ~7 k real tokens. Bounded to fit the
+/// [`MAX_TAGGER_TEXT_TOKENS`] context plan above.
+pub const MAX_USER_NOTE_TOKENS: usize = 1_500;
 
 /// Truncate `s` to at most `max_bytes` bytes, landing on a valid UTF-8
 /// character boundary so the result is always well-formed.
@@ -767,6 +784,46 @@ pub fn truncate_to_char_boundary(s: &str, max_bytes: usize) -> &str {
         end -= 1;
     }
     &s[..end]
+}
+
+/// Truncate `s` so a conservative BPE token estimate stays within
+/// `max_tokens`, cutting on a character boundary (BUG-INGEST-18).
+///
+/// The estimate charges ¼ token per ASCII character (~4 bytes/token prose)
+/// and 2 tokens per non-ASCII character: CJK runs ~1 token/char and emoji /
+/// rare scripts can reach ~2, so the bound errs on the safe side without
+/// shipping a real tokenizer. The walk is `O(len)` and cuts before the first
+/// character that would exceed the budget, so the result is always valid
+/// UTF-8 and never above `max_tokens` under the estimate.
+#[must_use]
+pub fn truncate_to_token_budget(s: &str, max_tokens: usize) -> &str {
+    // Token cost in milli-tokens so ASCII can cost a fraction per char.
+    const ASCII_MILLI: usize = 250; // ¼ token per ASCII char
+    const OTHER_MILLI: usize = 2_000; // 2 tokens per non-ASCII char
+    let budget_milli = max_tokens.saturating_mul(1_000);
+    let mut cost_milli = 0usize;
+    for (i, ch) in s.char_indices() {
+        cost_milli += if ch.is_ascii() {
+            ASCII_MILLI
+        } else {
+            OTHER_MILLI
+        };
+        if cost_milli > budget_milli {
+            return &s[..i];
+        }
+    }
+    s
+}
+
+/// Apply both halves of the tagger text bound: the byte cap (scan/storage
+/// bound) and the worst-case token cap (context-window bound). See
+/// [`MAX_TAGGER_TEXT_BYTES`] and [`MAX_TAGGER_TEXT_TOKENS`] (BUG-INGEST-18).
+#[must_use]
+pub fn bound_tagger_text(s: &str) -> &str {
+    truncate_to_token_budget(
+        truncate_to_char_boundary(s, MAX_TAGGER_TEXT_BYTES),
+        MAX_TAGGER_TEXT_TOKENS,
+    )
 }
 
 /// Remove NUL and other control characters from a user-supplied string.
@@ -1267,12 +1324,60 @@ mod tests {
         // serving context instead of being rejected (or silently truncated by
         // older llama.cpp builds).
         let huge = "A".repeat(200 * 1024);
-        let capped = truncate_to_char_boundary(&huge, MAX_TAGGER_TEXT_BYTES);
+        let capped = bound_tagger_text(&huge);
         assert_eq!(capped.len(), MAX_TAGGER_TEXT_BYTES);
-        // Sanity: the budget stays well under an 8 k-token context even for
-        // dense scripts (~3 bytes/token) once system prompt + output reserve
-        // are accounted for.
-        const { assert!(MAX_TAGGER_TEXT_BYTES / 3 < 7_000) };
+        // The ASCII estimate for the byte-capped text must already fit the
+        // token budget (18 KB ASCII ≈ 4 608 estimated tokens ≤ 4 800).
+        const { assert!(MAX_TAGGER_TEXT_BYTES / 4 <= MAX_TAGGER_TEXT_TOKENS) };
+    }
+
+    #[test]
+    fn tagger_text_cap_bounds_emoji_token_inflation() {
+        // BUG-INGEST-18 (second half): 18 KB of emoji passed the byte cap but
+        // measured 11.6 k+ REAL tokens against the 8 192-token context — BPE
+        // token counts are not proportional to bytes. The token-aware bound
+        // must cut emoji-dense text far below the byte cap.
+        let emoji = "🎉".repeat(8 * 1024); // 32 KB, 8 192 chars
+        let capped = bound_tagger_text(&emoji);
+        let chars = capped.chars().count();
+        // 2 milli-token-units per emoji char → at most 2 400 chars fit 4 800.
+        assert!(
+            chars <= MAX_TAGGER_TEXT_TOKENS / 2,
+            "emoji text must be cut by the token estimate, kept {chars} chars"
+        );
+        assert!(!capped.is_empty(), "cap must keep a usable prefix");
+        assert!(std::str::from_utf8(capped.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn token_budget_ascii_costs_quarter_token_per_char() {
+        // 4 000 ASCII chars ≈ 1 000 estimated tokens — exactly at budget.
+        let s = "a".repeat(4_000);
+        assert_eq!(truncate_to_token_budget(&s, 1_000), s.as_str());
+        // One more char exceeds it: the cut lands before the overflowing char.
+        let s2 = "a".repeat(4_001);
+        assert_eq!(truncate_to_token_budget(&s2, 1_000).len(), 4_000);
+    }
+
+    #[test]
+    fn token_budget_mixed_content_cuts_on_char_boundary() {
+        // 100 ASCII (25 tokens) + CJK at 2 tokens each: budget 35 → 5 CJK fit.
+        let s = format!("{}{}", "a".repeat(100), "語".repeat(20));
+        let cut = truncate_to_token_budget(&s, 35);
+        assert_eq!(cut.chars().count(), 105);
+        assert!(std::str::from_utf8(cut.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn token_budget_zero_returns_empty() {
+        assert_eq!(truncate_to_token_budget("abc", 0), "");
+    }
+
+    #[test]
+    fn user_note_token_cap_constants_fit_context_plan() {
+        // System (~800) + note (≤1 500) + text (≤4 800) + wrapping/output
+        // reserve must stay under the 8 192-token serving context.
+        const { assert!(800 + MAX_USER_NOTE_TOKENS + MAX_TAGGER_TEXT_TOKENS + 1_000 < 8_192) };
     }
 
     #[test]
