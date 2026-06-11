@@ -436,3 +436,92 @@ def test_client_side_size_guard_present(page):
         "size guard present + wired (MAX_TOTAL_BYTES / #size-warning / submit-disable); "
         "live over-limit trigger skipped — would require a >100 MiB upload"
     )
+
+
+# ── 10. Async polling journey (P15-T10) ─────────────────────────────────────
+def test_async_journey_progress_redirect_and_badge_autoflip(page, tmp_path):
+    """upload → progress bar → poll → redirect to the document → ready badge.
+
+    The queued-mode primary path: the page shows the progress area while
+    polling ``/api/jobs/:id``, redirects to ``/documents/{id}`` when the job
+    completes, and the document page's badge reads ``ready`` — either because
+    processing finished before the redirect or because the detail page's
+    auto-refresh flipped it without manual interaction.
+    """
+    _open_upload(page)
+    marker = flows.unique_marker("kbe2easync")
+    path = _write(tmp_path, f"{marker}.txt", f"Async journey document {marker}.".encode())
+
+    _select_files(page, path)
+    _submit(page)
+
+    # The progress area is visible (asserted by _submit); the poll then drives
+    # a redirect to the document detail.
+    url = _wait_for_document_redirect(page)
+    assert url is not None, (
+        f"async upload never reached /documents/<id> (last url={page.url!r})"
+    )
+
+    # The badge must reach "ready" WITHOUT manual refresh: the detail page
+    # auto-reloads while processing (P15-T10). Playwright's locator survives
+    # reloads, so waiting on the text is exactly the no-manual-refresh assert.
+    expect(page.locator("main span", has_text="ready").first).to_be_visible(
+        timeout=120_000
+    )
+
+
+def test_async_journey_failed_upload_links_to_retryable_document(page, tmp_path):
+    """A deterministically-failing upload surfaces the error + a working retry.
+
+    Uses the P15-T9 probe (text-sniffed bytes with an invalid UTF-8 sequence):
+    the upload 202s, processing dead-letters, the upload page shows the inline
+    error with a link to the failed document, and the document page's Retry
+    button round-trips (the form POST re-renders the page with processing
+    state or a fresh failure — never an error page).
+    """
+    _open_upload(page)
+    marker = flows.unique_marker("kbe2eafail")
+    bad = (
+        f"Deterministic failure probe {marker}. ".encode("ascii")
+        + b"\xc3\x28"
+        + b" trailing ascii so the sniffer still sees text."
+    )
+    path = _write(tmp_path, f"{marker}.txt", bad)
+
+    _select_files(page, path)
+    _submit(page)
+
+    # The poll ends in the inline error + document link (job dead-letters fast
+    # thanks to permanent-failure classification).
+    deadline = time.monotonic() + 120
+    link = page.locator("#progress-detail a[href^='/documents/']")
+    while time.monotonic() < deadline:
+        if link.count() > 0:
+            break
+        # Admission may have rejected it instead (also correct) — then the
+        # error box shows without a document link.
+        err_shown = page.evaluate(
+            "() => { const e = document.getElementById('progress-error');"
+            " return !!(e && !e.classList.contains('hidden')); }"
+        )
+        if err_shown and link.count() == 0:
+            time.sleep(2)  # give the link injection a beat, then re-check
+            if link.count() == 0:
+                pytest.skip("probe rejected at admission — no async failure to exercise")
+        time.sleep(1)
+    assert link.count() > 0, "failed upload must link to the failed document"
+
+    href = link.first.get_attribute("href")
+    page.goto(href)
+    expect(page.locator("#ingest-failed-alert")).to_be_visible(timeout=15_000)
+
+    # The Retry button round-trips: the POST re-renders the detail page.
+    page.click("#retry-ingest-btn")
+    page.wait_for_load_state("networkidle")
+    assert "/documents/" in page.url, f"retry must re-render the document page: {page.url}"
+    # After retry the document is pending again (badge shows processing) until
+    # the deterministic failure recurs — either state proves the retry ran.
+    body_text = page.locator("main").inner_text().lower()
+    assert ("processing" in body_text) or ("failed" in body_text), (
+        "after retry the page must show processing or a fresh failure"
+    )

@@ -333,6 +333,27 @@ impl PgStore {
         Ok((tenant_pending, global_pending))
     }
 
+    /// Count of this tenant's in-flight ingest jobs (queued or running) —
+    /// feeds the nav "processing N" indicator (P15-T10).
+    ///
+    /// Admin pool with an explicit `tenant_id` filter (§31.5); served by the
+    /// `jobs_tenant_pending` partial index.
+    ///
+    /// # Errors
+    /// Returns an error if the database is not connected or the query fails.
+    pub async fn count_active_ingest_jobs(&self, tenant_id: i64) -> anyhow::Result<i64> {
+        let pool = self.pool()?;
+        let n: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM jobs \
+             WHERE tenant_id = $1 AND kind = 'ingest' AND status IN ('queued','running')",
+        )
+        .bind(tenant_id)
+        .fetch_one(&pool)
+        .await
+        .context("failed to count active ingest jobs")?;
+        Ok(n)
+    }
+
     /// The latest ingest job's `last_error` for a document (failure UX, P15-T9).
     ///
     /// Admin pool with an explicit `tenant_id` filter (§31.5 — jobs sit

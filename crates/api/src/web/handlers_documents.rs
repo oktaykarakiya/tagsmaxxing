@@ -291,7 +291,13 @@ async fn build_document_detail_page(
         kind: doc.kind.as_str().to_string(),
         meta_json: serde_json::to_string_pretty(&doc.meta).unwrap_or_default(),
         page_count: doc.page_count,
-        status: doc.status.as_str().to_string(),
+        // Presentation status (P15-T10): a queued/staged document reads as
+        // "processing" to the user (the badge's yellow arm + the auto-refresh
+        // script key off it); ready/failed pass through unchanged.
+        status: match doc.status {
+            kb_core::status::ProcessingStatus::Pending => "processing".to_string(),
+            other => other.as_str().to_string(),
+        },
         created_at: doc.created_at.format("%b %d, %Y %H:%M").to_string(),
         tags: tag_chips,
         tenant_tag_names,

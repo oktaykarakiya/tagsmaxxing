@@ -358,9 +358,21 @@
 
           const data = await resp.json();
           const docId = data.document_id;
+          const jobId = data.job_id;
+
+          if (docId && jobId) {
+              // Queued ingestion (P15): the upload is staged; poll the job and
+              // land on the processed document when the worker finishes.
+              document.getElementById('progress-text').textContent = 'Processing your files…';
+              document.getElementById('progress-bar').style.width = '10%';
+              document.getElementById('progress-detail').textContent =
+                  'Job #' + jobId + ' — you can leave this page; processing continues in the background.';
+              pollJobStatus(jobId, docId, Date.now());
+              return;
+          }
 
           if (docId) {
-              // Inline processing: document is already ready — redirect directly.
+              // Inline mode (rollback lever): document already processed.
               document.getElementById('progress-bar').style.width = '100%';
               document.getElementById('progress-text').textContent = 'Done! Redirecting…';
               document.getElementById('progress-detail').textContent = 'Document #' + docId;
@@ -370,24 +382,23 @@
               return;
           }
 
-          // Fallback: no document_id — poll job status (async worker path).
-          const jobId = data.job_id;
-          document.getElementById('progress-text').textContent = 'Processing your files…';
-          document.getElementById('progress-bar').style.width = '10%';
-          document.getElementById('progress-detail').textContent =
-              'Job #' + jobId + ' — this may take a moment.';
-
-          pollJobStatus(jobId, Date.now());
+          // Legacy fallback: job id only.
+          pollJobStatus(jobId, null, Date.now());
 
       } catch (err) {
           showUploadError(err.message || 'Network error — please check your connection and try again.');
       }
   }
 
-  async function pollJobStatus(jobId, startTime) {
-      // Check timeout
+  async function pollJobStatus(jobId, docId, startTime) {
+      // Bounded foreground wait: the upload is durably queued, so timing out
+      // here only stops THIS page's polling — processing continues.
       if (Date.now() - startTime > MAX_JOB_POLL_MS) {
-          showUploadError('Processing timed out. The job may still complete — check your documents.');
+          if (docId) {
+              window.location.href = '/documents/' + docId;
+          } else {
+              showUploadError('Still processing in the background — check your documents shortly.');
+          }
           return;
       }
 
@@ -395,7 +406,7 @@
           const resp = await fetch('/api/jobs/' + jobId);
           if (!resp.ok) {
               // Retry on server errors
-              setTimeout(() => pollJobStatus(jobId, startTime), POLL_INTERVAL_MS);
+              setTimeout(() => pollJobStatus(jobId, docId, startTime), POLL_INTERVAL_MS);
               return;
           }
 
@@ -403,31 +414,43 @@
           updateProgress(job);
 
           if (job.status === 'done') {
-              // Success — redirect to document detail
+              const target = docId || job.document_id;
               document.getElementById('progress-bar').style.width = '100%';
               document.getElementById('progress-text').textContent = 'Done! Redirecting…';
               document.getElementById('progress-detail').textContent = '';
-
-              // Fetch the document_id from the job payload or just redirect to search
-              // The job response includes document context; redirect to search as fallback
               setTimeout(() => {
-                  window.location.href = '/search';
+                  window.location.href = target ? ('/documents/' + target) : '/search';
               }, 800);
               return;
           }
 
-          if (job.status === 'failed' || job.status === 'dead') {
-              const errMsg = job.last_error || 'Job failed with an unknown error.';
-              showUploadError(errMsg);
+          if (job.status === 'dead') {
+              // Terminal failure: the document is marked failed (P15-T9) and
+              // its page offers a Retry button — link the user there.
+              const errMsg = job.last_error || 'Processing failed.';
+              const target = docId || job.document_id;
+              showUploadError(errMsg + (target
+                  ? ' — open the document below to retry.'
+                  : ''));
+              if (target) {
+                  const detail = document.getElementById('progress-detail');
+                  detail.innerHTML = '';
+                  const link = document.createElement('a');
+                  link.href = '/documents/' + target;
+                  link.textContent = 'View failed document #' + target;
+                  link.className = 'text-indigo-600 underline';
+                  detail.appendChild(link);
+              }
               return;
           }
 
-          // Still processing — poll again
-          setTimeout(() => pollJobStatus(jobId, startTime), POLL_INTERVAL_MS);
+          // 'failed' here means a retry is scheduled (backoff), NOT terminal —
+          // keep polling alongside queued/running.
+          setTimeout(() => pollJobStatus(jobId, docId, startTime), POLL_INTERVAL_MS);
 
       } catch (err) {
           // Network error — retry
-          setTimeout(() => pollJobStatus(jobId, startTime), POLL_INTERVAL_MS);
+          setTimeout(() => pollJobStatus(jobId, docId, startTime), POLL_INTERVAL_MS);
       }
   }
 
@@ -446,6 +469,10 @@
           }
           document.getElementById('progress-text').textContent =
               'Processing… (attempt ' + (job.attempts || 1) + ')';
+      } else if (job.status === 'failed') {
+          // Backoff retry pending (queue semantics) — not terminal.
+          document.getElementById('progress-text').textContent =
+              'Retrying… (attempt ' + (job.attempts || 1) + ' hit a transient error)';
       }
   }
 

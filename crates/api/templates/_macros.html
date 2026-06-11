@@ -16,7 +16,7 @@
 <nav class="bg-white shadow-sm border-b border-gray-200">
   <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
     <div class="flex justify-between h-14 items-center">
-      <a href="/dashboard" class="font-semibold text-lg text-gray-900">📊 Local KB</a>
+      <a href="/dashboard" class="font-semibold text-lg text-gray-900">📊 tagsmaxxing</a>
       <div class="flex items-center gap-4 text-sm">
         <a href="/dashboard"
            {% if active == "dashboard" %}aria-current="page" class="text-indigo-600 font-medium"{% else %}class="text-gray-600 hover:text-gray-900"{% endif %}>Dashboard</a>
@@ -24,6 +24,16 @@
            {% if active == "search" %}aria-current="page" class="text-indigo-600 font-medium"{% else %}class="text-gray-600 hover:text-gray-900"{% endif %}>Search</a>
         <a href="/upload"
            {% if active == "upload" %}aria-current="page" class="text-indigo-600 font-medium"{% else %}class="text-gray-600 hover:text-gray-900"{% endif %}>Upload</a>
+        {# Async-ingestion indicator (P15-T10): hidden until /api/jobs reports
+           in-flight ingest work for this tenant. #}
+        <span id="nav-processing-indicator" class="hidden items-center gap-1.5 rounded-full bg-yellow-50 px-2.5 py-0.5 text-xs font-medium text-yellow-800 ring-1 ring-yellow-600/20"
+              title="Documents still being processed in the background">
+          <svg class="h-3 w-3 animate-spin" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"/>
+          </svg>
+          Processing <span id="nav-processing-count">0</span>
+        </span>
         <a href="/account"
            {% if active == "account" %}aria-current="page" class="text-indigo-600 font-medium"{% else %}class="text-gray-600 hover:text-gray-900"{% endif %}>Account</a>
         <form action="/logout" method="post" class="inline">
@@ -34,4 +44,33 @@
     </div>
   </div>
 </nav>
+<script>
+  // Nav "processing N" indicator (P15-T10): one fetch per page load, then a
+  // slow refresh only while work is in flight. Fed by GET /api/jobs `active`.
+  (function () {
+    const el = document.getElementById('nav-processing-indicator');
+    const count = document.getElementById('nav-processing-count');
+    if (!el || !count) return;
+    let timer = null;
+    async function refresh() {
+      try {
+        const resp = await fetch('/api/jobs?limit=1');
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const n = data.active || 0;
+        if (n > 0) {
+          count.textContent = n;
+          el.classList.remove('hidden');
+          el.classList.add('inline-flex');
+          if (!timer) timer = setInterval(refresh, 10000);
+        } else {
+          el.classList.add('hidden');
+          el.classList.remove('inline-flex');
+          if (timer) { clearInterval(timer); timer = null; }
+        }
+      } catch (_e) { /* nav decoration only — never break the page */ }
+    }
+    refresh();
+  })();
+</script>
 {% endmacro %}

@@ -276,6 +276,33 @@
 {% endblock %}
 
 {% block scripts %}
+{% if status == "processing" %}
+<script>
+  // Auto-refresh while the queued worker processes this document (P15-T10):
+  // poll the JSON API and reload when the status leaves "pending" — the
+  // ready/failed badge then renders without a manual refresh.
+  (function () {
+    const DOC_ID = {{ doc_id }};
+    const POLL_MS = 3000;
+    const DEADLINE = Date.now() + 30 * 60 * 1000; // stop polling after 30 min
+    async function tick() {
+      if (Date.now() > DEADLINE) return;
+      try {
+        const resp = await fetch('/api/documents/' + DOC_ID);
+        if (resp.ok) {
+          const doc = await resp.json();
+          if (doc.status && doc.status !== 'pending') {
+            window.location.reload();
+            return;
+          }
+        }
+      } catch (_e) { /* transient — keep polling */ }
+      setTimeout(tick, POLL_MS);
+    }
+    setTimeout(tick, POLL_MS);
+  })();
+</script>
+{% endif %}
 <script>
   // Build comma-separated file_ids and page_nos for the reorder form.
   function buildReorderData() {

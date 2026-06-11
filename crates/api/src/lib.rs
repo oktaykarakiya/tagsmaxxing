@@ -335,6 +335,7 @@ impl AppState {
 /// | GET    | `/api/documents/:id`           | yes   | Document detail + files + tags       |
 /// | GET    | `/api/documents/:id/file/:file_id` | yes | Redirect to presigned download URL  |
 /// | POST   | `/api/documents/:id/retry`     | yes   | Requeue a failed ingest (P15-T9)     |
+/// | GET    | `/api/jobs`                    | yes   | Tenant job list + active count (T10) |
 /// | GET    | `/api/jobs/:id`                | yes   | Job status                           |
 /// | GET    | `/billing/checkout`            | yes   | Stripe Checkout via query param (BUG-UPGR-01) |
 /// | POST   | `/billing/checkout`            | yes   | Stripe Checkout Session (P11-T2)     |
@@ -388,6 +389,7 @@ pub fn build_router(state: AppState) -> Router {
             "/api/documents/{id}/retry",
             post(handlers::documents::retry_document_ingest),
         )
+        .route("/api/jobs", get(handlers::jobs::list_jobs))
         .route("/api/jobs/{id}", get(handlers::jobs::job_status))
         .route(
             "/api/tokens",

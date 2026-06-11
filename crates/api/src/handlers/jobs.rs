@@ -1,15 +1,17 @@
-//! `GET /api/jobs/:id` — job status handler.
+//! `GET /api/jobs/:id` (job status) and `GET /api/jobs` (tenant job list +
+//! active count, P15-T10).
 //!
-//! Returns the current state of an ingest job, including its status, attempt
-//! count, and any error message.
+//! Both are scoped to the authenticated tenant; the jobs table sits outside
+//! RLS, so every store call carries an explicit `tenant_id` (§31.5).
 
+use std::str::FromStr;
 use std::sync::Arc;
 
 use axum::Extension;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::Json;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::AppState;
 use crate::AuthUser;
@@ -40,6 +42,24 @@ pub struct JobStatusResponse {
 pub struct ErrorResponse {
     error: String,
     message: String,
+}
+
+/// Query parameters for `GET /api/jobs` (P15-T10).
+#[derive(Debug, Deserialize)]
+pub struct JobsListQuery {
+    /// Optional status filter (`queued`, `running`, `failed`, `dead`, `done`).
+    pub status: Option<String>,
+    /// Maximum jobs to return (default 50, clamped to 1..=100).
+    pub limit: Option<i64>,
+}
+
+/// Response body for `GET /api/jobs`.
+#[derive(Debug, Serialize)]
+pub struct JobsListResponse {
+    /// The tenant's jobs, most recent first.
+    pub jobs: Vec<JobStatusResponse>,
+    /// In-flight ingest jobs (queued + running) — the nav indicator count.
+    pub active: i64,
 }
 
 // ── Handler ────────────────────────────────────────────────────────────────────
@@ -78,6 +98,70 @@ pub async fn job_status(
             run_after: job.run_after.to_rfc3339(),
             created_at: job.created_at.to_rfc3339(),
             document_id: job.document_id,
+        }),
+    ))
+}
+
+/// `GET /api/jobs?status=&limit=` — list the tenant's jobs (P15-T10).
+///
+/// Wraps the already-tenant-filtered `admin_list_jobs` for the caller's own
+/// tenant (most recent first) and adds `active`: the count of in-flight
+/// (queued + running) ingest jobs feeding the nav "processing N" indicator.
+///
+/// # Response
+///
+/// * `200 OK` — [`JobsListResponse`].
+/// * `400 Bad Request` — unknown `status` value.
+/// * `401 Unauthorized` — rejected by middleware.
+/// * `500 Internal Server Error` — database failure.
+pub async fn list_jobs(
+    State(state): State<Arc<AppState>>,
+    Extension(auth_user): Extension<AuthUser>,
+    Query(q): Query<JobsListQuery>,
+) -> Result<(StatusCode, Json<JobsListResponse>), (StatusCode, Json<ErrorResponse>)> {
+    let status = match q.status.as_deref() {
+        None | Some("") => None,
+        Some(raw) => Some(kb_core::job::JobStatus::from_str(raw).map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_status".into(),
+                    message: format!(
+                        "unknown status '{raw}' — expected queued, running, failed, dead, or done"
+                    ),
+                }),
+            )
+        })?),
+    };
+    let limit = q.limit.unwrap_or(50).clamp(1, 100);
+
+    let jobs = state
+        .pg_store
+        .admin_list_jobs(auth_user.tenant_id, status, limit)
+        .await
+        .map_err(internal_error)?;
+    let active = state
+        .pg_store
+        .count_active_ingest_jobs(auth_user.tenant_id)
+        .await
+        .map_err(internal_error)?;
+
+    Ok((
+        StatusCode::OK,
+        Json(JobsListResponse {
+            jobs: jobs
+                .into_iter()
+                .map(|job| JobStatusResponse {
+                    id: job.id,
+                    status: job.status.as_str().to_owned(),
+                    attempts: job.attempts,
+                    last_error: job.last_error,
+                    run_after: job.run_after.to_rfc3339(),
+                    created_at: job.created_at.to_rfc3339(),
+                    document_id: job.document_id,
+                })
+                .collect(),
+            active,
         }),
     ))
 }
@@ -141,6 +225,7 @@ mod tests {
 
     fn jobs_router(state: Arc<AppState>) -> Router {
         Router::new()
+            .route("/api/jobs", get(list_jobs))
             .route("/api/jobs/{id}", get(job_status))
             .layer(axum::middleware::from_fn_with_state(
                 state.clone(),
@@ -237,5 +322,46 @@ mod tests {
         };
         let json = serde_json::to_value(&resp).unwrap();
         assert!(json["document_id"].is_null());
+    }
+
+    // ── GET /api/jobs (P15-T10) ────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn jobs_list_unauthenticated_returns_401() {
+        let state = test_state();
+        let router = jobs_router(state);
+        let request = axum::http::Request::builder()
+            .method(Method::GET)
+            .uri("/api/jobs")
+            .body(Body::empty())
+            .unwrap();
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn jobs_list_rejects_unknown_status_with_400() {
+        // The status parse runs before any database access, so this holds even
+        // against the disconnected test store.
+        let state = test_state();
+        let token = state
+            .session_store
+            .create(1, 42, UserRole::Member, true, Duration::from_secs(3600))
+            .await
+            .unwrap();
+        let router = jobs_router(state);
+        let request = axum::http::Request::builder()
+            .method(Method::GET)
+            .uri("/api/jobs?status=bogus")
+            .header("Cookie", format!("__Host-session={token}"))
+            .body(Body::empty())
+            .unwrap();
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["error"], "invalid_status");
     }
 }
