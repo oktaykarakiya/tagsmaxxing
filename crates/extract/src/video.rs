@@ -1350,9 +1350,9 @@ mod tests {
 
     #[tokio::test]
     async fn error_on_connection_refused() {
-        let mock_whisper = MockWhisper::start().await;
-        let addr = mock_whisper.addr;
-        mock_whisper.shutdown().await;
+        // A verified-refusing port (probe + retry) — the naive start/shutdown
+        // idiom races OS port recycling under parallel runs (crate::test_net).
+        let addr = crate::test_net::refused_addr().await;
 
         let whisper_config = WhisperConfig::new(format!("http://{addr}"));
         let media_tool = MockMediaTool::new(standard_ffprobe_json(), b"wav".to_vec(), vec![]);

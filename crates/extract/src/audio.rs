@@ -923,13 +923,11 @@ mod tests {
 
     // ── extraction: connection errors ────────────────────────────────────────
 
-    /// Whisper server is unreachable (mock shut down before call).
+    /// Whisper server is unreachable (verified-refusing port).
     #[tokio::test]
     async fn error_on_connection_refused() {
-        let mock = MockWhisper::start().await;
-        let addr = mock.addr;
-        // Shut down the mock so the port is no longer accepting connections.
-        mock.shutdown().await;
+        // See crate::test_net — avoids the OS port-recycle race.
+        let addr = crate::test_net::refused_addr().await;
 
         let config = WhisperConfig::new(format!("http://{addr}"));
         let transcoder: Arc<dyn Transcoder> = Arc::new(MockFfmpeg::new(b"wav".to_vec()));

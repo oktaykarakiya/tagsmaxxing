@@ -798,16 +798,14 @@ mod tests {
         mock.shutdown().await;
     }
 
-    /// Server is unreachable (mock shut down before call).
+    /// Server is unreachable (verified-refusing port).
     #[tokio::test]
-    #[ignore = "flaky: depends on OS socket cleanup timing; passes in isolation"]
     async fn error_on_connection_refused() {
-        let mock = MockTika::start().await;
-        let addr = mock.addr;
-        // Shut down the mock so the port is no longer accepting connections.
-        mock.shutdown().await;
+        // crate::test_net::refused_addr probes + retries, eliminating the OS
+        // port-recycle race this test was previously #[ignore]'d for.
+        let addr = crate::test_net::refused_addr().await;
 
-        // Build an extractor pointing at the now-dead port.
+        // Build an extractor pointing at the dead port.
         let config = TikaConfig::new(format!("http://{addr}"));
         let ex = TikaExtractor::new(Client::new(), config);
 

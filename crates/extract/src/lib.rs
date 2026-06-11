@@ -12,3 +12,6 @@ pub mod security;
 pub mod text;
 pub mod tika;
 pub mod video;
+
+#[cfg(test)]
+mod test_net;
