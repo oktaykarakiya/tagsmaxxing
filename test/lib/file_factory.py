@@ -452,7 +452,12 @@ def format_breadth(marker: str) -> list[Sample]:
         Sample("image", f"{marker}.tiff", minimal_tiff(), "image/tiff", ACCEPT, ("image",)),
         Sample("audio", f"{marker}.mp3", minimal_mp3(), "audio/mpeg", ACCEPT, ("audio",)),
         Sample("audio", f"{marker}.flac", minimal_flac(), "audio/flac", ACCEPT, ("audio",)),
-        Sample("audio", f"{marker}.ogg", minimal_ogg(), "audio/ogg", ACCEPT, ("audio",)),
+        # The minimal OggS stub carries no codec streams, so content magic can
+        # only see the CONTAINER — shared-mime classifies it video/ogg and
+        # nothing decodable exists to refine the kind to audio (real, decodable
+        # audio files cover the audio-kind contract elsewhere). Either kind is
+        # honest for a bare container.
+        Sample("audio", f"{marker}.ogg", minimal_ogg(), "audio/ogg", ACCEPT, ("audio", "video")),
         Sample("video", f"{marker}.mkv", minimal_mkv(), "video/x-matroska", ACCEPT, ("video",)),
         Sample("video", f"{marker}.webm", minimal_webm(), "video/webm", ACCEPT, ("video",)),
         Sample("code", f"{marker}.c", CODE_SAMPLES["c"][1], "text/x-csrc", ACCEPT, ("code", "document")),

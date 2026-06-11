@@ -172,15 +172,32 @@ carrying `request_id`, `tenant_id`, `file_id`.
 
 ## Data flow
 
-### Ingest path (P0–P3)
+### Ingest path (P0–P3, queued since P15)
+
+Since P15 the upload request only performs the **staging half** and returns
+`202 {job_id, document_id}` in milliseconds; a worker performs the
+**processing half** asynchronously (see *Queued ingestion* below). The
+processing pipeline itself is unchanged:
 
 ```
+   ── upload request (API node) ──────────────────────────────────
                           ┌──────────────┐
    Raw bytes ────────────►│DocumentBuilder│──► (Document, FileRecords)
                           └──────┬───────┘
                                  │
                     ┌────────────▼──────────┐
-                    │   Blob::put (LocalBlob)│       content-addressed storage
+                    │ Blob::put (local | s3) │       content-addressed storage
+                    └────────────┬──────────┘
+                                 │
+                    ┌────────────▼──────────┐
+                    │ create_pending_ingest  │  doc+files status='pending'
+                    │ + JobQueue::enqueue    │  (one tenant txn) → 202
+                    └────────────┬──────────┘
+   ── worker (same or another machine) ─────────────────────────
+                                 │ claim (SKIP LOCKED, leased)
+                    ┌────────────▼──────────┐
+                    │ load staged doc+files  │
+                    │ + Blob::get per page   │
                     └────────────┬──────────┘
                                  │
               ┌──────────────────▼───────────────────┐
@@ -202,7 +219,7 @@ carrying `request_id`, `tenant_id`, `file_id`.
                                  │
                           ┌──────▼──────┐
                           │  Chunker     │──► overlapping chunks
-                          │  + Embedder  │      with 1024-dim vectors
+                          │  + Embedder  │      with 2560-dim vectors
                           └──────┬──────┘
                                  │
                           ┌──────▼────────────┐
@@ -215,7 +232,7 @@ carrying `request_id`, `tenant_id`, `file_id`.
 
 ```
                           ┌────────────┐
-   Query text ───────────►│Embed (Query)│──► 1024-dim vector
+   Query text ───────────►│Embed (Query)│──► 2560-dim vector
                           └──────┬─────┘
                                  │
                     ┌────────────▼────────────────┐
@@ -237,6 +254,55 @@ carrying `request_id`, `tenant_id`, `file_id`.
                           │  Top-n Hits  │──► {title, snippet, score, page_no, file_id, …}
                           └─────────────┘
 ```
+
+### Queued ingestion (P15)
+
+Uploads are **asynchronous and durable**. The request stages everything
+(blob bytes, `pending` document + file rows, and a queue job — the row
+writes in one tenant transaction), then returns immediately; measured on the
+dev box, the upload response went from **14.8 s (inline) to 46 ms (queued)**
+for the same document. Workers — the pool embedded in `kb serve` and/or any
+number of `kb worker` processes — drain the shared Postgres queue:
+
+- **Claim**: `SELECT … FOR UPDATE SKIP LOCKED` with priority + aging, kind
+  filter, and a **lease** (`lease_expires_at`, `locked_by`), heartbeat-extended
+  every `lease/3` while the handler runs.
+- **Resilience**: a crashed/stalled worker stops heartbeating; the **reaper**
+  requeues its expired lease through the normal retry accounting. Transient
+  failures retry with exponential backoff (`[worker] min_backoff_ms`, default
+  30 s base — 5 attempts spread over ~15 min); **deterministic** failures
+  (unprocessable bytes, missing staged state) are classified permanent and
+  dead-letter on the first attempt.
+- **Failure UX**: a dead-lettered ingest marks its document `failed` (same
+  transaction); the document page shows the sanitized error and a **Retry**
+  button (`POST /api/documents/:id/retry`, tenant-scoped, ownership proven
+  by an RLS read before any jobs-table access — the jobs table sits outside
+  RLS and every query carries an explicit `tenant_id`).
+- **Idempotence**: files key on `(tenant_id, sha256, document_id)` and chunks
+  are DELETE+INSERT per file, so lease-expiry replays and duplicate
+  completions converge; re-processing an already-`ready` document is a no-op.
+- **Admission**: bounded queue — per-tenant + global pending caps reject with
+  `429 queue_full` + `Retry-After` (hot-swappable `[ingest]` caps).
+- **Distributed, heterogeneous capacity**: each machine runs `kb worker` with
+  its **own** config.toml; `[worker] use_db_routing = false` (default) makes
+  its `[[backend]]` slot semaphores the sole gate on its local model servers
+  — no cross-process over-subscription. Multi-machine fleets **require**
+  `[blob] backend = "s3"` (MinIO/B2) so workers can fetch staged bytes, plus
+  per-machine-reachable `TIKA_URL`/`WHISPER_URL`. Same-box scaling:
+  `podman compose --profile worker up -d --scale worker=N`.
+- **Rollback lever**: `[ingest] mode = "inline"` restores the synchronous
+  pipeline **without a restart** (the config file is watched). Drill,
+  verified live in both directions: set `mode = "inline"` → uploads block
+  through processing and return `job_id: 0` with the document already
+  `ready`; remove it → uploads return in milliseconds with a real job id and
+  the document `pending`.
+- **Observability**: `kb_job_duration_seconds{kind,outcome}`,
+  `kb_jobs_running`, `kb_job_leases_reaped_total`,
+  `kb_queue_full_rejections_total` (+ the existing `kb_queue_depth` /
+  `kb_queue_oldest_job_age_secs`), with alert rules in
+  `prometheus_alerts.yml`. The UI polls `/api/jobs/:id` (upload page),
+  auto-refreshes the document page while processing, and shows a nav
+  "Processing N" chip from `GET /api/jobs`.
 
 ## Design decisions (from plan §1)
 

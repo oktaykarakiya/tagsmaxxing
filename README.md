@@ -158,6 +158,23 @@ kb serve [--port 9999] [--config config.toml]
 └──────────────────────────────────────────────────────────────┘
 ```
 
+**Queued ingestion (P15):** uploads return `202 {job_id, document_id}` in
+milliseconds — the bytes are stored, a `pending` document is staged, and a
+durable Postgres-backed job queue (leases, heartbeats, retries with backoff,
+dead-letter + tenant retry) drives the processing on background workers.
+`kb serve` embeds a worker pool; dedicated processes scale it out:
+
+```bash
+# same box:
+podman compose --profile worker up -d --scale worker=2
+# another machine (its own config.toml = its own model slots; requires
+# [blob] backend = "s3" so it can fetch staged bytes):
+kb worker --config /etc/kb/config.toml --concurrency 4
+```
+
+Rollback lever: set `[ingest] mode = "inline"` in config.toml (hot-reloaded,
+no restart) to restore the synchronous pipeline.
+
 See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a full crate tour, data-flow diagrams,
 and the rationale behind key design decisions.
 
