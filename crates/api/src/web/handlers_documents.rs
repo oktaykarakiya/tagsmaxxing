@@ -54,6 +54,13 @@ pub struct RetagForm {
     pub csrf_token: String,
 }
 
+/// Form data for retrying a failed ingest (P15-T9).
+#[derive(Debug, serde::Deserialize)]
+pub struct RetryForm {
+    /// CSRF token.
+    pub csrf_token: String,
+}
+
 /// Form data for page reorder.
 ///
 /// File ids and page numbers are sent as comma-separated strings
@@ -255,6 +262,25 @@ async fn build_document_detail_page(
         })
         .collect();
 
+    // Failure UX (P15-T9): surface the latest ingest error on failed docs.
+    // Sanitized for display: bounded length, and Askama HTML-escapes it.
+    let last_error = if doc.status == kb_core::status::ProcessingStatus::Failed {
+        match state
+            .pg_store
+            .latest_ingest_job_error(tenant_id, doc_id)
+            .await
+        {
+            Ok(Some(e)) => sanitize_job_error(&e),
+            Ok(None) => String::new(),
+            Err(e) => {
+                tracing::warn!(error = %e, %doc_id, "failed to load ingest error for display");
+                String::new()
+            }
+        }
+    } else {
+        String::new()
+    };
+
     let page = DocumentDetailPage {
         csrf_token: csrf_token.to_string(),
         error: error.to_string(),
@@ -270,9 +296,100 @@ async fn build_document_detail_page(
         tags: tag_chips,
         tenant_tag_names,
         files: file_entries,
+        last_error,
     };
 
     render_ok(&page)
+}
+
+// ── POST /documents/:id/retry (P15-T9) ──────────────────────────────────────────
+
+/// Bound, display-safe rendering of a `jobs.last_error` string.
+///
+/// The raw error is an internal diagnostic (it may chain extractor/model
+/// context). For the tenant-facing page it is truncated to a single bounded
+/// line on a char boundary; Askama escapes HTML on output.
+fn sanitize_job_error(raw: &str) -> String {
+    const MAX_CHARS: usize = 240;
+    let line = raw.lines().next().unwrap_or_default().trim();
+    if line.chars().count() <= MAX_CHARS {
+        line.to_string()
+    } else {
+        let cut: String = line.chars().take(MAX_CHARS).collect();
+        format!("{cut}…")
+    }
+}
+
+/// `POST /documents/:id/retry` — requeue a failed ingest from the detail page.
+///
+/// Validates CSRF, then delegates to the same tenant-scoped store operation
+/// as the JSON API (`/api/documents/:id/retry`): ownership is proven by the
+/// page rebuild's RLS-scoped document read; the job reset itself carries an
+/// explicit `tenant_id` on every statement (§31.5). Re-renders the detail
+/// page — on success the status badge shows `pending` again.
+pub async fn retry_document_ingest_web(
+    State(state): State<Arc<AppState>>,
+    Extension(auth_user): Extension<AuthUser>,
+    Path(doc_id): Path<i64>,
+    headers: HeaderMap,
+    Form(form): Form<RetryForm>,
+) -> Response {
+    if let Err((status, msg)) = csrf::validate_csrf(&headers, &form.csrf_token) {
+        return csrf_error_response(status, &msg);
+    }
+
+    // RLS-scoped ownership proof BEFORE touching the jobs table: a foreign or
+    // unknown id renders the 404 page and the retry never runs.
+    match state
+        .pg_store
+        .get_document(auth_user.tenant_id, doc_id)
+        .await
+    {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Html("<h1>404 — Document not found</h1>".to_owned()),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            tracing::error!(error = %e, %doc_id, "retry: failed to fetch document");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html("Internal server error".to_owned()),
+            )
+                .into_response();
+        }
+    }
+
+    let message = match state
+        .pg_store
+        .retry_failed_ingest(auth_user.tenant_id, doc_id)
+        .await
+    {
+        Ok(kb_store::RetryIngestOutcome::Retried { .. }) => "",
+        Ok(kb_store::RetryIngestOutcome::NotRetryable { status }) => {
+            tracing::info!(%doc_id, %status, "retry refused: job not in a terminal failure state");
+            "This document's ingest is not in a failed state — nothing to retry."
+        }
+        Ok(kb_store::RetryIngestOutcome::NoJob) => {
+            "This document has no background ingest job to retry."
+        }
+        Err(e) => {
+            tracing::error!(error = %e, %doc_id, "retry failed");
+            "Retry failed — please try again."
+        }
+    };
+
+    let csrf = generate_fresh_csrf();
+    let mut resp =
+        build_document_detail_page(&state, auth_user.tenant_id, doc_id, &csrf, message).await;
+    resp.headers_mut().insert(
+        axum::http::header::SET_COOKIE,
+        csrf::csrf_cookie_value(&csrf, state.session_ttl, state.secure_cookies),
+    );
+    resp
 }
 
 // ── GET /documents/:id ──────────────────────────────────────────────────────────
@@ -899,6 +1016,39 @@ mod tests {
         let (ids, nos) = form.parse_ids();
         assert_eq!(ids, vec![10, 20, 30]);
         assert_eq!(nos, vec![3, 1, 2]);
+    }
+
+    // ── sanitize_job_error (P15-T9) ────────────────────────────────────────
+
+    #[test]
+    fn sanitize_short_error_passes_through_trimmed() {
+        assert_eq!(
+            sanitize_job_error("  tagger model call failed  "),
+            "tagger model call failed"
+        );
+    }
+
+    #[test]
+    fn sanitize_keeps_only_the_first_line() {
+        assert_eq!(
+            sanitize_job_error("extraction failed\ninternal stack line\nmore"),
+            "extraction failed"
+        );
+    }
+
+    #[test]
+    fn sanitize_truncates_long_errors_on_char_boundary() {
+        // 300 multibyte chars → truncated to 240 chars + ellipsis, valid UTF-8.
+        let long = "é".repeat(300);
+        let out = sanitize_job_error(&long);
+        assert_eq!(out.chars().count(), 241, "240 kept + ellipsis");
+        assert!(out.ends_with('…'));
+        assert!(std::str::from_utf8(out.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn sanitize_empty_is_empty() {
+        assert_eq!(sanitize_job_error(""), "");
     }
 
     #[test]

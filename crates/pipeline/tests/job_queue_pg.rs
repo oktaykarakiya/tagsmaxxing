@@ -1074,3 +1074,173 @@ async fn worker_pool_kind_filter_leaves_other_kinds_queued() -> anyhow::Result<(
     );
     Ok(())
 }
+
+// ── P15-T9: dead-letter document hook + permanent failures ─────────────────────
+
+/// Insert a pending document + one pending file, returning (doc_id, file_id).
+async fn staged_doc(pool: &PgPool, tenant_id: i64, tag: &str) -> anyhow::Result<(i64, i64)> {
+    let doc_id: i64 = sqlx::query_scalar(
+        "INSERT INTO documents (tenant_id, kind, status) \
+         VALUES ($1, 'document', 'pending') RETURNING id",
+    )
+    .bind(tenant_id)
+    .fetch_one(pool)
+    .await?;
+    let file_id: i64 = sqlx::query_scalar(
+        "INSERT INTO files (tenant_id, document_id, sha256, blob_key, status) \
+         VALUES ($1, $2, $3, $4, 'pending') RETURNING id",
+    )
+    .bind(tenant_id)
+    .bind(doc_id)
+    .bind(tag.as_bytes().to_vec())
+    .bind(format!("t{tenant_id}/{tag}"))
+    .fetch_one(pool)
+    .await?;
+    Ok((doc_id, file_id))
+}
+
+async fn doc_status(pool: &PgPool, doc_id: i64) -> anyhow::Result<String> {
+    Ok(
+        sqlx::query_scalar("SELECT status FROM documents WHERE id = $1")
+            .bind(doc_id)
+            .fetch_one(pool)
+            .await?,
+    )
+}
+
+async fn file_status(pool: &PgPool, file_id: i64) -> anyhow::Result<String> {
+    Ok(sqlx::query_scalar("SELECT status FROM files WHERE id = $1")
+        .bind(file_id)
+        .fetch_one(pool)
+        .await?)
+}
+
+/// Exhausting the retry budget on an ingest job marks its staged document —
+/// and the document's pending files — `failed` in the same transaction.
+#[tokio::test]
+#[ignore = "requires Podman + image pull; run with --ignored"]
+async fn dead_letter_marks_document_and_files_failed() -> anyhow::Result<()> {
+    let s = setup_queue(10, 2).await?;
+    let (doc_id, file_id) = staged_doc(&s.pool, s.tenant_id, "dlhook").await?;
+    let job_id = s
+        .queue
+        .enqueue(s.tenant_id, None, None, Some(doc_id), JobKind::Ingest, 0)
+        .await?;
+
+    // Attempt 1: failed (retry scheduled) — document untouched.
+    let _ = s.queue.claim().await?;
+    assert_eq!(s.queue.fail(job_id, "boom").await?, JobStatus::Failed);
+    assert_eq!(doc_status(&s.pool, doc_id).await?, "pending");
+
+    // Attempt 2 (= max_retries): dead — document + pending file flip failed.
+    sqlx::query("UPDATE jobs SET status = 'queued', run_after = now() WHERE id = $1")
+        .bind(job_id)
+        .execute(&s.pool)
+        .await?;
+    let _ = s.queue.claim().await?;
+    assert_eq!(s.queue.fail(job_id, "boom again").await?, JobStatus::Dead);
+    assert_eq!(job_status(&s.pool, job_id).await?, "dead");
+    assert_eq!(doc_status(&s.pool, doc_id).await?, "failed");
+    assert_eq!(file_status(&s.pool, file_id).await?, "failed");
+    Ok(())
+}
+
+/// A document that already converged to `ready` (idempotent replay race) is
+/// never downgraded by a late dead-letter.
+#[tokio::test]
+#[ignore = "requires Podman + image pull; run with --ignored"]
+async fn dead_letter_never_downgrades_ready_document() -> anyhow::Result<()> {
+    let s = setup_queue(10, 1).await?;
+    let (doc_id, _file_id) = staged_doc(&s.pool, s.tenant_id, "dlready").await?;
+    sqlx::query("UPDATE documents SET status = 'ready' WHERE id = $1")
+        .bind(doc_id)
+        .execute(&s.pool)
+        .await?;
+    let job_id = s
+        .queue
+        .enqueue(s.tenant_id, None, None, Some(doc_id), JobKind::Ingest, 0)
+        .await?;
+
+    let _ = s.queue.claim().await?;
+    assert_eq!(s.queue.fail(job_id, "late failure").await?, JobStatus::Dead);
+    assert_eq!(
+        doc_status(&s.pool, doc_id).await?,
+        "ready",
+        "ready documents must never be downgraded by the dead-letter hook"
+    );
+    Ok(())
+}
+
+/// `fail_permanent` dead-letters on the FIRST attempt (deterministic failures
+/// skip the retry budget) and fires the same document hook.
+#[tokio::test]
+#[ignore = "requires Podman + image pull; run with --ignored"]
+async fn fail_permanent_dead_letters_immediately_with_hook() -> anyhow::Result<()> {
+    let s = setup_queue(10, 5).await?;
+    let (doc_id, file_id) = staged_doc(&s.pool, s.tenant_id, "dlperm").await?;
+    let job_id = s
+        .queue
+        .enqueue(s.tenant_id, None, None, Some(doc_id), JobKind::Ingest, 0)
+        .await?;
+
+    let _ = s.queue.claim().await?;
+    assert_eq!(
+        s.queue.fail_permanent(job_id, "invalid utf-8").await?,
+        JobStatus::Dead
+    );
+    assert_eq!(job_status(&s.pool, job_id).await?, "dead");
+    assert_eq!(job_attempts(&s.pool, job_id).await?, 1, "one attempt only");
+    assert_eq!(doc_status(&s.pool, doc_id).await?, "failed");
+    assert_eq!(file_status(&s.pool, file_id).await?, "failed");
+    Ok(())
+}
+
+/// The worker pool routes `permanent: `-prefixed handler errors straight to
+/// dead (prefix stripped from `last_error`), and plain errors to backoff.
+#[tokio::test]
+#[ignore = "requires Podman + image pull; run with --ignored"]
+async fn worker_pool_routes_permanent_errors_to_immediate_dead() -> anyhow::Result<()> {
+    let s = setup_queue(60_000, 5).await?; // long backoff: a retried job stays parked
+    let (doc_id, _file_id) = staged_doc(&s.pool, s.tenant_id, "dlroute").await?;
+    let permanent_id = s
+        .queue
+        .enqueue(s.tenant_id, None, None, Some(doc_id), JobKind::Ingest, 0)
+        .await?;
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let queue = Arc::clone(&s.queue);
+    let handle = tokio::spawn(kb_pipeline::run_worker_pool(
+        queue,
+        1,
+        vec![JobKind::Ingest],
+        shutdown_rx,
+        move |_job| async move {
+            Err(format!(
+                "{}extraction failed for page 1 (x.bin): invalid utf-8",
+                kb_pipeline::PERMANENT_ERROR_PREFIX
+            ))
+        },
+    ));
+
+    for _ in 0..100 {
+        if job_status(&s.pool, permanent_id).await? == "dead" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    shutdown_tx.send(true).ok();
+    handle.await.unwrap();
+
+    assert_eq!(job_status(&s.pool, permanent_id).await?, "dead");
+    assert_eq!(job_attempts(&s.pool, permanent_id).await?, 1);
+    let last_error: String = sqlx::query_scalar("SELECT last_error FROM jobs WHERE id = $1")
+        .bind(permanent_id)
+        .fetch_one(&s.pool)
+        .await?;
+    assert!(
+        last_error.starts_with("extraction failed"),
+        "prefix must be stripped from last_error: {last_error}"
+    );
+    assert_eq!(doc_status(&s.pool, doc_id).await?, "failed");
+    Ok(())
+}

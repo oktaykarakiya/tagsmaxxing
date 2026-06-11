@@ -251,7 +251,91 @@ fn build_redirect_response(
         .body(Body::empty())
 }
 
+// ── Tenant retry (P15-T9) ──────────────────────────────────────────────────────
+
+/// Response body for a successful retry: the requeued job + its document.
+#[derive(Debug, serde::Serialize)]
+pub struct RetryResponse {
+    /// The requeued ingest job id (pollable via `/api/jobs/:id`).
+    pub job_id: i64,
+    /// The document reset to `pending` for reprocessing.
+    pub document_id: i64,
+    /// Human-readable confirmation.
+    pub message: String,
+}
+
+/// `POST /api/documents/:id/retry` — requeue a failed ingest (member-allowed).
+///
+/// Ownership is proven first with an RLS-scoped document read — a foreign or
+/// unknown id is a plain 404 with no information leak (§31.5); only then is
+/// the latest ingest job (jobs sit outside RLS; every statement carries this
+/// tenant's id) checked and reset.
+///
+/// # Response
+///
+/// * `202 Accepted` — [`RetryResponse`]; the job is queued again and the
+///   document is `pending`.
+/// * `404 Not Found` — document does not exist or belongs to another tenant.
+/// * `409 Conflict` — the latest ingest job is not in a terminal failure
+///   state (still queued/running, or already done), or the document has no
+///   ingest job to retry (e.g. it was ingested inline).
+/// * `500 Internal Server Error` — database failure.
+pub async fn retry_document_ingest(
+    State(state): State<Arc<AppState>>,
+    Extension(auth_user): Extension<AuthUser>,
+    Path(id): Path<i64>,
+) -> Result<(StatusCode, Json<RetryResponse>), (StatusCode, Json<ErrorResponse>)> {
+    // RLS-scoped ownership proof: a cross-tenant id 404s here, before any
+    // job-table access.
+    let doc = state
+        .pg_store
+        .get_document(auth_user.tenant_id, id)
+        .await
+        .map_err(internal_error)?
+        .ok_or_else(|| not_found("document_not_found", "document not found"))?;
+
+    match state
+        .pg_store
+        .retry_failed_ingest(auth_user.tenant_id, id)
+        .await
+        .map_err(internal_error)?
+    {
+        kb_store::RetryIngestOutcome::Retried { job_id } => Ok((
+            StatusCode::ACCEPTED,
+            Json(RetryResponse {
+                job_id,
+                document_id: id,
+                message: "ingest requeued; the document will be reprocessed".into(),
+            }),
+        )),
+        kb_store::RetryIngestOutcome::NotRetryable { status } => Err(conflict(
+            "not_retryable",
+            &format!(
+                "the document's ingest job is '{status}' — only failed or \
+                 dead-lettered ingests can be retried"
+            ),
+        )),
+        kb_store::RetryIngestOutcome::NoJob => Err(conflict(
+            "no_ingest_job",
+            &format!(
+                "document {} ({:?}) has no queued-ingest job to retry",
+                id, doc.status
+            ),
+        )),
+    }
+}
+
 // ── Error helpers ──────────────────────────────────────────────────────────────
+
+fn conflict(code: &str, msg: &str) -> (StatusCode, Json<ErrorResponse>) {
+    (
+        StatusCode::CONFLICT,
+        Json(ErrorResponse {
+            error: code.into(),
+            message: msg.into(),
+        }),
+    )
+}
 
 fn not_found(code: &str, msg: &str) -> (StatusCode, Json<ErrorResponse>) {
     (

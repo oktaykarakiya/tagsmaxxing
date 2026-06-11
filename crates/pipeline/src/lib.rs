@@ -65,7 +65,7 @@ pub use integrity_scan::{
     select_sample, should_run_now as integrity_scan_should_run_now, verify_hash,
 };
 pub use job_lease::{LEASE_EXPIRED_ERROR, run_lease_reaper};
-pub use job_queue::{JobQueue, run_worker_pool};
+pub use job_queue::{JobQueue, PERMANENT_ERROR_PREFIX, run_worker_pool};
 pub use maintenance::{
     B2LifecycleHandler, BlobCacheEvictHandler, FakeClock, LogPruneHandler, MaintenanceHandler,
     MaintenanceJobKind, MaintenanceScheduler, RealClock, ReembedCheckHandler, Schedule,

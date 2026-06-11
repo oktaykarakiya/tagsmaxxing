@@ -181,6 +181,9 @@ pub(crate) struct DocumentDetailPage {
     pub tenant_tag_names: Vec<String>,
     /// Files belonging to this document, ordered by page_no.
     pub files: Vec<DocumentFileEntry>,
+    /// Sanitized last ingest error (only populated when `status == "failed"`,
+    /// P15-T9); empty otherwise.
+    pub last_error: String,
 }
 
 /// A tag chip rendered on the document detail page (P6-T7).

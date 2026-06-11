@@ -301,3 +301,189 @@ async fn stage_pending_files_appends_to_existing_document() -> anyhow::Result<()
 
     Ok(())
 }
+
+// ── P15-T9: tenant retry + failure visibility (§31.5 checkpoint) ───────────────
+
+/// Stage a doc + enqueue a dead ingest job for it; returns (doc_id, job_id).
+async fn stage_dead_ingest(s: &Setup, tag: &str) -> anyhow::Result<(i64, i64)> {
+    let pending = s
+        .store
+        .create_pending_ingest(
+            &doc(s.tenant_id, tag),
+            &[file(s.tenant_id, tag.len() as u8, 1)],
+        )
+        .await?;
+    let job_id: i64 = sqlx::query_scalar(
+        "INSERT INTO jobs (tenant_id, document_id, kind, status, attempts, last_error) \
+         VALUES ($1, $2, 'ingest', 'dead', 5, 'extraction failed: invalid bytes') RETURNING id",
+    )
+    .bind(s.tenant_id)
+    .bind(pending.document_id)
+    .fetch_one(&s.pool)
+    .await?;
+    // Mirror the dead-letter hook's document transition.
+    sqlx::query("UPDATE documents SET status = 'failed' WHERE id = $1")
+        .bind(pending.document_id)
+        .execute(&s.pool)
+        .await?;
+    sqlx::query("UPDATE files SET status = 'failed' WHERE document_id = $1")
+        .bind(pending.document_id)
+        .execute(&s.pool)
+        .await?;
+    Ok((pending.document_id, job_id))
+}
+
+/// Full tenant-retry reset: dead job → queued (attempts 0, lease/error
+/// cleared) and document + files → pending.
+#[tokio::test]
+#[ignore = "requires Podman + image pull; run with --ignored"]
+async fn retry_failed_ingest_resets_job_document_and_files() -> anyhow::Result<()> {
+    let s = setup().await?;
+    let (doc_id, job_id) = stage_dead_ingest(&s, "retry-cycle").await?;
+
+    let outcome = s.store.retry_failed_ingest(s.tenant_id, doc_id).await?;
+    assert_eq!(
+        outcome,
+        kb_store::RetryIngestOutcome::Retried { job_id },
+        "the latest dead ingest job must be requeued"
+    );
+
+    let (status, attempts, last_error): (String, i32, Option<String>) =
+        sqlx::query_as("SELECT status, attempts, last_error FROM jobs WHERE id = $1")
+            .bind(job_id)
+            .fetch_one(&s.pool)
+            .await?;
+    assert_eq!(status, "queued");
+    assert_eq!(attempts, 0);
+    assert!(last_error.is_none(), "error cleared on retry");
+
+    let doc_status: String = sqlx::query_scalar("SELECT status FROM documents WHERE id = $1")
+        .bind(doc_id)
+        .fetch_one(&s.pool)
+        .await?;
+    assert_eq!(doc_status, "pending");
+    let failed_files: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM files WHERE document_id = $1 AND status = 'failed'",
+    )
+    .bind(doc_id)
+    .fetch_one(&s.pool)
+    .await?;
+    assert_eq!(failed_files, 0, "failed files reset to pending");
+    Ok(())
+}
+
+/// A queued/running/done job is not retryable; absence of any job reports NoJob.
+#[tokio::test]
+#[ignore = "requires Podman + image pull; run with --ignored"]
+async fn retry_refuses_non_terminal_jobs_and_reports_no_job() -> anyhow::Result<()> {
+    let s = setup().await?;
+    let pending = s
+        .store
+        .create_pending_ingest(&doc(s.tenant_id, "retry-live"), &[file(s.tenant_id, 77, 1)])
+        .await?;
+
+    // No job at all yet.
+    assert_eq!(
+        s.store
+            .retry_failed_ingest(s.tenant_id, pending.document_id)
+            .await?,
+        kb_store::RetryIngestOutcome::NoJob
+    );
+
+    // A live (queued) job is not retryable.
+    sqlx::query(
+        "INSERT INTO jobs (tenant_id, document_id, kind, status) \
+         VALUES ($1, $2, 'ingest', 'queued')",
+    )
+    .bind(s.tenant_id)
+    .bind(pending.document_id)
+    .execute(&s.pool)
+    .await?;
+    match s
+        .store
+        .retry_failed_ingest(s.tenant_id, pending.document_id)
+        .await?
+    {
+        kb_store::RetryIngestOutcome::NotRetryable { status } => assert_eq!(status, "queued"),
+        other => panic!("expected NotRetryable, got {other:?}"),
+    }
+    Ok(())
+}
+
+/// §31.5 NEGATIVE: another tenant cannot retry, reset, or read the error of a
+/// foreign document — the explicit tenant filters find nothing and nothing
+/// changes.
+#[tokio::test]
+#[ignore = "requires Podman + image pull; run with --ignored"]
+async fn cross_tenant_retry_and_error_read_are_inert() -> anyhow::Result<()> {
+    let s = setup().await?;
+    let (doc_id, job_id) = stage_dead_ingest(&s, "xtenant").await?;
+
+    let intruder: i64 = sqlx::query_scalar(
+        "INSERT INTO tenants (slug, name) VALUES ('intruder', 'I') RETURNING id",
+    )
+    .fetch_one(&s.pool)
+    .await?;
+
+    // Retry under the WRONG tenant: reports NoJob (no information about the
+    // victim's job) and mutates nothing.
+    assert_eq!(
+        s.store.retry_failed_ingest(intruder, doc_id).await?,
+        kb_store::RetryIngestOutcome::NoJob,
+        "a foreign document id must look like it has no job at all"
+    );
+    let (status, attempts): (String, i32) =
+        sqlx::query_as("SELECT status, attempts FROM jobs WHERE id = $1")
+            .bind(job_id)
+            .fetch_one(&s.pool)
+            .await?;
+    assert_eq!(status, "dead", "victim job untouched");
+    assert_eq!(attempts, 5, "victim attempts untouched");
+    let doc_status: String = sqlx::query_scalar("SELECT status FROM documents WHERE id = $1")
+        .bind(doc_id)
+        .fetch_one(&s.pool)
+        .await?;
+    assert_eq!(doc_status, "failed", "victim document untouched");
+
+    // Error read under the WRONG tenant: nothing leaks.
+    assert_eq!(
+        s.store.latest_ingest_job_error(intruder, doc_id).await?,
+        None,
+        "a foreign tenant must not read the victim's ingest error"
+    );
+    // …while the owner sees it.
+    assert_eq!(
+        s.store
+            .latest_ingest_job_error(s.tenant_id, doc_id)
+            .await?
+            .as_deref(),
+        Some("extraction failed: invalid bytes")
+    );
+    Ok(())
+}
+
+/// Retry never resurrects a document that already converged to ready (a stale
+/// dead job from a lease race must not flip a ready document back to pending).
+#[tokio::test]
+#[ignore = "requires Podman + image pull; run with --ignored"]
+async fn retry_does_not_downgrade_ready_documents() -> anyhow::Result<()> {
+    let s = setup().await?;
+    let (doc_id, job_id) = stage_dead_ingest(&s, "retry-ready").await?;
+    sqlx::query("UPDATE documents SET status = 'ready' WHERE id = $1")
+        .bind(doc_id)
+        .execute(&s.pool)
+        .await?;
+
+    let outcome = s.store.retry_failed_ingest(s.tenant_id, doc_id).await?;
+    assert_eq!(outcome, kb_store::RetryIngestOutcome::Retried { job_id });
+
+    let doc_status: String = sqlx::query_scalar("SELECT status FROM documents WHERE id = $1")
+        .bind(doc_id)
+        .fetch_one(&s.pool)
+        .await?;
+    assert_eq!(
+        doc_status, "ready",
+        "ready documents stay ready; the requeued job no-ops as an idempotent replay"
+    );
+    Ok(())
+}

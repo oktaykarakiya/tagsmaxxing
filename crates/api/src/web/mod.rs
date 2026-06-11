@@ -63,6 +63,7 @@ pub(crate) mod templates;
 /// | POST   | `/documents/:id/tags/:tag_id/remove` | yes | Remove tag (P6-T7) |
 /// | POST   | `/documents/:id/add-tag` | yes | Add tag by name (P6-T7) |
 /// | POST   | `/documents/:id/retag` | yes | Enqueue retag job (P6-T7) |
+/// | POST   | `/documents/:id/retry` | yes | Requeue a failed ingest (P15-T9) |
 /// | POST   | `/documents/:id/reorder` | yes | Reorder pages (P6-T7) |
 /// | POST   | `/documents/:id/add-page` | yes | Upload additional page (P6-T7) |
 pub(crate) fn build_web_router(
@@ -137,6 +138,10 @@ pub(crate) fn build_web_router(
         .route(
             "/documents/{id}/retag",
             post(handlers_documents::retag_document),
+        )
+        .route(
+            "/documents/{id}/retry",
+            post(handlers_documents::retry_document_ingest_web),
         )
         .route(
             "/documents/{id}/reorder",

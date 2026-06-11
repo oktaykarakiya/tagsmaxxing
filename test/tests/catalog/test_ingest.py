@@ -467,12 +467,16 @@ def test_ingest_binary_file(api):
 
     # Queued ingestion (P15): a binary that slipped upload validation may still
     # fail extraction in the worker (e.g. the text extractor rejects non-UTF-8
-    # bytes). That asynchronous CLEAN failure — a dead-lettered job with a
-    # descriptive error — is the queued-mode equivalent of the inline 400/500
-    # arm above, so accept it. TODO(P15-T9): tighten — a dead ingest job must
-    # mark the document status='failed' (today it stays 'pending').
+    # bytes). That asynchronous CLEAN failure is the queued-mode equivalent of
+    # the inline 400/500 arm above. P15-T9 tightened the contract: the
+    # dead-lettered job must mark the DOCUMENT status='failed' (visible
+    # failure), with a descriptive error preserved on the job.
     outcome, doc, job = flows.wait_until_terminal(api, doc_id, job_id=body.get("job_id"))
     if outcome in ("dead", "failed"):
+        assert doc.get("status") == "failed", (
+            f"a dead-lettered ingest must mark the document failed (P15-T9); "
+            f"outcome={outcome}, doc status={doc.get('status')!r}"
+        )
         err = (job.get("last_error") or "") if job else ""
         assert err, (
             f"binary ingest {outcome} without a descriptive last_error — "

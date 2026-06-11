@@ -352,12 +352,17 @@ pub async fn build_runtime(
         reranker,
     ));
 
-    // ── Job queue (lease from [worker], P15-T2) ─────────────────────────────
+    // ── Job queue (lease + retry policy from [worker], P15-T2/T9) ───────────
     let job_queue_pool = pg_store
         .admin_pool()
         .context("failed to get admin pool for job queue")?;
     let job_queue = Arc::new(
-        JobQueue::new(job_queue_pool, 1000, 5).with_lease_secs(cfg.worker.lease_secs as i64),
+        JobQueue::new(
+            job_queue_pool,
+            cfg.worker.min_backoff_ms as i64,
+            cfg.worker.max_retries as i32,
+        )
+        .with_lease_secs(cfg.worker.lease_secs as i64),
     );
 
     // ── Backend health loop ─────────────────────────────────────────────────

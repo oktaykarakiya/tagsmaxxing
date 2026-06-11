@@ -425,6 +425,12 @@ const fn default_worker_concurrency() -> u32 {
 const fn default_worker_lease_secs() -> u64 {
     600
 }
+const fn default_worker_min_backoff_ms() -> u64 {
+    30_000
+}
+const fn default_worker_max_retries() -> u32 {
+    5
+}
 
 /// Ingest-job worker settings (plan §16, P15-T4).
 ///
@@ -450,6 +456,16 @@ pub struct Worker {
     /// requeued by the reaper after this long without a heartbeat.
     #[serde(default = "default_worker_lease_secs")]
     pub lease_secs: u64,
+    /// Base retry backoff in milliseconds; attempt *n* waits
+    /// `min_backoff_ms × 2^n`. The 30 s default spreads a 5-attempt budget
+    /// over ~15 minutes so a transient backend outage or cooldown window
+    /// cannot burn the whole budget in seconds (P15-T9). Deterministic
+    /// failures skip retries entirely (permanent-error classification).
+    #[serde(default = "default_worker_min_backoff_ms")]
+    pub min_backoff_ms: u64,
+    /// Attempts before a job is dead-lettered.
+    #[serde(default = "default_worker_max_retries")]
+    pub max_retries: u32,
 }
 
 impl Default for Worker {
@@ -459,6 +475,8 @@ impl Default for Worker {
             concurrency: default_worker_concurrency(),
             use_db_routing: false,
             lease_secs: default_worker_lease_secs(),
+            min_backoff_ms: default_worker_min_backoff_ms(),
+            max_retries: default_worker_max_retries(),
         }
     }
 }
@@ -903,8 +921,13 @@ bucket = "kb-blobs"
             "workers default to their own per-machine backends (exact slot enforcement)"
         );
         assert_eq!(w.lease_secs, 600);
+        // Retry policy (P15-T9): 30 s base spreads 5 attempts over ~15 min so
+        // a transient outage can't burn the budget in seconds.
+        assert_eq!(w.min_backoff_ms, 30_000);
+        assert_eq!(w.max_retries, 5);
         let cfg: Config = toml::from_str("").expect("empty config parses");
         assert!(cfg.worker.enabled);
+        assert_eq!(cfg.worker.min_backoff_ms, 30_000);
     }
 
     #[test]
@@ -915,12 +938,16 @@ enabled = false
 concurrency = 7
 use_db_routing = true
 lease_secs = 120
+min_backoff_ms = 5000
+max_retries = 3
 "#;
         let cfg: Config = toml::from_str(toml_str).expect("parse should succeed");
         assert!(!cfg.worker.enabled);
         assert_eq!(cfg.worker.concurrency, 7);
         assert!(cfg.worker.use_db_routing);
         assert_eq!(cfg.worker.lease_secs, 120);
+        assert_eq!(cfg.worker.min_backoff_ms, 5000);
+        assert_eq!(cfg.worker.max_retries, 3);
     }
 
     #[test]

@@ -332,6 +332,131 @@ impl PgStore {
         .context("failed to count pending ingest jobs")?;
         Ok((tenant_pending, global_pending))
     }
+
+    /// The latest ingest job's `last_error` for a document (failure UX, P15-T9).
+    ///
+    /// Admin pool with an explicit `tenant_id` filter (§31.5 — jobs sit
+    /// outside RLS); callers must already have proven document ownership via
+    /// an RLS-scoped read. Returns `None` when the document has no ingest job
+    /// or the job recorded no error.
+    ///
+    /// # Errors
+    /// Returns an error if the database is not connected or the query fails.
+    pub async fn latest_ingest_job_error(
+        &self,
+        tenant_id: i64,
+        document_id: i64,
+    ) -> anyhow::Result<Option<String>> {
+        let pool = self.pool()?;
+        let row: Option<(Option<String>,)> = sqlx::query_as(
+            "SELECT last_error FROM jobs \
+             WHERE tenant_id = $1 AND document_id = $2 AND kind = 'ingest' \
+             ORDER BY id DESC LIMIT 1",
+        )
+        .bind(tenant_id)
+        .bind(document_id)
+        .fetch_optional(&pool)
+        .await
+        .context("failed to read latest ingest job error")?;
+        Ok(row.and_then(|(e,)| e))
+    }
+
+    /// Requeue a document's terminal ingest job and reset the document for
+    /// reprocessing (the tenant retry action, P15-T9).
+    ///
+    /// Finds the document's **latest** ingest job; when it is `dead` or
+    /// `failed`, resets it to `queued` (attempts 0, error and lease cleared,
+    /// eligible now) and moves the document — plus its `failed` files — back
+    /// to `pending`, all in one transaction.
+    ///
+    /// Runs on the **admin pool** (jobs sit outside RLS) with an explicit
+    /// `tenant_id` on every statement (§31.5); the caller is responsible for
+    /// proving document ownership first via an RLS-scoped read, so a
+    /// cross-tenant id simply finds no job here and nothing changes.
+    ///
+    /// # Errors
+    /// Returns an error if the database is not connected or a query fails.
+    pub async fn retry_failed_ingest(
+        &self,
+        tenant_id: i64,
+        document_id: i64,
+    ) -> anyhow::Result<RetryIngestOutcome> {
+        let pool = self.pool()?;
+        let mut tx = pool
+            .begin()
+            .await
+            .context("failed to begin retry transaction")?;
+
+        let latest: Option<(i64, String)> = sqlx::query_as(
+            "SELECT id, status FROM jobs \
+             WHERE tenant_id = $1 AND document_id = $2 AND kind = 'ingest' \
+             ORDER BY id DESC LIMIT 1 FOR UPDATE",
+        )
+        .bind(tenant_id)
+        .bind(document_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .context("failed to read latest ingest job for retry")?;
+
+        let Some((job_id, status)) = latest else {
+            return Ok(RetryIngestOutcome::NoJob);
+        };
+        if status != "dead" && status != "failed" {
+            return Ok(RetryIngestOutcome::NotRetryable { status });
+        }
+
+        sqlx::query(
+            "UPDATE jobs SET status = 'queued', attempts = 0, last_error = NULL, \
+             run_after = now(), lease_expires_at = NULL, locked_by = NULL \
+             WHERE id = $1 AND tenant_id = $2",
+        )
+        .bind(job_id)
+        .bind(tenant_id)
+        .execute(&mut *tx)
+        .await
+        .context("failed to requeue ingest job")?;
+
+        sqlx::query(
+            "UPDATE documents SET status = 'pending' \
+             WHERE id = $1 AND tenant_id = $2 AND status <> 'ready'",
+        )
+        .bind(document_id)
+        .bind(tenant_id)
+        .execute(&mut *tx)
+        .await
+        .context("failed to reset document for retry")?;
+        sqlx::query(
+            "UPDATE files SET status = 'pending' \
+             WHERE document_id = $1 AND tenant_id = $2 AND status = 'failed'",
+        )
+        .bind(document_id)
+        .bind(tenant_id)
+        .execute(&mut *tx)
+        .await
+        .context("failed to reset files for retry")?;
+
+        tx.commit()
+            .await
+            .context("failed to commit retry transaction")?;
+        Ok(RetryIngestOutcome::Retried { job_id })
+    }
+}
+
+/// Outcome of [`PgStore::retry_failed_ingest`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RetryIngestOutcome {
+    /// The job was requeued; the document is `pending` again.
+    Retried {
+        /// The requeued ingest job id (pollable via `/api/jobs/:id`).
+        job_id: i64,
+    },
+    /// The latest ingest job is not in a terminal failure state.
+    NotRetryable {
+        /// Its current status (e.g. `queued`, `running`, `done`).
+        status: String,
+    },
+    /// No ingest job exists for this document (e.g. ingested inline).
+    NoJob,
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

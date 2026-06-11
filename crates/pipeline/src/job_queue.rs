@@ -26,6 +26,17 @@ use crate::job_aging::AGING_STEP_SECS;
 
 // ── Backoff calculation ────────────────────────────────────
 
+/// Error-message prefix that marks a handler failure as **permanent** (P15-T9).
+///
+/// A worker handler returning `Err` whose message starts with this prefix is
+/// dead-lettered immediately via [`JobQueue::fail_permanent`] — deterministic
+/// failures (invalid bytes, missing staged state) produce the same outcome on
+/// every retry, so spending the retry budget on them only wastes capacity.
+/// The prefix is stripped before the message is stored in `last_error`.
+/// Producers: `kb_pipeline::ingest_worker` tags its deterministic failures;
+/// consumers: the worker loop below.
+pub const PERMANENT_ERROR_PREFIX: &str = "permanent: ";
+
 /// Calculate the exponential backoff duration for a given attempt count.
 ///
 /// Formula: `min_backoff_ms × 2^attempts`, clamped so the exponent never exceeds 30
@@ -324,6 +335,14 @@ impl JobQueue {
     /// * If the new attempt count **reaches** `max_retries`: the job is **dead-lettered**
     ///   (`status = 'dead'`) and its `run_after` is left unchanged.
     ///
+    /// When an **ingest** job dead-letters, its staged document (and that
+    /// document's still-`pending` files) transitions to `status = 'failed'`
+    /// in the same transaction (P15-T9) so the failure is visible to the
+    /// tenant instead of leaving the document `pending` forever. A document
+    /// that already reached `ready` (idempotent replay) is never downgraded.
+    /// Both updates carry the job's own `tenant_id` filter — the jobs table
+    /// sits outside RLS (§31.5).
+    ///
     /// Only affects jobs currently in `running` status. Returns the new status
     /// ([`JobStatus::Failed`] or [`JobStatus::Dead`]).
     ///
@@ -332,23 +351,59 @@ impl JobQueue {
     /// Returns an error if the job does not exist, is not currently `running`, or the
     /// database operation fails.
     pub async fn fail(&self, job_id: i64, error: &str) -> anyhow::Result<JobStatus> {
+        self.fail_inner(job_id, error, false).await
+    }
+
+    /// Dead-letter a running job immediately, bypassing remaining retries.
+    ///
+    /// For **permanent** failures — deterministic errors (e.g. extraction of
+    /// invalid bytes) where every retry must produce the same outcome, so
+    /// burning the retry budget only wastes worker capacity (P15-T9; observed
+    /// as 5 pointless attempts in ~30 s). The dead-letter document hook of
+    /// [`fail`](Self::fail) applies identically; the tenant retry endpoint
+    /// can still requeue the job explicitly.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the job does not exist, is not currently `running`,
+    /// or the database operation fails.
+    pub async fn fail_permanent(&self, job_id: i64, error: &str) -> anyhow::Result<JobStatus> {
+        self.fail_inner(job_id, error, true).await
+    }
+
+    /// Shared body of [`fail`](Self::fail) / [`fail_permanent`](Self::fail_permanent).
+    async fn fail_inner(
+        &self,
+        job_id: i64,
+        error: &str,
+        force_dead: bool,
+    ) -> anyhow::Result<JobStatus> {
         let mut tx = self
             .pool
             .begin()
             .await
             .context("failed to begin fail transaction")?;
 
-        // Lock the row and read current state.
-        let row = sqlx::query("SELECT status, attempts FROM jobs WHERE id = $1 FOR UPDATE")
-            .bind(job_id)
-            .fetch_optional(&mut *tx)
-            .await
-            .context("failed to read job for fail")?;
+        // Lock the row and read current state (+ what the dead-letter document
+        // hook needs: kind, document_id and the job's own tenant for explicit
+        // tenant-scoped updates — jobs sit outside RLS).
+        let row = sqlx::query(
+            "SELECT status, attempts, kind, document_id, tenant_id \
+             FROM jobs WHERE id = $1 FOR UPDATE",
+        )
+        .bind(job_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .context("failed to read job for fail")?;
 
-        let (status_str, current_attempts): (String, i32) = match row {
-            Some(r) => (r.get("status"), r.get("attempts")),
-            None => anyhow::bail!("job {job_id} not found"),
+        let Some(row) = row else {
+            anyhow::bail!("job {job_id} not found");
         };
+        let status_str: String = row.get("status");
+        let current_attempts: i32 = row.get("attempts");
+        let kind: String = row.get("kind");
+        let document_id: Option<i64> = row.get("document_id");
+        let tenant_id: i64 = row.get("tenant_id");
 
         anyhow::ensure!(
             status_str == "running",
@@ -356,7 +411,7 @@ impl JobQueue {
         );
 
         let new_attempts = current_attempts + 1;
-        let dead = new_attempts >= self.max_retries;
+        let dead = force_dead || new_attempts >= self.max_retries;
         let new_status = if dead {
             JobStatus::Dead
         } else {
@@ -375,6 +430,33 @@ impl JobQueue {
             .execute(&mut *tx)
             .await
             .context("failed to dead-letter job")?;
+
+            // Dead-letter document hook (P15-T9): surface the terminal failure
+            // on the staged document so the tenant sees `failed` (+ retry UX)
+            // instead of an eternally-`pending` document. Never downgrade a
+            // document that already converged to `ready`.
+            if kind == "ingest"
+                && let Some(doc_id) = document_id
+            {
+                sqlx::query(
+                    "UPDATE documents SET status = 'failed' \
+                         WHERE id = $1 AND tenant_id = $2 AND status <> 'ready'",
+                )
+                .bind(doc_id)
+                .bind(tenant_id)
+                .execute(&mut *tx)
+                .await
+                .context("failed to mark document failed on dead-letter")?;
+                sqlx::query(
+                    "UPDATE files SET status = 'failed' \
+                         WHERE document_id = $1 AND tenant_id = $2 AND status = 'pending'",
+                )
+                .bind(doc_id)
+                .bind(tenant_id)
+                .execute(&mut *tx)
+                .await
+                .context("failed to mark files failed on dead-letter")?;
+            }
         } else {
             let run_after = Utc::now() + calculate_backoff(new_attempts, self.min_backoff_ms);
             sqlx::query(
@@ -530,7 +612,13 @@ async fn worker_loop<F, Fut>(
                         let _ = queue.complete(job_id).await;
                     }
                     Err(e) => {
-                        let _ = queue.fail(job_id, &e).await;
+                        // Deterministic failures skip the retry budget — every
+                        // retry would produce the same outcome (P15-T9).
+                        if let Some(msg) = e.strip_prefix(PERMANENT_ERROR_PREFIX) {
+                            let _ = queue.fail_permanent(job_id, msg).await;
+                        } else {
+                            let _ = queue.fail(job_id, &e).await;
+                        }
                     }
                 }
             }

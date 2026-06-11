@@ -18,6 +18,7 @@ use kb_core::job::Job;
 use kb_core::status::ProcessingStatus;
 
 use crate::ingest::{IngestFile, IngestPipeline};
+use crate::job_queue::PERMANENT_ERROR_PREFIX;
 
 // ── Store trait ──────────────────────────────────────────────────────────────
 
@@ -79,24 +80,32 @@ pub struct QueuedIngestInputs {
 /// document's own staged `local_only` flag.
 ///
 /// # Errors
-/// Returns a `jobs.last_error`-ready string when the job carries no
-/// `document_id`, the document or its files are missing, or a blob read
-/// fails — each retryable through the queue's normal backoff.
+/// Returns a `jobs.last_error`-ready string. **Deterministic** failures — a
+/// job with no `document_id`, a staged document/file set that does not exist
+/// — are tagged with [`PERMANENT_ERROR_PREFIX`] so the worker loop
+/// dead-letters them immediately instead of burning the retry budget
+/// (P15-T9); transient ones (database or blob read errors) keep the queue's
+/// normal backoff retry.
 pub async fn load_queued_ingest_inputs(
     store: &dyn QueuedIngestStore,
     blob: &dyn Blob,
     job: &Job,
     plan_local_only: bool,
 ) -> Result<QueuedIngestInputs, String> {
-    let document_id = job
-        .document_id
-        .ok_or_else(|| format!("ingest job {} carries no document_id (legacy job?)", job.id))?;
+    let document_id = job.document_id.ok_or_else(|| {
+        format!(
+            "{PERMANENT_ERROR_PREFIX}ingest job {} carries no document_id (legacy job?)",
+            job.id
+        )
+    })?;
 
     let doc = store
         .get_document(job.tenant_id, document_id)
         .await
         .map_err(|e| format!("failed to load staged document {document_id}: {e}"))?
-        .ok_or_else(|| format!("staged document {document_id} not found for tenant"))?;
+        .ok_or_else(|| {
+            format!("{PERMANENT_ERROR_PREFIX}staged document {document_id} not found for tenant")
+        })?;
 
     if doc.status == ProcessingStatus::Ready {
         // Idempotent replay: already finalized (e.g. a lease-expiry duplicate
@@ -115,7 +124,9 @@ pub async fn load_queued_ingest_inputs(
         .await
         .map_err(|e| format!("failed to load files for document {document_id}: {e}"))?;
     if file_rows.is_empty() {
-        return Err(format!("staged document {document_id} has no file rows"));
+        return Err(format!(
+            "{PERMANENT_ERROR_PREFIX}staged document {document_id} has no file rows"
+        ));
     }
 
     let mut files = Vec::with_capacity(file_rows.len());
@@ -157,7 +168,9 @@ pub async fn load_queued_ingest_inputs(
 /// # Errors
 /// Returns a `jobs.last_error`-ready string on any failure; the worker loop
 /// routes it into [`JobQueue::fail`](crate::JobQueue::fail) (backoff retry,
-/// then dead-letter).
+/// then dead-letter) — except **deterministic** failures, which carry
+/// [`PERMANENT_ERROR_PREFIX`] and dead-letter immediately via
+/// [`JobQueue::fail_permanent`](crate::JobQueue::fail_permanent) (P15-T9).
 pub async fn process_queued_ingest(
     pipeline: &IngestPipeline,
     store: &dyn QueuedIngestStore,
@@ -180,7 +193,22 @@ pub async fn process_queued_ingest(
         )
         .await
         .map(|_| ())
-        .map_err(|e| format!("{e:#}"))
+        .map_err(|e| classify_pipeline_error(&format!("{e:#}")))
+}
+
+/// Tag deterministic pipeline failures as permanent (P15-T9).
+///
+/// Extraction errors are a pure function of the stored bytes — every retry of
+/// `"extraction failed for page …"` (the pipeline's own context string,
+/// pinned by a unit test) must fail identically, so they dead-letter
+/// immediately. Everything else (model backends, store writes) stays
+/// transient and keeps the backoff retry.
+fn classify_pipeline_error(formatted: &str) -> String {
+    if formatted.starts_with("extraction failed") {
+        format!("{PERMANENT_ERROR_PREFIX}{formatted}")
+    } else {
+        formatted.to_string()
+    }
 }
 
 // ── Unit tests ──────────────────────────────────────────────────────────────
@@ -316,6 +344,8 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("no document_id"), "got: {err}");
+        // Deterministic: retries cannot grow a document_id (P15-T9).
+        assert!(err.starts_with(PERMANENT_ERROR_PREFIX), "got: {err}");
     }
 
     #[tokio::test]
@@ -326,6 +356,8 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("not found"), "got: {err}");
+        // Deterministic: staging commits before enqueue, so absence is final.
+        assert!(err.starts_with(PERMANENT_ERROR_PREFIX), "got: {err}");
     }
 
     #[tokio::test]
@@ -355,6 +387,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("no file rows"), "got: {err}");
+        assert!(err.starts_with(PERMANENT_ERROR_PREFIX), "got: {err}");
     }
 
     #[tokio::test]
@@ -369,6 +402,33 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("absent-key"), "got: {err}");
+        // Blob reads can fail transiently (shared S3): keep the retry budget.
+        assert!(!err.starts_with(PERMANENT_ERROR_PREFIX), "got: {err}");
+    }
+
+    // ── classify_pipeline_error (P15-T9) ──────────────────────────────────
+
+    #[test]
+    fn extraction_failures_classify_as_permanent() {
+        // Pins the pipeline's own context string ("extraction failed for page
+        // …", ingest.rs) — extraction is a pure function of the stored bytes.
+        let e = classify_pipeline_error(
+            "extraction failed for page 1 (x.bin): TextExtractor: invalid utf-8",
+        );
+        assert!(e.starts_with(PERMANENT_ERROR_PREFIX), "got: {e}");
+        assert!(e.contains("extraction failed for page 1"), "got: {e}");
+    }
+
+    #[test]
+    fn model_and_store_failures_stay_transient() {
+        for msg in [
+            "model backend temporarily unavailable: tagger model call failed",
+            "embedding failed: connection reset",
+            "transactional ingest failed: deadlock detected",
+        ] {
+            let e = classify_pipeline_error(msg);
+            assert_eq!(e, msg, "transient errors must pass through unchanged");
+        }
     }
 
     /// The effective local_only is the staged flag OR the plan gate.
