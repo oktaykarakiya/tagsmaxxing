@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! The chunk record — an embedded unit of retrievable content (plan §5).
 
 use serde::{Deserialize, Serialize};

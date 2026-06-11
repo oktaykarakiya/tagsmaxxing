@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! [`Pool`]: the role-indexed registry of backends (plan §6.2, §6.6) and
 //! its acquire algorithm (§6.3, §26.4).
 

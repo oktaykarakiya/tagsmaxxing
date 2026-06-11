@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Integration tests for the pending-ingest staging layer (P15-T1) against a
 //! real pgvector Postgres container.
 //!

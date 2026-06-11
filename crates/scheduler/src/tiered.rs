@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Tiered failover routing algorithm (plan §26.4).
 //!
 //! Implements the per-tier spill-and-fallback acquire strategy that replaces

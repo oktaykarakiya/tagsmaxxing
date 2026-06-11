@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! The `Store` capability — persistence + hybrid search (plan §4, §5, §8).
 
 use async_trait::async_trait;

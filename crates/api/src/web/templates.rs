@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Askama template types for the Web UI.
 //!
 //! Each struct corresponds to a template file under `templates/`. Fields use
@@ -357,6 +359,14 @@ pub(crate) struct FaqItem {
     pub question: String,
     /// The answer text (may contain basic HTML like links).
     pub answer: String,
+}
+
+/// `GET /license` — the public dual-licensing explanation page.
+#[derive(Debug, Template)]
+#[template(path = "license.html")]
+pub(crate) struct LicensePage {
+    /// Whether a valid session cookie was detected.
+    pub is_authenticated: bool,
 }
 
 // ── Account page types (P12-T3) ────────────────────────────────────────────────

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Retrieval eval harness: labelled queries, metrics computation (recall@k, MRR),
 //! and a regression-check baseline (plan §19, P6-T12).
 //!

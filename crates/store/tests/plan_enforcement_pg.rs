@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Integration tests for plan-driven quota enforcement (P11-T5) against a real
 //! pgvector Postgres container.
 //!

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Askama template types for the provider / model / route admin CRUD pages
 //! (plan §26.5, ledger P9-T8).
 //!

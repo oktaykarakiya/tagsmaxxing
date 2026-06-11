@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Subscription lifecycle methods on [`PgStore`] (plan §29, P11-T4).
 //!
 //! These methods drive the Stripe-driven billing lifecycle:

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Integration tests for `JobQueue` and `run_worker_pool` against a real pgvector
 //! Postgres container.
 //!

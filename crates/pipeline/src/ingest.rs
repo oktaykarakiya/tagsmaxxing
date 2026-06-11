@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! [`IngestPipeline`] — top-level orchestrator wiring the full §7 ingestion flow
 //! from raw bytes to a ready document (plan §7, §10, P3-T7).
 //!

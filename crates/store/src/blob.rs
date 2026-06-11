@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Local-disk implementation of the [`kb_core::blob::Blob`] capability trait (plan §20).
 //!
 //! Content-addressed key layout: `{root}/{prefix}/{blob_key}`.

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! AES-256-GCM column encryption for sensitive DB columns (plan §28, P10-T2).
 //!
 //! Pure, I/O-free functions for encrypting and decrypting individual database column values

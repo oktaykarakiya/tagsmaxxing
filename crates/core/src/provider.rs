@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! The `ProviderAdapter` capability and its wire DTOs (plan §26.1).
 
 use std::fmt::Debug;

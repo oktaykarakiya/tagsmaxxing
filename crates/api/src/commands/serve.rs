@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! `kb serve` — start the HTTP API server (plan §10, §12).
 //!
 //! This command wires up all pipeline components (PgStore, scheduler pool,

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Web UI module: Askama templates, CSRF protection, security headers, and
 //! HTML page handlers for the Local File Knowledge Base.
 //!
@@ -81,6 +83,7 @@ pub(crate) fn build_web_router(
         .route("/pricing", get(handlers_marketing::pricing_page))
         .route("/features", get(handlers_marketing::features_page))
         .route("/faq", get(handlers_marketing::faq_page))
+        .route("/license", get(handlers_marketing::license_page))
         // Legal pages (P12-T6): public, no auth required.
         .route("/terms", get(handlers_legal::terms_page))
         .route("/privacy", get(handlers_legal::privacy_page))

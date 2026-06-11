@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! `PgStore` — the [`Store`](kb_core::store::Store) implementation over Postgres + pgvector
 //! (plan §5/§7/§13), connecting via sqlx.
 //!

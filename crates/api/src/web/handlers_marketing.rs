@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Public marketing page handlers (P12-T1): landing, pricing, features, FAQ.
 //!
 //! All routes in this module are **public** (no auth middleware). They detect
@@ -21,7 +23,8 @@ use kb_store::plans::Plan;
 
 use super::handlers::render_ok;
 use super::templates::{
-    FaqItem, FaqPage, FeaturesPage, FileTypeSupport, LandingPage, PlanCard, PricingPage,
+    FaqItem, FaqPage, FeaturesPage, FileTypeSupport, LandingPage, LicensePage, PlanCard,
+    PricingPage,
 };
 
 // ── GET / ────────────────────────────────────────────────────────────────────────
@@ -105,6 +108,19 @@ pub(crate) async fn faq_page() -> Response {
     let page = FaqPage {
         is_authenticated: false,
         faqs: build_faqs(),
+    };
+    render_ok(&page)
+}
+
+// ── GET /license ──────────────────────────────────────────────────────────────────
+
+/// `GET /license` — render the public dual-licensing explanation page.
+///
+/// Explains the AGPLv3 open-source license, the commercial license option,
+/// and the CLA requirement for contributors. Content is static.
+pub(crate) async fn license_page() -> Response {
+    let page = LicensePage {
+        is_authenticated: false,
     };
     render_ok(&page)
 }
@@ -318,7 +334,7 @@ fn build_faqs() -> Vec<FaqItem> {
         },
         FaqItem {
             question: "Can I self-host Local KB?".to_string(),
-            answer: "Absolutely. Local KB runs on Podman containers with a single compose.yaml file. You control where your data lives — on your own servers, in your cloud account, or on bare metal. The open-source license (Apache 2.0 / MIT) gives you full freedom.".to_string(),
+            answer: "Absolutely. Local KB runs on Podman containers with a single compose.yaml file. You control where your data lives — on your own servers, in your cloud account, or on bare metal. The open-source license (AGPLv3, or a commercial license for proprietary use) gives you full freedom.".to_string(),
         },
         FaqItem {
             question: "How does AI tagging work?".to_string(),
@@ -382,6 +398,7 @@ mod tests {
             .route("/pricing", get(pricing_page))
             .route("/features", get(features_page))
             .route("/faq", get(faq_page))
+            .route("/license", get(license_page))
             .layer(axum::middleware::from_fn(
                 crate::web::security::security_headers_middleware,
             ))
@@ -585,6 +602,36 @@ mod tests {
         assert!(
             html.contains("<meta name=\"description\""),
             "faq must have meta description"
+        );
+    }
+
+    #[test]
+    fn license_page_template_renders() {
+        let page = LicensePage {
+            is_authenticated: false,
+        };
+        let html = page.render().expect("license template must render");
+
+        assert!(
+            html.contains("Dual Licensing"),
+            "license must have hero headline"
+        );
+        assert!(html.contains("AGPLv3"), "license must mention AGPLv3");
+        assert!(
+            html.contains("Commercial License"),
+            "license must mention commercial license"
+        );
+        assert!(
+            html.contains("Contributing"),
+            "license must mention contributing"
+        );
+        assert!(
+            html.contains("Model Weights"),
+            "license must mention model weights exclusion"
+        );
+        assert!(
+            html.contains("<meta name=\"description\""),
+            "license must have meta description"
         );
     }
 

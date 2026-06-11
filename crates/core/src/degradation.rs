@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Aggregated degradation status for all subsystems (plan §22).
 //!
 //! Each flag is an [`AtomicBool`] for lock-free reads across axum worker tasks.

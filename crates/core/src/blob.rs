@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! The `Blob` capability — content-addressed object storage (plan §13, §20).
 
 use std::time::Duration;

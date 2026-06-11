@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! `kb-store`: the `Store` implementation over Postgres + pgvector (sqlx), including
 //! hybrid (vector + keyword) search, RRF fusion, and document roll-up.
 //!

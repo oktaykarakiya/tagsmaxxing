@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Dashboard page handler (plan §30, ledger P12-T4).
 //!
 //! `GET /dashboard` renders an authenticated usage dashboard with:

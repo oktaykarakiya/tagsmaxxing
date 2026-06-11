@@ -26,7 +26,7 @@ All inference runs on **local llama.cpp servers**, addressed by hostname, with a
 - **Avoid the abliterated/"uncensored-aggressive" build.** This pipeline refuses nothing —
   it tags your own files. Aggressive de-alignment measurably degrades instruction-following
   and JSON-schema adherence, which is exactly the property the tagger depends on. Use stock
-  Apache-2.0 weights.
+  permissively-licensed weights.
 - **Structured output is grammar-constrained**, not prompt-and-pray. `llama-server`
   supports `response_format: json_schema` / GBNF, so tags/metadata deserialize into Rust
   structs reliably.
@@ -628,7 +628,7 @@ Each phase is independently testable because dependencies are traits, not concre
   enforce this (reject multi-model `embed` routes).
 - **Rust doc-parsing gaps:** Tika sidecar is the universal fallback; native crates
   (`calamine`, `lopdf`) are optional fast paths, not prerequisites.
-- **Model choice:** stock Apache-2.0 weights only — abliterated builds hurt the JSON
+- **Model choice:** stock permissively-licensed weights only — abliterated builds hurt the JSON
   reliability this whole pipeline rests on.
 - **Resilience has a complexity cost.** Maximal HA (auto-failover clusters) adds moving
   parts that can *reduce* stability for a single operator. Default to a disposable stateless
@@ -711,7 +711,8 @@ JS, trivial to open-source and maintain; "sleek minimalist" is achievable with T
   separate **profile** / `compose.gpu.yaml` (Podman GPU via CDI, `--device nvidia.com/gpu=all`)
   so CPU-only users can still run the app.
 - **Podman-native:** ship **Quadlet** `.container` units for systemd deployment.
-- **Repo:** `.env.example`, README/ARCHITECTURE/CONTRIBUTING, **LICENSE** (Apache-2.0/MIT),
+- **Repo:** `.env.example`, README/ARCHITECTURE/CONTRIBUTING, **LICENSE** (AGPL-3.0-or-later),
+  **CLA.md**, **LICENSE.COMMERCIAL** (commercial dual-license),
   note that model weights are separately licensed, CI (clippy + fmt + tests, incl. the
   mock-backend scheduler tests), `cargo audit` + `cargo deny`, SBOM.
 

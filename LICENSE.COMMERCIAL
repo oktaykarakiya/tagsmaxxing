@@ -1,0 +1,43 @@
+# Commercial License — Local File Knowledge Base
+
+The **Local File Knowledge Base** is dual-licensed:
+
+## Open Source Edition — AGPLv3
+
+The source code is freely available under the GNU Affero General Public License v3.0
+or later (`AGPL-3.0-or-later`). See the [`LICENSE`](./LICENSE) file for the full text.
+
+Under the AGPLv3 you may:
+- Use the software for any purpose
+- Modify the software
+- Distribute the software
+- Run the software as a network service (provided you make the source — including your
+  modifications — available to users interacting with it over the network)
+
+## Commercial License
+
+A separate commercial license is available for organizations that wish to:
+
+- **Integrate** the software into a proprietary product without the copyleft obligation
+  to release their own modifications under AGPLv3
+- **Embed** the software in a closed-source application or appliance
+- **Operate** a modified version as a network service without publishing their
+  modifications
+- **Receive** warranties, indemnification, and support not provided with the
+  open-source edition
+
+The commercial license is **perpetual, worldwide, non-exclusive**, and includes the
+right to use the software without AGPLv3's copyleft obligations.
+
+### How to obtain a commercial license
+
+Contact the Maintainer to discuss your use case and obtain a quote:
+
+- **Email:** oktaykarakiya@protonmail.com
+- **Web:** https://tagsmaxxing.com/license
+
+---
+
+**Model weights are NOT covered by either license.** The LLM models (llama.cpp GGUF
+files, whisper models, etc.) are separately licensed by their respective providers.
+This project does not distribute any model weights.

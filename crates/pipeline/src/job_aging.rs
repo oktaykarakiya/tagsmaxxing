@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Job priority aging to prevent starvation (plan §16, P9-T12).
 //!
 //! Low-priority jobs should not starve forever behind a stream of high-priority

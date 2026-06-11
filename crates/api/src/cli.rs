@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! CLI argument definitions for the `kb` binary (plan §10, §12, P6-T1).
 //!
 //! Parsed with [`clap`] derive macros. The [`Cli`] struct is the top-level entry point;

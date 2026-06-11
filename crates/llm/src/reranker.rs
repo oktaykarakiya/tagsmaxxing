@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! [`LlamaReranker`] — implements the core [`Reranker`] trait using
 //! [`LlamaClient`] with [`Role::Rerank`] (plan §8 step 5).
 //!

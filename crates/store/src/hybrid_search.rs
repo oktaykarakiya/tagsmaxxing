@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Hybrid search SQL implementation — vector (HNSW cosine) + keyword (ts_rank on tsv),
 //! fused with Reciprocal Rank Fusion and rolled up to document-level [`Hit`]s with
 //! deep-link provenance (plan §8, P4-T3).

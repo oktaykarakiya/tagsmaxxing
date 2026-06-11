@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! The `Embedder` capability and its kind selector (plan §4).
 
 use async_trait::async_trait;

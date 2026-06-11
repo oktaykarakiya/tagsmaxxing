@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Axum request handlers, organized by domain.
 //!
 //! * [`admin_quota`] — super-admin quota-override endpoint (P14-T14).

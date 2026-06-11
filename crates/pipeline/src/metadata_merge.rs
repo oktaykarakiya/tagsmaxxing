@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Metadata merge: combine per-page `(FileRecord, Extracted)` pairs into
 //! document-level output — merged text, namespaced metadata, and a dominant
 //! [`DocKind`] (plan §7 step 3, P3-T6).

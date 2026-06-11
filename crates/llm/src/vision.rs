@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! VLM captioning: describe image bytes with a vision-language model.
 //!
 //! The [`VisionCaptioner`] takes [`PageImage`]s produced by the image extractor

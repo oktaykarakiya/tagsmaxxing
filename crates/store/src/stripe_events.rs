@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Stripe event idempotency and webhook-lookup methods (plan §29, P11-T3).
 //!
 //! The [`PgStore`](crate::PgStore) methods in this module handle:

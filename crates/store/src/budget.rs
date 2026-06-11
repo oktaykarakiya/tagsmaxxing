@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Budget / cost-tracking queries on [`PgStore`] (plan §26.6, P9-T10).
 //!
 //! These methods query the running monthly spend (`usage_events.cost_micros`)

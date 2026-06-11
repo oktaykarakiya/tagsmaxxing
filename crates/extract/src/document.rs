@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! [`DocumentExtractor`] — the composite extractor for [`DocKind::Document`].
 //!
 //! `DocKind::Document` spans both plain-text formats (`text/plain`, markdown,

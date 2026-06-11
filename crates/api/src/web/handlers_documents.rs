@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Web UI document detail page handlers (P6-T7).
 //!
 //! These handlers render and manage the document detail page:

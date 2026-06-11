@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! CDN URL rewriting for blob egress economics (plan §20, P8-T13).
 //!
 //! B2 + Cloudflare are in the [Bandwidth

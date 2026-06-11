@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! [`UsageRecorder`] implementation for [`PgStore`] (BUG-BILL-03).
 //!
 //! Bridges the [`kb_core::usage::UsageRecorder`] capability — injected into the

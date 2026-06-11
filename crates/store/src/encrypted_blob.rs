@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Envelope encryption wrapper for any [`kb_core::blob::Blob`] backend (plan §20, §24, §28).
 //!
 //! [`EncryptedBlob`] wraps an inner `Blob` implementation and transparently encrypts

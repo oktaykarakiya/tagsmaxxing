@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Binary entry point for the coverage-gate tool. All logic lives in the [`kb_cov_gate`]
 //! library so it is unit-tested; `main` is a thin shell that maps the result to an exit code.
 

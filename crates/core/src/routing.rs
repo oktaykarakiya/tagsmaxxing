@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! DB-driven routing types: provider kinds, strategies, and resolved routing-table
 //! entries (plan §26.5).
 //!

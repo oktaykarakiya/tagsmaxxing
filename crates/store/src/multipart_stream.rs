@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Streaming multipart upload for S3-compatible blob backends (plan §20, P8-T4).
 //!
 //! Files larger than [`MultipartUploadConfig::threshold_bytes`] are uploaded in parts

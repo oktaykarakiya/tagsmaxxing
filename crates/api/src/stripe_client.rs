@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Stripe client abstraction for billing integration (plan §29, P11-T2).
 //!
 //! Provides the [`StripeClient`] trait for creating Stripe Checkout Sessions,

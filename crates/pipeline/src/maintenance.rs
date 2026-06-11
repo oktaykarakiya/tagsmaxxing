@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Maintenance scheduler (plan §25, P8-T11).
 //!
 //! A built-in cron-like scheduler for recurring maintenance tasks that runs inside

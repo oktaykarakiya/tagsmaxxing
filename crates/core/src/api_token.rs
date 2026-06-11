@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! API tokens for programmatic Bearer-auth access (plan §30, P12-T5).
 //!
 //! This module defines the [`ApiTokenStore`] trait, the metadata types returned

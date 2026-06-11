@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Optional OpenTelemetry tracing export (plan §18, behind the `otlp` feature).
 //!
 //! When the `otlp` feature is enabled and the `OTEL_EXPORTER_OTLP_ENDPOINT`

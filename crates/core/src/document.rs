@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! The document record — the semantic unit a user retrieves (plan §5, §27).
 
 use chrono::{DateTime, Utc};

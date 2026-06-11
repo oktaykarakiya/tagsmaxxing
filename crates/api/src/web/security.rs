@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Security headers middleware for the Web UI.
 //!
 //! The [`security_headers_middleware`] is an axum middleware that adds

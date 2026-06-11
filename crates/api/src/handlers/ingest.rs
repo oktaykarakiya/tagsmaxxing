@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! `POST /api/ingest` — multipart file upload handler.
 //!
 //! Accepts one or more files, an optional `user_note` text field, and an

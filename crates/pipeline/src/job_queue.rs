@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Durable Postgres-backed job queue for ingestion work (plan §16).
 //!
 //! The [`JobQueue`] provides enqueue, claim (atomic `SELECT … FOR UPDATE SKIP LOCKED`),

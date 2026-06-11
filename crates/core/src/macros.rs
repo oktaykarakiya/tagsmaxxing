@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Internal helper macro for the crate's "string enum" pattern.
 
 /// Define a `Copy` enum whose variants map 1:1 to canonical lowercase strings (the values

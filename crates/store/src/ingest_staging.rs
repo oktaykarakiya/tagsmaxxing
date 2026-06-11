@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Pending-ingest staging on [`PgStore`] — the upload-time half of the async
 //! queued ingestion flow (P15-T1, plan §16).
 //!

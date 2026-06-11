@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Document detail + file download handlers.
 //!
 //! * `GET /api/documents/:id` — document with files, tags, and metadata.

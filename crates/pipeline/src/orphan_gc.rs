@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Orphan GC maintenance job (plan §23, P8-T10).
 //!
 //! The orphan GC finds and cleans up inconsistencies between the B2 blob store

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! [`RetrievalPipeline`] — top-level orchestrator wiring the complete §8 read path
 //! from query text to ranked [`Hit`]s with deep-link provenance (plan §8, §10, P4-T5).
 //!

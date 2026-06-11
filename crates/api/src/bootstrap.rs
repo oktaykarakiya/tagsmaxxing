@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Bootstrap seeding: on first run with an empty `tenants` table, create a
 //! default tenant and admin user from environment variables.
 //!

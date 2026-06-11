@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Candidate-diversification regression for hybrid search (BUG-SEARCH-04).
 //!
 //! A single document whose many near-identical chunks all sit close to the

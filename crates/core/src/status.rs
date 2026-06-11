@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Processing status shared by documents and files (the `status` column).
 
 use crate::macros::str_enum;

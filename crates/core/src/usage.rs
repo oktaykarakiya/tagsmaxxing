@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Per-call usage accounting record (plan §5, §15).
 
 use async_trait::async_trait;

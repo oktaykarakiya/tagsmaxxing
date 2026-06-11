@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Test-only networking helpers shared by the extractor unit tests.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]

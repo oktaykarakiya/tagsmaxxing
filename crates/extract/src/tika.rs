@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Tika-sidecar extractor for rich documents (PDF, DOCX, PPTX, XLSX, ODT, RTF,
 //! and any other format Apache Tika supports).
 //!

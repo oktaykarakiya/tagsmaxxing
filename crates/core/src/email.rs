@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Email sending traits for verification, password reset, and notifications
 //! (P12-T2, P12-T7).
 //!

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! The file record — one physical blob = one page/member of a document (plan §5).
 
 use chrono::{DateTime, Utc};

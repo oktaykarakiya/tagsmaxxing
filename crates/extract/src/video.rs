@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Video extractor: ffmpeg scene-change keyframe extraction (capped at ~40 frames,
 //! `select='gt(scene,0.3)'`), audio track extraction + whisper transcription, and
 //! ffprobe metadata harvest (duration/resolution/codec/fps).

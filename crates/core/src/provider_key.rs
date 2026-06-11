@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Provider API key encryption and secure in-memory handling (plan §24, P10-T3).
 //!
 //! Provider API keys (Anthropic, OpenAI, Gemini, etc.) are stored **encrypted at rest**

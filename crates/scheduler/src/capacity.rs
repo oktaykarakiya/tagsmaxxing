@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Pluggable capacity guards (plan §26.2).
 //!
 //! The [`Capacity`] enum replaces the hardcoded [`tokio::sync::Semaphore`] in

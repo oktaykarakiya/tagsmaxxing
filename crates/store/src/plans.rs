@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Billing plans and tenant subscription methods (plan §29, P11-T1).
 //!
 //! The `plans` table defines tiers (free/pro/team) with storage/token quotas and

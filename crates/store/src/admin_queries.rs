@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Admin-panel query methods on [`PgStore`] (plan §15, ledger P6-T8).
 //!
 //! These methods support the admin dashboard, tenant / user management, tag merge,

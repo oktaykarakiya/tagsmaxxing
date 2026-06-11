@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! The embedded, forward-only schema migrations (plan §5 schema, §13 RLS, §16 queue).
 
 use sqlx::migrate::Migrator;

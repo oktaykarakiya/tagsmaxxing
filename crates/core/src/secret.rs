@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Encrypted-key reference types (plan §26.3, §24).
 //!
 //! A [`SecretRef`] is a lightweight handle to a provider API key stored

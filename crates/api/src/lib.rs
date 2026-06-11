@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! `kb-api`: the axum HTTP API for the Local File Knowledge Base.
 //!
 //! This crate provides the auth middleware (cookie-based session validation),

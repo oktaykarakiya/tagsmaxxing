@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! `GET /api/jobs/:id` (job status) and `GET /api/jobs` (tenant job list +
 //! active count, P15-T10).
 //!

@@ -450,8 +450,18 @@ catalogued as acceptance criteria.
 
 ## License
 
-Licensed under the [GNU General Public License v3.0 or later](LICENSE) — see the
-[`LICENSE`](./LICENSE) file for the full text.
+**Open-source edition:** Licensed under the [GNU Affero General Public License v3.0 or
+later](./LICENSE) — see the [`LICENSE`](./LICENSE) file for the full text. The AGPLv3 is a
+strong copyleft license that closes the "network service loophole": if you modify the
+software and make it available to users interacting with it over a computer network, you
+must make your modifications available under the same license.
+
+**Commercial license:** For enterprises that need to integrate this software into
+proprietary products without the copyleft obligations of the AGPL, a commercial license is
+available. See [`LICENSE.COMMERCIAL`](./LICENSE.COMMERCIAL) for details.
+
+**Contributor License Agreement:** All contributions are accepted under the terms of
+[`CLA.md`](./CLA.md). See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for instructions.
 
 **Model weights are NOT covered by this license.** The LLM models (llama.cpp GGUF files,
 whisper models, etc.) are separately licensed by their respective providers. This project

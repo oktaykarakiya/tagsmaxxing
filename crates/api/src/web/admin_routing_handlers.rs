@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Admin-panel Web UI handlers for provider / model / route CRUD (plan §26.5,
 //! ledger P9-T8).
 //!

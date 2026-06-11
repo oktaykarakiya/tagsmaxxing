@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! P3 phase integration test (§10, §31): end-to-end ingest of a text file
 //! through the full pipeline — mock LLM backends for tagger + embedder,
 //! [`LocalBlob`](kb_store::LocalBlob) for storage, real [`PgStore`] with

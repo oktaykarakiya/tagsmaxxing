@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! [`OpenAiCompat`] — a [`ProviderAdapter`](kb_core::provider::ProviderAdapter)
 //! for any OpenAI-compatible HTTP API (plan §26.1). Covers local
 //! `llama.cpp`/vLLM, DeepSeek, Qwen, Gemini (OpenAI-compat), OpenAI, etc.

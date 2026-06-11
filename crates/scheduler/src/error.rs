@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Scheduler acquisition errors (plan §6.3).
 
 use std::time::Duration;

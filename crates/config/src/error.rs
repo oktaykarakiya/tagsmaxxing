@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Error type for configuration loading, overlay, validation, and watching.
 
 use std::path::PathBuf;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // pgbackrest_validation.rs — structural validation of pgBackRest config, backup
 // scripts, and DR runbook (P8-T6, plan §21).
 //

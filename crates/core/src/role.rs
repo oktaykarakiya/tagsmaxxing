@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Model capability roles — what a backend can be asked to do (plan §6).
 
 use crate::macros::str_enum;

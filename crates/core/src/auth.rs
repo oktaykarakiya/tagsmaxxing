@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Password hashing with Argon2id, common-password rejection, and session-secret
 //! validation.
 //!

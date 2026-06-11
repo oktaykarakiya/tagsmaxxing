@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! `kb-extract`: `Extractor` implementations (text/code, Tika docs, image/VLM, audio/video
 //! via ffmpeg+whisper, binary metadata).
 //!

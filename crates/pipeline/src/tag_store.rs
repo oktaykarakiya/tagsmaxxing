@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! [`TagStore`] trait — the database operations needed by
 //! [`TagCanonicalizer`](super::tag_canonicalizer::TagCanonicalizer).
 //!

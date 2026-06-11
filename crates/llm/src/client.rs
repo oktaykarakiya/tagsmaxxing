@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! [`LlamaClient`] — the OpenAI-compatible HTTP client that routes every call
 //! through [`kb_scheduler::Pool::acquire`] with failover and circuit-breaking
 //! (plan §6.4).

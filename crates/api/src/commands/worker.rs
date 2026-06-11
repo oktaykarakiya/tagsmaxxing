@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! `kb worker` — a standalone, distributed ingest-worker process (P15-T8).
 //!
 //! Runs the exact same processing stack as `kb serve`'s embedded workers

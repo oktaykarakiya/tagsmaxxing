@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! DataKey envelope-tracking struct and KEK rotation helpers (plan §28, P10-T1).
 //!
 //! A [`DataKey`] tracks which Key Encryption Key (KEK) wrapped a particular Data Encryption

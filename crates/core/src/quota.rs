@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Per-tenant quota enforcement: pure counting logic (plan §13, P5-T6, P11-T5).
 //!
 //! These are the I/O-free math helpers that compare current usage against a tenant's

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! P9 phase integration test (§26, §31): pluggable providers, DB-driven tiered
 //! routing, data residency, cost tracking & budget enforcement, and hot-reload.
 //!

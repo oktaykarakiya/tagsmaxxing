@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Per-tenant spend-budget enforcement — pure logic (plan §26.6, P9-T10).
 //!
 //! These functions compare a tenant's running monthly cost (sum of

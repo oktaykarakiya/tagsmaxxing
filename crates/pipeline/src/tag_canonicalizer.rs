@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Tag canonicalization: deduplicate raw LLM-proposed tags against a tenant's
 //! existing tag set via alias lookup and cosine similarity (plan §6.5).
 //!

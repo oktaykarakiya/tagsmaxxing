@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Crypto-shredding methods on [`PgStore`] — tenant-data destruction, DEK removal,
 //! and tombstone creation for the delete-tenant flow (plan §28, P10-T4).
 //!

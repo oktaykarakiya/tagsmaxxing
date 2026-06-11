@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Time-of-day and day-of-week access windows for backends (plan §26.2, P9-T13).
 //!
 //! A [`TimeWindow`] gates a backend on wall-clock time: only during certain hours

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Decrypt-access audit logging on [`PgStore`] (plan §28, P10-T5).
 //!
 //! Every key-unwrap operation (DEK unwrap, provider API key decrypt) writes a

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Read-through LRU cache for any [`Blob`](kb_core::blob::Blob) implementor (plan §20).
 //!
 //! Wraps an inner backend (typically [`B2Blob`](crate::B2Blob)) with a size-capped on-disk

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Billing handlers: Stripe Checkout + Customer Portal (plan §29, P11-T2 & P11-T6).
 //!
 //! * `GET  /billing/checkout` — start a Stripe Checkout Session via query param

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Capability set — which roles a backend can serve (plan §26.3).
 //!
 //! A [`CapSet`] is a compact bitset of [`Role`]s stored in a `u8`. It replaces

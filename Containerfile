@@ -41,6 +41,12 @@ RUN cargo build --release -p kb-api --bin kb
 
 # ── Stage 4: Runtime (minimal debian:slim, non-root) ─────────────────────────
 FROM docker.io/debian:bookworm-slim AS runtime
+# OCI image annotations (https://github.com/opencontainers/image-spec/blob/main/annotations.md)
+LABEL org.opencontainers.image.title="Local File Knowledge Base (tagsmaxxing)"
+LABEL org.opencontainers.image.description="AI-powered local file knowledge base"
+LABEL org.opencontainers.image.licenses="AGPL-3.0-or-later"
+LABEL org.opencontainers.image.source="https://github.com/oktaykarakiya/tagsmaxxing"
+LABEL org.opencontainers.image.documentation="https://tagsmaxxing.com"
 # curl is needed by the HEALTHCHECK; ca-certificates for TLS; ffmpeg is used by
 # the audio/video extractors to transcode media to 16 kHz mono WAV / keyframes
 # before whisper transcription.

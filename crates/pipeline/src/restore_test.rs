@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Automated pgBackRest restore-test maintenance job (plan §21, P8-T7).
 //!
 //! The restore-test job is the non-negotiable verification that makes backups real

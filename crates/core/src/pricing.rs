@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Per-model pricing metadata (plan §26.3, §26.6).
 //!
 //! [`Pricing`] drives the cost-aware routing strategy ([`CostAsc`]) and

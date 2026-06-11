@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! `kb-llm`: OpenAI-compatible client that routes every call through the
 //! [`kb_scheduler::Pool`] with failover, bounded retries, and per-backend
 //! circuit-breaking (plan §6.4).

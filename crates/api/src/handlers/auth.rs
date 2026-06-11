@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Auth handlers: login (password verification + session creation), register
 //! (user creation + session creation), and logout (session revocation).
 //!

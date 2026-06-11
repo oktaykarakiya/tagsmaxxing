@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! P10 phase integration test (§28, §31): comprehensive verification that all P10
 //! encryption, key-management, crypto-shredding, and decrypt-audit components work
 //! together correctly.

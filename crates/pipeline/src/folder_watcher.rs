@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Folder watcher: a background task that monitors a directory for new and
 //! modified files and enqueues each as an ingest job via the job queue (plan
 //! §10, P6-T3).

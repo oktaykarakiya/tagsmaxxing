@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! [`DataClass`]: where inference runs — local or remote (plan §26.3, §26.6).
 //!
 //! This drives data-residency policy: local-only tenants must never send data

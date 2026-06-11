@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! `GET /api/search` — hybrid search handler.
 //!
 //! Accepts query parameters (`q`, `kind`, `tag`, `limit`), calls the

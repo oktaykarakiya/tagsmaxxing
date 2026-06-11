@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! `kb-cov-gate` — enforce per-group line-coverage floors from an LCOV report.
 //!
 //! Build tooling for the Podman-backed integration lane (`just ci-integration`, ledger task

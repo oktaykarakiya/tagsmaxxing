@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Backblaze B2 blob backend implementing the [`kb_core::blob::Blob`] capability trait
 //! (plan §20).
 //!

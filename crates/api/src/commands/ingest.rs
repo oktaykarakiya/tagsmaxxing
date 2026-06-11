@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Handler for `kb ingest <FILES...>`.
 //!
 //! Reads each file from disk, constructs [`IngestFile`] records, and calls

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! `kb-core`: the stable, I/O-free contract for the Local File Knowledge Base.
 //!
 //! This crate holds the domain types (mirroring the Postgres schema, plan §5) and the

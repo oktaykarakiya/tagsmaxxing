@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Plan-driven quota enforcement on [`PgStore`] — storage, tokens, users, and
 //! feature gates (plan §29, P11-T5).
 //!

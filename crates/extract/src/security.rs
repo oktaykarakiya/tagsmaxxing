@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Security guards for the extractor untrusted-bytes boundary (plan §17, §31.5).
 //!
 //! This module provides upload-edge validation — per-file size limits, MIME-type

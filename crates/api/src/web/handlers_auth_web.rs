@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Web UI auth flow handlers: signup, email verification, forgot/reset password (P12-T2).
 //!
 //! These handlers implement the self-service onboarding flow:

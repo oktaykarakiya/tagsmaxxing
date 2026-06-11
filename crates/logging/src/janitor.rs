@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Belt-and-suspenders log-directory janitor (plan §18).
 //!
 //! In addition to the per-file rotation enforced by [`file_rotate`], a

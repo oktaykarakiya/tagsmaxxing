@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Legal page handlers (P12-T6): Terms of Service, Privacy Policy, DPA,
 //! Acceptable Use Policy, Cookie Policy, and Data Retention & Erasure.
 //!

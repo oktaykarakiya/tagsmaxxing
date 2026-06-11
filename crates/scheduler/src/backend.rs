@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! [`Backend`]: one inference server or provider endpoint with a pluggable
 //! capacity guard and capability set (plan §6.1–§6.2, §26.2–§26.3).
 

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Stripe webhook handler (plan §29, P11-T3).
 //!
 //! `POST /stripe/webhook` — idempotent, signature-verified Stripe webhook endpoint.

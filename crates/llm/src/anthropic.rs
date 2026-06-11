@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! [`Anthropic`] — a [`ProviderAdapter`](kb_core::provider::ProviderAdapter) for
 //! Anthropic's native Messages API (`x-api-key`, `anthropic-version: 2023-06-01`,
 //! system parameter). Normalizes to [`ChatResp`]/[`EmbedResp`] (plan §26.1).

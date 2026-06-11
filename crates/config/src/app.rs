@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Hot-swappable configuration handle backed by [`arc_swap::ArcSwap`].
 
 use std::path::{Path, PathBuf};

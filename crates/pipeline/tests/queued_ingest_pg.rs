@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Integration test for the queued-ingest worker path (P15-T3) against a real
 //! pgvector Postgres container: staged pending document → `process_queued_ingest`
 //! → document/files `ready` with chunks; replay is idempotent.

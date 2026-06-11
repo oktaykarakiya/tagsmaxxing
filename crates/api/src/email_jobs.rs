@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Transactional email: job-queue integration, template rendering, and provider impls
 //! (P12-T7).
 //!

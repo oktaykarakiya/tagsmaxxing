@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Error type for the coverage-gate tool.
 
 use std::path::PathBuf;

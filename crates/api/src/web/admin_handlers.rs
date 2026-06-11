@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Admin-panel Web UI handlers (plan §15, ledger P6-T8).
 //!
 //! All handlers require authentication (the auth middleware runs first). Role-based

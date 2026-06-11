@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Integration test for the embedded queued-ingest workers (P15-T6) against a
 //! real pgvector Postgres container: the **runtime-built** stack (real
 //! JsonSchemaTagger / embedder / DocumentExtractor over a mock LLM backend)

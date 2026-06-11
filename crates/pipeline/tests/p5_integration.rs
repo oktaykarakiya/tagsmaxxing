@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! P5 phase integration test (§13, §31): multi-tenant end-to-end.
 //!
 //! Sets up two tenants (A, B) with their own admin users in a real pgvector Postgres

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Minimal LCOV parser — extracts per-file line counts from a coverage report.
 //!
 //! `cargo llvm-cov report --lcov` emits standard LCOV: one record per source file, with an

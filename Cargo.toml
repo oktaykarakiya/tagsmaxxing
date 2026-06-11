@@ -6,7 +6,7 @@ members = ["crates/*"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-license = "GPL-3.0-or-later"
+license = "AGPL-3.0-or-later"
 
 # Single source of truth for dependency versions. Crates opt in with
 # `dep = { workspace = true }`. Versions verified against crates.io on 2026-05-29

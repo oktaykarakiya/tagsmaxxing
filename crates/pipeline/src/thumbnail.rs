@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Ingest-time thumbnail generation (plan §20, P8-T13).
 //!
 //! Generates small derived preview/thumbnail blobs from file bytes at ingest

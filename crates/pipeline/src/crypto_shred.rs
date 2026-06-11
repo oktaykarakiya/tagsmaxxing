@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Crypto-shredding pipeline — irrevocable tenant deletion via DEK destruction
 //! (plan §28, P10-T4).
 //!

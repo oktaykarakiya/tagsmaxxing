@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Logging configuration read from environment variables (plan §18).
 //!
 //! Configuration is resolved once at startup from the process environment

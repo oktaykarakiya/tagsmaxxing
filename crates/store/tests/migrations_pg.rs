@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Integration test: the schema migrations apply cleanly on a *fresh* pgvector Postgres,
 //! produce 2560-dim vector columns, enable RLS, and are idempotent on re-run (plan §5/§13/§16,
 //! acceptance of P0-T6).

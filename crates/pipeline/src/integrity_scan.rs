@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Blob integrity scan maintenance job (plan §23, P8-T10).
 //!
 //! The integrity scan periodically re-hashes a random sample of B2 blobs and

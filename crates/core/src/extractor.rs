@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! The `Extractor` capability and its I/O types (plan §4, §7).
 
 use async_trait::async_trait;

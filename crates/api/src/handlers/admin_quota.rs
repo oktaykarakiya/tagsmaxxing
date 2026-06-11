@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Super-admin quota-override endpoint (ledger P14-T14, plan §29).
 //!
 //! `POST /admin/tenants/:id/quota-override` lets the **platform operator**

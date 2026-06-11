@@ -178,18 +178,40 @@ One task = one commit. Format: `P7-T5: short description of what changed`. End w
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
 ```
 
+## Contributor License Agreement
+
+All contributions are accepted under the terms of the [Contributor License Agreement
+(CLA)](./CLA.md). Before your first PR is merged, you must sign the CLA — this grants
+the Project a copyright and patent license for your contributions and enables the
+dual-licensing model (AGPLv3 open source + commercial license).
+
+**How to sign:**
+- Comment **`/cla-signed`** on your first PR, or
+- Email a signed copy of [`CLA.md`](./CLA.md) to the Maintainer.
+
+By signing, you confirm that You have read and agree to the CLA terms. The CLA is based
+on the Apache Software Foundation Individual CLA v2.0 — it is perpetual, non-exclusive,
+and royalty-free. Crucially, it allows the Project to relicense Your Contribution under
+different terms (enabling the commercial license option for enterprises).
+
+If you submit a PR without signing the CLA, your contribution is accepted under the
+project's default inbound license (**AGPL-3.0-or-later only**) — this means it can be
+used in the open-source edition but **cannot** be incorporated into the commercial
+license offering. Please sign the CLA so your contribution benefits both tracks.
+
 ## PR process
 
-1. **Create a branch** from `main`.
-2. **Implement** following `CLAUDE.md` and the test patterns above.
-3. **Run `just ci`** — all gates must be green.
-4. If your change adds or modifies DB code, also run **`just ci-integration`** against
+1. **Sign the CLA** — comment `/cla-signed` on your first PR (see above).
+2. **Create a branch** from `main`.
+3. **Implement** following `CLAUDE.md` and the test patterns above.
+4. **Run `just ci`** — all gates must be green.
+5. If your change adds or modifies DB code, also run **`just ci-integration`** against
    a running Podman socket to ensure the integration suites pass.
-5. **Update `BUILD_LEDGER.toml`** — set the task `status = "done"` and append a one-line
+6. **Update `BUILD_LEDGER.toml`** — set the task `status = "done"` and append a one-line
    `notes` entry.
-6. **Push and open a PR.** CI runs the same gates on push/PR. A reviewer checks for
+7. **Push and open a PR.** CI runs the same gates on push/PR. A reviewer checks for
    correctness, test coverage, and adherence to the architectural patterns.
-7. **Merge** once approved and CI is green. Prefer squash-merge to keep `main` linear.
+8. **Merge** once approved and CI is green. Prefer squash-merge to keep `main` linear.
 
 ## Generating an SBOM
 

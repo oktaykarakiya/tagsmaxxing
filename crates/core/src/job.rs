@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! The durable ingestion job record and its enums (plan §5, §16).
 
 use chrono::{DateTime, Utc};

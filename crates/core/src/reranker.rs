@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! The `Reranker` capability (plan §4, §8).
 
 use async_trait::async_trait;

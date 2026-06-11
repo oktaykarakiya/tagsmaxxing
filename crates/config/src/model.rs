@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Typed configuration model parsed from `config.toml` (plan §6).
 
 use kb_core::role::Role;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Plain-text extractor for Document-kind files (.txt, .md, .html, .csv, .log, etc.).
 //!
 //! Reads the raw bytes as UTF-8 and returns the full content as [`Extracted::text`].

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! P11 phase integration test (§29, §31): end-to-end billing lifecycle with
 //! mock Stripe server, real Postgres (testcontainers), and the full API router.
 //!

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Binary / unknown extractor: magic-byte MIME detection via `tree_magic_mini`,
 //! the `file` command (detached subprocess), printable ASCII string extraction,
 //! and size + SHA-256 collection.

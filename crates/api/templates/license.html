@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+
+{% block title %}License{% endblock %}
+
+{% block head_extra %}
+<meta name="description" content="Dual licensing: AGPLv3 open source and commercial license for the Local File Knowledge Base.">
+{% endblock %}
+
+{% block content %}
+{# ── Public navigation ─────────────────────────────────────────────────── #}
+<nav class="bg-white/90 backdrop-blur-sm border-b border-gray-200 sticky top-0 z-50">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="flex justify-between h-14 items-center">
+            <a href="/" class="text-lg font-bold text-indigo-600 tracking-tight">tagsmaxxing</a>
+            <div class="flex items-center space-x-1 sm:space-x-4">
+                <a href="/features" class="text-sm text-gray-600 hover:text-indigo-600 px-2 py-1">Features</a>
+                <a href="/pricing" class="text-sm text-gray-600 hover:text-indigo-600 px-2 py-1">Pricing</a>
+                <a href="/faq" class="text-sm text-gray-600 hover:text-indigo-600 px-2 py-1">FAQ</a>
+                {% if is_authenticated %}
+                <a href="/search" class="text-sm text-gray-600 hover:text-indigo-600 px-2 py-1">Search</a>
+                {% else %}
+                <a href="/login" class="text-sm text-gray-600 hover:text-indigo-600 px-2 py-1">Log in</a>
+                <a href="/register" class="ml-2 rounded-md bg-indigo-600 px-4 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 transition">
+                    Sign up
+                </a>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</nav>
+
+{# ── Hero ─────────────────────────────────────────────────────────────── #}
+<section class="bg-gradient-to-br from-indigo-50 via-white to-purple-50 py-16">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
+        <h1 class="text-3xl sm:text-4xl lg:text-5xl font-extrabold text-gray-900">
+            Dual Licensing
+        </h1>
+        <p class="mt-4 text-lg text-gray-500 max-w-2xl mx-auto">
+            Open Source (AGPLv3) for the community. Commercial license for enterprises.
+        </p>
+    </div>
+</section>
+
+{# ── Content ──────────────────────────────────────────────────────────── #}
+<section class="py-16 bg-white">
+    <div class="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 prose prose-gray max-w-none">
+
+        <h2 class="text-2xl font-bold text-gray-900 mb-4">Open Source Edition — AGPLv3</h2>
+        <p class="text-gray-600 mb-6">
+            The Local File Knowledge Base is <strong>free and open source</strong> under the
+            <a href="https://www.gnu.org/licenses/agpl-3.0.html" class="text-indigo-600 hover:underline">
+            GNU Affero General Public License v3.0 or later</a> (AGPL-3.0-or-later).
+            This is a strong copyleft license that guarantees the four essential freedoms:
+        </p>
+        <ul class="list-disc list-inside text-gray-600 mb-6 space-y-1">
+            <li>Freedom to <strong>use</strong> the software for any purpose</li>
+            <li>Freedom to <strong>study and modify</strong> the software</li>
+            <li>Freedom to <strong>share</strong> the software</li>
+            <li>Freedom to <strong>share your modifications</strong></li>
+        </ul>
+
+        <h3 class="text-xl font-semibold text-gray-900 mb-3">The network-service clause</h3>
+        <p class="text-gray-600 mb-6">
+            AGPLv3 adds one important condition beyond the standard GPL: if you modify the
+            software and make it available to users interacting with it over a computer
+            network (including as a SaaS or hosted service), you must make your
+            modifications available under the same license. This closes the
+            "network service loophole" that allows companies to take open-source code,
+            improve it privately, and offer it as a proprietary service without giving
+            anything back.
+        </p>
+
+        <p class="text-gray-600 mb-8">
+            <a href="/LICENSE.txt" class="text-indigo-600 hover:underline font-medium">
+            View the full AGPLv3 license text &rarr;</a>
+        </p>
+
+        <h2 class="text-2xl font-bold text-gray-900 mb-4">Commercial License</h2>
+        <p class="text-gray-600 mb-6">
+            For organizations that need to integrate this software into proprietary
+            products, embed it in closed-source applications, or operate a modified
+            version without the copyleft obligations of the AGPL, a
+            <strong>commercial license</strong> is available.
+        </p>
+
+        <h3 class="text-xl font-semibold text-gray-900 mb-3">What the commercial license provides</h3>
+        <ul class="list-disc list-inside text-gray-600 mb-6 space-y-1">
+            <li>Use the software in <strong>proprietary products</strong> without source disclosure</li>
+            <li>No obligation to publish modifications made for internal use</li>
+            <li>Operate modified versions as a network service without sharing code</li>
+            <li>Perpetual, worldwide, non-exclusive license</li>
+        </ul>
+
+        <p class="text-gray-600 mb-8">
+            <strong>To obtain a commercial license</strong>, contact us at
+            <a href="mailto:oktaykarakiya@protonmail.com" class="text-indigo-600 hover:underline">
+            oktaykarakiya@protonmail.com</a> to discuss your use case.
+        </p>
+
+        <h2 class="text-2xl font-bold text-gray-900 mb-4">Contributing</h2>
+        <p class="text-gray-600 mb-2">
+            Contributions are welcomed under the terms of the
+            <a href="https://github.com/oktaykarakiya/tagsmaxxing/blob/main/CLA.md" class="text-indigo-600 hover:underline">
+            Contributor License Agreement (CLA)</a>.
+            Before your first pull request is merged, you must sign the CLA.
+        </p>
+        <p class="text-gray-600 mb-8">
+            See
+            <a href="https://github.com/oktaykarakiya/tagsmaxxing/blob/main/CONTRIBUTING.md" class="text-indigo-600 hover:underline">
+            CONTRIBUTING.md</a> for full instructions.
+        </p>
+
+        <h2 class="text-2xl font-bold text-gray-900 mb-4">Model Weights</h2>
+        <p class="text-gray-600">
+            <strong>Model weights are NOT covered by either license.</strong> The LLM models
+            (llama.cpp GGUF files, whisper models, etc.) are separately licensed by their
+            respective providers. This project does not distribute any model weights — operators
+            must obtain them directly from the model providers under each model's own terms.
+        </p>
+
+    </div>
+</section>
+{% endblock %}

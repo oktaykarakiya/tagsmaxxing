@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! P4 phase integration test (§8, §10, §31): end-to-end retrieval round-trip.
 //!
 //! Sets up documents, files, chunks, and tags in a real pgvector Postgres via

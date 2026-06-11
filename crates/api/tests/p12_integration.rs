@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! P12 phase integration test (§30, §31): full SaaS onboarding flow with
 //! mock Stripe server, mock email, and real Postgres (testcontainers).
 //!

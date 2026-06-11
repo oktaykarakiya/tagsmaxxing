@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Per-backend bandwidth throttle (plan §26.2, P9-T13).
 //!
 //! A [`BandwidthLimiter`] bounds throughput to a configured MB/s using the

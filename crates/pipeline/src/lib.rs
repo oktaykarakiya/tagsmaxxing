@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! `kb-pipeline`: orchestrates ingestion (extract → tag → chunk → embed → upsert) and
 //! retrieval (embed → hybrid search → RRF → rerank → optional RAG).
 //!

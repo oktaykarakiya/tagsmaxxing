@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Error type for `kb-core`'s own fallible logic (string/hex parsing).
 //!
 //! The high-level capability traits return [`anyhow::Result`] so implementations in other

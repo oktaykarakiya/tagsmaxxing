@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Background health-check loop that polls every backend's `/health` endpoint
 //! and updates [`Backend::healthy`] (plan §6.5).
 //!

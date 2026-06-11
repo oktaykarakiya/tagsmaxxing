@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Cookie-based session management — the trait and pure helpers.
 //!
 //! This module defines the [`Session`] record, the [`SessionStore`] async trait (plan §13),

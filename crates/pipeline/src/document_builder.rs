@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Document builder: constructs a [`Document`] and ordered [`FileRecord`]s from
 //! 1..N raw file bytes (plan §5, §7, §27).
 //!

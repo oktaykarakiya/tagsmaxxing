@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! P8 phase integration test (§20, §22, §23, §31): comprehensive verification that
 //! all P8 components work together correctly.
 //!

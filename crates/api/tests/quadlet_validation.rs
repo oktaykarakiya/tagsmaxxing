@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // quadlet_validation.rs — structural validation of the quadlet deployment files.
 //
 // §14, P7-T3: proves that every required unit file exists, carries its

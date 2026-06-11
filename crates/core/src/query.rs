@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Retrieval query input, result types, and fusion logic (plan §8).
 
 use std::collections::HashMap;

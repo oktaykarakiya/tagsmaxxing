@@ -40,9 +40,9 @@ allow = [
     "Unicode-DFS-2016",
     "MPL-2.0",
     "CC0-1.0",
-    # First-party kb-* crates are GPL-3.0-or-later (commit 2c5dd84). A GPL project
-    # may legally incorporate GPL deps, so it is allow-listed for the workspace.
-    "GPL-3.0-or-later",
+    # First-party kb-* crates are AGPL-3.0-or-later (the project license). An AGPL
+    # project may legally incorporate AGPL deps, so it is allow-listed for the workspace.
+    "AGPL-3.0-or-later",
 ]
 confidence-threshold = 0.8
 exceptions = []
@@ -50,7 +50,7 @@ exceptions = []
 unused-allowed-license = "allow"
 
 [licenses.private]
-# First-party kb-* workspace crates are GPL-3.0-or-later (the project license, commit 2c5dd84).
+# First-party kb-* workspace crates are AGPL-3.0-or-later (the project license).
 ignore = false
 
 [bans]

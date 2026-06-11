@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! The audit log — records every mutating admin action for accountability
 //! (plan §15 admin panel) and every key-unwrap operation for confidentiality
 //! auditing (plan §28, P10-T5).

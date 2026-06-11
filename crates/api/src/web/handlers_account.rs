@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Account & billing page handlers (plan §30, ledger P12-T3).
 //!
 //! These handlers serve the authenticated account section:

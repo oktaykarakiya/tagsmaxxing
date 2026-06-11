@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Reusable circuit breaker for external dependencies (plan §6.4, §22).
 //!
 //! After `threshold` consecutive failures the circuit opens (fast-fail).

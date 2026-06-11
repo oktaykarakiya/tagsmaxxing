@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Streaming ZIP + JSONL export for data portability (plan §13, P5-T7).
 //!
 //! Given a `tenant_id`, the export:

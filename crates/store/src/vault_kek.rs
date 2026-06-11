@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! HashiCorp Vault Transit-backed [`KeyEncryptionKey`](kb_core::kek::KeyEncryptionKey)
 //! implementation (plan §24, §28, P10-T1).
 //!

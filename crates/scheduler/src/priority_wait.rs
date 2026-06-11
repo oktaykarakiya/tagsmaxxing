@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Priority-ordered waiter queue for the scheduler (P9-T12).
 //!
 //! When multiple callers are waiting for a backend slot, the highest-priority

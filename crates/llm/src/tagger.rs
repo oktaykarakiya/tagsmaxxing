@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! [`JsonSchemaTagger`] — implements the core [`Tagger`] trait using
 //! [`LlamaClient`] with `response_format: json_schema` for grammar-constrained
 //! structured output (plan §9).

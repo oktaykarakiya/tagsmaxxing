@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Content-address primitive: a SHA-256 digest with hex (de)serialization.
 
 use std::fmt;

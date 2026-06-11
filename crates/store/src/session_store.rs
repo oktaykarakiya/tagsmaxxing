@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! [`SessionStore`](kb_core::session::SessionStore) implementations.
 //!
 //! This module ships two backends for the session persistence trait defined in `kb-core`:

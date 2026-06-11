@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Fail-open, asynchronous usage recorder (plan §15, §29; ledger P14-T1).
 //!
 //! [`BufferedUsageRecorder`] wraps an inner [`UsageRecorder`] (typically the

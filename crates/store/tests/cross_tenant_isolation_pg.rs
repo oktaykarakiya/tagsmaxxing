@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Cross-tenant isolation integration tests — the definitive proof that Postgres RLS
 //! (§13) prevents tenant A from ever reading, writing, or searching tenant B's data
 //! (plan §13, §31.5; acceptance of P5-T2, reworked in P6-T14).

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! In-flight request limiter for backpressure (plan §22, P8-T9, P14-T7).
 //!
 //! Caps the number of concurrent ingest requests to prevent resource

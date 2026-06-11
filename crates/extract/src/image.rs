@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Image extractor: validates magic bytes for JPEG/PNG/GIF/WebP/TIFF and harvests
 //! EXIF metadata via `kamadak-exif` into namespaced `meta` JSON.
 //!

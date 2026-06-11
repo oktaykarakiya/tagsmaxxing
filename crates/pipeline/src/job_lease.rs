@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Job lease (visibility timeout) maintenance for the [`JobQueue`] (P15-T2,
 //! plan §16).
 //!

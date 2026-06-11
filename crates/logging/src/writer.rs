@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! File-rotate-based writer for `tracing-subscriber` (plan §18).
 //!
 //! The [`RotatingWriter`] wraps [`file_rotate::FileRotate`] in an

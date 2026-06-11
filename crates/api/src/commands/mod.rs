@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! CLI command handlers — thin dispatch from parsed arguments to pipeline calls.
 //!
 //! Each subcommand has a `run_*` function that takes the parsed [`clap`] args plus

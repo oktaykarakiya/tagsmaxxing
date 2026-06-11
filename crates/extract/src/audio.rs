@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Audio extractor: transcodes to 16 kHz mono WAV via ffmpeg subprocess
 //! (`tokio::process::Command`, timeout-gated), then POSTs the WAV to
 //! whisper-server for transcription (OpenAI-compatible `/v1/audio/transcriptions`).

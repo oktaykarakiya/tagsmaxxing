@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Degradation middleware — injects the `X-Degraded` response header when
 //! any subsystem is unhealthy (plan §22, P8-T9).
 //!

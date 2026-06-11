@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! The tenant record — the top-level isolation boundary.
 
 use chrono::{DateTime, Utc};

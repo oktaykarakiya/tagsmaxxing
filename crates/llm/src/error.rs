@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Error types for the `kb-llm` crate.
 
 use std::time::Duration;

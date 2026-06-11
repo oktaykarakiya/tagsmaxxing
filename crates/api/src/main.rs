@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! `kb` — the Local File Knowledge Base CLI.
 //!
 //! Entry point for the `kb` binary. Parses arguments via [`clap`], loads

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Loading, environment overlay, and validation of [`Config`].
 
 use std::fs;

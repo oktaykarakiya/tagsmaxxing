@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Shared harness for the `#[ignore]` testcontainers integration suites (P6-T14).
 //!
 //! # Why this crate exists

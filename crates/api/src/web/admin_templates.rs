@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Askama template types for the admin Web UI (P6-T8).
 //!
 //! Each struct corresponds to a template file under `templates/`. Fields use

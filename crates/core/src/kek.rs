@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Key Encryption Key (KEK) — the master-key capability trait and its file/env-backed
 //! implementation (plan §20, §24, §28).
 //!

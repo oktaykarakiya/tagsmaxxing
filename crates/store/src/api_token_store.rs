@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! API token persistence — [`ApiTokenStore`](kb_core::api_token::ApiTokenStore) trait
 //! implementations (plan §30, P12-T5).
 //!

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Hot-reload for the DB-driven routing table (plan §26.5, P9-T7).
 //!
 //! [`RoutingReloader`] bridges a [`Pool`](crate::Pool) with a source of

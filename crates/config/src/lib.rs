@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Typed, validated, hot-swappable configuration for the Local File Knowledge Base.
 //!
 //! Configuration is parsed from a TOML file (plan §6), overlaid with environment

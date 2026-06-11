@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! `kb-metrics`: Prometheus metrics + optional OpenTelemetry tracing (plan §15, §18).
 //!
 //! This crate provides the metrics infrastructure for the Local File Knowledge Base:

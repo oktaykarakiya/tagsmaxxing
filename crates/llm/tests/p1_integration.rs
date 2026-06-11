@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! P1 integration test suite — exercising the full scheduler + llm + mock-backend
 //! contract together (plan §10 P1, §31.3).
 //!

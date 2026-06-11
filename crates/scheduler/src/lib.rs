@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! `kb-scheduler`: capacity-aware, multi-host model pool (plan §6) — the centerpiece.
 //!
 //! Phase P1 builds this crate up one ledger task at a time. **P1-T1** lands the

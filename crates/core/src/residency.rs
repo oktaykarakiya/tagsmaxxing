@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! [`Residency`]: per-tenant data-residency policy (plan §26.6, P9-T9).
 //!
 //! A tenant's residency governs whether its content may be sent to remote

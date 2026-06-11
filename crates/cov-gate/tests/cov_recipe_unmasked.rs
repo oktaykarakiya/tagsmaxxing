@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Regression guard (ledger P6-T0, part d): the `cov` coverage gate in the repo `justfile`
 //! must stay a REAL, unmasked floor. This test is what prevents the gate from being silently
 //! neutered again — the review/p6-readiness finding was that a trailing `|| true` plus a

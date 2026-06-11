@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Retrieval eval integration test (plan §19, P6-T12).
 //!
 //! Ingests a deterministic fixture corpus of 8 documents into a real pgvector

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! P6 phase integration test (§10, §12, §15, §31): end-to-end through CLI,
 //! API, Web UI, Admin, and Metrics fronts.
 //!

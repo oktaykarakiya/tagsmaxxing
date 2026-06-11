@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Integration tests for `PgStore` against a real pgvector Postgres container.
 //!
 //! These tests need **Podman** (this project targets Podman exclusively) and network access

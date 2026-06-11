@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! `kb-logging`: size-based log rotation, JSON/pretty format, and correlation
 //! span helpers for the Local File Knowledge Base (plan §18).
 //!

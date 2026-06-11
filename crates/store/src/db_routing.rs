@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! DB-driven routing: CRUD for `providers`/`models`/`routes` tables +
 //! [`get_routing_table`] and [`test_connection`] (plan §26.5, P9-T5).
 //!

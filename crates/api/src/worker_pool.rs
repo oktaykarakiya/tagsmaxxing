@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Ingest-worker spawning shared by `kb serve` (embedded workers, P15-T6) and
 //! `kb worker` (dedicated worker processes, P15-T8).
 //!

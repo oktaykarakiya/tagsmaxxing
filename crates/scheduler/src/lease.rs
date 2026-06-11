@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! [`Lease`]: an RAII guard holding acquired capacity on a backend
 //! (plan §6.1–§6.2, §26.2).
 

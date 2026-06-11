@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Integration tests for the dashboard query methods on `PgStore` (P12-T4,
 //! P14-T13) against a real pgvector Postgres container.
 //!

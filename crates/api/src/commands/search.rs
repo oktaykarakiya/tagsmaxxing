@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Handler for `kb search <QUERY>`.
 //!
 //! Builds a [`Query`] from the parsed CLI arguments, calls

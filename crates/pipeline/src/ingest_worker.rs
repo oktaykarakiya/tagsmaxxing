@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Queued-ingest job processing — the worker half of async ingestion
 //! (P15-T3, plan §16).
 //!

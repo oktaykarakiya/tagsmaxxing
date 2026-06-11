@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! The kind of a document/file (drives extractor routing and the `kind` column).
 
 use crate::macros::str_enum;

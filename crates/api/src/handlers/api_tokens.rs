@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! API token handlers: create (POST /api/tokens), list (GET /api/tokens),
 //! and revoke (DELETE /api/tokens/:id).
 //!

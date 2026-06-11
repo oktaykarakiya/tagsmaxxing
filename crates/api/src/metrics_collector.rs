@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Periodic metrics collector that polls live state and updates Prometheus gauges.
 //!
 //! The collector runs as a background task and updates backend-level metrics

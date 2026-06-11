@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Shared component wiring for `kb serve` and `kb worker` (P15-T4).
 //!
 //! Both processes need the same stack — Postgres store, scheduler pool with

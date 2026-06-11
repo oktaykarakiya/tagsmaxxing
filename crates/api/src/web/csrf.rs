@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! CSRF token generation and validation for HTML forms.
 //!
 //! Each mutating form (`POST`, `PUT`, `DELETE`) on the Web UI includes a hidden

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Coverage groups: parse `--group` specs, aggregate per-group line coverage, and evaluate
 //! each group against its floor.
 
