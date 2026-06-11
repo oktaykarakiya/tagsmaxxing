@@ -324,6 +324,19 @@ async fn no_backend_when_all_unhealthy() {
 
 // ── health loop + pool + client lifecycle ─────────────────────────────────────
 
+/// Poll a backend's health flag until it reaches `want` (bounded 5 s) — the
+/// health loop runs every 10 ms here, so this converges almost immediately on
+/// an idle host while staying robust on a loaded one.
+async fn wait_for_health_flag(b: &Arc<kb_scheduler::Backend>, want: bool) {
+    for _ in 0..500 {
+        if b.healthy.load(std::sync::atomic::Ordering::SeqCst) == want {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("backend health flag never became {want} within 5s");
+}
+
 /// Full lifecycle: health loop detects an unhealthy backend → pool skips it
 /// → client gets NoBackend. Then health loop detects recovery → pool includes
 /// it again → client succeeds.
@@ -349,9 +362,12 @@ async fn health_loop_unhealthy_then_recovery_full_pipeline() {
     assert_eq!(resp.text, "mock response");
 
     // Phase 2: make the mock return unhealthy → health loop detects it →
-    // pool skips it → chat gets NoBackend.
+    // pool skips it → chat gets NoBackend. Poll the observable flag with a
+    // bounded deadline instead of a fixed sleep — under coverage
+    // instrumentation on a loaded host the 10 ms loop can fall behind a
+    // hard-coded wait (this test flaked exactly once that way).
     mock.scenario().lock().await.health = ResponseMode::Unhealthy;
-    tokio::time::sleep(Duration::from_millis(40)).await;
+    wait_for_health_flag(&b, false).await;
 
     let err = client
         .chat(Role::Text, "model", &chat_req("phase2"), false, 0)
@@ -364,7 +380,7 @@ async fn health_loop_unhealthy_then_recovery_full_pipeline() {
 
     // Phase 3: recover the mock → health loop detects it → chat succeeds again.
     mock.scenario().lock().await.health = ResponseMode::Healthy;
-    tokio::time::sleep(Duration::from_millis(40)).await;
+    wait_for_health_flag(&b, true).await;
 
     let resp = client
         .chat(Role::Text, "model", &chat_req("phase3"), false, 0)
