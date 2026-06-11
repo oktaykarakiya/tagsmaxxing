@@ -60,6 +60,9 @@ def _ingest_body(marker: str, body: str, suffix: str) -> int:
         resp = c.ingest_text(f"{marker}-{suffix}.txt", text)
         doc_id = resp.get("document_id")
         assert doc_id is not None, f"ingest returned no document_id: {resp}"
+        # Queued ingestion (P15): callers assert on search ranking, which needs
+        # the document fully processed (chunked + embedded), not merely staged.
+        flows.wait_until_ready(c, doc_id, job_id=resp.get("job_id"))
         return doc_id
     finally:
         c.close()

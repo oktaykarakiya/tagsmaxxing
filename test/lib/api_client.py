@@ -72,12 +72,12 @@ class ApiClient:
     ) -> dict[str, Any]:
         """Upload a single text file for ingestion; return the parsed response.
 
-        ``POST /api/ingest`` runs the pipeline (extract → tag → embed → store)
-        **synchronously** and returns ``202`` with ``{job_id, document_id,
-        message}``. ``job_id`` is a sentinel ``0`` — there is no async job to poll;
-        the document is already processed and ``document_id`` identifies it. The
-        async job queue / :meth:`get_job` is only for re-tag / re-embed / retry,
-        not this upload path.
+        Ingestion is **queued** (P15): ``POST /api/ingest`` stages a pending
+        document + files, enqueues a background ingest job, and returns ``202``
+        with ``{job_id, document_id, message}`` immediately. The pipeline
+        (extract → tag → embed → store) runs on a worker afterwards — poll
+        :func:`lib.flows.wait_until_ready` (or :meth:`get_job` with the returned
+        ``job_id``) before asserting on processed state.
         """
         files = [("files", (filename, content.encode("utf-8"), "text/plain"))]
         data: dict[str, str] = {}

@@ -148,8 +148,8 @@ def _upload_raw(api, filename: str, content: bytes, mime: str, **fields) -> dict
 def _csrf_upload(api, filename: str, content: bytes, mime: str, **fields) -> dict:
     """Upload through the Web UI endpoint (POST /upload) with CSRF handling.
 
-    This path creates a *real* async job (unlike /api/ingest which is synchronous).
-    Returns the parsed JSON response containing ``job_id``.
+    Like /api/ingest, this stages a pending document and enqueues a background
+    ingest job (P15). Returns the parsed JSON response containing ``job_id``.
     """
     # 1. GET /upload to obtain the CSRF cookie + token.
     get_resp = api._c.get("/upload")
@@ -214,7 +214,8 @@ def test_ingest_returns_202_with_job_id(api):
 
     body = resp.json()
     assert "job_id" in body, f"response missing job_id: {body}"
-    # job_id is the sentinel 0 for synchronous ingest (the API doc confirms this).
+    # Queued ingestion (P15): job_id identifies the real background ingest job
+    # (pollable via /api/jobs/:id).
     assert isinstance(body["job_id"], int), f"job_id is not an integer: {body['job_id']!r}"
 
     # document_id should be present and non-None for synchronous ingest.
@@ -245,7 +246,7 @@ def test_ingest_pdf_via_tika(api):
     doc_id = body.get("document_id")
     assert doc_id is not None, f"ingest returned no document_id: {body}"
 
-    doc = api.get_document(doc_id)
+    doc = flows.wait_until_ready(api, doc_id, job_id=body.get("job_id"))
     assert doc.get("id") == doc_id
 
     # The document kind should reflect a document/PDF.
@@ -319,7 +320,7 @@ def test_ingest_image_extracts_metadata(api):
     doc_id = body.get("document_id")
     assert doc_id is not None, f"image ingest returned no document_id: {body}"
 
-    doc = api.get_document(doc_id)
+    doc = flows.wait_until_ready(api, doc_id, job_id=body.get("job_id"))
     assert doc.get("id") == doc_id
 
     # Image documents should have kind "image".
@@ -352,7 +353,7 @@ def test_ingest_audio_transcribed(api):
     doc_id = body.get("document_id")
     assert doc_id is not None, f"audio ingest returned no document_id: {body}"
 
-    doc = api.get_document(doc_id)
+    doc = flows.wait_until_ready(api, doc_id, job_id=body.get("job_id"))
     assert doc.get("id") == doc_id
 
     # Audio documents should have kind "audio".
@@ -381,7 +382,7 @@ def test_ingest_video_keyframes_and_audio(api):
     doc_id = body.get("document_id")
     assert doc_id is not None, f"video ingest returned no document_id: {body}"
 
-    doc = api.get_document(doc_id)
+    doc = flows.wait_until_ready(api, doc_id, job_id=body.get("job_id"))
     assert doc.get("id") == doc_id
 
     # Video documents should have kind "video".
@@ -420,7 +421,7 @@ def test_ingest_code_file(api):
     doc_id = resp.get("document_id")
     assert doc_id is not None, f"code ingest returned no document_id: {resp}"
 
-    doc = api.get_document(doc_id)
+    doc = flows.wait_until_ready(api, doc_id, job_id=resp.get("job_id"))
     assert doc.get("id") == doc_id
 
     # Code classification is deferred (P3-T4); until then all text/* maps to
@@ -464,7 +465,21 @@ def test_ingest_binary_file(api):
     doc_id = body.get("document_id")
     assert doc_id is not None, f"binary ingest returned no document_id: {body}"
 
-    doc = api.get_document(doc_id)
+    # Queued ingestion (P15): a binary that slipped upload validation may still
+    # fail extraction in the worker (e.g. the text extractor rejects non-UTF-8
+    # bytes). That asynchronous CLEAN failure — a dead-lettered job with a
+    # descriptive error — is the queued-mode equivalent of the inline 400/500
+    # arm above, so accept it. TODO(P15-T9): tighten — a dead ingest job must
+    # mark the document status='failed' (today it stays 'pending').
+    outcome, doc, job = flows.wait_until_terminal(api, doc_id, job_id=body.get("job_id"))
+    if outcome in ("dead", "failed"):
+        err = (job.get("last_error") or "") if job else ""
+        assert err, (
+            f"binary ingest {outcome} without a descriptive last_error — "
+            f"failures must be diagnosable (doc={doc.get('status')!r})"
+        )
+        return
+
     assert doc.get("id") == doc_id
 
     # The file should be stored; kind may be "binary", "unknown", or "other".
@@ -500,7 +515,7 @@ def test_ingest_multi_file_group_as_document(api):
     doc_id = body.get("document_id")
     assert doc_id is not None, f"group ingest returned no document_id: {body}"
 
-    doc = api.get_document(doc_id)
+    doc = flows.wait_until_ready(api, doc_id, job_id=body.get("job_id"))
     assert doc.get("id") == doc_id
 
     # Should have multiple pages/files (all grouped into one document).
@@ -552,7 +567,7 @@ def test_ingest_idempotent_reupload(api):
     resp1 = _upload_raw(api, f"{marker}.txt", content, "text/plain")
     doc_id1 = resp1.get("document_id")
     assert doc_id1 is not None
-    doc1 = api.get_document(doc_id1)
+    doc1 = flows.wait_until_ready(api, doc_id1)
 
     # Second upload — same content, same filename.
     resp2 = _upload_raw(api, f"{marker}.txt", content, "text/plain")
@@ -565,10 +580,12 @@ def test_ingest_idempotent_reupload(api):
     assert len(hits) >= 1, f"search for {marker!r} returned no hits"
 
     # Both document ids should be retrievable.
-    doc2 = api.get_document(doc_id2)
+    doc2 = flows.wait_until_ready(api, doc_id2)
     assert doc2.get("id") == doc_id2
 
-    # The status of both documents should be valid (not error).
+    # The status of both documents should be valid (not error). (Re-read doc1:
+    # the re-upload re-staged the SAME document, so its first snapshot is stale.)
+    doc1 = flows.wait_until_ready(api, doc_id1)
     assert doc1.get("status") in ("ready",), f"first doc status: {doc1.get('status')!r}"
     assert doc2.get("status") in ("ready",), f"second doc status: {doc2.get('status')!r}"
 
@@ -598,7 +615,7 @@ def test_job_status_progression(api):
             f"inline ingest must return document_id, got: {upload_resp}"
         )
         # Verify the document actually exists.
-        doc = api.get_document(doc_id)
+        doc = flows.wait_until_ready(api, doc_id, job_id=upload_resp.get("job_id"))
         assert doc is not None, f"document {doc_id} not found after inline ingest"
         assert doc.get("id") == doc_id
     else:
@@ -746,7 +763,7 @@ def test_ingest_multi_format_group_as_document(api):
     doc_id = body.get("document_id")
     assert doc_id is not None, f"multi-format ingest returned no document_id: {body}"
 
-    doc = api.get_document(doc_id)
+    doc = flows.wait_until_ready(api, doc_id, job_id=body.get("job_id"))
     assert doc["id"] == doc_id
     assert doc["status"] == "ready", f"doc not ready: {doc}"
 
@@ -777,7 +794,7 @@ def test_download_uploaded_file_presigned_url(api):
     assert resp.status_code == 202, f"upload failed: {resp.status_code} {resp.text}"
     doc_id = resp.json()["document_id"]
 
-    doc = api.get_document(doc_id)
+    doc = flows.wait_until_ready(api, doc_id, job_id=resp.json().get("job_id"))
     assert doc["status"] == "ready", f"doc not ready: {doc}"
 
     files_in_doc = doc.get("files", [])
@@ -837,7 +854,7 @@ def test_file_visualization_metadata_after_upload(api):
     assert resp.status_code == 202, f"upload failed: {resp.status_code}"
     doc_id = resp.json()["document_id"]
 
-    doc = api.get_document(doc_id)
+    doc = flows.wait_until_ready(api, doc_id, job_id=resp.json().get("job_id"))
     assert doc["status"] == "ready"
 
     files_in_doc = doc.get("files", [])

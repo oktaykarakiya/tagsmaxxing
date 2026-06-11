@@ -202,7 +202,21 @@ def test_format_breadth(admin_client, idx):
         )
     doc_id = (out["body"] or {}).get("document_id")
     assert doc_id is not None, f"no document_id for {proto.filename} (req {rid})"
-    doc = admin_client.get_document(doc_id)
+    if proto.kind_class in ("image", "audio", "video"):
+        # Media kinds can be refined by the worker's metadata merge (e.g. an
+        # audio-only OGG staged as video/ogg settles to 'audio' after ffprobe),
+        # so assert the FINAL kind. On a mid-flight backend flap, skip — the
+        # environment (F5/F9), not a routing defect.
+        try:
+            doc = flows.wait_until_ready(
+                admin_client, doc_id, job_id=(out["body"] or {}).get("job_id")
+            )
+        except AssertionError:
+            if not ff.subsystem_ok(admin_client._c, "text"):
+                pytest.skip("text backend degraded mid-processing — environment, not routing")
+            raise
+    else:
+        doc = admin_client.get_document(doc_id)
     assert doc.get("kind", "") in proto.expected_kinds, (
         f"{proto.filename}: kind {doc.get('kind')!r} not in {proto.expected_kinds} (req {rid})"
     )

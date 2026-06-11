@@ -90,6 +90,36 @@ def _wait_for_family(name: str, timeout: float = 40.0, interval: float = 2.0) ->
     return text
 
 
+def _series_present(text: str, family: str, label: str) -> bool:
+    """True when a non-comment ``family`` sample line carries ``label``."""
+    return any(
+        label in ln
+        for ln in text.splitlines()
+        if ln.strip().startswith(family) and not ln.strip().startswith("#")
+    )
+
+
+def _wait_for_series(
+    family: str, label: str, timeout: float = 75.0, interval: float = 2.0
+) -> str:
+    """Poll ``/metrics`` until a ``family`` series carrying ``label`` appears.
+
+    Stricter than :func:`_wait_for_family`: a freshly-provisioned tenant's own
+    labelled series only shows up on the collector tick AFTER its usage exists,
+    while the family name is usually already present from other tenants — so
+    waiting for the family alone races the reconcile tick (observed with the
+    P15 queued worker, where usage is metered asynchronously). The timeout
+    spans two 30 s collector ticks plus margin. Returns the last scrape; on
+    timeout the caller's assertion fails with a useful message.
+    """
+    deadline = time.monotonic() + timeout
+    text = _metrics_text()
+    while not _series_present(text, family, label) and time.monotonic() < deadline:
+        time.sleep(interval)
+        text = _metrics_text()
+    return text
+
+
 def test_health_ok_when_ready(api):
     """GET /health returns 200 with DB + migrations + backends healthy."""
     resp = api.health()
@@ -275,38 +305,35 @@ def test_per_tenant_usage_gauges_published(limits_account):
     acct.reset_usage()
 
     # Establish some monthly token usage so kb_tenant_tokens_monthly has a value
-    # to publish for this tenant on the next collector tick.
+    # to publish for this tenant on the next collector tick. Queued ingestion
+    # (P15): usage is metered when the worker processes the job, so wait for
+    # readiness before expecting the collector to see this tenant at all.
     marker = flows.unique_marker("gaugemetric")
-    acct.client.ingest_text(f"{marker}.txt", f"Per-tenant gauge observability probe {marker}.")
+    body = acct.client.ingest_text(f"{marker}.txt", f"Per-tenant gauge observability probe {marker}.")
+    flows.wait_until_ready(acct.client, body["document_id"], job_id=body.get("job_id"))
 
-    # active-users is published every tick from the start; wait for it first.
-    text = _wait_for_family("kb_active_users")
+    # Wait for THIS tenant's own labelled series (not merely the family, which
+    # other tenants usually populate already) — the collector publishes it on
+    # its first tick after the tenant's usage exists.
+    tenant_label = f'tenant_id="{acct.tenant_id}"'
+    text = _wait_for_series("kb_active_users", tenant_label)
     assert _family_present(text, "kb_active_users"), (
         "kb_active_users gauge family never appeared on /metrics; the collector "
         "must publish a per-tenant active-user count each poll."
     )
-    tenant_label = f'tenant_id="{acct.tenant_id}"'
-    assert any(
-        tenant_label in ln
-        for ln in text.splitlines()
-        if ln.strip().startswith("kb_active_users") and not ln.strip().startswith("#")
-    ), (
+    assert _series_present(text, "kb_active_users", tenant_label), (
         f"kb_active_users has no series for tenant_id={acct.tenant_id}; the "
         "limits tenant's user count must be published, not only other tenants'."
     )
 
     # The monthly-tokens rollup gauge follows on a subsequent reconcile tick.
-    text2 = _wait_for_family("kb_tenant_tokens_monthly")
+    text2 = _wait_for_series("kb_tenant_tokens_monthly", tenant_label)
     assert _family_present(text2, "kb_tenant_tokens_monthly"), (
         "kb_tenant_tokens_monthly gauge family never appeared on /metrics; the "
         "collector must publish each tenant's reconciled monthly token total so "
         "operators can graph consumption per tenant."
     )
-    assert any(
-        tenant_label in ln
-        for ln in text2.splitlines()
-        if ln.strip().startswith("kb_tenant_tokens_monthly") and not ln.strip().startswith("#")
-    ), (
+    assert _series_present(text2, "kb_tenant_tokens_monthly", tenant_label), (
         f"kb_tenant_tokens_monthly has no series for tenant_id={acct.tenant_id}; "
         "the limits tenant's monthly token usage must be published."
     )

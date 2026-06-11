@@ -332,6 +332,11 @@ def test_token_budget_429_increments_rejection_metric(limits_account):
             f"{resp.status_code}: {resp.text[:300]}"
         )
         accepted += 1
+        # Queued ingestion (P15): tokens are metered when the worker processes
+        # the job, not at the 202 — wait for processing so the rollup the gate
+        # point-selects reflects this probe before the next admission attempt.
+        rbody = resp.json()
+        flows.wait_until_ready(acct.client, rbody["document_id"], job_id=rbody.get("job_id"))
 
     assert rejection is not None, (
         f"token budget was never enforced after {accepted} accepted ingests under a "

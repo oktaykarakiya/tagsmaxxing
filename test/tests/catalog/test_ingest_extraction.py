@@ -140,6 +140,9 @@ def _ingest_one(client: ApiClient, payload: tuple[str, bytes, str], request_id: 
         f"202 ingest of {payload[0]!r} returned no document_id; "
         f"x-request-id={out['request_id']}; body={out['text']}"
     )
+    # Queued ingestion (P15): the 202 stages a pending document; wait for the
+    # background worker to finalize it before asserting on extracted content.
+    flows.wait_until_ready(client, body["document_id"], job_id=body.get("job_id"))
     return body
 
 

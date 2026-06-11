@@ -3,25 +3,21 @@
 Where ``test_scheduler_load`` samples Prometheus ``/metrics`` to assert the
 scheduler's *internal* slot invariants, this file drives the ``/api/ingest``
 endpoint **directly** and asserts the *externally observable* concurrency
-contract a real client sees:
+contract a real client sees under **queued ingestion** (P15):
 
-  * per-tenant backpressure — the in-flight ingest limiter (per-tenant cap = 8,
-    global = 50 on this branch) actually engages: a burst well beyond the cap
-    yields explicit ``429``\\ s with a ``Retry-After`` header, never a silent
-    hang/drop. A past finding was that the limiter "was never consulted →
-    extreme-burst hangs with no 429"; this branch should FIX that, so the burst
-    test asserts backpressure ENGAGES (≥1 429 across 30 concurrent uploads);
+  * bounded-queue backpressure — uploads are cheap (validate → blob → stage →
+    enqueue) and the backlog is bounded by the ``[ingest]`` pending caps
+    (production default ``max_pending_per_tenant = 200``): a burst past the cap
+    yields explicit ``429 queue_full`` with a ``Retry-After`` header, never a
+    silent hang/drop or a 5xx;
   * concurrent dedup — firing the *exact same bytes* concurrently must not crash
-    on a unique-constraint / dedup collision (BUG-INGEST-02 territory): every
-    response is ``202``/``429``, no ``500``, and every returned ``document_id``
-    is retrievable (no orphaned rows);
-  * recovery — after a burst drains, a single sequential upload still returns
-    ``202`` (in-flight slots were released; the system is not wedged);
-  * two-tenant fairness (optional) — one tenant's burst does not starve another.
-
-The in-flight permit is held for the WHOLE handler (extract → tag → embed →
-store, ~1-2 s for a text doc), so concurrent uploads genuinely overlap and a
-30-wide burst must exceed the per-tenant cap of 8.
+    on a unique-constraint / staging collision (BUG-INGEST-02 territory): no
+    ``500``, and every returned ``document_id`` is retrievable (no orphaned
+    rows);
+  * recovery — after a burst's backlog drains, a fresh upload is accepted and
+    reaches ``ready`` (the queue is not wedged);
+  * two-tenant fairness — one tenant's burst does not starve another (the
+    pending caps are per-tenant).
 
 Concurrency uses ``ThreadPoolExecutor`` + a per-thread authenticated
 ``httpx.Client`` (each its OWN cookie jar — the proven ``_auth_httpx`` pattern
@@ -63,13 +59,18 @@ def _env_int(key: str, default: int) -> int:
         return default
 
 
-# Per-tenant in-flight cap is 8 (code default, enforced on this branch); a burst
-# of ~30 concurrent slow handlers must comfortably exceed it and force 429s.
-BURST_N = _env_int("INGEST_BURST_N", 30)
+# The queue caps are the production defaults (max_pending_per_tenant = 200);
+# a burst of ~210 cheap queued uploads lands far faster than the embedded
+# workers drain, so admission must bounce the overflow with 429 queue_full.
+# This lane runs LAST (perf marker, invoked explicitly): the ~200-job backlog
+# it leaves keeps the tagger busy for many minutes.
+BURST_N = _env_int("INGEST_BURST_N", 210)
 # Concurrent identical-bytes uploads for the dedup/idempotency probe.
 DEDUP_N = _env_int("INGEST_DEDUP_N", 5)
-# Bounded poll for the recovery probe (no fixed long sleeps).
-RECOVERY_DEADLINE_S = float(os.environ.get("INGEST_RECOVERY_DEADLINE_S", "120"))
+# Bounded poll for the recovery probe (no fixed long sleeps). The recovery
+# upload is ADMITTED as soon as the burst's backlog dips below the pending cap
+# (one drained job suffices); the budget covers that plus scheduling slack.
+RECOVERY_DEADLINE_S = float(os.environ.get("INGEST_RECOVERY_DEADLINE_S", "420"))
 RECOVERY_INTERVAL_S = float(os.environ.get("INGEST_RECOVERY_INTERVAL_S", "3"))
 
 _SAMPLE = (
@@ -143,7 +144,7 @@ def _burst(n: int, prefix: str) -> list[dict[str, Any]]:
     than propagating — the test can then assert "no silent loss" precisely.
     """
     outcomes: list[dict[str, Any]] = []
-    with ThreadPoolExecutor(max_workers=n) as pool:
+    with ThreadPoolExecutor(max_workers=min(n, 40)) as pool:
         futs = [pool.submit(_upload_once, _text_file(prefix)) for _ in range(n)]
         for fut in as_completed(futs):
             try:
@@ -171,20 +172,25 @@ def _doc_id(outcome: dict[str, Any]) -> Any:
 
 
 def test_per_tenant_backpressure_under_burst():
-    """A burst of ~30 concurrent ingests as one tenant engages explicit 429 backpressure.
+    """A burst of ~30 concurrent queued uploads engages explicit 429 queue_full.
 
-    The per-tenant in-flight ingest cap is 8 and each permit is held for the whole
-    handler (~1-2 s for text), so 30 concurrent slow uploads must exceed the cap.
-    Asserts the full external contract:
+    Queued ingestion (P15): the upload itself is cheap, so backpressure moves
+    from in-flight slots to the bounded queue — a tenant's not-yet-done ingest
+    jobs are capped at 200 (production default). A 210-wide burst lands far
+    faster than the embedded workers drain (~tens of seconds per text job on
+    the local tagger), so admission must reject the overflow. Asserts the full
+    external contract:
 
       (a) NO silent loss — every future returns a concrete int status (no ``None``
           from a hang/timeout/dropped connection, no propagated exception);
-      (b) every status is in ``{202, 429}`` (accepted, or explicitly throttled);
-      (c) backpressure ENGAGED — at least one ``429`` occurred. Zero 429s across
-          30 concurrent slow handlers means the in-flight limiter was never
-          consulted (the historical "no backpressure" bug) — FAIL with the
-          histogram;
-      (d) every ``429`` carries a ``Retry-After`` header (actionable backpressure).
+      (b) every status is in ``{202, 429}`` — accepted into the queue or
+          explicitly bounced. Queued-mode uploads make NO model calls, so a 5xx
+          here is an app bug, not backend saturation;
+      (c) backpressure ENGAGED — at least one ``429`` occurred (cap 200 vs a
+          210-wide burst). Zero 429s means admission was never consulted —
+          FAIL with the histogram;
+      (d) every ``429`` carries a ``Retry-After`` header and the ``queue_full``
+          error code (actionable, machine-readable backpressure).
     """
     outcomes = _burst(BURST_N, "burst")
     hist = _status_histogram(outcomes)
@@ -197,29 +203,36 @@ def test_per_tenant_backpressure_under_burst():
         f"examples={[o.get('text') for o in lost[:5]]}"
     )
 
-    # (b) Every status is graceful: accepted (202), explicitly-throttled (429),
-    # or — when a burst saturates the single tagger backend — backend-unavailable
-    # (503 + Retry-After, the F4 transient). A 500 / silent loss is forbidden.
-    unexpected = [o for o in outcomes if o.get("status") not in (202, 429, 503)]
+    # (b) Accepted (202) or explicitly bounced (429 queue_full) — nothing else.
+    unexpected = [o for o in outcomes if o.get("status") not in (202, 429)]
     assert not unexpected, (
         f"{len(unexpected)}/{BURST_N} burst uploads returned a status outside "
-        f"{{202, 429, 503}}: histogram={dict(hist)}; "
+        f"{{202, 429}}: histogram={dict(hist)}; "
         f"examples={[(o.get('status'), o.get('text')) for o in unexpected[:5]]}"
     )
 
-    # (c) Backpressure engaged: ≥1 429 (per-tenant cap 8 vs 30 concurrent).
+    # (c) Backpressure engaged: ≥1 429 (queue cap 200 vs the wider burst).
     n_429 = hist.get(429, 0)
     assert n_429 >= 1, (
-        f"a burst of {BURST_N} concurrent ingests as one tenant produced zero 429s "
-        f"despite a per-tenant in-flight cap of 8: the in-flight limiter was not "
-        f"consulted / no backpressure engaged. status histogram={dict(hist)}"
+        f"a burst of {BURST_N} concurrent queued uploads produced zero 429s "
+        f"despite a per-tenant pending cap of 200: queue admission was not "
+        f"consulted. status histogram={dict(hist)}"
     )
 
-    # (d) Every 429 must carry a Retry-After header.
+    # (d) Every 429 carries Retry-After + the queue_full error code.
     missing_retry = [o for o in outcomes if o.get("status") == 429 and not o.get("retry_after")]
     assert not missing_retry, (
         f"{len(missing_retry)}/{n_429} throttled (429) responses lacked a "
         "Retry-After header (backpressure must be explicit and actionable)"
+    )
+    not_queue_full = [
+        o
+        for o in outcomes
+        if o.get("status") == 429 and (o.get("body") or {}).get("error") != "queue_full"
+    ]
+    assert not not_queue_full, (
+        f"{len(not_queue_full)}/{n_429} 429s did not carry error='queue_full': "
+        f"examples={[(o.get('body') or {}).get('error') for o in not_queue_full[:5]]}"
     )
 
 
@@ -318,9 +331,10 @@ def test_single_upload_recovers_after_burst(api):
 
     assert last.get("status") == 202, (
         f"a single sequential upload did not recover to 202 within "
-        f"{RECOVERY_DEADLINE_S:g}s after the burst (in-flight slots not released / "
-        f"system wedged): last outcome status={last.get('status')!r} "
-        f"retry_after={last.get('retry_after')!r} text={last.get('text')!r}"
+        f"{RECOVERY_DEADLINE_S:g}s after the burst (queue backlog never drained "
+        f"below the pending cap / system wedged): last outcome "
+        f"status={last.get('status')!r} retry_after={last.get('retry_after')!r} "
+        f"text={last.get('text')!r}"
     )
     # The recovered upload must identify a retrievable document (real acceptance).
     doc_id = _doc_id(last)
@@ -336,10 +350,10 @@ def test_two_tenant_fairness_under_burst(page):
 
     Provisions a second tenant via the web ``/signup`` + DB email-verify shortcut
     (the proven ``lib.limits`` provision pattern), then fires a burst as the
-    bootstrap tenant *concurrently* with a small burst as the second tenant. With
-    a **per-tenant** in-flight cap (8 each) and a higher global cap (50), one
-    tenant flooding its own 8 slots must not consume the other tenant's quota —
-    so the second tenant must still land at least one ``202``.
+    bootstrap tenant *concurrently* with a small burst as the second tenant. The
+    queue's pending caps are **per-tenant** (200 each by default, global 2000),
+    so tenant A filling its own pending budget must not consume tenant B's —
+    the second tenant must still land at least one ``202``.
 
     Provisioning needs the app's Postgres container (``podman exec … psql``); when
     that is unavailable this skips cleanly (not a failure).
@@ -392,9 +406,9 @@ def test_two_tenant_fairness_under_burst(page):
         f"tenant A's flood: A={dict(a_hist)} B={dict(b_hist)}"
     )
 
-    # Fairness: tenant B must make progress (≥1 accepted) despite A's flood — a
-    # per-tenant limiter must not let A monopolise B's slots.
+    # Fairness: tenant B must make progress (≥1 accepted) despite A's flood — the
+    # pending caps must be per-tenant, not a shared pool A can monopolise.
     assert b_hist.get(202, 0) >= 1, (
         f"tenant B was starved (zero 202s) while tenant A flooded ingest: the "
-        f"in-flight cap is not per-tenant. A={dict(a_hist)} B={dict(b_hist)}"
+        f"queue admission cap is not per-tenant. A={dict(a_hist)} B={dict(b_hist)}"
     )

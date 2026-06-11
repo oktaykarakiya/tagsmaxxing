@@ -25,6 +25,15 @@ cd "$(dirname "$0")/.."
 
 # ── config ──────────────────────────────────────────────────────────────────
 LLAMA_BIN="${LLAMA_BIN:-$HOME/.local/bin/llama-server}"
+# Text server runs a NEWER llama.cpp than embeddings: the old build (24d2ee0,
+# 2026-03-04) predates Qwen3.6 — its BPE pretokenizer lacks this model's
+# fast-path and falls back to libstdc++ std::regex, whose backtracking
+# recursion overflows the worker-thread stack (SIGSEGV) on long unbroken text
+# segments (CSV one-liners, large filler docs). That was "F5". The embed
+# server intentionally STAYS on the old binary so Qwen3-Embedding-4B numerics
+# remain byte-stable with the 2560-dim vectors already stored in Postgres.
+LLAMA_BIN_TEXT="${LLAMA_BIN_TEXT:-$HOME/.local/lib/llama-b9592/llama-server}"
+[ -x "$LLAMA_BIN_TEXT" ] || LLAMA_BIN_TEXT="$LLAMA_BIN"
 WHISPER_BIN="${WHISPER_BIN:-/tmp/whisper.cpp/build/bin/whisper-server}"
 ETTIN_VENV="${ETTIN_VENV:-$HOME/.venvs/ettin-rerank}"
 ECTL="${ECTL:-/usr/local/bin/ectool}"
@@ -143,9 +152,17 @@ start_all() {
   if _listening 8080; then
     _green "  ✓ :8080 already listening (reusing)"
   else
-    nohup "$LLAMA_BIN" -ngl 99 --temp 0 -c 8192 --host 127.0.0.1 --port 8080 \
+    # $LLAMA_BIN_TEXT (b9592): fixes the F5 SIGSEGV — see the note at the top.
+    # Keep the DEFAULT --reasoning-format (extraction): on b9592, leftover think
+    # tags would stay in message.content with `--reasoning-format none`,
+    # corrupting tagger/caption JSON; the default parser strips them into
+    # reasoning_content (which the app ignores). On b9592 `--reasoning-budget 0`
+    # alone no longer prevents thinking (the model still burns its max_tokens in
+    # the think block) — Qwen3-family templates need enable_thinking=false,
+    # which skips the <think> block at the template level like the old build did.
+    nohup "$LLAMA_BIN_TEXT" -ngl 99 --temp 0 -c 8192 --host 127.0.0.1 --port 8080 \
       -m "$MODEL_DIR/$MODEL_TEXT" --mmproj "$MODEL_DIR/$MODEL_MMPROJ" \
-      --reasoning-budget 0 \
+      --reasoning-budget 0 --chat-template-kwargs '{"enable_thinking":false}' \
       >/tmp/llama-text-8080.log 2>&1 &
     disown "$!" 2>/dev/null || true
     echo "  ▶ started :8080 (pid $!)"

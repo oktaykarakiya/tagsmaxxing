@@ -48,13 +48,15 @@ def _post_ingest(api: ApiClient, parts: list[tuple[str, tuple[str, bytes, str]]]
 def _ingest_file(api: ApiClient, filename: str, raw: bytes, content_type: str) -> int:
     """Ingest a single file and return its processed ``document_id``.
 
-    Ingestion is synchronous (the inline pipeline runs extract→tag→embed→store
-    before the 202 returns), so the document is searchable immediately.
+    Ingestion is queued (P15): the 202 stages a pending document and a worker
+    finalizes it, so wait for readiness — callers assert on searchable state.
     """
     r = _post_ingest(api, [("files", (filename, raw, content_type))])
     assert r.status_code == 202, f"ingest of {filename!r} failed: {r.status_code} {r.text[:300]}"
-    doc_id = r.json().get("document_id")
-    assert doc_id is not None, f"ingest of {filename!r} returned no document_id: {r.json()}"
+    body = r.json()
+    doc_id = body.get("document_id")
+    assert doc_id is not None, f"ingest of {filename!r} returned no document_id: {body}"
+    flows.wait_until_ready(api, doc_id, job_id=body.get("job_id"))
     return doc_id
 
 
@@ -219,9 +221,12 @@ def test_provenance_cited_location_contains_match(api):
     ]
     r = _post_ingest(api, parts)
     assert r.status_code == 202, f"multi-page ingest failed: {r.status_code} {r.text[:300]}"
-    doc_id = r.json()["document_id"]
+    body = r.json()
+    doc_id = body["document_id"]
 
-    doc = api.get_document(doc_id)
+    # Queued ingestion (P15): wait for the worker before asserting on
+    # processed (searchable) state.
+    doc = flows.wait_until_ready(api, doc_id, job_id=body.get("job_id"))
     files = doc.get("files", [])
     assert len(files) == 3, f"expected a 3-page document, got {len(files)} file(s)"
 
@@ -270,7 +275,11 @@ def test_exact_match_outranks_semantic_only(api):
     doc_a = _ingest_file(api, f"{scope}-a.txt", content_a.encode("utf-8"), "text/plain")
     doc_b = _ingest_file(api, f"{scope}-b.txt", content_b.encode("utf-8"), "text/plain")
 
-    ids = _search_ids(api, f"{scope} {phrase}", limit=20)
+    # limit=50: the persistent e2e corpus accumulates near-identical copies of
+    # these fixtures from prior runs; they legitimately compete in the vector
+    # arm and can push the weaker doc past a small window. The assertion that
+    # matters — A outranks B — is relative and pollution-immune.
+    ids = _search_ids(api, f"{scope} {phrase}", limit=50)
     assert doc_a in ids and doc_b in ids, (
         f"both docs should be retrievable for the scoped exact query; got {ids}"
     )
@@ -295,7 +304,10 @@ def test_multiterm_all_terms_doc_ranks_first(api):
     doc_all = _ingest_file(api, f"{scope}-all.txt", content_all.encode("utf-8"), "text/plain")
     doc_subset = _ingest_file(api, f"{scope}-sub.txt", content_subset.encode("utf-8"), "text/plain")
 
-    ids = _search_ids(api, f"{scope} {t1} {t2} {t3}", limit=20)
+    # limit=50: prior runs' copies of these fixtures (same invented terms,
+    # different scope tokens) compete in the vector arm — see the note in
+    # test_exact_match_outranks_semantic_only.
+    ids = _search_ids(api, f"{scope} {t1} {t2} {t3}", limit=50)
     assert doc_all in ids and doc_subset in ids, (
         f"both docs should be retrievable for the scoped multi-term query; got {ids}"
     )
@@ -322,13 +334,20 @@ def test_dedup_collision_does_not_orphan_document(api):
 
     r1 = _post_ingest(api, [("files", ("alpha.txt", raw, "text/plain"))])
     assert r1.status_code == 202, f"first ingest failed: {r1.status_code} {r1.text[:300]}"
-    doc1 = r1.json()["document_id"]
+    b1 = r1.json()
+    doc1 = b1["document_id"]
+    # Queued ingestion (P15): let the worker finish doc1 before re-uploading the
+    # same bytes — the orphan guard is about the *processed* dedup state, and
+    # the later search asserts both documents are fully ingested.
+    flows.wait_until_ready(api, doc1, job_id=b1.get("job_id"))
 
     r2 = _post_ingest(api, [("files", ("bravo.txt", raw, "text/plain"))])
     assert r2.status_code == 202, f"second ingest failed: {r2.status_code} {r2.text[:300]}"
-    doc2 = r2.json()["document_id"]
+    b2 = r2.json()
+    doc2 = b2["document_id"]
 
     assert doc1 != doc2, f"identical bytes under a new name collapsed into one doc id {doc1}"
+    flows.wait_until_ready(api, doc2, job_id=b2.get("job_id"))
 
     d1 = api.get_document(doc1)
     d2 = api.get_document(doc2)
@@ -371,15 +390,22 @@ def test_cross_tenant_identical_bytes_isolated(page):
 
         ra = _post_ingest(api_a, [("files", ("shared.txt", raw, "text/plain"))])
         assert ra.status_code == 202, f"tenant A ingest failed: {ra.status_code} {ra.text[:300]}"
-        doc_a = ra.json()["document_id"]
+        ba = ra.json()
+        doc_a = ba["document_id"]
 
         rb = _post_ingest(api_b, [("files", ("shared.txt", raw, "text/plain"))])
         assert rb.status_code == 202, f"tenant B ingest failed: {rb.status_code} {rb.text[:300]}"
-        doc_b = rb.json()["document_id"]
+        bb = rb.json()
+        doc_b = bb["document_id"]
 
         assert doc_a != doc_b, (
             f"identical bytes across tenants collapsed into one doc id {doc_a}"
         )
+
+        # Queued ingestion (P15): both tenants' search/download asserts below
+        # need fully processed documents.
+        flows.wait_until_ready(api_a, doc_a, job_id=ba.get("job_id"))
+        flows.wait_until_ready(api_b, doc_b, job_id=bb.get("job_id"))
 
         # Each tenant searches and finds only its own document.
         ids_a = _search_ids(api_a, marker, limit=20)

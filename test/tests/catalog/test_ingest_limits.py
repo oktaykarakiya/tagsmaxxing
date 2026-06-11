@@ -184,6 +184,13 @@ def test_token_budget_blocks_subsequent_ingest(limits_account):
                 f"warm-up ingest #{i} returned an unexpected {last_status} "
                 f"(expected 202 until the budget trips): {res['text']!r}"
             )
+            # Queued ingestion (P15): tokens are metered when the WORKER
+            # processes the job, so wait for completion — the next upload's
+            # admission gate then reads the updated monthly rollup.
+            flows.wait_until_ready(
+                account.client, (res["body"] or {})["document_id"],
+                job_id=(res["body"] or {}).get("job_id"),
+            )
 
         assert saw_429, (
             f"after {_MAX_INGEST_TRIES} successful ingests of a token-bearing "
@@ -223,6 +230,12 @@ def test_token_budget_recovers_after_reset(limits_account):
                 break
             assert res["status"] == 202, (
                 f"warm-up ingest returned an unexpected {res['status']}: {res['text']!r}"
+            )
+            # Queued ingestion (P15): wait for the worker to meter this job's
+            # tokens before the next admission check (see the blocks test).
+            flows.wait_until_ready(
+                account.client, (res["body"] or {})["document_id"],
+                job_id=(res["body"] or {}).get("job_id"),
             )
         if not tripped:
             pytest.fail(

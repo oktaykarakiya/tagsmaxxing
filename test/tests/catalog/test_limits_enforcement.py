@@ -103,9 +103,10 @@ def _drive_over_token_budget(account) -> None:
     Returns once an ingest succeeds (2xx) AND the budget is known to be met (a
     later ingest will 429). We ingest one rich document at a time: each runs the
     tagging + embedding models, accruing tokens into ``usage_events`` and the
-    ``tenant_monthly_usage`` rollup that the ingest gate point-selects. We stop as
-    soon as we've put real usage on the account; the caller then asserts the *next*
-    ingest is the one that's blocked.
+    ``tenant_monthly_usage`` rollup that the ingest gate point-selects. Ingestion
+    is queued (P15) — the 202 only stages the document, so we wait for the
+    worker to finish processing (that is when the tokens are metered) before
+    returning; the caller then asserts the *next* ingest is the one blocked.
     """
     for i in range(_MAX_INGEST_TRIES):
         marker = flows.unique_marker("limtok")
@@ -113,6 +114,10 @@ def _drive_over_token_budget(account) -> None:
         resp = _raw_ingest(account, f"{marker}.txt", text)
         if resp.status_code == 202:
             account.remember(marker)
+            body = resp.json()
+            flows.wait_until_ready(
+                account.client, body["document_id"], job_id=body.get("job_id")
+            )
             return
         if resp.status_code == 429:
             # Already over budget (a prior iteration's tokens tipped it) — good
@@ -145,13 +150,20 @@ def test_token_budget_blocks_next_ingest(limits_account):
 
     # The very next ingest must now be refused for budget — retry a bounded number
     # of times because the rollup reflects only completed calls, so one more upload
-    # may still squeak through before the counter catches up.
+    # may still squeak through before the counter catches up. Each accepted probe
+    # is queued (P15): wait for it to process (and meter its tokens) before the
+    # next attempt, or every probe would be admitted against the stale rollup.
     last: httpx.Response | None = None
     for _ in range(_MAX_INGEST_TRIES):
         marker = flows.unique_marker("limtok-blocked")
         last = _raw_ingest(account, f"{marker}.txt", TOKEN_DOC.format(marker=marker))
         if last.status_code == 429:
             break
+        if last.status_code == 202:
+            body = last.json()
+            flows.wait_until_ready(
+                account.client, body["document_id"], job_id=body.get("job_id")
+            )
 
     assert last is not None and last.status_code == 429, (
         f"ingesting past the ~1000-token monthly budget should be throttled with "

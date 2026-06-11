@@ -52,3 +52,13 @@ base_url = "http://host.containers.internal:9082/v1"
 roles = ["rerank"]
 slots = 4
 priority = 0
+
+# ── Queued ingestion (P15) ─────────────────────────────────────────────────────
+# Production-default queue bounds (explicit for documentation). The suite's
+# accept-heavy lanes fire dozens of fire-and-forget uploads whose backlog
+# drains in the background, so the caps must comfortably exceed a lane's burst;
+# the concurrency lane triggers 429 queue_full with a 210-wide burst instead.
+# Hot-swappable: the app watches this file, so edits apply without a restart.
+[ingest]
+max_pending_per_tenant = 200
+max_pending_global = 2000
