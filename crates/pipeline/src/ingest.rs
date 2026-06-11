@@ -795,22 +795,32 @@ pub fn truncate_to_char_boundary(s: &str, max_bytes: usize) -> &str {
 /// Truncate `s` so a conservative BPE token estimate stays within
 /// `max_tokens`, cutting on a character boundary (BUG-INGEST-18).
 ///
-/// The estimate charges ¼ token per ASCII character (~4 bytes/token prose)
-/// and 2 tokens per non-ASCII character: CJK runs ~1 token/char and emoji /
-/// rare scripts can reach ~2, so the bound errs on the safe side without
-/// shipping a real tokenizer. The walk is `O(len)` and cuts before the first
-/// character that would exceed the budget, so the result is always valid
-/// UTF-8 and never above `max_tokens` under the estimate.
+/// Per-character costs are calibrated to worst cases observed against the
+/// serving tokenizer, erring on the safe side without shipping a real one:
+///
+/// - ASCII letters/digits/whitespace: ¼ token (~4 chars/token prose);
+/// - other ASCII (punctuation/symbols): 1 token — symbol-dense content such
+///   as SQL or code tokenizes near one token per character, and a flat
+///   ¼-token ASCII charge let an 18 KB injection-string document reach 12 k
+///   real tokens against the 8 k context;
+/// - non-ASCII: 2 tokens (CJK ~1/char, emoji and rare scripts up to ~2).
+///
+/// The walk is `O(len)` and cuts before the first character that would
+/// exceed the budget, so the result is always valid UTF-8 and never above
+/// `max_tokens` under the estimate.
 #[must_use]
 pub fn truncate_to_token_budget(s: &str, max_tokens: usize) -> &str {
-    // Token cost in milli-tokens so ASCII can cost a fraction per char.
-    const ASCII_MILLI: usize = 250; // ¼ token per ASCII char
+    // Token cost in milli-tokens so prose can cost a fraction per char.
+    const PROSE_MILLI: usize = 250; // ¼ token per alphanumeric/space char
+    const SYMBOL_MILLI: usize = 1_000; // 1 token per other-ASCII char
     const OTHER_MILLI: usize = 2_000; // 2 tokens per non-ASCII char
     let budget_milli = max_tokens.saturating_mul(1_000);
     let mut cost_milli = 0usize;
     for (i, ch) in s.char_indices() {
-        cost_milli += if ch.is_ascii() {
-            ASCII_MILLI
+        cost_milli += if ch.is_ascii_alphanumeric() || ch.is_ascii_whitespace() {
+            PROSE_MILLI
+        } else if ch.is_ascii() {
+            SYMBOL_MILLI
         } else {
             OTHER_MILLI
         };
@@ -1357,12 +1367,42 @@ mod tests {
 
     #[test]
     fn token_budget_ascii_costs_quarter_token_per_char() {
-        // 4 000 ASCII chars ≈ 1 000 estimated tokens — exactly at budget.
+        // 4 000 alphanumeric chars ≈ 1 000 estimated tokens — exactly at budget.
         let s = "a".repeat(4_000);
         assert_eq!(truncate_to_token_budget(&s, 1_000), s.as_str());
         // One more char exceeds it: the cut lands before the overflowing char.
         let s2 = "a".repeat(4_001);
         assert_eq!(truncate_to_token_budget(&s2, 1_000).len(), 4_000);
+    }
+
+    #[test]
+    fn token_budget_symbols_cost_a_full_token_per_char() {
+        // BUG-INGEST-18 (third finding): symbol-dense content (SQL injection
+        // strings, code) tokenizes near one token per character — a flat
+        // ¼-token ASCII charge let an 18 KB injection document reach 12 k real
+        // tokens. Punctuation must be charged 1 token/char: 1 000 symbols fit
+        // a 1 000-token budget exactly; one more is cut.
+        let s = "';--".repeat(250); // 1 000 punctuation chars
+        assert_eq!(truncate_to_token_budget(&s, 1_000), s.as_str());
+        let s2 = format!("{s};");
+        assert_eq!(truncate_to_token_budget(&s2, 1_000).len(), 1_000);
+        // Realistic SQLi-style mix stays bounded: estimated cost of what
+        // survives a 4 800-token budget must be ≤ 4 800 even when the byte cap
+        // alone would have admitted ~19 k chars.
+        let sqli = "' OR 1=1; DROP TABLE users; --".repeat(800); // 24 000 chars
+        let cut = truncate_to_token_budget(&sqli, 4_800);
+        let est: f64 = cut
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c.is_ascii_whitespace() {
+                    0.25
+                } else {
+                    1.0
+                }
+            })
+            .sum();
+        assert!(est <= 4_800.0, "estimate {est} exceeds the budget");
+        assert!(!cut.is_empty());
     }
 
     #[test]
