@@ -109,6 +109,10 @@ kb search [--kind image] [--tag invoice] [--limit 5] "quarterly report"
 # Start the API + web server
 kb serve [--port 9999] [--config config.toml]
          [--tls-cert cert.pem] [--tls-key key.pem]
+
+# Run a standalone ingest worker (drains the shared queue with THIS
+# machine's model backends; see "Queued ingestion" below)
+kb worker [--config config.toml] [--concurrency 4]
 ```
 
 ## Architecture
