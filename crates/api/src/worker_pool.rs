@@ -78,6 +78,84 @@ pub fn spawn_lease_reaper(
     tokio::spawn(run_lease_reaper(job_queue, REAPER_INTERVAL, shutdown))
 }
 
+/// Build the runtime from `app_config` and run the worker pool + lease reaper
+/// until `shutdown` flips, then drain — the testable core of `kb worker`
+/// (P15-T8; the binary's `run_worker` adds OS-signal binding around this).
+///
+/// Per-machine capacity by default: with `[worker] use_db_routing = false`
+/// the scheduler pool is built solely from this machine's own `[[backend]]`
+/// entries, so its slot semaphores are the only gate on its local model
+/// servers (no cross-process over-subscription).
+///
+/// On shutdown the workers stop claiming and finish their in-flight job (a
+/// long media job gets a generous window — anything that outlives it is
+/// requeued by the next process's lease reaper), the backend health loop
+/// stops, and the usage recorder flushes.
+///
+/// # Errors
+/// Returns an error if the runtime cannot be built (Postgres unreachable,
+/// component construction failure, …).
+pub async fn worker_main(
+    app_config: &kb_config::AppConfig,
+    concurrency_override: Option<usize>,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
+) -> anyhow::Result<()> {
+    let cfg = app_config.current();
+
+    let rt = crate::runtime::build_runtime(app_config, cfg.worker.use_db_routing).await?;
+    let crate::runtime::PipelineRuntime {
+        pg_store,
+        blob,
+        ingest_pipeline,
+        job_queue,
+        health_handle,
+        health_shutdown,
+        usage_flush_handle,
+        ..
+    } = rt;
+
+    let concurrency = concurrency_override
+        .unwrap_or(cfg.worker.concurrency.max(1) as usize)
+        .max(1);
+
+    let workers = spawn_ingest_workers(
+        Arc::clone(&job_queue),
+        Arc::clone(&ingest_pipeline),
+        Arc::clone(&pg_store),
+        Arc::clone(&blob),
+        concurrency,
+        shutdown.clone(),
+    );
+    let reaper = spawn_lease_reaper(Arc::clone(&job_queue), shutdown.clone());
+
+    tracing::info!(
+        concurrency,
+        lease_secs = cfg.worker.lease_secs,
+        use_db_routing = cfg.worker.use_db_routing,
+        "kb worker started — claiming ingest jobs"
+    );
+
+    // Run until the shutdown channel flips (signal handler or test driver).
+    while !*shutdown.borrow_and_update() {
+        if shutdown.changed().await.is_err() {
+            break; // sender dropped — treat as shutdown
+        }
+    }
+
+    // Workers stopped claiming when the channel flipped; drain in-flight work.
+    let _ = tokio::time::timeout(Duration::from_secs(60), workers).await;
+    let _ = tokio::time::timeout(Duration::from_secs(10), reaper).await;
+
+    // Stop the backend health loop, then let the usage recorder flush any
+    // buffered events (P14-T1).
+    let _ = health_shutdown.send(());
+    let _ = tokio::time::timeout(Duration::from_secs(10), health_handle).await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), usage_flush_handle).await;
+
+    tracing::info!("kb worker drained — exiting");
+    Ok(())
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

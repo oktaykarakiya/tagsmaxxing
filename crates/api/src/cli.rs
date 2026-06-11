@@ -44,6 +44,16 @@ pub enum Command {
     /// ingest, search, document detail, file download, job status, Prometheus
     /// metrics, and the admin panel.
     Serve(ServeArgs),
+    /// Run a standalone ingest worker (distributed processing, P15-T8).
+    ///
+    /// Claims queued ingest jobs from the shared Postgres queue and processes
+    /// them with this machine's own model backends ([[backend]] entries in its
+    /// config.toml; `[worker] use_db_routing = false` by default for exact
+    /// per-machine capacity). Multiple heterogeneous workers — each with its
+    /// own config and `--concurrency` — drain the same queue. Requires the
+    /// shared blob store (`[blob] backend = "s3"`) when running on a machine
+    /// other than the API node.
+    Worker(WorkerArgs),
 }
 
 /// Arguments for `kb ingest`.
@@ -114,6 +124,18 @@ pub struct ServeArgs {
     /// Must be used together with `--tls-cert`.
     #[arg(long, value_name = "PATH")]
     pub tls_key: Option<String>,
+}
+
+/// Arguments for `kb worker`.
+#[derive(Args, Clone, Debug)]
+pub struct WorkerArgs {
+    /// Path to this machine's config.toml file.
+    #[arg(long, value_name = "PATH", default_value = "config.toml")]
+    pub config: String,
+
+    /// Concurrent jobs to process (overrides config.toml `[worker].concurrency`).
+    #[arg(long, value_name = "N")]
+    pub concurrency: Option<usize>,
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -315,5 +337,54 @@ mod tests {
             }
             other => panic!("expected Serve, got {other:?}"),
         }
+    }
+
+    // ── kb worker (P15-T8) ─────────────────────────────────────────────────
+
+    #[test]
+    fn parse_worker_defaults() {
+        let cli = Cli::try_parse_from(["kb", "worker"]).unwrap();
+        match cli.command {
+            Command::Worker(args) => {
+                assert_eq!(args.config, "config.toml");
+                assert!(args.concurrency.is_none(), "concurrency defaults to config");
+            }
+            other => panic!("expected Worker, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_worker_with_concurrency_and_config() {
+        let cli = Cli::try_parse_from([
+            "kb",
+            "worker",
+            "--config",
+            "/etc/kb/worker.toml",
+            "--concurrency",
+            "6",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Worker(args) => {
+                assert_eq!(args.config, "/etc/kb/worker.toml");
+                assert_eq!(args.concurrency, Some(6));
+            }
+            other => panic!("expected Worker, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_worker_rejects_zero_is_not_special() {
+        // `--concurrency 0` parses (clap level); worker_main clamps it to ≥ 1.
+        let cli = Cli::try_parse_from(["kb", "worker", "--concurrency", "0"]).unwrap();
+        match cli.command {
+            Command::Worker(args) => assert_eq!(args.concurrency, Some(0)),
+            other => panic!("expected Worker, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_worker_rejects_non_numeric_concurrency() {
+        assert!(Cli::try_parse_from(["kb", "worker", "--concurrency", "lots"]).is_err());
     }
 }

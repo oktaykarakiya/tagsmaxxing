@@ -76,11 +76,14 @@ async fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     // ── Dispatch to subcommand ─────────────────────────────────────────────
-    // The `serve` subcommand manages its own config loading, tracing, metrics,
-    // and component wiring independently — it does not share the CLI bootstrap
-    // path (plan §10).
+    // The `serve` and `worker` subcommands manage their own config loading,
+    // tracing, metrics, and component wiring independently — they do not share
+    // the CLI bootstrap path (plan §10, P15-T8).
     if let Command::Serve(args) = &cli.command {
         return commands::serve::run_serve(args).await;
+    }
+    if let Command::Worker(args) = &cli.command {
+        return commands::worker::run_worker(args).await;
     }
 
     // ── Load configuration (ingest/search CLI path) ────────────────────────
@@ -245,8 +248,8 @@ async fn run() -> anyhow::Result<()> {
 
             commands::search::run_search(&args, &pipeline, cli.tenant_id).await?;
         }
-        Command::Serve(_) => {
-            // Already handled by the early return above.
+        Command::Serve(_) | Command::Worker(_) => {
+            // Already handled by the early returns above.
             return anyhow::Ok(());
         }
     }

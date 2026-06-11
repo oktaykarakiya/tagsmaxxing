@@ -203,3 +203,156 @@ async fn embedded_workers_drain_staged_upload_to_ready() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+/// P15-T8: a **standalone** `kb worker` process (no `kb serve`, no embedded
+/// pool anywhere) drains a staged upload to `ready` through the full command
+/// path — `worker_main` builds its own runtime from the per-machine config
+/// (`use_db_routing = false`) and runs the pool + reaper until shutdown.
+#[tokio::test]
+#[ignore = "requires Podman + image pull; run with --ignored"]
+async fn standalone_worker_main_drains_staged_upload_to_ready() -> anyhow::Result<()> {
+    // ── mock LLM backend (text + embed) ─────────────────────────────────────
+    let mock = MockBackend::start().await;
+    mock.scenario().lock().await.chat_content = Some(
+        serde_json::json!({
+            "title": "Standalone Worker Doc",
+            "summary": "Drained by kb worker.",
+            "tags": ["worker", "standalone"]
+        })
+        .to_string(),
+    );
+    mock.scenario().lock().await.embed_dim = Some(kb_store::EMBED_DIM);
+
+    // ── per-machine worker config: fresh DB + temp blob root + mock backend ──
+    let db = kb_testsupport::fresh_db().await?;
+    let blob_dir = tempfile::tempdir()?;
+    let mut cfg = kb_config::Config::default();
+    cfg.storage.postgres_url = db.admin_url.clone();
+    cfg.storage.app_postgres_url = db.app_url.clone();
+    cfg.blob.local_root = blob_dir.path().to_string_lossy().into_owned();
+    cfg.worker.concurrency = 1; // overridden below via the CLI-style argument
+    cfg.backends.push(kb_config::Backend {
+        id: "mock".into(),
+        base_url: mock.url("/v1"),
+        roles: vec![Role::Text, Role::Embed],
+        slots: 4,
+        priority: 0,
+    });
+    let app_config = kb_config::AppConfig::from_config(cfg);
+
+    // ── stage an upload first (the API node's side of the hand-off) ─────────
+    // A separate runtime handle plays the API node: it stages the pending
+    // document + blob and enqueues the job. No worker pool is spawned on it.
+    let api_side = kb_api::runtime::build_runtime(&app_config, false).await?;
+    let admin = api_side.pg_store.pool()?;
+    let tenant_id: i64 =
+        sqlx::query_scalar("INSERT INTO tenants (slug, name) VALUES ('w', 'W') RETURNING id")
+            .fetch_one(&admin)
+            .await?;
+
+    let body = b"Standalone workers drain the shared queue.".to_vec();
+    let sha = sha_of(&body);
+    let blob_key = sha.to_hex();
+    api_side
+        .blob
+        .put(&blob_key, bytes::Bytes::from(body.clone()))
+        .await?;
+
+    let doc = Document {
+        id: 0,
+        tenant_id,
+        title: None,
+        summary: None,
+        user_note: None,
+        kind: DocKind::Document,
+        meta: serde_json::json!({}),
+        page_count: 1,
+        status: ProcessingStatus::Pending,
+        created_at: chrono::Utc::now(),
+        local_only: false,
+    };
+    let file = FileRecord {
+        id: 0,
+        tenant_id,
+        document_id: 0,
+        page_no: 1,
+        page_label: Some("standalone.txt".into()),
+        sha256: sha,
+        blob_key,
+        path: Some("standalone.txt".into()),
+        mime: Some("text/plain".into()),
+        size_bytes: Some(body.len() as i64),
+        meta: serde_json::json!({}),
+        status: ProcessingStatus::Pending,
+        ingested_at: chrono::Utc::now(),
+    };
+    let pending = api_side
+        .pg_store
+        .create_pending_ingest(&doc, &[file])
+        .await?;
+    api_side
+        .job_queue
+        .enqueue(
+            tenant_id,
+            None,
+            None,
+            Some(pending.document_id),
+            JobKind::Ingest,
+            0,
+        )
+        .await?;
+
+    // ── run the standalone worker (the full `kb worker` core) ───────────────
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let worker_cfg = app_config.clone();
+    let worker = tokio::spawn(async move {
+        kb_api::worker_pool::worker_main(&worker_cfg, Some(2), shutdown_rx).await
+    });
+
+    // ── poll until the standalone worker finalizes the document ─────────────
+    let mut ready = false;
+    for _ in 0..240 {
+        let d = api_side
+            .pg_store
+            .get_document(tenant_id, pending.document_id)
+            .await?
+            .expect("staged document exists");
+        if d.status == ProcessingStatus::Ready {
+            assert_eq!(d.title.as_deref(), Some("Standalone Worker Doc"));
+            ready = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    if !ready {
+        let (job_status, last_error): (String, Option<String>) = sqlx::query_as(
+            "SELECT status, last_error FROM jobs WHERE document_id = $1 AND kind = 'ingest'",
+        )
+        .bind(pending.document_id)
+        .fetch_one(&admin)
+        .await?;
+        panic!(
+            "standalone worker did not finalize within 60s: job status={job_status}, \
+             last_error={last_error:?}"
+        );
+    }
+
+    let chunks: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chunks WHERE document_id = $1")
+        .bind(pending.document_id)
+        .fetch_one(&admin)
+        .await?;
+    assert!(chunks > 0, "content chunked + embedded by the worker");
+
+    // ── graceful shutdown: worker_main drains and returns Ok ────────────────
+    shutdown_tx.send(true)?;
+    tokio::time::timeout(Duration::from_secs(90), worker)
+        .await
+        .expect("worker_main must drain on shutdown")?
+        .expect("worker_main returns Ok");
+
+    // Stop the API-side runtime's background tasks.
+    let _ = api_side.health_shutdown.send(());
+    let _ = tokio::time::timeout(Duration::from_secs(5), api_side.health_handle).await;
+
+    Ok(())
+}

@@ -1702,9 +1702,9 @@ description = "kb worker subcommand (standalone distributed worker). cli.rs Comm
 depends_on = ["P15-T6"]
 plan_sections = ["16", "10", "6"]
 acceptance = "CLI parse tests; #[ignore] integration: serve-side worker disabled -> standalone kb worker drains a staged job to ready. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "Command::Worker(WorkerArgs{config: PATH (default config.toml), concurrency: Option<usize>}) + 4 parse tests; main.rs early-dispatches like serve (own tracing/config path). The runnable core is kb_api::worker_pool::worker_main (library, so integration tests drive the full command path without OS signals): build_runtime(use_db_routing from [worker], default false -> per-machine [[backend]] slots are the sole gate), spawn pool (+--concurrency override, clamped >=1) + lease reaper, run until the watch flips, then drain (60s workers / 10s reaper / health stop / 5s usage flush). commands/worker.rs adds tracing, the live config-watcher (hot-reload), and SIGINT+SIGTERM handling (SIGTERM matters for compose stop_grace_period). Integration (queued_worker_pg.rs): standalone_worker_main_drains_staged_upload_to_ready — an API-side runtime stages doc+blob+job with NO worker anywhere; worker_main alone builds its own runtime from the same per-machine config and drains it to ready with chunks, then shuts down gracefully (both pg tests green, 19s). Per-machine TIKA_URL/WHISPER_URL reachability documented in .env.example + module docs; multi-machine fleets need [blob] backend=s3 (T11). just ci green."
 
 [[task]]
 id = "P15-T9"
