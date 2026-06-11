@@ -471,42 +471,43 @@ impl IngestPipeline {
             kind: merged.kind,
             meta: merged.merged_meta.clone(),
         };
-        let tag_output = match self.tagger.tag(&tag_input, local_only).await {
-            Ok(output) => output,
-            // Media documents (image/audio/video) are ingested best-effort:
-            // a tagger failure (backend saturation, transient model error,
-            // json_schema reject on empty text after failed VLM captioning) must
-            // not fail the entire upload. The document is already blob-stored
-            // and its file metadata is searchable; it degrades gracefully with
-            // an empty title/summary/tags. Non-media documents still fail hard.
-            Err(e)
-                if matches!(
-                    merged.kind,
-                    DocKind::Image | DocKind::Audio | DocKind::Video
-                ) =>
-            {
-                tracing::warn!(
-                    error = %e,
-                    kind = ?merged.kind,
-                    "tagger failed for media document; ingesting with default metadata"
-                );
-                TagOutput::default()
-            }
-            // Non-media: a transient backend-availability failure (no healthy
-            // backend, capacity exhausted, all retries failed / in cooldown) is
-            // not the client's fault — surface it as a typed BackendUnavailable so
-            // the API answers 503 + Retry-After instead of 500 (campaign F4).
-            Err(e) if is_backend_unavailable(&e) => {
-                tracing::warn!(
-                    error = %e,
-                    kind = ?merged.kind,
-                    "tagger backend unavailable; ingest returns 503"
-                );
-                return Err(IngestError::BackendUnavailable(e.to_string()).into());
-            }
-            // Any other non-media tagger error is a genuine internal failure (500).
-            Err(e) => return Err(e).context("tagger failed"),
-        };
+        let tag_output =
+            match tag_with_context_retry(self.tagger.as_ref(), tag_input, local_only).await {
+                Ok(output) => output,
+                // Media documents (image/audio/video) are ingested best-effort:
+                // a tagger failure (backend saturation, transient model error,
+                // json_schema reject on empty text after failed VLM captioning) must
+                // not fail the entire upload. The document is already blob-stored
+                // and its file metadata is searchable; it degrades gracefully with
+                // an empty title/summary/tags. Non-media documents still fail hard.
+                Err(e)
+                    if matches!(
+                        merged.kind,
+                        DocKind::Image | DocKind::Audio | DocKind::Video
+                    ) =>
+                {
+                    tracing::warn!(
+                        error = %e,
+                        kind = ?merged.kind,
+                        "tagger failed for media document; ingesting with default metadata"
+                    );
+                    TagOutput::default()
+                }
+                // Non-media: a transient backend-availability failure (no healthy
+                // backend, capacity exhausted, all retries failed / in cooldown) is
+                // not the client's fault — surface it as a typed BackendUnavailable so
+                // the API answers 503 + Retry-After instead of 500 (campaign F4).
+                Err(e) if is_backend_unavailable(&e) => {
+                    tracing::warn!(
+                        error = %e,
+                        kind = ?merged.kind,
+                        "tagger backend unavailable; ingest returns 503"
+                    );
+                    return Err(IngestError::BackendUnavailable(e.to_string()).into());
+                }
+                // Any other non-media tagger error is a genuine internal failure (500).
+                Err(e) => return Err(e).context("tagger failed"),
+            };
 
         // 6. Canonicalize tags against the tenant's existing tag set.
         let tag_ids = self
@@ -696,8 +697,7 @@ pub async fn process_retag_job(
         kind: DocKind::Document,
         meta: serde_json::Value::Null,
     };
-    let tag_output = tagger
-        .tag(&tag_input, local_only)
+    let tag_output = tag_with_context_retry(tagger, tag_input, local_only)
         .await
         .map_err(|e| format!("tagger failed: {e}"))?;
 
@@ -840,6 +840,48 @@ pub fn bound_tagger_text(s: &str) -> &str {
         truncate_to_char_boundary(s, MAX_TAGGER_TEXT_BYTES),
         MAX_TAGGER_TEXT_TOKENS,
     )
+}
+
+/// `true` when an error chain reports the serving model rejected the prompt
+/// as exceeding its context window (llama-server's 400 wording, pinned by a
+/// unit test in `kb-llm`'s integration shape and the retry tests below).
+fn is_context_overflow(e: &anyhow::Error) -> bool {
+    format!("{e:#}").contains("exceeds the available context")
+}
+
+/// Call the tagger, halving the document text and retrying when the serving
+/// model rejects the prompt as larger than its context window — the final
+/// BUG-INGEST-18 layer.
+///
+/// The byte + token caps are heuristics; exotic content shapes (random
+/// alphanumerics, base64 blobs) can still tokenize past them. The model's
+/// own context-size 400 is ground truth, so shrink toward it: each overflow
+/// halves the text (char-boundary safe) up to [`MAX_CONTEXT_SHRINKS`] times,
+/// converging for ANY content shape. Non-overflow errors propagate
+/// unchanged on the first occurrence.
+async fn tag_with_context_retry(
+    tagger: &dyn Tagger,
+    mut tag_input: TagInput,
+    local_only: bool,
+) -> anyhow::Result<TagOutput> {
+    /// Halvings before giving up: 4 800-token budget → ≥600 effective.
+    const MAX_CONTEXT_SHRINKS: usize = 3;
+    let mut shrinks = 0;
+    loop {
+        match tagger.tag(&tag_input, local_only).await {
+            Err(e) if shrinks < MAX_CONTEXT_SHRINKS && is_context_overflow(&e) => {
+                shrinks += 1;
+                let keep = tag_input.text.chars().count() / 2;
+                tag_input.text = tag_input.text.chars().take(keep).collect();
+                tracing::warn!(
+                    shrinks,
+                    kept_chars = keep,
+                    "tagger prompt exceeded the model context; halving text and retrying"
+                );
+            }
+            other => return other,
+        }
+    }
 }
 
 /// Remove NUL and other control characters from a user-supplied string.
@@ -1095,6 +1137,100 @@ mod tests {
         async fn tag(&self, _: &TagInput, _local_only: bool) -> anyhow::Result<TagOutput> {
             anyhow::bail!("simulated tagger failure")
         }
+    }
+
+    // ── tag_with_context_retry (BUG-INGEST-18 final layer) ─────────────────
+
+    /// A tagger that rejects prompts whose text exceeds `max_chars` with the
+    /// serving model's context-overflow wording, recording each call's size.
+    struct ContextLimitedTagger {
+        max_chars: usize,
+        calls: std::sync::Mutex<Vec<usize>>,
+    }
+
+    #[async_trait]
+    impl Tagger for ContextLimitedTagger {
+        async fn tag(&self, input: &TagInput, _local_only: bool) -> anyhow::Result<TagOutput> {
+            let n = input.text.chars().count();
+            self.calls.lock().unwrap().push(n);
+            if n > self.max_chars {
+                anyhow::bail!(
+                    "tagger model call failed: request ({} tokens) exceeds the available \
+                     context size (8192 tokens), try increasing it",
+                    n
+                );
+            }
+            Ok(TagOutput {
+                title: "ok".into(),
+                summary: "ok".into(),
+                tags: vec![],
+            })
+        }
+    }
+
+    fn ctx_input(text: String) -> TagInput {
+        TagInput {
+            tenant_id: 1,
+            user_id: None,
+            text,
+            user_note: None,
+            kind: DocKind::Document,
+            meta: serde_json::Value::Null,
+        }
+    }
+
+    #[tokio::test]
+    async fn context_retry_halves_until_the_model_accepts() {
+        let tagger = ContextLimitedTagger {
+            max_chars: 3_000,
+            calls: std::sync::Mutex::new(Vec::new()),
+        };
+        let out = tag_with_context_retry(&tagger, ctx_input("a".repeat(10_000)), false)
+            .await
+            .expect("must converge");
+        assert_eq!(out.title, "ok");
+        let calls = tagger.calls.lock().unwrap().clone();
+        assert_eq!(calls, vec![10_000, 5_000, 2_500], "halve until accepted");
+    }
+
+    #[tokio::test]
+    async fn context_retry_gives_up_after_three_shrinks() {
+        // A model that rejects everything keeps the overflow error after the
+        // bounded shrink budget instead of looping forever.
+        let tagger = ContextLimitedTagger {
+            max_chars: 0,
+            calls: std::sync::Mutex::new(Vec::new()),
+        };
+        let err = tag_with_context_retry(&tagger, ctx_input("a".repeat(800)), false)
+            .await
+            .unwrap_err();
+        assert!(
+            is_context_overflow(&err),
+            "overflow error surfaces: {err:#}"
+        );
+        assert_eq!(tagger.calls.lock().unwrap().len(), 4, "1 try + 3 shrinks");
+    }
+
+    #[tokio::test]
+    async fn context_retry_passes_other_errors_through_immediately() {
+        let tagger = FailingTagger;
+        let err = tag_with_context_retry(&tagger, ctx_input("hello".into()), false)
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("simulated tagger failure"),
+            "non-overflow errors must not trigger shrinking: {err:#}"
+        );
+    }
+
+    #[test]
+    fn is_context_overflow_pins_the_server_wording() {
+        let e = anyhow::anyhow!(
+            "model backend temporarily unavailable: request (12673 tokens) \
+             exceeds the available context size (8192 tokens)"
+        );
+        assert!(is_context_overflow(&e));
+        assert!(!is_context_overflow(&anyhow::anyhow!("connection refused")));
     }
 
     // ── infer_kind_from_mime tests ─────────────────────────────────────────
