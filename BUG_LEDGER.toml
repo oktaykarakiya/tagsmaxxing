@@ -1190,6 +1190,19 @@ status = "done"
 acceptance = "with one attractor document (100 identical chunks at distance ~0) plus distinct farther documents seeded, hybrid search top_k returns the attractor FIRST plus the other documents (>= 3 distinct docs), in both the vector and keyword arms"
 notes = "Found in P15-T7: test_search_rerank_changes_order returned exactly 1 hit once test_large_text's 200 KB 'AAAA...' document finally ingested successfully (b9592 + BUG-INGEST-18 cap) — its ~100 identical chunk embeddings sit at cosine distance 0.384 from mixed-topic query embeddings, closer than any topical document, so the vector arm's ORDER BY distance LIMIT top_k returned ONLY attractor chunks and document_rollup collapsed them to one hit. Fix: both arms overscan the index (overscan_limit = clamp(top_k*8, 256, 1000); vector arm also SET LOCAL hnsw.ef_search = overscan since HNSW returns at most ef_search candidates) then dedup_best_chunk_per_document keeps rank order until top_k DISTINCT documents. Downstream rollup already kept only the best chunk per doc, so nothing is lost. Floor 256 covers the observed ~100-chunk attractor. Future hardening (recorded, not done): chunk-content dedup at ingest would shrink such attractors at the source."
 
+[[bug]]
+id = "BUG-INGEST-19"
+description = "no chunk-content dedup at ingest: pathologically repetitive content (200 KB uniform file) stored ~2,100 IDENTICAL chunks per document — thousands of identical embeddings that poison vector search as a semantic attractor (BUG-SEARCH-04) and pay per-chunk embed cost for zero retrieval value"
+test_names = ["dedup_uniform_content_collapses_to_distinct_chunks", "dedup_keeps_distinct_chunks_and_order", "dedup_preserves_original_idx_values"]
+test_file = "crates/pipeline/src/chunker.rs"
+touches = ["crates/pipeline/src/chunker.rs", "crates/pipeline/src/ingest.rs"]
+conflict_group = "pipeline"
+depends_on = []
+severity = "medium"
+status = "done"
+acceptance = "ingesting a 200 KB uniform-content file stores exactly the distinct chunks (repeated block + tail), not thousands of identical rows; first occurrence keeps its provenance; (file_id, idx) stays unique"
+notes = "Found in P15-T7 while root-causing BUG-SEARCH-04's corpus poisoning: each successful large-text e2e ingest stored ~2,115 chunks for one document, ~all identical. Fix: dedup_identical_chunks() in the chunker (first occurrence survives with provenance, original idx kept, gaps fine) applied at the ingest chunk+embed loop BEFORE embedding, so the embed cost disappears with the duplicate rows. Defence-in-depth with BUG-SEARCH-04's overscan+dedup at query time: ingest-side dedup shrinks attractors at the source; query-side diversification handles whatever still accumulates (e.g. legacy rows, near-identical-but-distinct chunks)."
+
 # ── Upload/ingest campaign findings (docs/analysis/08-upload-campaign-findings.md) ──
 
 [[bug]]

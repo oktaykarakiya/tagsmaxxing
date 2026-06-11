@@ -110,6 +110,25 @@ pub fn chunk_text(
     chunks
 }
 
+/// Collapse chunks with identical content within one file (BUG-INGEST-19).
+///
+/// Pathologically repetitive content — e.g. a 200 KB uniform-byte file —
+/// otherwise stores thousands of identical chunks whose identical embeddings
+/// act as a semantic "attractor" in vector search (BUG-SEARCH-04's corpus
+/// poisoning) while adding zero retrieval value and paying per-chunk embedding
+/// cost for nothing. The FIRST occurrence survives with its provenance fields
+/// (earliest page/position); later duplicates are dropped. Original `idx`
+/// values are preserved — gaps are fine, `(file_id, idx)` stays unique and
+/// position-ordered.
+#[must_use]
+pub fn dedup_identical_chunks(chunks: Vec<TextChunk>) -> Vec<TextChunk> {
+    let mut seen = std::collections::HashSet::new();
+    chunks
+        .into_iter()
+        .filter(|c| seen.insert(c.content.clone()))
+        .collect()
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -329,6 +348,57 @@ mod tests {
         let chunks = chunk_text(text, 1, None, None, 1000, 64);
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].content, "tiny");
+    }
+
+    // ── dedup_identical_chunks (BUG-INGEST-19) ────────────────────────────
+
+    #[test]
+    fn dedup_uniform_content_collapses_to_distinct_chunks() {
+        // 200 KB of a single repeated character — the corpus-poisoning case.
+        // Every full-size chunk is identical; only the (shorter) tail differs,
+        // so thousands of chunks must collapse to exactly two.
+        let text = "A".repeat(200 * 1024);
+        let raw = chunk_text(&text, 7, Some(1), None, 1000, 0);
+        assert!(raw.len() > 100, "precondition: many raw chunks");
+        let deduped = dedup_identical_chunks(raw);
+        assert_eq!(
+            deduped.len(),
+            2,
+            "uniform text must collapse to the repeated block + the tail"
+        );
+        assert_eq!(deduped[0].idx, 0, "first occurrence survives");
+        assert_eq!(deduped[0].file_id, 7);
+    }
+
+    #[test]
+    fn dedup_keeps_distinct_chunks_and_order() {
+        let mut chunks = chunk_text("alpha beta", 1, None, None, 5, 0);
+        chunks.extend(chunk_text("alpha beta", 1, None, None, 5, 0));
+        assert_eq!(chunks.len(), 4); // "alpha", " beta" twice each
+        let deduped = dedup_identical_chunks(chunks);
+        let contents: Vec<&str> = deduped.iter().map(|c| c.content.as_str()).collect();
+        assert_eq!(
+            contents,
+            vec!["alpha", " beta"],
+            "order of first occurrences kept"
+        );
+    }
+
+    #[test]
+    fn dedup_preserves_original_idx_values() {
+        // Survivors keep their position idx (gaps allowed) so provenance and
+        // the (file_id, idx) uniqueness both hold.
+        let text = "xxxxx".repeat(3); // chunks of 5: "xxxxx" ×3 → 1 survivor
+        let raw = chunk_text(&text, 1, None, None, 5, 0);
+        assert_eq!(raw.len(), 3);
+        let deduped = dedup_identical_chunks(raw);
+        assert_eq!(deduped.len(), 1);
+        assert_eq!(deduped[0].idx, 0);
+    }
+
+    #[test]
+    fn dedup_empty_input_is_empty() {
+        assert!(dedup_identical_chunks(Vec::new()).is_empty());
     }
 
     // ── Constants are stable ──────────────────────────────────────────────

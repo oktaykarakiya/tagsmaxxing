@@ -29,7 +29,9 @@ use kb_core::tag::TagSource;
 use kb_core::tagger::{TagInput, TagOutput, Tagger};
 use kb_llm::VisionCaptioner;
 
-use crate::chunker::{DEFAULT_CHUNK_SIZE_CHARS, DEFAULT_OVERLAP_CHARS, chunk_text};
+use crate::chunker::{
+    DEFAULT_CHUNK_SIZE_CHARS, DEFAULT_OVERLAP_CHARS, chunk_text, dedup_identical_chunks,
+};
 use crate::document_builder::{DocumentBuilder, PageInput};
 use crate::embedder::ChunkEmbedder;
 use crate::metadata_merge::MetadataMerger;
@@ -513,17 +515,21 @@ impl IngestPipeline {
             .await?;
 
         // 7. Chunk + embed — one batch per file so transactional_ingest
-        //    receives the correct `&[Vec<Chunk>]` grouping.
+        //    receives the correct `&[Vec<Chunk>]` grouping. Identical chunks
+        //    within a file are collapsed first (BUG-INGEST-19): repetitive
+        //    content otherwise stores thousands of identical embeddings that
+        //    poison vector search (BUG-SEARCH-04) and pay embed cost for
+        //    nothing.
         let mut embedded_per_file: Vec<Vec<Chunk>> = Vec::with_capacity(extracted_pairs.len());
         for (file, extracted) in &extracted_pairs {
-            let text_chunks = chunk_text(
+            let text_chunks = dedup_identical_chunks(chunk_text(
                 &extracted.text,
                 file.id,
                 Some(file.page_no),
                 None,
                 DEFAULT_CHUNK_SIZE_CHARS,
                 DEFAULT_OVERLAP_CHARS,
-            );
+            ));
             if text_chunks.is_empty() {
                 embedded_per_file.push(Vec::new());
             } else {
