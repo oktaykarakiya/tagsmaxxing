@@ -6,6 +6,12 @@
 //! 1. Vector top-N via `chunks.embedding <=> CAST($vec AS vector) ORDER BY distance LIMIT N`
 //! 2. Keyword top-N via `ts_rank(tsv, websearch_to_tsquery('simple', $q)) ORDER BY rank DESC`
 //!
+//! Both arms **overscan** the index (bounded by [`overscan_limit`]) and then keep
+//! only the best chunk per document ([`dedup_best_chunk_per_document`]) so each
+//! arm contributes up to `top_k` *distinct documents* — a single document with
+//! many near-identical matching chunks must not monopolize the candidate set
+//! (BUG-SEARCH-04).
+//!
 //! Filters (kinds, tags via document_tags, created_after/before) are pushed into both
 //! queries identically. The two ranked lists feed [`rrf_fuse`] → [`document_rollup`]
 //! → top-K [`Hit`]s. Tenant isolation is handled by Postgres RLS (§13); no explicit
@@ -228,14 +234,71 @@ async fn resolve_tag_ids_for_filter(
 
 // ── Query execution ──────────────────────────────────────────────────────────
 
-/// Run the vector (HNSW cosine) top-N query, returning chunk rows ordered by
-/// increasing cosine distance (most similar first).
+/// Overscan multiplier for per-document candidate diversification (BUG-SEARCH-04).
+const OVERSCAN_FACTOR: usize = 8;
+/// Overscan floor — must exceed the chunk count of any realistic single
+/// document "attractor" so one document cannot fill the whole scan window
+/// (a 200 KB uniform file chunks to ~100 near-identical embeddings).
+const OVERSCAN_FLOOR: usize = 256;
+/// Overscan ceiling — pgvector's `hnsw.ef_search` upper bound is 1000, and the
+/// scan window must stay within it for recall to cover the window.
+const OVERSCAN_CEILING: usize = 1000;
+
+/// How many chunk rows to fetch from one arm before per-document dedup.
+fn overscan_limit(top_k: usize) -> usize {
+    top_k
+        .saturating_mul(OVERSCAN_FACTOR)
+        .clamp(OVERSCAN_FLOOR, OVERSCAN_CEILING)
+}
+
+/// Keep only the best-ranked (first) chunk of each document, preserving rank
+/// order, until `top_k` distinct documents are collected (BUG-SEARCH-04).
+///
+/// Without this, a single document whose many near-identical chunks all sit
+/// close to the query monopolizes a plain `LIMIT top_k` arm — e.g. one large
+/// uniform-content file became a semantic "attractor" whose ~100 identical
+/// chunks consumed every vector slot, starving all other documents out of the
+/// candidate set (the downstream rollup then yields a single hit). The
+/// document rollup keeps only each document's best chunk anyway, so dropping
+/// the duplicates here loses nothing.
+fn dedup_best_chunk_per_document(rows: Vec<ChunkRow>, top_k: usize) -> Vec<ChunkRow> {
+    if top_k == 0 {
+        return Vec::new();
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::with_capacity(top_k.min(rows.len()));
+    for row in rows {
+        if seen.insert(row.document_id) {
+            out.push(row);
+            if out.len() == top_k {
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// Run the vector (HNSW cosine) top-N query, returning the best chunk of each
+/// of up to `top_k` distinct documents, ordered by increasing cosine distance
+/// (most similar first).
 async fn execute_vector_query(
     conn: &mut PgConnection,
     query: &Query,
     query_embedding: &[f32],
     tag_ids: &[i64],
 ) -> anyhow::Result<Vec<ChunkRow>> {
+    let fetch = overscan_limit(query.top_k);
+
+    // HNSW returns at most ef_search candidates regardless of LIMIT; the scan
+    // window must cover the overscan or the widened LIMIT silently degrades.
+    // `SET LOCAL` is transaction-scoped (we are inside begin_tenant_tx) and the
+    // value is a computed integer, so inlining it is safe (GUCs cannot be
+    // bound as parameters).
+    sqlx::query(&format!("SET LOCAL hnsw.ef_search = {fetch}"))
+        .execute(&mut *conn)
+        .await
+        .context("failed to set hnsw.ef_search for vector overscan")?;
+
     let mut builder = build_base_select();
     push_filters(&mut builder, &query.filters, tag_ids);
     // pgvector caps `vector` ANN indexes at 2000 dims, so the chunks HNSW index is built on a
@@ -244,17 +307,22 @@ async fn execute_vector_query(
     builder.push(" ORDER BY c.embedding::halfvec(2560) <=> CAST(");
     builder.push_bind(crate::pg_store::format_vector(query_embedding));
     builder.push(" AS halfvec(2560)) LIMIT ");
-    builder.push_bind(query.top_k as i64);
+    builder.push_bind(fetch as i64);
 
-    builder
+    let rows = builder
         .build_query_as::<ChunkRow>()
         .fetch_all(&mut *conn)
         .await
-        .context("vector search query failed")
+        .context("vector search query failed")?;
+
+    Ok(dedup_best_chunk_per_document(rows, query.top_k))
 }
 
-/// Run the keyword (ts_rank on tsv) top-N query. When `query.text` is empty or
-/// whitespace-only the keyword signal contributes nothing — return an empty list.
+/// Run the keyword (ts_rank on tsv) top-N query, returning the best chunk of
+/// each of up to `top_k` distinct documents (same diversification as the
+/// vector arm — a many-matching-chunks document must not starve the rest).
+/// When `query.text` is empty or whitespace-only the keyword signal
+/// contributes nothing — return an empty list.
 async fn execute_keyword_query(
     conn: &mut PgConnection,
     query: &Query,
@@ -277,13 +345,15 @@ async fn execute_keyword_query(
     builder.push(" ORDER BY ts_rank(c.tsv, plainto_tsquery('simple', ");
     builder.push_bind(query_text);
     builder.push(")) DESC LIMIT ");
-    builder.push_bind(query.top_k as i64);
+    builder.push_bind(overscan_limit(query.top_k) as i64);
 
-    builder
+    let rows = builder
         .build_query_as::<ChunkRow>()
         .fetch_all(&mut *conn)
         .await
-        .context("keyword search query failed")
+        .context("keyword search query failed")?;
+
+    Ok(dedup_best_chunk_per_document(rows, query.top_k))
 }
 
 // ── SQL construction helpers ─────────────────────────────────────────────────
@@ -354,6 +424,72 @@ mod tests {
     use kb_core::store::Store;
 
     // ── resolve_tag_ids_for_filter (unit — requires connected DB; tested via integration below) ──
+
+    // ── Candidate diversification (BUG-SEARCH-04) ──────────────────────────
+
+    fn row(chunk_id: i64, document_id: i64) -> ChunkRow {
+        ChunkRow {
+            chunk_id,
+            document_id,
+            file_id: 1,
+            page_no: None,
+            ts_offset: None,
+            content: format!("chunk {chunk_id}"),
+            content_enc: None,
+            title: None,
+            kind: None,
+        }
+    }
+
+    #[test]
+    fn overscan_limit_clamps_to_floor_and_ceiling() {
+        // Small top_k hits the floor (must cover a ~100-chunk attractor doc).
+        assert_eq!(overscan_limit(0), OVERSCAN_FLOOR);
+        assert_eq!(overscan_limit(8), OVERSCAN_FLOOR);
+        // Mid-range scales by the factor.
+        assert_eq!(overscan_limit(64), 64 * OVERSCAN_FACTOR);
+        // Large top_k is capped at pgvector's ef_search bound.
+        assert_eq!(overscan_limit(500), OVERSCAN_CEILING);
+        assert_eq!(overscan_limit(usize::MAX), OVERSCAN_CEILING);
+    }
+
+    #[test]
+    fn dedup_keeps_best_chunk_per_document_in_rank_order() {
+        // Doc 7's three chunks lead the ranking (the attractor pattern); docs
+        // 8 and 9 follow. Dedup must keep 7's FIRST chunk only, then 8, then 9.
+        let rows = vec![row(1, 7), row(2, 7), row(3, 7), row(4, 8), row(5, 9)];
+        let out = dedup_best_chunk_per_document(rows, 10);
+        let kept: Vec<(i64, i64)> = out.iter().map(|r| (r.chunk_id, r.document_id)).collect();
+        assert_eq!(kept, vec![(1, 7), (4, 8), (5, 9)]);
+    }
+
+    #[test]
+    fn dedup_stops_at_top_k_distinct_documents() {
+        let rows = vec![row(1, 1), row(2, 2), row(3, 3), row(4, 4)];
+        let out = dedup_best_chunk_per_document(rows, 2);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].document_id, 1);
+        assert_eq!(out[1].document_id, 2);
+    }
+
+    #[test]
+    fn dedup_attractor_cannot_monopolize_the_arm() {
+        // 100 identical-embedding chunks of doc 42 ahead of two real matches —
+        // exactly the observed corpus poisoning. The arm must still surface
+        // the other documents.
+        let mut rows: Vec<ChunkRow> = (0..100).map(|i| row(i, 42)).collect();
+        rows.push(row(200, 1));
+        rows.push(row(201, 2));
+        let out = dedup_best_chunk_per_document(rows, 8);
+        let docs: Vec<i64> = out.iter().map(|r| r.document_id).collect();
+        assert_eq!(docs, vec![42, 1, 2]);
+    }
+
+    #[test]
+    fn dedup_empty_and_zero_top_k() {
+        assert!(dedup_best_chunk_per_document(Vec::new(), 5).is_empty());
+        assert!(dedup_best_chunk_per_document(vec![row(1, 1)], 0).is_empty());
+    }
 
     // ── SQL construction tests ─────────────────────────────────────────────
 

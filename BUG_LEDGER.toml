@@ -1177,6 +1177,19 @@ status = "done"
 acceptance = "a 200 KB text document ingests to ready (tagger request fits the serving context) and the marker is searchable; tagger text is capped at MAX_TAGGER_TEXT_BYTES with the VLM caption surviving at the front"
 notes = "Found in P15-T7 when the b9592 llama-server (strict context checks) replaced the crashy 24d2ee0 build: every retry of the large-doc tagging job 400'd ('request (26815 tokens) exceeds the available context size (8192)') and the job dead-lettered. Fix in two halves. (1) byte cap: truncate_to_char_boundary(text, MAX_TAGGER_TEXT_BYTES=18 KB) at BOTH TagInput build sites (ingest + retag). (2) the byte cap alone proved insufficient in the final sweep — 18 KB of emoji measured 11.6k REAL tokens (BPE inflation, ~2 tokens/char for exotic scripts) and still 400'd, dead-lettering jobs and tripping the text-degradation cooldown (37 skipped tests): added truncate_to_token_budget (conservative estimate: ASCII 1/4 tok/char, non-ASCII 2 tok/char) with MAX_TAGGER_TEXT_TOKENS=4800 + MAX_USER_NOTE_TOKENS=1500, composed via bound_tagger_text(); the user-note path gets the same token bound on top of its BUG-INGEST-10 byte cap. Context plan: 800 sys + 1500 note + 4800 text + 1000 wrap/output < 8192. Prepended VLM captions sit at the front and survive both cuts."
 
+[[bug]]
+id = "BUG-SEARCH-04"
+description = "hybrid-search arms had NO per-document diversification: a single document with many near-identical matching chunks monopolizes the plain LIMIT top_k candidate window, starving every other document (observed: one 200 KB uniform blob's ~100 identical-embedding chunks consumed the whole vector arm -> exactly one hit for mixed-topic queries)"
+test_names = ["attractor_document_cannot_monopolize_vector_arm", "many_chunk_document_cannot_monopolize_keyword_arm", "test_search_rerank_changes_order"]
+test_file = "crates/store/tests/hybrid_diversification_pg.rs"
+touches = ["crates/store/src/hybrid_search.rs"]
+conflict_group = "store"
+depends_on = []
+severity = "high"
+status = "done"
+acceptance = "with one attractor document (100 identical chunks at distance ~0) plus distinct farther documents seeded, hybrid search top_k returns the attractor FIRST plus the other documents (>= 3 distinct docs), in both the vector and keyword arms"
+notes = "Found in P15-T7: test_search_rerank_changes_order returned exactly 1 hit once test_large_text's 200 KB 'AAAA...' document finally ingested successfully (b9592 + BUG-INGEST-18 cap) — its ~100 identical chunk embeddings sit at cosine distance 0.384 from mixed-topic query embeddings, closer than any topical document, so the vector arm's ORDER BY distance LIMIT top_k returned ONLY attractor chunks and document_rollup collapsed them to one hit. Fix: both arms overscan the index (overscan_limit = clamp(top_k*8, 256, 1000); vector arm also SET LOCAL hnsw.ef_search = overscan since HNSW returns at most ef_search candidates) then dedup_best_chunk_per_document keeps rank order until top_k DISTINCT documents. Downstream rollup already kept only the best chunk per doc, so nothing is lost. Floor 256 covers the observed ~100-chunk attractor. Future hardening (recorded, not done): chunk-content dedup at ingest would shrink such attractors at the source."
+
 # ── Upload/ingest campaign findings (docs/analysis/08-upload-campaign-findings.md) ──
 
 [[bug]]
