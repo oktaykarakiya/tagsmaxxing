@@ -1735,9 +1735,9 @@ description = "Shared blobs end-to-end (S3-compatible: MinIO/B2). Compose overri
 depends_on = ["P15-T4"]
 plan_sections = ["20"]
 acceptance = "Existing b2_integration tests pass against MinIO (S3_TEST_*); one e2e smoke with the MinIO override: upload -> worker (s3 blob) -> ready -> download OK. just ci green."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "test/compose.minio.yaml overlay: minio service (FS-mode bucket auto-created in the entrypoint, healthcheck-gated app dependency) + BLOB_S3_ACCESS_KEY/SECRET into the app; test/config.e2e.minio.toml = host e2e config + [blob] backend=s3 -> http://minio:9000 bucket kb-blobs. b2_integration vs MinIO: ALL 10 pass (9 existing + NEW encrypted_blob_over_s3_roundtrips_ciphertext — EncryptedBlob over B2Blob: at-rest bytes are ciphertext, get() decrypts, presigning refused). Live e2e smoke on the s3-mode stack: queued upload -> embedded worker fetched staged bytes FROM MINIO -> ready; object verified in the bucket under the tenant-prefixed content key (/kb-blobs/1/<sha>); download = 302 presigned URL whose fetch (inside the compose network — the URL is signed for the minio host) returns the exact uploaded content. Deployment note encoded in docs: presigned URLs must be HOST-REACHABLE in production (public MinIO endpoint or B2); with an EncryptedBlob KEK the handler streams server-side instead (presign refused for ciphertext, unit + integration tested). LOUD multi-machine requirement documented in compose/config.toml (+commented [blob] s3 sample), .env.example (BLOB_S3_*), the compose overlay header, and kb worker's module docs (T8). Stack reverted to the standard local-blob config after the smoke (T14's regression compares against the local-blob baseline). just ci green."
 
 [[task]]
 id = "P15-T12"

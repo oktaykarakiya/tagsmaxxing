@@ -51,3 +51,20 @@ base_url = "http://llama-server:8080/v1"
 roles = ["rerank"]
 slots = 8
 priority = 0
+
+# ── Blob storage (P15-T11) ─────────────────────────────────────────────────────
+# backend = "local" keeps file bytes on THIS node's filesystem — fine for a
+# single box. Multi-machine worker fleets REQUIRE backend = "s3": a `kb worker`
+# on another machine must fetch the bytes the API node staged. Any
+# S3-compatible store works (MinIO self-hosted, Backblaze B2). Credentials are
+# read at call time from BLOB_S3_ACCESS_KEY / BLOB_S3_SECRET_KEY env vars; a
+# provisioned blob KEK wraps objects with EncryptedBlob in either mode
+# (downloads then stream server-side — presigned URLs are refused for
+# ciphertext).
+#
+# [blob]
+# backend = "s3"
+# [blob.s3]
+# endpoint = "http://minio:9000"   # or the B2 S3 endpoint for your region
+# region = "us-east-1"
+# bucket = "kb-blobs"

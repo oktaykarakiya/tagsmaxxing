@@ -1,0 +1,40 @@
+# test/compose.minio.yaml — shared-blob overlay (P15-T11): MinIO as the
+# S3-compatible blob store.
+#
+# Layer ON TOP of compose.yaml (+ the e2e overlay of your choice) and point
+# CONFIG_FILE at an s3-mode config:
+#
+#   CONFIG_FILE=./test/config.e2e.minio.toml \
+#   podman compose --env-file test/.env \
+#     -f compose.yaml -f test/compose.e2e.host.yaml -f test/compose.minio.yaml up -d
+#
+# Multi-machine worker fleets REQUIRE s3 blob mode: a worker on another box
+# must be able to fetch the bytes the API node staged. `local` mode keeps
+# blobs on one node's filesystem and only works single-box.
+
+services:
+  minio:
+    image: docker.io/minio/minio:latest
+    # Create the bucket (a directory in single-node FS mode) before serving.
+    entrypoint: ["/bin/sh", "-c", "mkdir -p /data/kb-blobs && exec minio server /data --console-address :9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:9000/minio/health/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  app:
+    environment:
+      BLOB_S3_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      BLOB_S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    depends_on:
+      minio:
+        condition: service_healthy
+
+volumes:
+  minio_data:

@@ -752,6 +752,43 @@ mod tests {
             blob.delete(key).await.unwrap();
         }
 
+        /// EncryptedBlob composes over the S3 backend (P15-T11): objects land
+        /// as ciphertext in the bucket, round-trip through get(), and the
+        /// wrapper refuses presigning (the download handler then streams
+        /// server-side instead of handing clients undecryptable bytes).
+        #[tokio::test]
+        #[ignore = "needs S3-compatible endpoint"]
+        async fn encrypted_blob_over_s3_roundtrips_ciphertext() {
+            use crate::encrypted_blob::EncryptedBlob;
+            use kb_core::kek::{FileKek, KeyEncryptionKey};
+
+            let raw = std::sync::Arc::new(test_b2_from_env().expect("build test blob"));
+            let kek: std::sync::Arc<dyn KeyEncryptionKey> =
+                std::sync::Arc::new(FileKek::from_key([0xABu8; 32]));
+            let enc =
+                EncryptedBlob::new(std::sync::Arc::clone(&raw) as std::sync::Arc<dyn Blob>, kek);
+
+            let key = "tenant-test/encrypted-s3";
+            let data = Bytes::from_static(b"secret bytes over shared S3 blobs");
+            enc.put(key, data.clone()).await.unwrap();
+
+            // Decrypted round-trip through the wrapper.
+            assert_eq!(enc.get(key).await.unwrap(), data);
+
+            // At rest in the bucket it is NOT the plaintext.
+            let stored = raw.get(key).await.unwrap();
+            assert_ne!(stored, data, "object at rest must be ciphertext");
+
+            // Presigning is refused — clients cannot decrypt raw objects.
+            assert!(
+                enc.presigned_get_url(key, Duration::from_secs(60))
+                    .await
+                    .is_err()
+            );
+
+            enc.delete(key).await.unwrap();
+        }
+
         /// Presigned URL generation succeeds against S3-compatible backend.
         #[tokio::test]
         #[ignore = "needs S3-compatible endpoint"]
