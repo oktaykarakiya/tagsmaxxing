@@ -38,7 +38,7 @@ Live status: `python3 scripts/catalog_status.py summary`.
 | `tests/catalog/test_billing.py` | `billing` | ✅ | checkout, webhook signature + idempotency, dunning |
 | `tests/catalog/test_encryption.py` | `encryption` | ✅/⛔ | at-rest encryption, key rotation, crypto-shred, audit |
 | `tests/catalog/test_admin.py` | `admin` | ✅ | dashboard, tenants/users, jobs, tag merge, audit, RBAC |
-| `tests/catalog/test_providers_routing.py` | `providers` | ✅ | provider/model/route CRUD, failover, hot-reload, cost |
+| `tests/catalog/test_providers_routing.py` | `providers` | ✅ | provider/model/route CRUD, failover, hot-reload, cost, single-route-doesn't-break-other-roles guard (BUG-SCHED-03) |
 | `tests/catalog/test_email_signup.py` | `email` | ✅ | signup, verification, password reset, templates |
 | `tests/catalog/test_account_team.py` | `account` | ✅ | account, team, plan, dashboard, danger zone, legal |
 | `tests/catalog/test_api_tokens.py` | `tokens` | ✅ | token create/list/revoke, Bearer auth |

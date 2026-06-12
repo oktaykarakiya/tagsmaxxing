@@ -20,6 +20,11 @@ use crate::lease::Lease;
 use crate::priority_wait::PriorityWaiterQueue;
 use crate::tiered;
 
+/// Minimum interval between tiered→legacy fallback warnings per role
+/// (BUG-SCHED-03). The fallback itself is silent and hot-path-cheap; the
+/// warning is operator-facing diagnostics only.
+const FALLBACK_WARN_EVERY: Duration = Duration::from_secs(30);
+
 /// The scheduler's registry of backends, indexed by the role they serve.
 ///
 /// A backend that serves several roles (via its [`CapSet`](kb_core::capability::CapSet))
@@ -63,6 +68,10 @@ pub struct Pool {
     /// capacity, it registers here; when a [`Lease`] is dropped, the queue
     /// is notified and the highest-priority waiter is woken.
     wait_queue: Arc<PriorityWaiterQueue>,
+    /// Per-role timestamp of the last tiered→legacy fallback warning, so the
+    /// log is not flooded when a role has no usable routing entries
+    /// (BUG-SCHED-03). Keyed by the compact role bit value.
+    fallback_warned: Arc<DashMap<u8, std::time::Instant>>,
 }
 
 impl Pool {
@@ -90,6 +99,7 @@ impl Pool {
             routing: Arc::new(ArcSwap::new(Arc::new(None))),
             rr_counters: Arc::new(DashMap::new()),
             wait_queue: Arc::new(PriorityWaiterQueue::default()),
+            fallback_warned: Arc::new(DashMap::new()),
         }
     }
 
@@ -114,7 +124,43 @@ impl Pool {
         self.acquire_timeout
     }
 
+    /// Apply a freshly fetched routing snapshot (BUG-SCHED-03).
+    ///
+    /// Materializes/refreshes the DB-keyed backends in the flat map via
+    /// [`crate::materialize`] **before** swapping the table in, so no acquire
+    /// ever observes a routing table whose backends are missing. An empty
+    /// snapshot clears the table (legacy flat-priority mode) and prunes all
+    /// DB-materialized backends.
+    ///
+    /// Concurrency: production has a single reload task, so applies are
+    /// serial. A hypothetical concurrent apply interleaves per-key
+    /// atomically; worst case an acquire resolves zero candidates for one
+    /// role momentarily and falls back to the legacy pool.
+    pub fn apply_routing(&self, entries: Vec<kb_core::routing::RoutingEntry>) {
+        if entries.is_empty() {
+            self.clear_routing();
+            crate::materialize::prune_all(&self.backends);
+            return;
+        }
+        crate::materialize::sync_backends(&self.backends, &entries);
+        self.set_routing(Arc::new(RoutingTable::from_entries(entries)));
+    }
+
+    /// Look up any backend — config or DB-materialized — by its flat-map id.
+    ///
+    /// This is the id carried by [`Lease::backend_id`](crate::Lease); the
+    /// LLM client uses it to flip the pool-side health flag on transport
+    /// failures, which is what lets tiered routing skip a dead routed
+    /// backend and fail over to the next tier.
+    pub fn find_backend(&self, id: &str) -> Option<Arc<Backend>> {
+        self.backends.get(id).map(|e| Arc::clone(e.value()))
+    }
+
     /// Set or replace the tiered routing table (P9-T6).
+    ///
+    /// Prefer [`apply_routing`](Self::apply_routing), which also materializes
+    /// DB-backed entries; this raw setter is kept for tests and for callers
+    /// that manage the backend map themselves.
     ///
     /// After setting, subsequent [`acquire`](Self::acquire) calls use the
     /// tiered failover algorithm (§26.4) instead of the legacy flat-priority
@@ -141,6 +187,15 @@ impl Pool {
     /// in order, filter + order candidates by strategy, try each, wait
     /// `spill_after`, then spill to the next tier.  [`Role::Embed`] is locked
     /// to tier 0 only (plan §11 — no cross-model failover for embeddings).
+    ///
+    /// **Per-role fallback (BUG-SCHED-03):** a routing table covers only the
+    /// roles it has entries for. When the tiered path reports
+    /// [`AcquireError::NoBackend`] — the role has no tiers, or every entry
+    /// resolved to zero live backends — acquire falls back to the legacy
+    /// flat-priority pool (with a rate-limited warning) instead of failing
+    /// the role outright. Real capacity pressure is **not** masked:
+    /// [`AcquireError::CapacityExhausted`]/[`Timeout`](AcquireError::Timeout)
+    /// from resolvable tiers are returned as-is.
     ///
     /// When no routing table is set, this falls back to the **legacy
     /// flat-priority algorithm** (§6.3): candidates sorted by
@@ -172,10 +227,10 @@ impl Pool {
         // Check for an active routing table — use tiered path if available.
         let routing_guard = self.routing.load();
         if let Some(table) = (*routing_guard).as_ref() {
-            return tiered::acquire_tiered(
+            match tiered::acquire_tiered(
                 role,
                 priority,
-                None, // tenant_id — global routes for now (P9-T9 adds per-tenant).
+                None, // tenant_id — global routes for now (per-tenant acquire is a recorded gap).
                 table,
                 &self.backends,
                 self.acquire_timeout,
@@ -183,11 +238,50 @@ impl Pool {
                 local_only, // P9-T9: data-residency enforcement (§26.6)
                 &self.wait_queue,
             )
-            .await;
+            .await
+            {
+                // Both NoBackend causes (the role has no tiers in the table;
+                // every entry resolved to zero live candidates) mean tiered
+                // routing has nothing usable for `role`. Fall back to the
+                // legacy config-backend pool so a partial routing table never
+                // takes unrelated roles down (BUG-SCHED-03). Both causes
+                // return without waiting, so the fallback adds no latency.
+                Err(AcquireError::NoBackend { .. }) => {
+                    if self.should_warn_fallback(role) {
+                        tracing::warn!(
+                            role = role.as_str(),
+                            "tiered routing has no usable candidates for this role; \
+                             falling back to legacy config backends"
+                        );
+                    }
+                }
+                // CapacityExhausted / Timeout / Closed come from resolvable
+                // candidates — real pressure must not be masked by silently
+                // switching pools.
+                other => return other,
+            }
         }
 
         // Legacy flat-priority path (§6.3).
         self.acquire_legacy(role, local_only, priority).await
+    }
+
+    /// Whether the tiered→legacy fallback warning for `role` should be
+    /// emitted now. Updates the per-role timestamp when it returns `true`;
+    /// at most one warning per role per [`FALLBACK_WARN_EVERY`].
+    fn should_warn_fallback(&self, role: Role) -> bool {
+        let key = tiered::role_to_rr_key(role);
+        let now = std::time::Instant::now();
+        let mut entry = self.fallback_warned.entry(key).or_insert(
+            // First sighting: backdate so the first warning always fires.
+            now - FALLBACK_WARN_EVERY,
+        );
+        if now.duration_since(*entry) >= FALLBACK_WARN_EVERY {
+            *entry = now;
+            true
+        } else {
+            false
+        }
     }
 
     /// Legacy flat-priority acquire (plan §6.3).
@@ -715,6 +809,142 @@ mod tests {
             matches!(err, AcquireError::NoBackend { .. }),
             "backend without endpoint must be skipped"
         );
+    }
+
+    // ── BUG-SCHED-03: routing-table resolution + per-role fallback ─────
+
+    /// Build one DB-shaped routing entry: numeric model id (a Postgres PK),
+    /// the way `PgStore::get_routing_table` returns them. Deliberately does
+    /// NOT match any config backend id.
+    fn db_entry(role: Role, model_id: i64, endpoint: &str) -> kb_core::routing::RoutingEntry {
+        use kb_core::routing::{
+            ModelRow, ProviderKind, ProviderRow, RoutingEntry, RoutingStrategy,
+        };
+        RoutingEntry {
+            tenant_id: None,
+            role,
+            tier: 0,
+            strategy: RoutingStrategy::LeastLoaded,
+            spill_ms: 100,
+            provider: ProviderRow {
+                id: 1000 + model_id,
+                name: format!("db-prov-{model_id}"),
+                kind: ProviderKind::OpenAiCompat,
+                endpoint: Some(endpoint.to_string()),
+                headers: serde_json::Value::Object(Default::default()),
+                enabled: true,
+                api_key_enc: None,
+            },
+            model: ModelRow {
+                id: model_id,
+                provider_id: 1000 + model_id,
+                model_id: format!("db-model-{model_id}"),
+                caps: vec![role.as_str().to_string()],
+                ctx_tokens: Some(8192),
+                max_conc: Some(2),
+                rpm: None,
+                tpm: None,
+                price_in: None,
+                price_out: None,
+                data_class: kb_core::data_class::DataClass::Local,
+                enabled: true,
+            },
+        }
+    }
+
+    /// The original BUG-SCHED-03 shape: a pool keyed by config string ids and
+    /// a routing table whose entries carry numeric DB model ids. The table is
+    /// unresolvable (no materialization happened — e.g. a stale snapshot), so
+    /// acquire must fall back to the legacy config backends instead of
+    /// returning `NoBackend` for every role.
+    #[tokio::test]
+    async fn regression_config_keyed_pool_with_db_entries_still_acquires() {
+        let b = tb("llama-text", "http://x:8001", vec![Role::Text], 0, 2);
+        let pool = Pool::new(vec![Arc::clone(&b)], Duration::from_secs(5));
+
+        let table = kb_core::routing::RoutingTable::from_entries(vec![db_entry(
+            Role::Text,
+            12,
+            "http://db:12",
+        )]);
+        pool.set_routing(Arc::new(table));
+
+        let lease = pool
+            .acquire(Role::Text, false, 0)
+            .await
+            .expect("unresolvable routing entries must fall back to legacy, not NoBackend");
+        assert_eq!(lease.backend_id, "llama-text");
+    }
+
+    /// Real capacity pressure on resolvable tiered candidates must surface as
+    /// `CapacityExhausted` — never silently served by the legacy pool.
+    #[tokio::test]
+    async fn capacity_exhausted_is_not_masked_by_fallback() {
+        // A routed backend, registered under the key the tiered resolver uses.
+        let routed = tb("routed", "http://db:12", vec![Role::Text], 0, 1);
+        // A legacy config backend with free slots that must NOT be used.
+        let legacy = tb("cfg-fallback", "http://x:1", vec![Role::Text], 0, 4);
+        let pool = Pool::new(vec![Arc::clone(&legacy)], Duration::from_millis(200));
+        pool.backends
+            .insert(crate::materialize::db_backend_key(12), Arc::clone(&routed));
+
+        let table = kb_core::routing::RoutingTable::from_entries(vec![db_entry(
+            Role::Text,
+            12,
+            "http://db:12",
+        )]);
+        pool.set_routing(Arc::new(table));
+
+        // Exhaust the routed backend's only slot.
+        let _hold = routed.capacity.try_acquire().unwrap();
+
+        let err = pool.acquire(Role::Text, false, 0).await.unwrap_err();
+        assert!(
+            matches!(err, AcquireError::CapacityExhausted { .. }),
+            "busy resolvable tier must stay CapacityExhausted, got {err:?}"
+        );
+        assert_eq!(legacy.free(), 4, "legacy pool must not have been touched");
+    }
+
+    /// The fallback warning fires immediately, then is suppressed within the
+    /// rate-limit window (per role).
+    #[test]
+    fn should_warn_fallback_is_rate_limited() {
+        let pool = Pool::new(vec![], Duration::from_secs(1));
+        assert!(pool.should_warn_fallback(Role::Text), "first call warns");
+        assert!(
+            !pool.should_warn_fallback(Role::Text),
+            "second call within the window is suppressed"
+        );
+        // A different role has its own window.
+        assert!(pool.should_warn_fallback(Role::Embed));
+    }
+
+    /// The ledger acceptance: creating ONE real DB route (here: Text) must not
+    /// break every other role's acquire — roles with no tiers in the table
+    /// fall back to the legacy flat-priority pool.
+    #[tokio::test]
+    async fn one_route_for_one_role_does_not_break_other_roles() {
+        let b_text = tb("cfg-text", "http://x:1", vec![Role::Text], 0, 2);
+        let b_embed = tb("cfg-embed", "http://x:2", vec![Role::Embed], 0, 2);
+        let pool = Pool::new(
+            vec![Arc::clone(&b_text), Arc::clone(&b_embed)],
+            Duration::from_secs(5),
+        );
+
+        let table = kb_core::routing::RoutingTable::from_entries(vec![db_entry(
+            Role::Text,
+            7,
+            "http://db:7",
+        )]);
+        pool.set_routing(Arc::new(table));
+
+        // Embed has no routing tiers at all → must fall back to legacy.
+        let lease = pool
+            .acquire(Role::Embed, false, 0)
+            .await
+            .expect("a role absent from the routing table must use the legacy pool");
+        assert_eq!(lease.backend_id, "cfg-embed");
     }
 
     // ── P1-T3: mock-backend harness smoke test ────────────────────────

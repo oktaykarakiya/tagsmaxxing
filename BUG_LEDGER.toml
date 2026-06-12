@@ -1141,15 +1141,15 @@ notes = "Added GET /billing/checkout?plan=... handler (get_checkout) that delega
 [[bug]]
 id = "BUG-SCHED-03"
 description = "Config-fallback routing table is unresolvable — tiered acquire looks up pool backends by numeric model.id but the pool keys them by config backend id; production is only saved by the reload loop immediately clearing the table against the empty DB routes table"
-test_names = ["embedded_workers_drain_staged_upload_to_ready"]
-test_file = "crates/api/tests/queued_worker_pg.rs"
-touches = ["crates/scheduler/src/tiered.rs", "crates/scheduler/src/routing_reload.rs", "crates/scheduler/src/pool.rs"]
+test_names = ["embedded_workers_drain_staged_upload_to_ready", "one_global_route_resolves_and_other_roles_fall_back", "route_created_after_startup_hot_reloads_without_breaking_roles", "test_single_role_route_does_not_break_other_roles"]
+test_file = "crates/api/tests/db_routing_pg.rs"
+touches = ["crates/scheduler/src/tiered.rs", "crates/scheduler/src/routing_reload.rs", "crates/scheduler/src/pool.rs", "crates/scheduler/src/materialize.rs", "crates/llm/src/client.rs", "crates/api/src/runtime.rs"]
 conflict_group = "scheduler"
 depends_on = []
 severity = "high"
-status = "todo"
+status = "done"
 acceptance = "with zero DB routes and config [[backend]] entries, tiered acquire resolves the fallback entries to the pool's backends (or the fallback is removed in favour of explicit legacy mode); creating ONE real DB route must not break every other role's acquire"
-notes = "Found by P15-T6's runtime integration test. Chain: Reloader::startup_load(empty DB, Some(cfg)) -> config_backends_to_entries assigns numeric model ids (idx+1) -> Pool::set_routing activates tiered acquire -> tiered::resolve_and_filter keys backends.get(entry.model.id.to_string()) but Pool::new keyed the map by backend.id (the config string id, e.g. 'llama-text') -> zero candidates -> AcquireError::NoBackend for EVERY role. Production serve never notices because PgRoutingNotifier's first wait_for_change returns immediately, the reload loop fetches the EMPTY routes table and calls pool.clear_routing(), dropping the pool back to legacy flat-priority mode milliseconds after startup. Corollary risk: the moment an operator creates one real DB route (e.g. via the providers admin UI), tiered mode activates for ALL roles with only that route resolvable — every other role's acquire breaks. P15 sidesteps it for workers (build_runtime(load_db_routing=false) now skips startup_load entirely, staying in legacy mode); the tiered resolver itself still needs the fix."
+notes = "FIXED (full option). (1) Removed the unresolvable config->entries bootstrap (config_backends_to_entries + startup_load's fallback arm): empty routes table now explicitly means legacy flat-priority mode in serve AND worker — same end state, no broken startup window. (2) Per-role fallback in Pool::acquire: tiered NoBackend (role has no tiers, or entries resolve to zero live candidates) falls back to acquire_legacy with a 30s-rate-limited warn; CapacityExhausted/Timeout/Closed stay final so real pressure is never masked. (3) NEW crates/scheduler/src/materialize.rs: routing snapshots are applied via Pool::apply_routing, which materializes each routed model into a live Backend under the canonical key db:{models.id} (the exact key tiered::resolve_and_filter now looks up) — Local/OpenAiCompat keyless providers only (the live client speaks raw OpenAI-compat HTTP, no auth; other kinds warn+skip and fall back per-role); unchanged definitions keep their Arc across reloads (semaphore state survives, verified by Arc::ptr_eq test), healthy is reset on apply as the admin retry signal, stale db: keys are pruned, config backends never touched. (4) LlamaClient::mark_unhealthy now uses Pool::find_backend (flat map) so dead MATERIALIZED tier-0 backends are excluded and failover reaches tier 1 (proven by tiered_failover_marks_materialized_backend_unhealthy). Verified: 4-test serve-shaped pg suite db_routing_pg.rs (empty-DB legacy; startup global route resolves + other roles fall back; LISTEN/NOTIFY hot-reload route without breaking roles; tenant-bound route dormancy) + e2e catalog guard test_single_role_route_does_not_break_other_roles. Follow-ups filed: BUG-ADMIN-01 (route form field mismatch — the reason no UI route ever landed and this bug never detonated in e2e), BUG-SCHED-04 (tenant-bound routes invisible to tenant-blind acquire), BUG-SCHED-05 (materialized backends not probed by the health loop), BUG-SCHED-06 (single NOTIFY can be lost between PgListener recv loops). Capacity note: a DB provider sharing a config backend's physical server gets its own semaphore (documented over-subscription, servers queue)."
 
 [[bug]]
 id = "BUG-INGEST-17"
@@ -1282,3 +1282,55 @@ severity = "high"
 status = "done"
 acceptance = "transcoding audio whose re-encoded WAV exceeds the ~64 KiB stdout pipe buffer completes within the timeout instead of hanging; audio ingest no longer wedges or leaks inflight permits"
 notes = "Campaign F8 (HIGH). CHECKPOINT (extractor untrusted-bytes boundary, §31.5) — implemented+tested, committed on the branch for review, NOT merged to main. RealFfmpeg::transcode fed input to ffmpeg's stdin (pipe:0) and only read stdout AFTER write_all finished; once ffmpeg's ~64 KiB stdout pipe filled it blocked writing, stopped draining stdin, and write_all blocked forever (outside the timeout) — so any real audio (>~2 s) hung >200 s and never released its inflight permit. Fix: adopt the video extractor's safe pattern — write input to a tempfile::NamedTempFile and run `ffmpeg -i <tmp> -ar 16000 -ac 1 -f wav pipe:1` with stdin(Stdio::null()), reading stdout under the existing timeout. Added RealFfmpeg::temp_file. Mock-transcoder unit tests unchanged (27 pass); added an #[ignore] real-ffmpeg regression (3 s WAV → >64 KiB out) — verified live on ffmpeg 8.1.1: completes in ~0.14 s (was a >200 s hang). Added audio.rs + video.rs to the extract conflict group."
+
+[[bug]]
+id = "BUG-ADMIN-01"
+description = "Admin route form posts fields named tier/spill_ms/model_id but RouteForm deserializes tier_str/spill_ms_str/model_id_str (all #[serde(default)]) — model_id_str arrives empty, parse fails, and EVERY UI route creation silently no-ops with 'Invalid model ID.'; route update has the same mismatch. No route created through the UI has ever reached the routes table (this is also why BUG-SCHED-03 never detonated in e2e — the failover/hot-reload/residency tests' routes never existed)"
+test_names = ["test_create_and_delete_route"]
+test_file = "test/tests/catalog/test_providers_routing.py"
+touches = ["crates/api/src/web/admin_routing_handlers.rs"]
+conflict_group = "api-web"
+depends_on = []
+severity = "high"
+status = "todo"
+acceptance = "creating a route via the admin UI form inserts a row with the chosen tier/spill_ms/model and test_create_and_delete_route passes; editing a route applies the submitted values"
+notes = "Root-caused while fixing BUG-SCHED-03: template crates/api/templates/admin_route_form.html posts name=tier (line 41), name=spill_ms (55), name=model_id (61); handler struct RouteForm (admin_routing_handlers.rs:119-138) expects tier_str/spill_ms_str/model_id_str. tier and spill_ms silently default (0/800); model_id_str='' fails the i64 parse at admin_route_create (~:966) and renders the routes list with 'Invalid model ID.'. admin_route_update (~:1065) has the identical mismatch."
+
+[[bug]]
+id = "BUG-SCHED-04"
+description = "Routes created via the admin UI are force-bound to the caller's tenant (BUG-ISOL-03 hardening in admin_route_create) but Pool::acquire passes tenant_id=None, and RoutingTable::tiers_for(None, role) only ever sees global (tenant_id IS NULL) buckets — so every UI-created route is dormant: it activates the table but can never be selected. With BUG-SCHED-03's per-role fallback this is safe (legacy serves), but routing intent is silently ignored"
+test_names = ["tenant_bound_route_is_invisible_to_tenant_blind_acquire"]
+test_file = "crates/api/tests/db_routing_pg.rs"
+touches = ["crates/scheduler/src/pool.rs", "crates/llm/src/client.rs", "crates/api/src/web/admin_routing_handlers.rs"]
+conflict_group = "scheduler"
+depends_on = []
+severity = "medium"
+status = "todo"
+acceptance = "either acquire becomes tenant-aware (callers thread the tenant through scheduler acquire so tenant routes are honored, with the global fallback per tiers_for) or the admin UI can create global routes for platform admins; test_tiered_failover then exercises real DB-routed failover end-to-end"
+notes = "Plan §26.5 supports tenant overrides; the acquire plumbing (pool.rs ~:178 'global routes for now') was never threaded through LlamaClient/pipelines. Decide the admin model too: per-tenant routes need tenant-aware acquire; platform-global routes need an authorization story (only platform admins may write tenant_id NULL)."
+
+[[bug]]
+id = "BUG-SCHED-05"
+description = "HealthLoop snapshots pool.all_backends() once at startup (runtime.rs ~:371-381), so DB-materialized routing backends (db:{id}, created later by apply_routing) are never health-probed; their pool-side healthy flag is driven only by LlamaClient failures and the reset-on-apply retry signal"
+test_names = []
+test_file = ""
+touches = ["crates/scheduler/src/health.rs", "crates/api/src/runtime.rs", "crates/scheduler/src/pool.rs"]
+conflict_group = "scheduler"
+depends_on = []
+severity = "low"
+status = "todo"
+acceptance = "the health loop observes backends added after startup (live view of the pool, or re-snapshot on apply_routing) so a recovered DB-routed backend returns to rotation without an admin touch; config-backend probing behavior unchanged"
+notes = "Filed from BUG-SCHED-03. Current behavior is safe but coarse: a dead materialized backend is excluded after its first failed call and only retried when a routing apply resets healthy (admin change, or each poll cycle when LISTEN is degraded). Consider HealthLoop holding the Pool (live all_backends + flat map) instead of a startup Vec."
+
+[[bug]]
+id = "BUG-SCHED-06"
+description = "PgRoutingNotifier opens a fresh PgListener per wait_for_change call, so a NOTIFY fired between recv loops (during fetch/apply or listener connect) is silently lost — a single admin change can fail to hot-reload until the next change. Real admin flows mostly survive because each CRUD action notifies (bursts), but a lone change can be missed"
+test_names = []
+test_file = ""
+touches = ["crates/store/src/db_routing.rs"]
+conflict_group = "store"
+depends_on = []
+severity = "low"
+status = "todo"
+acceptance = "a single NOTIFY fired at any point after the reload loop starts is eventually applied (persistent listener held across iterations, or a version/sequence check on each wakeup with a bounded re-poll), verified by a pg integration test that fires exactly one NOTIFY"
+notes = "Observed while writing db_routing_pg.rs (route_created_after_startup_hot_reloads_without_breaking_roles had to re-notify in its poll loop). Fix sketch: keep one PgListener alive across loop iterations and reconnect on error, or compare a routes-table xmin/updated_at watermark on every wakeup."

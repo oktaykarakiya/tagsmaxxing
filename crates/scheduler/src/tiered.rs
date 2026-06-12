@@ -144,7 +144,10 @@ fn resolve_and_filter(
 ) -> Vec<Arc<Backend>> {
     let mut candidates = Vec::with_capacity(entries.len());
     for entry in entries {
-        let backend_id = entry.model.id.to_string();
+        // Canonical key under which routing-apply materialized this model
+        // (BUG-SCHED-03 — was `entry.model.id.to_string()`, which matched
+        // nothing: the map is keyed by config ids and "db:{id}" keys).
+        let backend_id = crate::materialize::db_backend_key(entry.model.id);
         if let Some(entry_ref) = backends.get(&backend_id) {
             let b = entry_ref.value().clone();
             if b.healthy.load(Ordering::Acquire)
@@ -217,7 +220,8 @@ fn ordered_cost(p: Pricing) -> u64 {
 /// Map a role to its compact round-robin key (the raw bit value).
 ///
 /// This is smaller and cheaper to hash than the full enum discriminant.
-fn role_to_rr_key(role: Role) -> u8 {
+/// Also used by [`crate::Pool`] for its per-role fallback-warning map.
+pub(crate) fn role_to_rr_key(role: Role) -> u8 {
     match role {
         Role::Text => 0b00001,
         Role::Vision => 0b00010,
@@ -358,11 +362,18 @@ mod tests {
     ) -> (Arc<RoutingTable>, DashMap<String, Arc<Backend>>) {
         use kb_core::routing::{ModelRow, ProviderRow, RoutingEntry};
 
+        let map: DashMap<String, Arc<Backend>> = DashMap::new();
         let entries: Vec<RoutingEntry> = backends
             .iter()
             .enumerate()
             .map(|(i, b)| {
                 let model_id_num: i64 = b.id.parse().unwrap_or(i as i64);
+                // Register under the canonical key the resolver looks up —
+                // exactly what apply-time materialization does in production.
+                map.insert(
+                    crate::materialize::db_backend_key(model_id_num),
+                    Arc::clone(b),
+                );
                 RoutingEntry {
                     tenant_id,
                     role,
@@ -397,10 +408,6 @@ mod tests {
             .collect();
 
         let table = Arc::new(RoutingTable::from_entries(entries));
-        let map: DashMap<String, Arc<Backend>> = DashMap::new();
-        for b in backends {
-            map.insert(b.id.clone(), Arc::clone(b));
-        }
         (table, map)
     }
 
@@ -412,9 +419,11 @@ mod tests {
         use kb_core::routing::{ModelRow, ProviderRow, RoutingEntry};
 
         let mut entries = Vec::new();
+        let map: DashMap<String, Arc<Backend>> = DashMap::new();
 
         for b in tier0_backends {
             let mid: i64 = b.id.parse().expect("backend id must be numeric");
+            map.insert(crate::materialize::db_backend_key(mid), Arc::clone(b));
             entries.push(RoutingEntry {
                 tenant_id: None,
                 role: Role::Text,
@@ -448,6 +457,7 @@ mod tests {
         }
         for b in tier1_backends {
             let mid: i64 = b.id.parse().expect("backend id must be numeric");
+            map.insert(crate::materialize::db_backend_key(mid), Arc::clone(b));
             entries.push(RoutingEntry {
                 tenant_id: None,
                 role: Role::Text,
@@ -481,10 +491,6 @@ mod tests {
         }
 
         let table = Arc::new(RoutingTable::from_entries(entries));
-        let map: DashMap<String, Arc<Backend>> = DashMap::new();
-        for b in tier0_backends.iter().chain(tier1_backends.iter()) {
-            map.insert(b.id.clone(), Arc::clone(b));
-        }
         (table, map)
     }
 
@@ -665,8 +671,8 @@ mod tests {
             ];
             let table = Arc::new(RoutingTable::from_entries(entries));
             let map: DashMap<String, Arc<Backend>> = DashMap::new();
-            map.insert("3".into(), Arc::clone(&b_embed0));
-            map.insert("4".into(), Arc::clone(&b_embed1));
+            map.insert(crate::materialize::db_backend_key(3), Arc::clone(&b_embed0));
+            map.insert(crate::materialize::db_backend_key(4), Arc::clone(&b_embed1));
             (table, map)
         };
         let rr = DashMap::new();
@@ -751,7 +757,10 @@ mod tests {
             let table = Arc::new(RoutingTable::from_entries(entries));
             let map: DashMap<String, Arc<Backend>> = DashMap::new();
             for b in &all {
-                map.insert(b.id.clone(), Arc::clone(b));
+                map.insert(
+                    crate::materialize::db_backend_key(b.id.parse().unwrap()),
+                    Arc::clone(b),
+                );
             }
             (table, map)
         };
@@ -899,7 +908,10 @@ mod tests {
             let table = Arc::new(RoutingTable::from_entries(entries));
             let map: DashMap<String, Arc<Backend>> = DashMap::new();
             for b in &all {
-                map.insert(b.id.clone(), Arc::clone(b));
+                map.insert(
+                    crate::materialize::db_backend_key(b.id.parse().unwrap()),
+                    Arc::clone(b),
+                );
             }
             (table, map)
         };
@@ -976,7 +988,10 @@ mod tests {
             let table = Arc::new(RoutingTable::from_entries(entries));
             let map: DashMap<String, Arc<Backend>> = DashMap::new();
             for b in &all {
-                map.insert(b.id.clone(), Arc::clone(b));
+                map.insert(
+                    crate::materialize::db_backend_key(b.id.parse().unwrap()),
+                    Arc::clone(b),
+                );
             }
             (table, map)
         };
@@ -1117,7 +1132,10 @@ mod tests {
             let table = Arc::new(RoutingTable::from_entries(entries));
             let map: DashMap<String, Arc<Backend>> = DashMap::new();
             for b in &all {
-                map.insert(b.id.clone(), Arc::clone(b));
+                map.insert(
+                    crate::materialize::db_backend_key(b.id.parse().unwrap()),
+                    Arc::clone(b),
+                );
             }
             (table, map)
         };
@@ -1285,8 +1303,14 @@ mod tests {
             ];
             let table = Arc::new(RoutingTable::from_entries(entries));
             let map: DashMap<String, Arc<Backend>> = DashMap::new();
-            map.insert("22".into(), Arc::clone(&b_global));
-            map.insert("23".into(), Arc::clone(&b_tenant));
+            map.insert(
+                crate::materialize::db_backend_key(22),
+                Arc::clone(&b_global),
+            );
+            map.insert(
+                crate::materialize::db_backend_key(23),
+                Arc::clone(&b_tenant),
+            );
             (table, map)
         };
         let rr = DashMap::new();
@@ -1321,31 +1345,61 @@ mod tests {
         assert_eq!(b.free(), 2);
     }
 
-    /// Pool routing: acquire uses tiered routing when routing table is set.
+    /// Pool routing end-to-end: `apply_routing` materializes the routed DB
+    /// model and acquire resolves it through the tiered path — asserted via
+    /// the `db:` lease id, so this cannot silently pass through the
+    /// per-role legacy fallback (BUG-SCHED-03).
     #[tokio::test]
-    async fn pool_acquire_uses_tiered_when_routing_set() {
-        let b = tb("25", 2, 0);
-        let pool = Pool::new(vec![Arc::clone(&b)], Duration::from_secs(5));
+    async fn pool_acquire_uses_tiered_when_routing_resolves() {
+        use kb_core::routing::{ModelRow, ProviderKind, ProviderRow, RoutingEntry};
 
-        // Build routing table pointing to backend "25".
-        let (table, _backends) = simple_routing(
-            None,
-            Role::Text,
-            0,
-            RoutingStrategy::LeastLoaded,
-            500,
-            &[Arc::clone(&b)],
-        );
-        pool.set_routing(table);
+        let b_cfg = tb("cfg-text", 2, 0);
+        let pool = Pool::new(vec![Arc::clone(&b_cfg)], Duration::from_secs(5));
+
+        let entry = RoutingEntry {
+            tenant_id: None,
+            role: Role::Text,
+            tier: 0,
+            strategy: RoutingStrategy::LeastLoaded,
+            spill_ms: 500,
+            provider: ProviderRow {
+                id: 125,
+                name: "p-25".into(),
+                kind: ProviderKind::OpenAiCompat,
+                endpoint: Some("http://x:25".into()),
+                headers: Default::default(),
+                enabled: true,
+                api_key_enc: None,
+            },
+            model: ModelRow {
+                id: 25,
+                provider_id: 125,
+                model_id: "model-25".into(),
+                caps: vec!["text".into()],
+                ctx_tokens: Some(32768),
+                max_conc: Some(2),
+                rpm: None,
+                tpm: None,
+                price_in: None,
+                price_out: None,
+                data_class: DataClass::Local,
+                enabled: true,
+            },
+        };
+        pool.apply_routing(vec![entry]);
 
         let lease = pool.acquire(Role::Text, false, 0).await.unwrap();
-        assert_eq!(lease.backend_id, "25");
+        assert_eq!(
+            lease.backend_id, "db:25",
+            "acquire must use the materialized routed backend, not the config one"
+        );
+        assert_eq!(lease.endpoint, "http://x:25");
         drop(lease);
 
-        // Clear routing and verify fallback.
-        pool.clear_routing();
+        // Clear routing and verify legacy fallback serves the config backend.
+        pool.apply_routing(vec![]);
         let lease2 = pool.acquire(Role::Text, false, 0).await.unwrap();
-        assert_eq!(lease2.backend_id, "25"); // still works via legacy path
+        assert_eq!(lease2.backend_id, "cfg-text");
     }
 
     /// ordered_cost helper provides correct ordering.

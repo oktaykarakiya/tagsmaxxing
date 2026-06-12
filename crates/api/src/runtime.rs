@@ -183,16 +183,16 @@ pub async fn build_runtime(
 
     if load_db_routing {
         let reloader = Reloader::new(pool.clone());
-        // Startup load: try DB first, fall back to config.toml backends; then
-        // spawn the LISTEN/NOTIFY hot-reload loop (plan §26.5, P9-T7).
+        // Startup load: apply the DB routing snapshot (materializing routed
+        // models into live backends, BUG-SCHED-03); an empty routes table
+        // leaves the pool in legacy flat-priority mode serving the config
+        // [[backend]]s. Then spawn the LISTEN/NOTIFY hot-reload loop
+        // (plan §26.5, P9-T7).
         let db_entries = pg_store
             .get_routing_table()
             .await
             .context("failed to load routing table from database")?;
-        reloader
-            .startup_load(db_entries, Some(&cfg))
-            .await
-            .context("failed to perform routing startup load")?;
+        reloader.startup_load(db_entries);
 
         let admin_url_fn = {
             let s = Arc::clone(&pg_store);
@@ -221,12 +221,10 @@ pub async fn build_runtime(
         // Per-machine capacity mode (workers, P15): no routing table at all —
         // the pool stays in legacy flat-priority mode, where acquire works
         // directly off this machine's [[backend]] entries and their slot
-        // semaphores (exact local enforcement). Deliberately NOT
-        // `startup_load(vec![], Some(&cfg))`: the config-fallback routing
-        // table is unresolvable (its numeric model ids never match the pool's
-        // config-id backend keys — see BUG-SCHED-03), and in serve it only
-        // works because the reload loop's immediate first pass clears it
-        // against the empty DB routes table.
+        // semaphores (exact local enforcement). With `use_db_routing = true`
+        // a worker behaves like serve: DB routes are materialized and roles
+        // without usable routes fall back to these local backends
+        // (BUG-SCHED-03 fixed the previously-broken resolution).
         info!("per-machine backends (legacy flat-priority; DB routing not loaded)");
     }
 

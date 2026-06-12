@@ -530,3 +530,97 @@ def test_data_residency_routing(api, page):
     assert doc.get("summary"), (
         "ingested document has no summary — data residency routing may be broken"
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Partial routing-table safety (BUG-SCHED-03 regression guard)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_single_role_route_does_not_break_other_roles(api, page):
+    """Creating ONE route (text role) must not break any other role's scheduling.
+
+    BUG-SCHED-03: the moment a single route row landed in the DB, the tiered
+    routing table activated for ALL roles and every acquire failed — search
+    (query embedding + rerank, roles the route does NOT cover) died app-wide.
+    This guard creates exactly one text route, then proves search keeps
+    working the whole time the route is live.
+
+    The route is POSTed against the handler's form contract directly
+    (``tier_str``/``spill_ms_str``/``model_id_str``) — deliberately bypassing
+    the admin form, whose field names don't match the handler (a separately
+    recorded bug covered by ``test_create_and_delete_route``). The route is
+    deleted in a ``finally`` so a failure cannot poison later tests.
+    """
+    tenant, email, password = config.tenant_slug(), config.admin_email(), config.admin_password()
+
+    # 1. Ingest a marker doc BEFORE touching routing (known-good path).
+    api.login(tenant, email, password)
+    marker, _doc = flows.ingest_and_wait(
+        api, "Partial-routing guard document. Unique marker: {marker}."
+    )
+
+    # 2. Provider + model via the admin UI (those forms work).
+    _admin_login(page)
+    suffix = _unique_suffix()
+    prov_name = f"oneroute-{suffix}"
+    model_name = f"oneroute-model-{suffix}"
+    _create_provider(page, prov_name, kind="openai_compat",
+                     endpoint="http://llama-text:8090/v1")
+    _create_model(page, prov_name, model_name, caps_text=True)
+    page.goto("/admin/models")
+    page.wait_for_load_state("networkidle")
+    model_db_id = _get_first_id_from_table(page)
+
+    route_id = None
+    try:
+        # 3. Create ONE text route against the handler contract.
+        page.goto("/admin/routes/new")
+        page.wait_for_load_state("networkidle")
+        csrf = page.locator("input[name='csrf_token']").first.input_value()
+        resp = page.request.post("/admin/routes", form={
+            "csrf_token": csrf,
+            "tenant_id": "",
+            "role": "text",
+            "tier_str": "0",
+            "strategy": "least_loaded",
+            "spill_ms_str": "800",
+            "model_id_str": str(model_db_id),
+        })
+        assert resp.ok, f"route create POST failed: HTTP {resp.status}"
+
+        # Find the created route's id (the row showing our model name).
+        page.goto("/admin/routes")
+        page.wait_for_load_state("networkidle")
+        row = page.locator("tr", has=page.locator(f"text={model_name}")).first
+        assert row.count() >= 1, "created route not visible on /admin/routes"
+        route_id = int(row.locator("td").first.inner_text().strip())
+
+        # 4. While the route is live (NOTIFY hot-reload applies within
+        #    seconds), search — embed + rerank, the roles the route does NOT
+        #    cover — must keep succeeding. Pre-fix, the first post-reload
+        #    probe failed app-wide.
+        deadline = time.time() + 15
+        probes = 0
+        while time.time() < deadline:
+            res = api.search(marker)  # raises ApiError on any non-200
+            hits = res.get("results", res.get("hits", []))
+            assert any(marker in str(h) for h in hits), (
+                "search no longer finds the pre-existing document while a "
+                "single text route is live"
+            )
+            probes += 1
+            time.sleep(3)
+        assert probes >= 4, f"expected sustained probing, got {probes} probes"
+    finally:
+        # 5. Cleanup: delete the route so later tests run route-free.
+        if route_id is not None:
+            page.goto("/admin/routes")
+            page.wait_for_load_state("networkidle")
+            csrf = page.locator("input[name='csrf_token']").first.input_value()
+            page.request.post(f"/admin/routes/{route_id}/delete",
+                              form={"csrf_token": csrf})
+
+    # 6. After cleanup the app must still be healthy.
+    res = api.search(marker)
+    hits = res.get("results", res.get("hits", []))
+    assert any(marker in str(h) for h in hits), "search broken after route cleanup"

@@ -252,3 +252,27 @@ the document page auto-refreshes while processing; the nav shows a
 - **Queue triage SQL** (admin):
   `SELECT status, count(*) FROM jobs GROUP BY 1;` — `dead` rows carry
   `last_error`; tenant retry resets them, or use the admin jobs panel.
+
+## DB-driven model routing (admin → providers/models/routes)
+
+Routes in the `routes` table activate **tiered routing** on the serve
+process's pool (hot-reloaded via `NOTIFY routing_changed`); an empty table =
+legacy flat-priority mode over the config `[[backend]]`s. Since BUG-SCHED-03:
+
+- **Partial tables are safe**: a role with no usable routes falls back to the
+  legacy config backends (rate-limited `tiered routing has no usable
+  candidates` warning in the serve log). Creating one route no longer affects
+  other roles.
+- **What materializes**: only `local`/`openai_compat` providers **with an
+  endpoint and no API key** become live backends (`db:{model-id}` in logs/
+  leases) — the live client speaks raw OpenAI-compat HTTP without auth. Keyed
+  or native-SDK (Anthropic/Gemini) providers are skipped with a warning and
+  their roles serve from config backends.
+- **Capacity**: a routed model's `max_conc` (or rpm/tpm) is its own slot
+  pool — a DB provider pointing at the same physical server as a config
+  `[[backend]]` adds capacity on paper (the server queues the excess).
+- **Known gaps** (ledger): UI-created routes are tenant-bound and currently
+  dormant — acquire only sees **global** routes (BUG-SCHED-04); materialized
+  backends aren't probed by the health loop — a dead one is retried on the
+  next routing change (BUG-SCHED-05); a single `NOTIFY` can be missed between
+  listener cycles — touch any routing row again to re-trigger (BUG-SCHED-06).

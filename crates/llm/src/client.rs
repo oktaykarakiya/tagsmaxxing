@@ -631,13 +631,13 @@ impl LlamaClient {
     /// Mark a backend unhealthy by its id so that subsequent
     /// [`Pool::acquire`] calls skip it (plan §6.4).
     ///
-    /// Searches the pool's backend list by id; a non-existent id is a no-op.
+    /// Uses the pool's flat-map lookup so DB-materialized routing backends
+    /// (`db:{model}` ids, BUG-SCHED-03) are reachable too — without this, a
+    /// dead routed tier-0 backend would be re-acquired forever instead of
+    /// failing over to the next tier. A non-existent id is a no-op.
     fn mark_unhealthy(&self, backend_id: &str) {
-        for b in self.pool.all_backends() {
-            if b.id == backend_id {
-                b.healthy.store(false, Ordering::Release);
-                return;
-            }
+        if let Some(b) = self.pool.find_backend(backend_id) {
+            b.healthy.store(false, Ordering::Release);
         }
     }
 }
@@ -823,6 +823,91 @@ mod tests {
 
         mock1.shutdown().await;
         mock2.shutdown().await;
+    }
+
+    /// BUG-SCHED-03 end-to-end: DB-materialized routed backends participate
+    /// in client failover. A failing tier-0 routed backend is marked
+    /// unhealthy through the pool's flat-map lookup (it is NOT in the
+    /// by-role map), so the retry resolves tier 1 and succeeds.
+    #[tokio::test]
+    async fn tiered_failover_marks_materialized_backend_unhealthy() {
+        use kb_core::routing::{
+            ModelRow, ProviderKind, ProviderRow, RoutingEntry, RoutingStrategy,
+        };
+
+        fn text_entry(tier: i32, model_id: i64, endpoint: String) -> RoutingEntry {
+            RoutingEntry {
+                tenant_id: None,
+                role: Role::Text,
+                tier,
+                strategy: RoutingStrategy::LeastLoaded,
+                spill_ms: 100,
+                provider: ProviderRow {
+                    id: 1000 + model_id,
+                    name: format!("p-{model_id}"),
+                    kind: ProviderKind::OpenAiCompat,
+                    endpoint: Some(endpoint),
+                    headers: serde_json::Value::Object(Default::default()),
+                    enabled: true,
+                    api_key_enc: None,
+                },
+                model: ModelRow {
+                    id: model_id,
+                    provider_id: 1000 + model_id,
+                    model_id: format!("m-{model_id}"),
+                    caps: vec!["text".into()],
+                    ctx_tokens: None,
+                    max_conc: Some(2),
+                    rpm: None,
+                    tpm: None,
+                    price_in: None,
+                    price_out: None,
+                    data_class: kb_core::data_class::DataClass::Local,
+                    enabled: true,
+                },
+            }
+        }
+
+        let mock_bad = MockBackend::start().await;
+        let mock_good = MockBackend::start().await;
+        mock_bad.scenario().lock().await.chat = ResponseMode::ServerError;
+
+        // No config backends at all: success can only come through the
+        // materialized routed backends (no legacy fallback to hide behind).
+        let pool = Pool::new(vec![], Duration::from_secs(5));
+        pool.apply_routing(vec![
+            text_entry(0, 1, mock_bad.url("/v1")),
+            text_entry(1, 2, mock_good.url("/v1")),
+        ]);
+
+        let client = LlamaClient::new(
+            pool.clone(),
+            Client::new(),
+            2, /* max_retries */
+            3, /* circuit_threshold */
+            Duration::from_millis(200),
+        );
+
+        let resp = client
+            .chat(Role::Text, "model", &chat_req("hi"), false, 0)
+            .await
+            .unwrap();
+        assert_eq!(resp.text, "mock response", "tier 1 must serve the retry");
+
+        let b_bad = pool
+            .find_backend("db:1")
+            .expect("materialized tier-0 backend");
+        assert!(
+            !b_bad.healthy.load(Ordering::Acquire),
+            "failing materialized backend must be marked unhealthy via the flat map"
+        );
+        let b_good = pool
+            .find_backend("db:2")
+            .expect("materialized tier-1 backend");
+        assert!(b_good.healthy.load(Ordering::Acquire));
+
+        mock_bad.shutdown().await;
+        mock_good.shutdown().await;
     }
 
     /// Failover on transport error (mock is shut down mid-test).
