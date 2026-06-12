@@ -1969,4 +1969,49 @@ mod tests {
         assert_eq!(AuditAction::RouteDeleted.as_str(), "route_deleted");
         assert_eq!(AuditAction::ProviderTested.as_str(), "provider_tested");
     }
+
+    // ── Route form ↔ template contract (BUG-ADMIN-01) ─────────────────────
+
+    /// `RouteForm` deserializes exactly what the route form template posts.
+    #[test]
+    fn route_form_deserializes_the_template_field_names() {
+        let body = "csrf_token=tok&tenant_id=&role=text&tier_str=2&strategy=least_loaded\
+                    &spill_ms_str=500&model_id_str=7";
+        let form: RouteForm = serde_urlencoded::from_str(body).unwrap();
+        assert_eq!(form.csrf_token, "tok");
+        assert_eq!(form.role, "text");
+        assert_eq!(form.tier_str, "2");
+        assert_eq!(form.strategy, "least_loaded");
+        assert_eq!(form.spill_ms_str, "500");
+        assert_eq!(form.model_id_str, "7");
+    }
+
+    /// The template's input names must match `RouteForm`'s fields — they
+    /// silently diverged once (BUG-ADMIN-01: the template posted
+    /// `tier`/`spill_ms`/`model_id`, every `#[serde(default)]` field arrived
+    /// empty, and EVERY UI route creation no-op'd with "Invalid model ID.").
+    #[test]
+    fn route_form_template_posts_the_handler_contract() {
+        let tpl = include_str!("../../templates/admin_route_form.html");
+        for field in [
+            "name=\"csrf_token\"",
+            "name=\"tenant_id\"",
+            "name=\"role\"",
+            "name=\"tier_str\"",
+            "name=\"strategy\"",
+            "name=\"spill_ms_str\"",
+            "name=\"model_id_str\"",
+        ] {
+            assert!(tpl.contains(field), "template must post {field}");
+        }
+        // The old, handler-invisible names must not come back (note the
+        // closing quote — `name="tier_str"` does not match `name="tier"`).
+        for stale in ["name=\"tier\"", "name=\"spill_ms\"", "name=\"model_id\""] {
+            assert!(
+                !tpl.contains(stale),
+                "template field {stale} does not exist on RouteForm — \
+                 it would be silently dropped (BUG-ADMIN-01)"
+            );
+        }
+    }
 }

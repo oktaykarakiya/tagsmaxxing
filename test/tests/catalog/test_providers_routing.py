@@ -149,11 +149,11 @@ def test_create_and_delete_route(page):
     page.goto("/admin/routes/new")
     page.wait_for_load_state("networkidle")
     # Select the model by its label (which includes provider name).
-    page.select_option("select[name='model_id']", index=0)  # first option
+    page.select_option("select[name='model_id_str']", index=0)  # first option
     page.select_option("select[name='role']", "text")
-    page.fill("input[name='tier']", "0")
+    page.fill("input[name='tier_str']", "0")
     page.select_option("select[name='strategy']", "least_loaded")
-    page.fill("input[name='spill_ms']", "800")
+    page.fill("input[name='spill_ms_str']", "800")
     page.click("button[type='submit']")
     page.wait_for_load_state("networkidle")
 
@@ -260,50 +260,58 @@ def test_tiered_failover(api, page):
     _create_model(page, good_text_name, f"good-model-{suffix}", caps_text=True)
     _create_model(page, embed_name, f"embed-model-{suffix}", caps_text=False)
 
-    # ── Step 3: create routes ──────────────────────────────────────────────
+    # ── Step 3: create routes (cleaned up in `finally` — leaked routes change
+    # live scheduling for every later test) ─────────────────────────────────
     # Tier 0 = bad (unreachable), Tier 1 = good (real llama)
     # We need routes for both 'text' and 'embed' roles.
-    page.goto("/admin/routes/new")
-    page.wait_for_load_state("networkidle")
+    try:
+        page.goto("/admin/routes/new")
+        page.wait_for_load_state("networkidle")
 
-    # --- Route: text tier 0 → bad provider (model_index=0, the bad model) ---
-    _fill_route_form(page, role="text", tier="0", strategy="least_loaded", spill_ms="800",
-                     model_index=0)
-    _submit_route_form(page)
+        # --- Route: text tier 0 → bad provider (model_index=0, the bad model) ---
+        _fill_route_form(page, role="text", tier="0", strategy="least_loaded", spill_ms="800",
+                         model_index=0)
+        _submit_route_form(page)
 
-    # --- Route: text tier 1 → good provider (model_index=1, the good model) ---
-    page.goto("/admin/routes/new")
-    page.wait_for_load_state("networkidle")
-    _fill_route_form(page, role="text", tier="1", strategy="least_loaded", spill_ms="800",
-                     model_index=1)
-    _submit_route_form(page)
+        # --- Route: text tier 1 → good provider (model_index=1, the good model) ---
+        page.goto("/admin/routes/new")
+        page.wait_for_load_state("networkidle")
+        _fill_route_form(page, role="text", tier="1", strategy="least_loaded", spill_ms="800",
+                         model_index=1)
+        _submit_route_form(page)
 
-    # --- Route: embed tier 0 → embed provider (model_index=2, the embed model) ---
-    page.goto("/admin/routes/new")
-    page.wait_for_load_state("networkidle")
-    _fill_route_form(page, role="embed", tier="0", strategy="least_loaded", spill_ms="800",
-                     model_index=2)
-    _submit_route_form(page)
+        # --- Route: embed tier 0 → embed provider (model_index=2, the embed model) ---
+        page.goto("/admin/routes/new")
+        page.wait_for_load_state("networkidle")
+        _fill_route_form(page, role="embed", tier="0", strategy="least_loaded", spill_ms="800",
+                         model_index=2)
+        _submit_route_form(page)
 
-    # ── Step 4: wait for routing hot-reload + health check ─────────────────
-    # The routing reload happens on NOTIFY (instant) or poll (a few seconds).
-    # The health check for the bad backend needs at least one cycle (10s in e2e).
-    time.sleep(15)
+        # ── Step 4: wait for routing hot-reload + health check ─────────────
+        # The routing reload happens on NOTIFY (instant) or poll (a few seconds).
+        # The health check for the bad backend needs at least one cycle (10s in e2e).
+        time.sleep(15)
 
-    # ── Step 5: ingest — should succeed via failover ──────────────────────
-    tenant, email, password = config.tenant_slug(), config.admin_email(), config.admin_password()
-    api.login(tenant, email, password)
+        # ── Step 5: ingest — should succeed via failover ────────────────────
+        tenant, email, password = (
+            config.tenant_slug(), config.admin_email(), config.admin_password()
+        )
+        api.login(tenant, email, password)
 
-    marker, doc = flows.ingest_and_wait(api, "Failover test document. Unique marker: {marker}.")
+        marker, doc = flows.ingest_and_wait(
+            api, "Failover test document. Unique marker: {marker}."
+        )
 
-    # The document should have tags and a summary — proof that the text role
-    # successfully failed over to tier 1 (the good backend).
-    assert doc.get("tags"), (
-        "ingested document has no tags — text role failover may have failed"
-    )
-    assert doc.get("summary"), (
-        "ingested document has no summary — text role failover may have failed"
-    )
+        # The document should have tags and a summary — proof that the text role
+        # successfully failed over to tier 1 (the good backend).
+        assert doc.get("tags"), (
+            "ingested document has no tags — text role failover may have failed"
+        )
+        assert doc.get("summary"), (
+            "ingested document has no summary — text role failover may have failed"
+        )
+    finally:
+        _delete_routes_matching(page, suffix)
 
 
 def _fill_route_form(page, *, role, tier, strategy, spill_ms, model_index=0):
@@ -312,17 +320,52 @@ def _fill_route_form(page, *, role, tier, strategy, spill_ms, model_index=0):
     ``model_index`` selects which model in the dropdown (0-based). Callers that
     create multiple models must pass the correct index for each route.
     """
-    page.select_option("select[name='model_id']", index=model_index)
+    page.select_option("select[name='model_id_str']", index=model_index)
     page.select_option("select[name='role']", role)
-    page.fill("input[name='tier']", tier)
+    page.fill("input[name='tier_str']", tier)
     page.select_option("select[name='strategy']", strategy)
-    page.fill("input[name='spill_ms']", spill_ms)
+    page.fill("input[name='spill_ms_str']", spill_ms)
 
 
 def _submit_route_form(page):
-    """Submit the route form and wait for navigation."""
+    """Submit the route form and assert the route actually landed.
+
+    BUG-ADMIN-01 made every UI route creation silently no-op (the form's
+    field names didn't match the handler), so a bare submit-and-continue
+    turned several tests in this file into false greens. A successful
+    submit must land on /admin/routes with no error banner and at least one
+    real route row (the empty state renders a single colspan placeholder).
+    """
     page.click("button[type='submit']")
     page.wait_for_load_state("networkidle")
+    assert "/admin/routes" in page.url, f"expected routes list after submit, got {page.url}"
+    assert page.locator(".bg-red-50").count() == 0, (
+        "route form submit produced an error banner — the route was NOT created"
+    )
+    assert page.locator("tbody tr td[colspan]").count() == 0, (
+        "routes list still shows the empty state — the route was NOT created"
+    )
+
+
+def _delete_routes_matching(page, needle):
+    """Delete every route whose row mentions ``needle`` (scoped test cleanup).
+
+    Scoped on purpose: deleting ALL routes would be its own cross-test
+    interference. Routes are the only rows that change live scheduling
+    behaviour; providers/models are left behind as inert rows.
+    """
+    page.goto("/admin/routes")
+    page.wait_for_load_state("networkidle")
+    for _ in range(20):  # bounded — each pass deletes the first matching row
+        row = page.locator("tr", has=page.locator(f"text={needle}")).first
+        if row.count() == 0:
+            break
+        btn = row.locator("button:has-text('Delete')")
+        if btn.count() == 0:
+            break
+        page.once("dialog", lambda d: d.accept())
+        btn.click()
+        page.wait_for_load_state("networkidle")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -361,48 +404,39 @@ def test_hot_reload_routing(api, page):
     _create_model(page, text_prov, f"hotreload-text-model-{suffix}", caps_text=True)
     _create_model(page, embed_prov, f"hotreload-embed-model-{suffix}", caps_text=False)
 
-    # Create a route for text role — model_index=0 (hotreload-text-model).
-    page.goto("/admin/routes/new")
-    page.wait_for_load_state("networkidle")
-    _fill_route_form(page, role="text", tier="0", strategy="least_loaded", spill_ms="800",
-                     model_index=0)
-    _submit_route_form(page)
-
-    # Create a route for embed role — model_index=1 (hotreload-embed-model).
-    page.goto("/admin/routes/new")
-    page.wait_for_load_state("networkidle")
-    _fill_route_form(page, role="embed", tier="0", strategy="least_loaded", spill_ms="800",
-                     model_index=1)
-    _submit_route_form(page)
-
-    # Wait for the hot-reload to take effect.
-    time.sleep(5)
-
-    # Verify the app still works — the new DB-driven routes should serve
-    # inference identically to the config-fallback routes.
-    post_marker, post_doc = flows.ingest_and_wait(
-        api, "Post-routing-change document. Unique marker: {marker}."
-    )
-    assert post_doc.get("tags"), (
-        "post-hot-reload ingest has no tags — routing change may have broken the text role"
-    )
-    assert post_doc.get("summary"), (
-        "post-hot-reload ingest has no summary — routing change may have broken inference"
-    )
-
-    # Clean up: delete the routes we created to avoid polluting other tests.
-    page.goto("/admin/routes")
-    page.wait_for_load_state("networkidle")
-    route_rows = page.locator("tbody tr")
-    count = route_rows.count()
-    page.on("dialog", lambda d: d.accept())
-    for _ in range(count):
-        # Always delete the first remaining route.
-        delete_btn = page.locator("tbody tr").first.locator("button:has-text('Delete')")
-        if delete_btn.count() == 0:
-            break
-        delete_btn.click()
+    try:
+        # Create a route for text role — model_index=0 (hotreload-text-model).
+        page.goto("/admin/routes/new")
         page.wait_for_load_state("networkidle")
+        _fill_route_form(page, role="text", tier="0", strategy="least_loaded", spill_ms="800",
+                         model_index=0)
+        _submit_route_form(page)
+
+        # Create a route for embed role — model_index=1 (hotreload-embed-model).
+        page.goto("/admin/routes/new")
+        page.wait_for_load_state("networkidle")
+        _fill_route_form(page, role="embed", tier="0", strategy="least_loaded", spill_ms="800",
+                         model_index=1)
+        _submit_route_form(page)
+
+        # Wait for the hot-reload to take effect.
+        time.sleep(5)
+
+        # Verify the app still works — the new DB-driven routes should serve
+        # inference identically to the legacy config backends.
+        post_marker, post_doc = flows.ingest_and_wait(
+            api, "Post-routing-change document. Unique marker: {marker}."
+        )
+        assert post_doc.get("tags"), (
+            "post-hot-reload ingest has no tags — routing change may have broken the text role"
+        )
+        assert post_doc.get("summary"), (
+            "post-hot-reload ingest has no summary — routing change may have broken inference"
+        )
+    finally:
+        # Scoped cleanup (runs even on assertion failure): only THIS test's
+        # routes — deleting all routes would interfere with other tests.
+        _delete_routes_matching(page, suffix)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -485,51 +519,57 @@ def test_data_residency_routing(api, page):
 
     # Routes: local at tier 0, remote at tier 1 for text role.
     # If residency enforcement works, the remote tier 1 should be skipped
-    # and only the local tier 0 is used (which works).
-    page.goto("/admin/routes/new")
-    page.wait_for_load_state("networkidle")
-    # model_index=0 → res-local-text-model (local, index 0 in dropdown)
-    _fill_route_form(page, role="text", tier="0", strategy="least_loaded", spill_ms="800",
-                     model_index=0)
-    _submit_route_form(page)
+    # and only the local tier 0 is used (which works). Cleaned up in
+    # `finally` — leaked routes change live scheduling for later tests.
+    try:
+        page.goto("/admin/routes/new")
+        page.wait_for_load_state("networkidle")
+        # model_index=0 → res-local-text-model (local, index 0 in dropdown)
+        _fill_route_form(page, role="text", tier="0", strategy="least_loaded", spill_ms="800",
+                         model_index=0)
+        _submit_route_form(page)
 
-    # Add the remote as tier 1 for text (should be excluded by residency).
-    page.goto("/admin/routes/new")
-    page.wait_for_load_state("networkidle")
-    # model_index=1 → res-remote-text-model (remote, index 1 in dropdown)
-    _fill_route_form(page, role="text", tier="1", strategy="least_loaded", spill_ms="800",
-                     model_index=1)
-    _submit_route_form(page)
+        # Add the remote as tier 1 for text (should be excluded by residency).
+        page.goto("/admin/routes/new")
+        page.wait_for_load_state("networkidle")
+        # model_index=1 → res-remote-text-model (remote, index 1 in dropdown)
+        _fill_route_form(page, role="text", tier="1", strategy="least_loaded", spill_ms="800",
+                         model_index=1)
+        _submit_route_form(page)
 
-    # Embed route (local only) — model_index=2 (res-local-embed-model).
-    page.goto("/admin/routes/new")
-    page.wait_for_load_state("networkidle")
-    _fill_route_form(page, role="embed", tier="0", strategy="least_loaded", spill_ms="800",
-                     model_index=2)
-    _submit_route_form(page)
+        # Embed route (local only) — model_index=2 (res-local-embed-model).
+        page.goto("/admin/routes/new")
+        page.wait_for_load_state("networkidle")
+        _fill_route_form(page, role="embed", tier="0", strategy="least_loaded", spill_ms="800",
+                         model_index=2)
+        _submit_route_form(page)
 
-    # Wait for routing hot-reload.
-    time.sleep(10)
+        # Wait for routing hot-reload.
+        time.sleep(10)
 
-    # Ingest a document.  If data residency is enforced, the remote tier 1
-    # backend is excluded and only the local tier 0 is used — ingestion works.
-    # If residency is NOT enforced, the scheduler might try the remote backend
-    # and fail (or the spill to tier 1 finds a dead backend).
-    tenant, email, password = config.tenant_slug(), config.admin_email(), config.admin_password()
-    api.login(tenant, email, password)
+        # Ingest a document.  If data residency is enforced, the remote tier 1
+        # backend is excluded and only the local tier 0 is used — ingestion works.
+        # If residency is NOT enforced, the scheduler might try the remote backend
+        # and fail (or the spill to tier 1 finds a dead backend).
+        tenant, email, password = (
+            config.tenant_slug(), config.admin_email(), config.admin_password()
+        )
+        api.login(tenant, email, password)
 
-    marker, doc = flows.ingest_and_wait(
-        api, "Data-residency test document. Unique marker: {marker}."
-    )
+        marker, doc = flows.ingest_and_wait(
+            api, "Data-residency test document. Unique marker: {marker}."
+        )
 
-    # The document should be processed successfully.
-    assert doc.get("tags"), (
-        "ingested document has no tags — data residency routing may be misconfigured "
-        "or remote backends are not being excluded"
-    )
-    assert doc.get("summary"), (
-        "ingested document has no summary — data residency routing may be broken"
-    )
+        # The document should be processed successfully.
+        assert doc.get("tags"), (
+            "ingested document has no tags — data residency routing may be misconfigured "
+            "or remote backends are not being excluded"
+        )
+        assert doc.get("summary"), (
+            "ingested document has no summary — data residency routing may be broken"
+        )
+    finally:
+        _delete_routes_matching(page, suffix)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -546,10 +586,10 @@ def test_single_role_route_does_not_break_other_roles(api, page):
     working the whole time the route is live.
 
     The route is POSTed against the handler's form contract directly
-    (``tier_str``/``spill_ms_str``/``model_id_str``) — deliberately bypassing
-    the admin form, whose field names don't match the handler (a separately
-    recorded bug covered by ``test_create_and_delete_route``). The route is
-    deleted in a ``finally`` so a failure cannot poison later tests.
+    (``tier_str``/``spill_ms_str``/``model_id_str``, the names the form now
+    posts too — BUG-ADMIN-01) so this guard stays independent of the form UI,
+    which ``test_create_and_delete_route`` covers. The route is deleted in a
+    ``finally`` so a failure cannot poison later tests.
     """
     tenant, email, password = config.tenant_slug(), config.admin_email(), config.admin_password()
 
