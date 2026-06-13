@@ -44,8 +44,10 @@ const UNLIMITED_PER_MIN: f64 = 1e12;
 /// Canonical flat-map key for a DB-materialized backend: `"db:{models.id}"`.
 ///
 /// The prefix keeps DB-materialized backends disjoint from config backend
-/// ids (which may be any operator string — `db:` is reserved) and makes
-/// pruning and log attribution unambiguous.
+/// ids and makes pruning and log attribution unambiguous. The `db:` prefix is
+/// **reserved**: `kb_config::load::validate` rejects any config `[[backend]]`
+/// id that starts with it, so [`sync_backends`]/[`prune_all`] can safely
+/// evict every `db:`-keyed entry without ever touching a config backend.
 pub(crate) fn db_backend_key(model_id: i64) -> String {
     format!("db:{model_id}")
 }

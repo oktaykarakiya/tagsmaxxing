@@ -152,6 +152,17 @@ fn parse_optional_i32(s: &str) -> Option<i32> {
     if s.is_empty() { None } else { s.parse().ok() }
 }
 
+/// Parse an optional `i64` from a form field string, returning `None` on empty
+/// or invalid input.
+///
+/// Used for `models.id` (a `BIGSERIAL` / `i64` PK). Parsing it through
+/// [`parse_optional_i32`] would silently drop ids above `i32::MAX`, leaving
+/// the column unchanged while the handler still reports success (BUG-ADMIN-01).
+fn parse_optional_i64(s: &str) -> Option<i64> {
+    let s = s.trim();
+    if s.is_empty() { None } else { s.parse().ok() }
+}
+
 /// Parse an optional f64 from a form field string, returning `None` on empty or
 /// invalid input.
 fn parse_optional_f64(s: &str) -> Option<f64> {
@@ -1065,7 +1076,9 @@ pub async fn admin_route_update(
     let tier: Option<i32> = parse_optional_i32(&form.tier_str);
     let strategy = RoutingStrategy::from_str(&form.strategy).ok();
     let spill_ms: Option<i32> = parse_optional_i32(&form.spill_ms_str);
-    let model_id: Option<i64> = parse_optional_i32(&form.model_id_str).map(i64::from);
+    // models.id is BIGSERIAL/i64 — parse directly (mirrors admin_route_create);
+    // an i32 parse would silently no-op updates for ids > i32::MAX (BUG-ADMIN-01).
+    let model_id: Option<i64> = parse_optional_i64(&form.model_id_str);
 
     match pg
         .update_route(id, tier, strategy, spill_ms, model_id)
@@ -1348,6 +1361,26 @@ mod tests {
     fn parse_optional_i32_handles_invalid() {
         assert_eq!(parse_optional_i32("abc"), None);
         assert_eq!(parse_optional_i32("12.5"), None);
+    }
+
+    // ── parse_optional_i64 (models.id is BIGSERIAL, BUG-ADMIN-01) ───────────
+
+    #[test]
+    fn parse_optional_i64_handles_empty_and_invalid() {
+        assert_eq!(parse_optional_i64(""), None);
+        assert_eq!(parse_optional_i64("  "), None);
+        assert_eq!(parse_optional_i64("abc"), None);
+    }
+
+    #[test]
+    fn parse_optional_i64_accepts_values_above_i32_max() {
+        // The exact case the i32 parse silently dropped: a valid BIGSERIAL id
+        // beyond i32::MAX must round-trip, not become None (→ silent no-op update).
+        let big = i64::from(i32::MAX) + 1;
+        assert_eq!(parse_optional_i64(&big.to_string()), Some(big));
+        assert_eq!(parse_optional_i64(" 7 "), Some(7));
+        // And the old path would have failed here:
+        assert_eq!(parse_optional_i32(&big.to_string()), None);
     }
 
     // ── parse_optional_f64 ─────────────────────────────────────────────────

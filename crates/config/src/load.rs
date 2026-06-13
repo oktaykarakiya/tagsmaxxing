@@ -42,6 +42,16 @@ pub fn validate(cfg: &Config) -> Result<(), ConfigError> {
         if backend.id.trim().is_empty() {
             return Err(invalid("id must not be empty"));
         }
+        // The `db:` prefix is reserved for DB-materialized routing backends
+        // (BUG-SCHED-03): the scheduler prunes any `db:`-keyed entry from its
+        // flat map on every routing apply, so a config backend using it would
+        // silently vanish from health/failover bookkeeping.
+        if backend.id.starts_with("db:") {
+            return Err(invalid(
+                "id must not start with the reserved 'db:' prefix \
+                 (reserved for DB-materialized routing backends)",
+            ));
+        }
         if backend.base_url.trim().is_empty() {
             return Err(invalid("base_url must not be empty"));
         }
@@ -139,6 +149,23 @@ mod tests {
                    [[backend]]\nid = \"a\"\nbase_url = \"http://h\"\nroles = []\nslots = 1\n";
         let err = load_str(src, &empty_env()).unwrap_err();
         assert!(matches!(err, ConfigError::Backend { .. }));
+    }
+
+    #[test]
+    fn backend_with_reserved_db_prefix_is_rejected() {
+        // BUG-SCHED-03: the scheduler reserves `db:` for DB-materialized
+        // routing backends and prunes such keys on every routing apply, so a
+        // config backend using it would silently drop out of failover.
+        let src = "[storage]\npostgres_url = \"postgres://x\"\n\
+                   [[backend]]\nid = \"db:foo\"\nbase_url = \"http://h\"\nroles = [\"text\"]\nslots = 1\n";
+        let err = load_str(src, &empty_env()).unwrap_err();
+        match err {
+            ConfigError::Backend { backend, reason } => {
+                assert_eq!(backend, "db:foo");
+                assert!(reason.contains("reserved"), "reason was: {reason}");
+            }
+            other => panic!("expected ConfigError::Backend, got {other:?}"),
+        }
     }
 
     #[test]
