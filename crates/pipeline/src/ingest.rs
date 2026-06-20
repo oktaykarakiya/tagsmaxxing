@@ -449,6 +449,20 @@ impl IngestPipeline {
                         "--- image description ---\n{caption}\n---\n\n{}",
                         merged.merged_text
                     );
+                    // Make the caption SEARCHABLE: an image extractor yields no
+                    // text (only `page_images`), so without this the caption —
+                    // the image's only readable content, including any text the
+                    // VLM OCR'd — would never be chunked or embedded and the
+                    // image would be invisible to search (search is over chunks).
+                    // Attach it to the first image-bearing file so the existing
+                    // chunk+embed step (step 7) indexes it exactly like an audio
+                    // transcript. Combined captions attach once (first match).
+                    if let Some((_, e)) = extracted_pairs
+                        .iter_mut()
+                        .find(|(_, e)| e.text.is_empty() && !e.page_images.is_empty())
+                    {
+                        e.text = caption;
+                    }
                 }
                 Ok(_) => {} // empty caption — nothing to prepend
                 Err(e) => {
@@ -2209,6 +2223,32 @@ mod tests {
         assert_eq!(output.chunk_count, 0); // no text to chunk
 
         std::mem::forget(mock);
+    }
+
+    /// F1 regression: an image extractor yields no text (only `page_images`), so
+    /// before the fix the VLM caption only reached the tagger and the image
+    /// produced ZERO chunks — invisible to search. The caption must now become an
+    /// embedded chunk. `chunk_count > 0` is reachable only via the caption (the
+    /// tagger's title/summary/tags are not chunked), so this fails on pre-fix code.
+    #[tokio::test]
+    async fn image_caption_is_chunked_and_searchable() {
+        let caption = "An invoice from Globex Corporation totalling 1250 dollars.";
+        let (pipeline, _store, vision_mock) = vision_test_pipeline(caption).await;
+
+        let files = vec![IngestFile {
+            bytes: vec![0xff, 0xd8, 0xff], // JPEG magic → DocKind::Image
+            page_label: None,
+            path: Some("invoice.jpg".into()),
+        }];
+
+        let output = pipeline.ingest(1, None, files, None, false).await.unwrap();
+        assert!(
+            output.chunk_count > 0,
+            "image caption must be chunked + embedded so the image is searchable \
+             (chunk_count=0 is the F1 bug)"
+        );
+
+        vision_mock.shutdown().await;
     }
 
     // ── Blob storage verified ──────────────────────────────────────────────
