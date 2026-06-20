@@ -270,21 +270,21 @@ def test_tiered_failover(api, page):
 
         # --- Route: text tier 0 → bad provider (model_index=0, the bad model) ---
         _fill_route_form(page, role="text", tier="0", strategy="least_loaded", spill_ms="800",
-                         model_index=0)
+                         model_label=f"bad-model-{suffix}")
         _submit_route_form(page)
 
-        # --- Route: text tier 1 → good provider (model_index=1, the good model) ---
+        # --- Route: text tier 1 → good provider ---
         page.goto("/admin/routes/new")
         page.wait_for_load_state("networkidle")
         _fill_route_form(page, role="text", tier="1", strategy="least_loaded", spill_ms="800",
-                         model_index=1)
+                         model_label=f"good-model-{suffix}")
         _submit_route_form(page)
 
-        # --- Route: embed tier 0 → embed provider (model_index=2, the embed model) ---
+        # --- Route: embed tier 0 → embed provider ---
         page.goto("/admin/routes/new")
         page.wait_for_load_state("networkidle")
         _fill_route_form(page, role="embed", tier="0", strategy="least_loaded", spill_ms="800",
-                         model_index=2)
+                         model_label=f"embed-model-{suffix}")
         _submit_route_form(page)
 
         # ── Step 4: wait for routing hot-reload + health check ─────────────
@@ -314,13 +314,25 @@ def test_tiered_failover(api, page):
         _delete_routes_matching(page, suffix)
 
 
-def _fill_route_form(page, *, role, tier, strategy, spill_ms, model_index=0):
+def _fill_route_form(page, *, role, tier, strategy, spill_ms, model_label=None):
     """Fill the route creation form fields (assumes page is already on the form).
 
-    ``model_index`` selects which model in the dropdown (0-based). Callers that
-    create multiple models must pass the correct index for each route.
+    ``model_label`` is a substring of the model dropdown option's visible
+    text — typically the model name (the dropdown renders as
+    ``provider_name / model_name``). The positional ``model_index`` was
+    removed with BUG-ADMIN-01 because after several tests share the models
+    table, the dropdown order is no longer predictable.
     """
-    page.select_option("select[name='model_id_str']", index=model_index)
+    if model_label:
+        # Find the option by partial text match, then select by value
+        # (Playwright's ``label=`` requires an exact match on the full
+        #  "provider / model" text, which is brittle across tests).
+        opt = page.locator("select[name='model_id_str'] option",
+                           has_text=model_label).first
+        page.select_option("select[name='model_id_str']",
+                           value=opt.get_attribute("value"))
+    else:
+        page.select_option("select[name='model_id_str']", index=0)
     page.select_option("select[name='role']", role)
     page.fill("input[name='tier_str']", tier)
     page.select_option("select[name='strategy']", strategy)
@@ -405,18 +417,18 @@ def test_hot_reload_routing(api, page):
     _create_model(page, embed_prov, f"hotreload-embed-model-{suffix}", caps_text=False)
 
     try:
-        # Create a route for text role — model_index=0 (hotreload-text-model).
+        # Create a route for text role.
         page.goto("/admin/routes/new")
         page.wait_for_load_state("networkidle")
         _fill_route_form(page, role="text", tier="0", strategy="least_loaded", spill_ms="800",
-                         model_index=0)
+                         model_label=f"hotreload-text-model-{suffix}")
         _submit_route_form(page)
 
-        # Create a route for embed role — model_index=1 (hotreload-embed-model).
+        # Create a route for embed role.
         page.goto("/admin/routes/new")
         page.wait_for_load_state("networkidle")
         _fill_route_form(page, role="embed", tier="0", strategy="least_loaded", spill_ms="800",
-                         model_index=1)
+                         model_label=f"hotreload-embed-model-{suffix}")
         _submit_route_form(page)
 
         # Wait for the hot-reload to take effect.
@@ -524,24 +536,22 @@ def test_data_residency_routing(api, page):
     try:
         page.goto("/admin/routes/new")
         page.wait_for_load_state("networkidle")
-        # model_index=0 → res-local-text-model (local, index 0 in dropdown)
         _fill_route_form(page, role="text", tier="0", strategy="least_loaded", spill_ms="800",
-                         model_index=0)
+                         model_label=f"res-local-text-model-{suffix}")
         _submit_route_form(page)
 
         # Add the remote as tier 1 for text (should be excluded by residency).
         page.goto("/admin/routes/new")
         page.wait_for_load_state("networkidle")
-        # model_index=1 → res-remote-text-model (remote, index 1 in dropdown)
         _fill_route_form(page, role="text", tier="1", strategy="least_loaded", spill_ms="800",
-                         model_index=1)
+                         model_label=f"res-remote-text-model-{suffix}")
         _submit_route_form(page)
 
-        # Embed route (local only) — model_index=2 (res-local-embed-model).
+        # Embed route (local only).
         page.goto("/admin/routes/new")
         page.wait_for_load_state("networkidle")
         _fill_route_form(page, role="embed", tier="0", strategy="least_loaded", spill_ms="800",
-                         model_index=2)
+                         model_label=f"res-local-embed-model-{suffix}")
         _submit_route_form(page)
 
         # Wait for routing hot-reload.
@@ -609,7 +619,11 @@ def test_single_role_route_does_not_break_other_roles(api, page):
     _create_model(page, prov_name, model_name, caps_text=True)
     page.goto("/admin/models")
     page.wait_for_load_state("networkidle")
-    model_db_id = _get_first_id_from_table(page)
+    # Find the model WE just created (multiple tests share the models
+    # table — `_get_first_id_from_table` would pick up a prior test's row).
+    model_row = page.locator("tr", has=page.locator(f"text={model_name}")).first
+    assert model_row.count() >= 1, f"created model '{model_name}' not visible on /admin/models"
+    model_db_id = int(model_row.locator("td").first.inner_text().strip())
 
     route_id = None
     try:
