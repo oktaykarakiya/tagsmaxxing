@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import io
 import zipfile
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -622,14 +623,67 @@ def test_reembed_after_model_change(api):
     ...
 
 
-@pytest.mark.skip(reason="blocked: no OCR path for scanned PDFs / images of text")
-def test_ocr_scanned_document_searchable(api):
-    """A scanned (image-only) PDF / photo of text yields searchable text.
+_FIXTURES = Path(__file__).resolve().parents[2] / "lib" / "fixtures_data"
 
-    BLOCKED: image extraction is metadata-only (the VLM captioner was deferred); a
-    headline 'find that scanned invoice' use case is unmet.
+
+def test_ocr_scanned_document_searchable(api):
+    """A photo of text yields searchable text — the VLM caption is indexed (F1).
+
+    The image extractor produces no text; the VLM caption (which reads the visible
+    text) must be chunked + embedded so the image is findable by its content. The
+    committed fixture draws the distinctive words MERIDIAN / NEPTUNE / INVOICE.
+    Before the F1 fix the caption only reached the tagger (0 chunks) and the image
+    was invisible to search.
     """
-    ...
+    tenant, email, password = config.tenant_slug(), config.admin_email(), config.admin_password()
+    api.login(tenant, email, password)
+
+    png = (_FIXTURES / "text_image.png").read_bytes()
+    marker = flows.unique_marker("ocr")
+    resp = api._c.post("/api/ingest", files=[("files", (f"{marker}.png", png, "image/png"))])
+    assert resp.status_code == 202, f"image ingest failed: {resp.status_code} {resp.text[:200]}"
+    body = resp.json()
+    doc = flows.wait_until_ready(api, body["document_id"], job_id=body.get("job_id"))
+
+    assert doc.get("summary"), "image produced no caption/summary"
+    found = False
+    for word in ("MERIDIAN", "NEPTUNE", "invoice"):
+        hits = api.search(word).get("hits", [])
+        if any(h["document_id"] == doc["id"] for h in hits):
+            found = True
+            break
+    assert found, (
+        f"image {doc['id']} is not searchable by its visible text "
+        f"(F1: the VLM caption must be indexed as chunks); summary={doc.get('summary')!r}"
+    )
+
+
+def test_archive_contents_are_searchable(api):
+    """Text INSIDE a zip archive is extracted and searchable, not just listed (F2).
+
+    Before the F2 fix archives were ingested as a file-listing only, so a unique
+    token inside an entry was not findable.
+    """
+    tenant, email, password = config.tenant_slug(), config.admin_email(), config.admin_password()
+    api.login(tenant, email, password)
+
+    marker = flows.unique_marker("ziptext")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("readme.txt", f"The secret token inside this archive is {marker}.")
+        z.writestr("notes/extra.md", "# Notes\nunrelated archived markdown content")
+    zbytes = buf.getvalue()
+
+    resp = api._c.post("/api/ingest", files=[("files", (f"{marker}.zip", zbytes, "application/zip"))])
+    assert resp.status_code == 202, f"zip ingest failed: {resp.status_code} {resp.text[:200]}"
+    body = resp.json()
+    doc = flows.wait_until_ready(api, body["document_id"], job_id=body.get("job_id"))
+
+    hits = api.search(marker).get("hits", [])
+    assert any(h["document_id"] == doc["id"] for h in hits), (
+        f"archive inner-entry text (marker {marker}) is not searchable "
+        f"(F2: zip entry contents must be extracted, not just listed)"
+    )
 
 
 @pytest.mark.skip(reason="blocked: no content-replace / version-supersede route")
