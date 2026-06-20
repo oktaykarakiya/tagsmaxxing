@@ -5,14 +5,14 @@
 //!
 //! # Two connection roles (RLS enforcement, P6-T14)
 //!
-//! Tenant isolation rests on Postgres Row-Level Security (migration `0003_rls.sql`), but RLS
+//! Tenant isolation rests on Postgres Row-Level Security, but RLS
 //! is bypassed by superusers and by `BYPASSRLS` roles. So `PgStore` keeps **two pools**:
 //!
 //! * the **admin pool** ([`admin_pool`](PgStore::admin_pool)) — the privileged owner/superuser
 //!   role; runs migrations and every legitimately cross-tenant path (the job queue, admin and
 //!   usage roll-ups, the `tenants` / `sessions` / `settings` tables that carry no `tenant_id`);
 //! * the **app pool** ([`app_pool`](PgStore::app_pool)) — the non-privileged `kb_app` role
-//!   (`NOSUPERUSER NOBYPASSRLS`, migration `0006_app_role.sql`); used for **all** tenant-scoped
+//!   (`NOSUPERUSER NOBYPASSRLS`); used for **all** tenant-scoped
 //!   data. Every such operation runs inside a transaction opened by [`begin_tenant_tx`], which
 //!   sets the `app.current_tenant` GUC transaction-locally so the GUC and the query share one
 //!   connection and the setting is discarded on commit — a pooled connection can never leak one
@@ -625,7 +625,7 @@ static SET_TENANT_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomi
 
 /// The parameterised SQL that sets the per-transaction tenant GUC. Calls
 /// `set_config('app.current_tenant', $tenant, true)` via the `app_set_current_tenant($1)`
-/// wrapper function (migration `0003_rls.sql`).
+/// wrapper function.
 pub(crate) const SET_TENANT_SQL: &str = "SELECT app_set_current_tenant($1)";
 
 /// Begin a transaction on `pool` with the `app.current_tenant` GUC set transaction-locally,
@@ -1824,7 +1824,7 @@ impl PgStore {
     /// first-seeded (lowest-`id`) tenant created by [`bootstrap_seed`](crate#bootstrap).
     ///
     /// Inference infrastructure (`providers` / `models` / `routes`, migration
-    /// `0011`) is **global**: the `providers` and `models` tables carry no
+    /// is **global**: the `providers` and `models` tables carry no
     /// `tenant_id` column and are shared by every tenant. A customer tenant's own
     /// `Owner`/`Admin` administers only their own workspace, **not** the platform's
     /// shared infrastructure (this system has no platform-admin *role*, cf.

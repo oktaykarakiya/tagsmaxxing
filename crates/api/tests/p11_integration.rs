@@ -54,7 +54,7 @@ type HmacSha256 = Hmac<Sha256>;
 
 /// Create a connected PgStore against a fresh testcontainers Postgres database.
 ///
-/// Plans are seeded by the migration (0018_plans.sql), so they are immediately
+/// Plans are seeded by the schema, so they are immediately
 /// available after `connect()` returns.
 async fn connected_store() -> PgStore {
     let db = kb_testsupport::fresh_db().await.expect("fresh_db");

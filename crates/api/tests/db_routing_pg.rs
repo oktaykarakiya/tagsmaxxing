@@ -15,7 +15,7 @@
 //!
 //! Needs **Podman** + network to pull `pgvector/pgvector`; gated `#[ignore]`.
 //! Run single-threaded — each test runs the migrations on a fresh database,
-//! and the `CREATE ROLE kb_app` in migration 0006 is **cluster-global**, so
+//! and the `CREATE ROLE kb_app` is **cluster-global**, so
 //! concurrent runs race:
 //!
 //! ```text

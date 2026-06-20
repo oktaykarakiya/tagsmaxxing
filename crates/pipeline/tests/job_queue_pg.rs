@@ -253,9 +253,9 @@ async fn claim_returns_next_eligible_job() -> anyhow::Result<()> {
 async fn claim_respects_priority_ordering() -> anyhow::Result<()> {
     let s = setup().await?;
 
-    // Enqueue three jobs with different priorities. Since migration 0014
+    // Enqueue three jobs with different priorities.
     // (P9-T12) priority is HIGHER-is-more-urgent: the claim query orders by
-    // effective priority DESC. (This test predated 0014 and was stale — it
+    // effective priority DESC. (This test was previously stale — it
     // asserted the old lower-first semantics; first actually run in P15-T2.)
     let low_id = s
         .queue

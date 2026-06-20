@@ -8,7 +8,7 @@
 //!
 //! These assertions only mean something when run as a role that **does not** bypass RLS. The
 //! P6-T14 rework makes that real: every tenant-scoped read/write here goes through the
-//! `kb_app` role (`NOSUPERUSER NOBYPASSRLS`, migration `0006_app_role.sql`) — either via a
+//! `kb_app` role (`NOSUPERUSER NOBYPASSRLS`) — either via a
 //! `PgStore` method (which routes to its `app_pool`) or via a raw query inside
 //! [`kb_testsupport::tenant_tx`] on the app pool. Seeding of tenants/users uses the privileged
 //! pool (RLS bypassed, as a real provisioning path would). The earlier version connected as the

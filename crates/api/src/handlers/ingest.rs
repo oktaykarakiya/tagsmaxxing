@@ -338,6 +338,30 @@ impl std::fmt::Display for QueueFull {
 
 impl std::error::Error for QueueFull {}
 
+/// Best-effort cleanup of already-written blobs when staging or enqueue fails.
+///
+/// If `blob.put()` succeeds but `create_pending_ingest`/`enqueue` fails, the
+/// stored bytes are orphaned (no DB row references them). Calling this on the
+/// error path deletes them immediately rather than waiting for the orphan GC's
+/// 24 h grace period. Each per-blob failure is logged at `warn` but not surfaced
+/// (the staging/enqueue error is the primary one; delete failures don't change
+/// that the upload was already rejected).
+async fn cleanup_blobs(blob: &dyn Blob, file_records: &[kb_core::file::FileRecord]) {
+    let mut seen = std::collections::HashSet::new();
+    for r in file_records {
+        if !seen.insert(&r.blob_key) {
+            continue; // skip dedup keys within a single upload
+        }
+        if let Err(e) = blob.delete(&r.blob_key).await {
+            tracing::warn!(
+                error = %e,
+                blob_key = %r.blob_key,
+                "ingest: failed to clean up orphaned blob after staging failure"
+            );
+        }
+    }
+}
+
 /// Result from [`process_upload_queued`].
 pub(crate) struct QueuedIngestResult {
     /// The enqueued ingest job id (pollable at `/api/jobs/:id`).
@@ -451,10 +475,17 @@ pub(crate) async fn process_upload_queued(
     }
 
     // ── Stage pending rows + enqueue the job ────────────────────────────────
-    let pending = pg_store
+    let pending = match pg_store
         .create_pending_ingest(&document, &file_records)
-        .await?;
-    let job_id = job_queue
+        .await
+    {
+        Ok(p) => p,
+        Err(e) => {
+            cleanup_blobs(blob, &file_records).await;
+            return Err(e);
+        }
+    };
+    let job_id = match job_queue
         .enqueue(
             tenant_id,
             user_id,
@@ -463,7 +494,14 @@ pub(crate) async fn process_upload_queued(
             JobKind::Ingest,
             0,
         )
-        .await?;
+        .await
+    {
+        Ok(id) => id,
+        Err(e) => {
+            cleanup_blobs(blob, &file_records).await;
+            return Err(e);
+        }
+    };
 
     tracing::info!(
         tenant_id,
@@ -560,10 +598,14 @@ pub(crate) async fn process_add_page_queued(
             .with_context(|| format!("failed to store blob {}", record.blob_key))?;
     }
 
-    pg_store
+    if let Err(e) = pg_store
         .stage_pending_files(tenant_id, document_id, &records)
-        .await?;
-    let job_id = job_queue
+        .await
+    {
+        cleanup_blobs(blob, &records).await;
+        return Err(e);
+    }
+    let job_id = match job_queue
         .enqueue(
             tenant_id,
             user_id,
@@ -572,7 +614,14 @@ pub(crate) async fn process_add_page_queued(
             JobKind::Ingest,
             0,
         )
-        .await?;
+        .await
+    {
+        Ok(id) => id,
+        Err(e) => {
+            cleanup_blobs(blob, &records).await;
+            return Err(e);
+        }
+    };
 
     Ok((job_id, records.len()))
 }
@@ -619,14 +668,16 @@ pub(crate) async fn process_upload_inline(
     }
 
     // ── Store each file in the blob store ──────────────────────────────────
+    let mut blob_keys: Vec<String> = Vec::with_capacity(parsed.files.len());
     for f in &parsed.files {
         let sha256 = compute_blob_key(&f.bytes);
         blob.put(&sha256, bytes::Bytes::copy_from_slice(&f.bytes))
             .await?;
+        blob_keys.push(sha256);
     }
 
     // ── Process through ingest pipeline ────────────────────────────────────
-    let output = pipeline
+    let output = match pipeline
         .ingest(
             tenant_id,
             user_id, // attribute metered usage to the uploading user (P14-T1)
@@ -634,7 +685,23 @@ pub(crate) async fn process_upload_inline(
             parsed.user_note.clone(),
             local_only, // free plan → local-only models; pro/team → remote OK (P14-T6)
         )
-        .await?;
+        .await
+    {
+        Ok(o) => o,
+        Err(e) => {
+            // Pipeline failed after blobs were already stored — clean up.
+            for key in &blob_keys {
+                if let Err(del_err) = blob.delete(key).await {
+                    tracing::warn!(
+                        error = %del_err,
+                        blob_key = %key,
+                        "ingest: failed to clean up orphaned blob after inline pipeline failure"
+                    );
+                }
+            }
+            return Err(e);
+        }
+    };
 
     // Use a dummy job id for the response (no async queue needed).
     let job_id = 0;

@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! The embedded, forward-only schema migrations (plan §5 schema, §13 RLS, §16 queue).
+//! The embedded, forward-only single squashed base schema migration.
 
 use sqlx::migrate::Migrator;
 
 /// The full schema, compiled in from `crates/store/migrations/` at build time.
 ///
-/// Forward-only: each file is a simple `{version}_{name}.sql` migration with no `down` script
+/// Forward-only single squashed migration with no `down` script
 /// (a changed embedder needs a `reembed` job, not a reverse migration — plan §5 lock-in note).
 /// Apply against a Postgres pool with `kb_store::MIGRATOR.run(&pool).await`; the
 /// `_sqlx_migrations` ledger makes that idempotent, so already-applied versions are skipped on
@@ -18,11 +18,11 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
-    /// All twenty-seven migrations are present, in version order (1–27).
+    /// The squashed base schema migration (single file).
     #[test]
     fn embeds_the_schema_migrations() {
         let versions: Vec<i64> = MIGRATOR.iter().map(|m| m.version).collect();
-        assert_eq!(versions, (1..=27).collect::<Vec<i64>>());
+        assert_eq!(versions, vec![1]);
     }
 
     /// Forward-only and monotonic: no down/reversible scripts, strictly increasing versions,
@@ -57,9 +57,9 @@ mod tests {
         }
     }
 
-    /// Pin the schema invariants that downstream code (and the §5 plan) depends on: pgvector,
-    /// the locked 1024-dim vectors, every table, the HNSW + GIN indexes, RLS, and the embedder
-    /// lock-in row.
+    /// Comprehensive schema lock-in test for the single squashed migration: extension,
+    /// function, all tables, embedder lock-in (2560-dim), CHECK constraints, indexes,
+    /// RLS, kb_app role, FK relationships, seed data, and generated column.
     #[test]
     fn schema_locks_critical_ddl() {
         let sql: String = MIGRATOR
@@ -68,15 +68,21 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert!(sql.contains("CREATE EXTENSION IF NOT EXISTS vector"));
-        // The embedder lock-in: both vector columns are dim 1024 (§5). Count column
-        // definitions only — comment lines (e.g. the settings lock-in note) also say it.
-        let vector_columns = sql
-            .lines()
-            .filter(|l| l.contains("VECTOR(1024)") && !l.trim_start().starts_with("--"))
-            .count();
-        assert_eq!(vector_columns, 2, "tags + chunks vector columns");
+        // ── a) Extension & function ────────────────────────────────────────────
+        assert!(
+            sql.contains("CREATE EXTENSION IF NOT EXISTS vector"),
+            "missing pgvector extension"
+        );
+        assert!(
+            sql.contains("CREATE FUNCTION app_set_current_tenant"),
+            "missing app_set_current_tenant function"
+        );
+        assert!(
+            sql.contains("set_config('app.current_tenant'"),
+            "function must call set_config for app.current_tenant"
+        );
 
+        // ── b) All tables ──────────────────────────────────────────────────────
         for table in [
             "tenants",
             "users",
@@ -90,9 +96,17 @@ mod tests {
             "usage_events",
             "settings",
             "sessions",
+            "providers",
+            "models",
+            "routes",
+            "audit_events",
+            "tenant_data_keys",
+            "tenant_tombstones",
+            "decrypt_audit",
             "plans",
             "stripe_events",
             "api_tokens",
+            "tenant_monthly_usage",
         ] {
             assert!(
                 sql.contains(&format!("CREATE TABLE {table} ")),
@@ -100,186 +114,214 @@ mod tests {
             );
         }
 
-        // Hybrid-search indexes: HNSW for vectors, GIN for the full-text tsvector.
-        assert!(sql.contains("USING hnsw (embedding vector_cosine_ops)"));
-        assert!(sql.contains("USING GIN (tsv)"));
-
-        // Multi-tenancy: RLS + the app.current_tenant pattern (plan §5/§13).
-        assert!(sql.contains("ENABLE ROW LEVEL SECURITY"));
-        assert!(sql.contains("app.current_tenant"));
-
-        // Embedder lock-in row recording id + dim (§5 note).
-        assert!(sql.contains("'embedder'"));
-        assert!(sql.contains("\"dim\": 1024"));
-    }
-
-    /// Migration 0023: the embedder switch to Qwen3-Embedding-4B widens both vector columns to
-    /// 2560, rebuilds the chunks HNSW index via a `halfvec` cast (pgvector caps `vector` ANN
-    /// indexes at 2000 dims), and records the new embedder lock-in.
-    #[test]
-    fn schema_migrates_to_qwen3_4b_2560() {
-        let sql: String = MIGRATOR
-            .iter()
-            .map(|m| m.sql.as_ref())
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(sql.contains("vector(2560)"), "columns widened to 2560");
+        // ── c) Embedder lock-in (final state: 2560-dim, not 1024) ─────────────
+        let vector_2560_lines = sql
+            .lines()
+            .filter(|l| l.contains("VECTOR(2560)") && !l.trim_start().starts_with("--"))
+            .count();
+        assert_eq!(
+            vector_2560_lines, 2,
+            "expected 2 non-comment VECTOR(2560) column definitions (tags + chunks)"
+        );
+        let vector_1024_lines = sql
+            .lines()
+            .filter(|l| l.contains("VECTOR(1024)") && !l.trim_start().starts_with("--"))
+            .count();
+        assert_eq!(
+            vector_1024_lines, 0,
+            "squashed schema must not contain VECTOR(1024) — goes straight to 2560"
+        );
         assert!(
             sql.contains("halfvec(2560)) halfvec_cosine_ops"),
-            "halfvec-cast HNSW for >2000-dim vectors"
+            "missing halfvec HNSW index for >2000-dim vectors"
         );
         assert!(
             sql.contains("\"id\": \"qwen3-embed-4b\""),
-            "embedder id updated"
+            "embedder id must be qwen3-embed-4b"
         );
-        assert!(sql.contains("\"dim\": 2560"), "embedder dim updated");
-    }
+        assert!(sql.contains("\"dim\": 2560"), "embedder dim must be 2560");
+        assert!(sql.contains("'embedder'"), "missing embedder settings key");
 
-    /// Migration 0007 (P6-T11): tag provenance columns (`source`, `locked`) must be present,
-    /// the jobs CHECK must include `'retag'`, and `document_id` must exist on jobs.
-    #[test]
-    fn schema_adds_tag_provenance_and_retag_kind() {
-        let sql: String = MIGRATOR
-            .iter()
-            .map(|m| m.sql.as_ref())
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        // document_tags gains source + locked.
-        assert!(
-            sql.contains("document_tags\n    ADD COLUMN IF NOT EXISTS source"),
-            "missing source column on document_tags"
-        );
-        assert!(
-            sql.contains("document_tags\n    ADD COLUMN IF NOT EXISTS locked"),
-            "missing locked column on document_tags"
-        );
-        assert!(
-            sql.contains("'llm'") && sql.contains("'user'"),
-            "source CHECK must allow 'llm' and 'user'"
-        );
-
-        // jobs.kind CHECK now includes 'retag'.
-        assert!(
-            sql.contains("'retag'"),
-            "jobs kind CHECK must include 'retag'"
-        );
-
-        // jobs has document_id column.
-        assert!(
-            sql.contains("ADD COLUMN IF NOT EXISTS document_id"),
-            "jobs must gain document_id column"
-        );
-    }
-
-    /// Migration 0009 (P8-T7): the jobs.kind CHECK must include `'restore_test'`.
-    #[test]
-    fn schema_adds_restore_test_job_kind() {
-        let sql: String = MIGRATOR
-            .iter()
-            .map(|m| m.sql.as_ref())
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        assert!(
-            sql.contains("'restore_test'"),
-            "jobs kind CHECK must include 'restore_test' for the automated restore-test job (P8-T7)"
-        );
-    }
-
-    /// Migration 0010 (P8-T10): the jobs.kind CHECK must include `'orphan_gc'` and
-    /// `'integrity_scan'`.
-    #[test]
-    fn schema_adds_orphan_gc_and_integrity_scan_kinds() {
-        let sql: String = MIGRATOR
-            .iter()
-            .map(|m| m.sql.as_ref())
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        assert!(
-            sql.contains("'orphan_gc'"),
-            "jobs kind CHECK must include 'orphan_gc' for the orphan GC job (P8-T10)"
-        );
-        assert!(
-            sql.contains("'integrity_scan'"),
-            "jobs kind CHECK must include 'integrity_scan' for the integrity scan job (P8-T10)"
-        );
-    }
-
-    /// Migration 0011 (P9-T5): the `providers`, `models`, and `routes` tables for DB-driven
-    /// routing (§26.5).
-    #[test]
-    fn schema_adds_providers_models_and_routes_tables() {
-        let sql: String = MIGRATOR
-            .iter()
-            .map(|m| m.sql.as_ref())
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        for table in ["providers", "models", "routes"] {
+        // ── d) CHECK constraint values ─────────────────────────────────────────
+        // documents.kind
+        for kind in [
+            "'document'",
+            "'image'",
+            "'audio'",
+            "'video'",
+            "'identity_document'",
+            "'code'",
+            "'archive'",
+            "'binary'",
+        ] {
+            assert!(sql.contains(kind), "documents.kind CHECK missing {kind}");
+        }
+        // documents.status
+        for status in ["'pending'", "'ready'", "'failed'"] {
             assert!(
-                sql.contains(&format!("CREATE TABLE {table} ")),
-                "missing CREATE TABLE for {table} (migration 0011)"
+                sql.contains(status),
+                "documents.status CHECK missing {status}"
             );
         }
-
-        // providers.kind CHECK covers all four ProviderKind variants.
-        assert!(sql.contains("'openai_compat'"));
-        assert!(sql.contains("'anthropic'"));
-        assert!(sql.contains("'gemini_native'"));
-        assert!(sql.contains("'local'"));
-
-        // routes UNIQUE constraint for tenant-override detection.
-        assert!(sql.contains("UNIQUE (tenant_id, role, tier, model_id)"));
-
-        // routes.role CHECK covers all five Role variants.
-        for r in ["'text'", "'vision'", "'code'", "'embed'", "'rerank'"] {
-            assert!(sql.contains(r), "routes.role CHECK missing {r}");
+        // files.status
+        for status in ["'pending'", "'ready'", "'failed'"] {
+            assert!(sql.contains(status), "files.status CHECK missing {status}");
         }
-
-        // routes.strategy CHECK covers all four RoutingStrategy variants.
-        for s in [
+        // users.role
+        for role in ["'owner'", "'admin'", "'member'"] {
+            assert!(sql.contains(role), "users.role CHECK missing {role}");
+        }
+        // jobs.status
+        for status in ["'queued'", "'running'", "'failed'", "'dead'", "'done'"] {
+            assert!(sql.contains(status), "jobs.status CHECK missing {status}");
+        }
+        // jobs.kind
+        for kind in [
+            "'ingest'",
+            "'reembed'",
+            "'export'",
+            "'retag'",
+            "'restore_test'",
+            "'orphan_gc'",
+            "'integrity_scan'",
+            "'delete_tenant'",
+            "'send_email'",
+        ] {
+            assert!(sql.contains(kind), "jobs.kind CHECK missing {kind}");
+        }
+        // tenants.residency
+        for residency in ["'local_only'", "'allow_remote'"] {
+            assert!(
+                sql.contains(residency),
+                "tenants.residency CHECK missing {residency}"
+            );
+        }
+        // models.data_class
+        for dc in ["'local'", "'remote'"] {
+            assert!(sql.contains(dc), "models.data_class CHECK missing {dc}");
+        }
+        // providers.kind
+        for pkind in [
+            "'openai_compat'",
+            "'anthropic'",
+            "'gemini_native'",
+            "'local'",
+        ] {
+            assert!(sql.contains(pkind), "providers.kind CHECK missing {pkind}");
+        }
+        // routes.role
+        for role in ["'text'", "'vision'", "'code'", "'embed'", "'rerank'"] {
+            assert!(sql.contains(role), "routes.role CHECK missing {role}");
+        }
+        // routes.strategy
+        for strategy in [
             "'least_loaded'",
             "'round_robin'",
             "'cost_asc'",
             "'priority'",
         ] {
-            assert!(sql.contains(s), "routes.strategy CHECK missing {s}");
+            assert!(
+                sql.contains(strategy),
+                "routes.strategy CHECK missing {strategy}"
+            );
+        }
+        // document_tags.source
+        for src in ["'llm'", "'user'"] {
+            assert!(
+                sql.contains(src),
+                "document_tags.source CHECK missing {src}"
+            );
         }
 
-        // models FK to providers.
-        assert!(sql.contains("REFERENCES providers(id)"));
-        // routes FK to models.
-        assert!(sql.contains("REFERENCES models(id)"));
-    }
+        // ── e) Indexes ─────────────────────────────────────────────────────────
+        assert!(
+            sql.contains("USING hnsw")
+                && sql.contains("halfvec")
+                && sql.contains("halfvec_cosine_ops"),
+            "missing HNSW halfvec index"
+        );
+        assert!(sql.contains("USING GIN (tsv)"), "missing GIN tsv index");
+        for idx in [
+            "documents_meta_gin",
+            "files_meta_gin",
+            "files_document_id",
+            "chunks_document_id",
+            "chunks_file_id",
+            "sessions_expires_at",
+            "idx_audit_events_tenant",
+            "idx_audit_events_actor",
+            "idx_decrypt_audit_tenant",
+            "idx_decrypt_audit_key",
+            "idx_decrypt_audit_operation",
+            "idx_api_tokens_token_hash",
+            "idx_api_tokens_tenant_id",
+            "usage_events_tenant_created",
+            "jobs_running_lease",
+            "jobs_tenant_pending",
+        ] {
+            assert!(sql.contains(idx), "missing index: {idx}");
+        }
+        assert!(
+            sql.contains("priority DESC"),
+            "missing priority DESC in jobs index"
+        );
 
-    /// The two-role RLS model (P6-T14, §13): migration 0006 must create the non-privileged
-    /// `kb_app` role as `NOSUPERUSER NOBYPASSRLS` (so RLS is enforced for it) and grant it DML
-    /// on the tenant-scoped tables — but NOT on `tenants`/`sessions`/`settings`.
-    #[test]
-    fn schema_creates_non_bypassrls_app_role() {
-        let sql: String = MIGRATOR
-            .iter()
-            .map(|m| m.sql.as_ref())
-            .collect::<Vec<_>>()
-            .join("\n");
+        // ── f) RLS ─────────────────────────────────────────────────────────────
+        let rls_enable_count = sql.matches("ENABLE ROW LEVEL SECURITY").count();
+        assert!(
+            rls_enable_count >= 10,
+            "expected >=10 ENABLE ROW LEVEL SECURITY, found {rls_enable_count}"
+        );
+        let rls_force_count = sql.matches("FORCE ROW LEVEL SECURITY").count();
+        assert!(
+            rls_force_count >= 10,
+            "expected >=10 FORCE ROW LEVEL SECURITY, found {rls_force_count}"
+        );
+        assert!(
+            sql.contains("app.current_tenant"),
+            "missing app.current_tenant RLS reference"
+        );
+        assert!(
+            sql.contains("CREATE POLICY tenant_isolation"),
+            "missing tenant_isolation policy"
+        );
+        assert!(
+            sql.contains("EXISTS (SELECT 1 FROM documents"),
+            "missing document_tags EXISTS subquery variant"
+        );
 
+        // ── g) kb_app role ─────────────────────────────────────────────────────
         assert!(
             sql.contains("CREATE ROLE kb_app"),
-            "kb_app role not created"
+            "missing kb_app role creation"
         );
         assert!(
             sql.contains("NOSUPERUSER") && sql.contains("NOBYPASSRLS"),
-            "kb_app must be NOSUPERUSER + NOBYPASSRLS so RLS is enforced"
+            "kb_app must be NOSUPERUSER + NOBYPASSRLS"
         );
-        // DML grant covers the tenant tables.
+
+        // DML grant on the 10 tenant tables.
+        let tenant_tables = "users, documents, files, tags, tag_aliases, document_tags, chunks, jobs, usage_events, tenant_monthly_usage";
         assert!(
-            sql.contains("ON\n    users, documents, files, tags, tag_aliases, document_tags, chunks, jobs, usage_events\n    TO kb_app")
+            sql.contains(&format!("ON\n    {tenant_tables}\n    TO kb_app"))
+                || sql.contains(&format!("ON {tenant_tables} TO kb_app"))
                 || sql.contains("TO kb_app"),
-            "kb_app must be granted DML on the tenant tables"
+            "kb_app must be granted DML on the 10 tenant tables"
         );
-        // The privileged-only tables must NOT appear in a GRANT … TO kb_app list.
+
+        // Sequences grant.
+        assert!(
+            sql.contains("ALL SEQUENCES IN SCHEMA public TO kb_app"),
+            "kb_app must be granted ALL SEQUENCES"
+        );
+
+        // Function grant.
+        assert!(
+            sql.contains("EXECUTE ON FUNCTION app_set_current_tenant"),
+            "kb_app must be granted EXECUTE on app_set_current_tenant"
+        );
+
+        // Privileged-only tables must NOT appear in a GRANT … TO kb_app list.
         for forbidden in ["tenants,", "sessions,", "settings,"] {
             assert!(
                 !sql.contains(&format!(
@@ -288,285 +330,60 @@ mod tests {
                 "kb_app must not be granted DML on {forbidden}"
             );
         }
-    }
 
-    /// Migration 0014 (P9-T12): job priority semantics flipped — default changed from
-    /// 100 to 0, index rebuilt for `priority DESC`.
-    #[test]
-    fn schema_flips_job_priority_semantics() {
-        let sql: String = MIGRATOR
-            .iter()
-            .map(|m| m.sql.as_ref())
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        // Default changed from 100 to 0.
+        // ── h) FK relationships ────────────────────────────────────────────────
+        let cascade_count = sql
+            .matches("REFERENCES tenants(id) ON DELETE CASCADE")
+            .count();
         assert!(
-            sql.contains("ALTER TABLE jobs ALTER COLUMN priority SET DEFAULT 0"),
-            "migration 0014 must set priority default to 0 (higher=preferred)"
+            cascade_count >= 8,
+            "expected >=8 REFERENCES tenants(id) ON DELETE CASCADE, found {cascade_count}"
         );
-
-        // New index for priority DESC ordering.
-        assert!(
-            sql.contains("priority DESC"),
-            "migration 0014 must rebuild the index for priority DESC"
-        );
-    }
-
-    /// Migration 0013 (P9-T10): cost-tracking columns — `usage_events.cost_micros` and
-    /// `tenants.budget_monthly_cents`.
-    #[test]
-    fn schema_adds_cost_tracking_columns() {
-        let sql: String = MIGRATOR
-            .iter()
-            .map(|m| m.sql.as_ref())
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        // cost_micros column on usage_events for priced remote calls.
-        assert!(
-            sql.contains("usage_events\n    ADD COLUMN IF NOT EXISTS cost_micros"),
-            "missing cost_micros column on usage_events (migration 0013)"
-        );
-
-        // budget_monthly_cents column on tenants for per-tenant budget caps.
-        assert!(
-            sql.contains("tenants\n    ADD COLUMN IF NOT EXISTS budget_monthly_cents"),
-            "missing budget_monthly_cents column on tenants (migration 0013)"
-        );
-    }
-
-    /// Migration 0016 (P10-T4): tenant tombstone table and 'delete_tenant' job kind.
-    #[test]
-    fn schema_adds_tenant_tombstones_and_delete_tenant_kind() {
-        let sql: String = MIGRATOR
-            .iter()
-            .map(|m| m.sql.as_ref())
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        assert!(
-            sql.contains("CREATE TABLE tenant_tombstones"),
-            "missing CREATE TABLE tenant_tombstones (migration 0016)"
-        );
-
-        assert!(
-            sql.contains("'delete_tenant'"),
-            "jobs kind CHECK must include 'delete_tenant' for crypto-shredding (P10-T4)"
-        );
-    }
-
-    /// Migration 0017 (P10-T5): decrypt_audit table with indexes and no UPDATE/DELETE grants.
-    #[test]
-    fn schema_adds_decrypt_audit_table() {
-        let sql: String = MIGRATOR
-            .iter()
-            .map(|m| m.sql.as_ref())
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        assert!(
-            sql.contains("CREATE TABLE IF NOT EXISTS decrypt_audit"),
-            "missing CREATE TABLE IF NOT EXISTS decrypt_audit (migration 0017)"
-        );
-
-        // The table must have the required columns.
-        assert!(sql.contains("tenant_id"));
-        assert!(sql.contains("operation"));
-        assert!(sql.contains("key_id"));
-        assert!(sql.contains("user_id"));
-        assert!(sql.contains("success"));
-        assert!(sql.contains("created_at"));
-
-        // Indexes for query performance.
-        assert!(
-            sql.contains("idx_decrypt_audit_tenant"),
-            "missing tenant+time index on decrypt_audit"
-        );
-        assert!(
-            sql.contains("idx_decrypt_audit_key"),
-            "missing key_id index on decrypt_audit"
-        );
-        assert!(
-            sql.contains("idx_decrypt_audit_operation"),
-            "missing operation index on decrypt_audit"
-        );
-
-        // The operation column should support the known values.
-        assert!(sql.contains("unwrap_dek"));
-        assert!(sql.contains("unwrap_provider_key"));
-    }
-
-    /// Migration 0018 (P11-T1): billing plans table, tenant billing columns, and seed data.
-    #[test]
-    fn schema_adds_plans_table_and_tenant_billing_columns() {
-        let sql: String = MIGRATOR
-            .iter()
-            .map(|m| m.sql.as_ref())
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        // plans table with all required columns.
-        assert!(
-            sql.contains("CREATE TABLE plans"),
-            "missing CREATE TABLE plans (migration 0018)"
-        );
-        assert!(sql.contains("code"), "plans.code missing");
-        assert!(sql.contains("stripe_price"), "plans.stripe_price missing");
-        assert!(sql.contains("quota_bytes"), "plans.quota_bytes missing");
-        assert!(sql.contains("token_budget"), "plans.token_budget missing");
-        assert!(sql.contains("features"), "plans.features missing");
-        assert!(sql.contains("price_cents"), "plans.price_cents missing");
-        assert!(sql.contains("currency"), "plans.currency missing");
-
-        // UNIQUE constraint on code.
-        assert!(
-            sql.contains("TEXT UNIQUE NOT NULL"),
-            "plans.code must be UNIQUE NOT NULL"
-        );
-
-        // Tenant billing columns.
-        for col in [
-            "plan_id",
-            "stripe_customer_id",
-            "subscription_id",
-            "billing_status",
-            "current_period_end",
-        ] {
-            assert!(
-                sql.contains(&format!("ADD COLUMN IF NOT EXISTS {col}")),
-                "missing tenant billing column: {col} (migration 0018)"
-            );
-        }
-
-        // billing_status default is 'inactive'.
-        assert!(
-            sql.contains("'inactive'"),
-            "billing_status default must be 'inactive'"
-        );
-
-        // FK from tenants.plan_id → plans.id.
         assert!(
             sql.contains("REFERENCES plans(id)"),
             "tenants.plan_id must reference plans(id)"
         );
-
-        // Three seed plans (free, pro, team) — each is inserted idempotently.
         assert!(
-            sql.contains("'free'"),
-            "seed plan 'free' missing (migration 0018)"
+            sql.contains("REFERENCES providers(id)"),
+            "models.provider_id must reference providers(id)"
         );
         assert!(
-            sql.contains("'pro'"),
-            "seed plan 'pro' missing (migration 0018)"
-        );
-        assert!(
-            sql.contains("'team'"),
-            "seed plan 'team' missing (migration 0018)"
-        );
-
-        // ON CONFLICT DO NOTHING for idempotent seed.
-        assert!(
-            sql.contains("ON CONFLICT (code) DO NOTHING"),
-            "seed inserts must be idempotent (ON CONFLICT DO NOTHING)"
-        );
-
-        // Quota values match the plan spec (§29 / P11-T1).
-        assert!(
-            sql.contains("52428800"),
-            "free plan: 50 MB = 52428800 bytes"
-        );
-        assert!(
-            sql.contains("5368709120"),
-            "pro plan: 5 GB = 5368709120 bytes"
-        );
-        assert!(
-            sql.contains("53687091200"),
-            "team plan: 50 GB = 53687091200 bytes"
-        );
-
-        // Token budgets.
-        assert!(sql.contains("10000"), "free plan: 10K tokens");
-        assert!(sql.contains("500000"), "pro plan: 500K tokens");
-        assert!(sql.contains("2000000"), "team plan: 2M tokens");
-    }
-
-    /// Migration 0019 (P11-T3): stripe_events table for webhook idempotency.
-    #[test]
-    fn schema_adds_stripe_events_table() {
-        let sql: String = MIGRATOR
-            .iter()
-            .map(|m| m.sql.as_ref())
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        assert!(
-            sql.contains("CREATE TABLE stripe_events"),
-            "missing CREATE TABLE stripe_events (migration 0019)"
-        );
-
-        // Primary key on event_id for idempotent ON CONFLICT skipping.
-        assert!(sql.contains("event_id"), "stripe_events.event_id missing");
-        assert!(
-            sql.contains("event_type"),
-            "stripe_events.event_type missing"
-        );
-        assert!(
-            sql.contains("processed_at"),
-            "stripe_events.processed_at missing"
-        );
-        assert!(
-            sql.contains("TEXT PRIMARY KEY"),
-            "event_id must be TEXT PRIMARY KEY for ON CONFLICT dedup"
-        );
-    }
-
-    /// Migrations 0024/0025 (P14-T1): per-user job attribution column and the
-    /// tenant-scoped monthly token rollup table.
-    #[test]
-    fn schema_adds_job_attribution_and_monthly_rollup() {
-        let sql: String = MIGRATOR
-            .iter()
-            .map(|m| m.sql.as_ref())
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        // 0024: jobs.created_by, nullable, FK to users with ON DELETE SET NULL.
-        assert!(
-            sql.contains("ALTER TABLE jobs ADD COLUMN created_by BIGINT"),
-            "migration 0024 must add jobs.created_by"
+            sql.contains("REFERENCES models(id)"),
+            "routes.model_id must reference models(id)"
         );
         assert!(
             sql.contains("REFERENCES users(id) ON DELETE SET NULL"),
-            "jobs.created_by must FK users(id) ON DELETE SET NULL"
+            "jobs.created_by must reference users(id) ON DELETE SET NULL"
         );
 
-        // 0025: the rollup table with its composite primary key.
+        // ── i) Seed data ───────────────────────────────────────────────────────
+        assert!(sql.contains("'free'"), "seed plan 'free' missing");
+        assert!(sql.contains("'pro'"), "seed plan 'pro' missing");
+        assert!(sql.contains("'team'"), "seed plan 'team' missing");
         assert!(
-            sql.contains("CREATE TABLE tenant_monthly_usage "),
-            "migration 0025 must create tenant_monthly_usage"
+            sql.contains("ON CONFLICT (code) DO NOTHING"),
+            "seed inserts must use ON CONFLICT (code) DO NOTHING"
         );
         assert!(
-            sql.contains("PRIMARY KEY (tenant_id, period_month)"),
-            "tenant_monthly_usage PK must be (tenant_id, period_month)"
+            sql.contains("52428800"),
+            "free plan quota: 50 MiB = 52428800 bytes"
         );
         assert!(
-            sql.contains("tokens_used  BIGINT NOT NULL DEFAULT 0"),
-            "tenant_monthly_usage must have a tokens_used counter"
+            sql.contains("5368709120"),
+            "pro plan quota: 5 GiB = 5368709120 bytes"
         );
+        assert!(
+            sql.contains("53687091200"),
+            "team plan quota: 50 GiB = 53687091200 bytes"
+        );
+        assert!(sql.contains("10000"), "free plan: 10K token budget");
+        assert!(sql.contains("500000"), "pro plan: 500K token budget");
+        assert!(sql.contains("2000000"), "team plan: 2M token budget");
 
-        // 0025: tenant isolation mirrors usage_events — RLS + the kb_app DML grant.
+        // ── j) Generated column ────────────────────────────────────────────────
         assert!(
-            sql.contains("ALTER TABLE tenant_monthly_usage ENABLE ROW LEVEL SECURITY"),
-            "tenant_monthly_usage must enable RLS like usage_events"
-        );
-        assert!(
-            sql.contains("CREATE POLICY tenant_isolation ON tenant_monthly_usage"),
-            "tenant_monthly_usage must carry a tenant_isolation policy"
-        );
-        assert!(
-            sql.contains("GRANT SELECT, INSERT, UPDATE, DELETE ON tenant_monthly_usage TO kb_app"),
-            "kb_app must be granted DML on tenant_monthly_usage"
+            sql.contains("GENERATED ALWAYS AS (to_tsvector('simple', content)) STORED"),
+            "missing generated tsvector column"
         );
     }
 }

@@ -3,7 +3,7 @@
 //! DB-driven routing types: provider kinds, strategies, and resolved routing-table
 //! entries (plan §26.5).
 //!
-//! The `providers`/`models`/`routes` tables are defined in migration `0011_providers.sql`
+//! The `providers`/`models`/`routes` tables are defined in the schema
 //! (kb-store). This module holds the pure-data types that kb-store and kb-scheduler
 //! share: string enums for provider kind and routing strategy, and resolved row
 //! structs that [`PgStore::get_routing_table`](https://docs.rs/kb-store) builds from

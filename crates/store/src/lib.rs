@@ -16,7 +16,7 @@
 
 /// The embedding vector dimension the schema is built for — Qwen3-Embedding-4B = **2560**.
 ///
-/// MUST equal the `VECTOR(N)` of `chunks.embedding` / `tags.embedding` (migration 0023) and the
+/// MUST equal the `VECTOR(N)` of `chunks.embedding` / `tags.embedding` and the
 /// `expected_dim` the embedder verifies. Single source of truth so callers that build
 /// placeholder/zero embeddings (e.g. user-sourced tags) never drift from the schema and have
 /// their INSERT rejected for a dimension mismatch.

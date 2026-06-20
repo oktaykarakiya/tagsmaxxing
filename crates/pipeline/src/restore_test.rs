@@ -143,7 +143,7 @@ pub fn build_row_count_query() -> String {
 /// proves the restored data satisfies all constraints.
 #[must_use]
 pub fn build_check_constraint_query() -> String {
-    // Tables with CHECK constraints defined in the schema (0002_schema.sql +
+    // Tables with CHECK constraints defined in the schema (+
     // subsequent migrations). We count each table — if the query succeeds, the
     // data satisfies all CHECKs (Postgres enforced them at INSERT/UPDATE time).
     let tables_with_checks = [

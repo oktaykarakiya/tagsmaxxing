@@ -304,7 +304,7 @@ async fn execute_vector_query(
     let mut builder = build_base_select();
     push_filters(&mut builder, &query.filters, tag_ids);
     // pgvector caps `vector` ANN indexes at 2000 dims, so the chunks HNSW index is built on a
-    // `halfvec(2560)` cast (migration 0023). The ORDER BY must use the SAME cast on both sides
+    // `halfvec(2560)` cast. The ORDER BY must use the SAME cast on both sides
     // to hit that index instead of a sequential scan.
     builder.push(" ORDER BY c.embedding::halfvec(2560) <=> CAST(");
     builder.push_bind(crate::pg_store::format_vector(query_embedding));

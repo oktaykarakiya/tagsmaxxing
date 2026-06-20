@@ -205,7 +205,7 @@ def test_verify_token_marks_verified(api):
     # 2. A freshly-signed-up user must NOT be verified yet.
     assert not _is_email_verified(email), (
         f"freshly-signed-up user {email} must have email_verified=false; "
-        f"the DB default should be false, not true (migration 0021 bug)"
+        f"the DB default should be false, not true"
     )
 
     # 3. Retrieve the verification token from the DB.

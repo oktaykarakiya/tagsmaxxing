@@ -60,7 +60,7 @@ async fn migrations_apply_on_fresh_pgvector() -> TestResult {
     assert!(has_vector, "vector extension must be installed");
 
     // The embedder lock-in: chunks.embedding is exactly vector(2560) after the Qwen3-Embedding-4B
-    // migration (0023) widens it from the original 1024 (plan §5).
+    // (plan §5).
     let chunks_dim: String = sqlx::query_scalar(
         "SELECT format_type(a.atttypid, a.atttypmod) FROM pg_attribute a \
          WHERE a.attrelid = 'chunks'::regclass AND a.attname = 'embedding'",
@@ -105,7 +105,7 @@ async fn migrations_apply_on_fresh_pgvector() -> TestResult {
         .execute(&pool)
         .await?;
 
-    // Migration 0006: the kb_app application role exists and is the non-privileged role RLS
+    // The two-role model: the kb_app application role exists and is the non-privileged role RLS
     // requires — NOT a superuser and NOT BYPASSRLS (P6-T14, §13). This is the property the
     // whole isolation model rests on.
     let app_role = sqlx::query(
@@ -113,7 +113,7 @@ async fn migrations_apply_on_fresh_pgvector() -> TestResult {
     )
     .fetch_optional(&pool)
     .await?
-    .expect("migration 0006 must create the kb_app role");
+    .expect("schema must create the kb_app role");
     let is_super: bool = app_role.try_get("rolsuper")?;
     let bypass_rls: bool = app_role.try_get("rolbypassrls")?;
     let can_login: bool = app_role.try_get("rolcanlogin")?;

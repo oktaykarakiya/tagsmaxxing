@@ -18,7 +18,7 @@ each verified empirically below against a real pgvector container — combine so
 no-op today:
 
 1. **The connection role `kb` is a Postgres superuser with `BYPASSRLS`.** Superusers bypass
-   RLS unconditionally; `FORCE ROW LEVEL SECURITY` (migration `0003_rls.sql`) only reaches the
+   RLS unconditionally; `FORCE ROW LEVEL SECURITY` (the RLS setup) only reaches the
    table *owner*, not a superuser. Every `#[ignore]` suite connects as `kb`, so RLS is off and
    the isolation assertions (`tenant_b ... sees 0 rows`) would **fail**, not pass, if they
    reached the assertion.
@@ -44,7 +44,7 @@ or made *falsely* green** (e.g. by keeping the superuser connection or weakening
 assertions — that would ship a cross-tenant data-leak path behind a green checkpoint). Hence
 P6-T13 is set `blocked`.
 
-## Evidence (real pgvector `pg17` via Podman; migrations `0001`–`0005` applied)
+## Evidence (real pgvector `pg17` via Podman; schema applied)
 
 Role of the `kb` connection user (the one every suite uses):
 
@@ -162,7 +162,7 @@ lane that first ran these suites).
 The recommended two-role model was implemented and **verified on real pgvector via Podman**.
 RLS is now genuinely enforced for the application's own queries.
 
-**1. Two roles (migration `0006_app_role.sql`).** `kb_app` is created `LOGIN NOSUPERUSER
+**1. Two roles.** `kb_app` is created `LOGIN NOSUPERUSER
 NOBYPASSRLS`, owns nothing, and is granted only DML on the nine tenant-scoped tables (+ sequence
 usage + EXECUTE on `app_set_current_tenant`) — explicitly **not** on `tenants` / `sessions` /
 `settings`. The bootstrap superuser stays the privileged role for migrations, the job queue, and

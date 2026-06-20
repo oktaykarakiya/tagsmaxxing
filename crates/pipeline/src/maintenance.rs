@@ -532,9 +532,7 @@ impl MaintenanceHandler for ReembedCheckHandler {
                 .fetch_optional(&self.pool)
                 .await
                 .context("failed to read embedder settings")?
-                .with_context(
-                    || "embedder settings row not found — migration 0002_schema may be missing",
-                )?;
+                .with_context(|| "embedder settings row not found — the schema may be missing")?;
 
         let current_id = row
             .0

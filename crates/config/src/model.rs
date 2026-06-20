@@ -81,7 +81,7 @@ pub struct Storage {
     #[serde(default)]
     pub postgres_url: String,
     /// **Application** Postgres connection URL — the non-privileged `kb_app` role
-    /// (`NOSUPERUSER NOBYPASSRLS`, migration `0006_app_role.sql`) used for all tenant-scoped
+    /// (`NOSUPERUSER NOBYPASSRLS`) used for all tenant-scoped
     /// data so Row-Level Security is enforced (P6-T14, §13). May be supplied via the
     /// `APP_POSTGRES_URL` env var. When empty, the store falls back to [`postgres_url`]
     /// (single-role mode — RLS then relies on the explicit `tenant_id` filters only).

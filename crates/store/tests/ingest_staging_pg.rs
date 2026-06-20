@@ -210,7 +210,7 @@ async fn set_document_status_transitions() -> anyhow::Result<()> {
 
 /// Admission counts: per-tenant and global pending ingest jobs, counting only
 /// `queued|running|failed` ingest jobs (done/dead and other kinds excluded).
-/// Also proves the 0026 lease columns exist.
+/// Also proves the lease columns exist.
 #[tokio::test]
 #[ignore = "requires Podman + image pull; run with --ignored"]
 async fn count_pending_ingest_jobs_counts_only_open_ingest() -> anyhow::Result<()> {

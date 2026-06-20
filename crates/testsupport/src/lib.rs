@@ -14,7 +14,7 @@
 //! 2. **The two RLS roles (P6-T14).** Tenant isolation is enforced by Row-Level Security, which
 //!    is bypassed by superusers. So each [`TestDb`] exposes two URLs: an **admin** URL (the
 //!    container superuser — runs migrations, seeds data, the cross-tenant job queue) and an
-//!    **app** URL (the non-privileged `kb_app` role created by migration `0006_app_role.sql` —
+//!    **app** URL (the non-privileged `kb_app` role —
 //!    RLS-enforced, for tenant-scoped assertions). Suites seed via admin and assert via app.
 //!
 //! This crate is `publish = false` and used only as a dev-dependency.
@@ -27,7 +27,7 @@ use sqlx::postgres::PgPool;
 use sqlx::{Connection, PgConnection, Postgres, Transaction};
 use tokio::sync::OnceCell;
 
-/// The non-privileged application role created by migration `0006_app_role.sql`.
+/// The non-privileged application role (`kb_app`).
 pub const APP_ROLE: &str = "kb_app";
 /// The development password for [`APP_ROLE`] (matches the migration; operators rotate it).
 pub const APP_PASSWORD: &str = "kb_app";
@@ -41,7 +41,7 @@ pub const ADMIN_ROLE: &str = "kb";
 pub struct TestDb {
     /// Privileged superuser URL — migrations, seeding, the cross-tenant job queue, admin paths.
     pub admin_url: String,
-    /// Non-privileged `kb_app` URL — RLS-enforced tenant-scoped data (created by migration 0006).
+    /// Non-privileged `kb_app` URL — RLS-enforced tenant-scoped data.
     pub app_url: String,
     /// The generated database name (unique within the container).
     pub db_name: String,

@@ -103,7 +103,7 @@ The only crate that talks to the database. Ships:
 
 - **Schema migrations** (plan §5): forward-only SQL under `migrations/` — extensions,
   tables, indexes (HNSW + GIN), RLS policies, the two-role model (privileged `kb` +
-  non-superuser `kb_app` for tenant isolation, migration `0006`).
+  non-superuser `kb_app` for tenant isolation).
 - **`PgStore`**: implements the `Store` trait (`upsert_file`, `upsert_chunks`,
   `upsert_document`, `insert_usage_event`, `transactional_ingest`, `hybrid_search`,
   tag CRUD methods, user CRUD, admin queries).

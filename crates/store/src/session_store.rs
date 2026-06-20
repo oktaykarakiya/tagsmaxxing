@@ -7,7 +7,7 @@
 //! * **[`InMemorySessionStore`]** — `HashMap` + `tokio::RwLock`, zero-setup. Suitable for
 //!   development and tests, but **not** for production (sessions vanish on restart).
 //! * **[`PgSessionStore`]** — Postgres-backed via a `sessions` table (migration
-//!   `0004_sessions.sql`). Survives restarts and works across multiple app instances.
+//!   Survives restarts and works across multiple app instances.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -197,8 +197,8 @@ impl SessionStore for InMemorySessionStore {
 
 // ── PgSessionStore ─────────────────────────────────────────────────────────────
 
-/// A Postgres-backed session store using the `sessions` table (migration
-/// `0004_sessions.sql`, plan §13).
+/// A Postgres-backed session store using the `sessions` table
+/// (plan §13).
 ///
 /// Sessions survive restarts and are shared across all app instances connected to the
 /// same database. The pool is shared (typically the same `PgPool` used by
@@ -207,7 +207,7 @@ impl SessionStore for InMemorySessionStore {
 /// # Security note
 ///
 /// The `sessions` table is **not** covered by Row-Level Security (see migration
-/// `0004_sessions.sql` for the rationale). The opaque 256-bit random token is the sole
+/// the session table schema for the rationale). The opaque 256-bit random token is the sole
 /// authentication proof, so it must be transmitted only via an `HttpOnly` cookie.
 #[derive(Clone, Debug)]
 pub struct PgSessionStore {

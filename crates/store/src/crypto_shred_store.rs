@@ -61,7 +61,7 @@ impl PgStore {
     ///   - `users`
     ///
     /// Finally deletes the tenant row itself from `tenants`, which cascades to
-    /// `tenant_data_keys` (FK ON DELETE CASCADE, migration 0015).
+    /// `tenant_data_keys` (FK ON DELETE CASCADE).
     ///
     /// All operations happen within a single transaction on the **admin pool**
     /// (the tenant is being deleted — cross-tenant isolation does not apply).

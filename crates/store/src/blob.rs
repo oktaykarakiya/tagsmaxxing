@@ -151,14 +151,14 @@ impl LocalBlob {
             }
         }
 
-        // Flush before renaming.
+        // Flush + fsync before renaming so the temp file's bytes are durable.
         if write_result.is_ok()
-            && let Err(e) = file.flush().await
+            && let Err(e) = file.sync_all().await
         {
-            write_result = Err(e).with_context(|| format!("failed to flush blob at key `{key}`"));
+            write_result = Err(e).with_context(|| format!("failed to sync blob at key `{key}`"));
         }
 
-        // On success, rename atomically. On failure, remove the temp file.
+        // On success, rename atomically and sync the parent directory.
         match write_result {
             Ok(()) => {
                 tokio::fs::rename(&temp_path, &final_path)
@@ -166,6 +166,13 @@ impl LocalBlob {
                     .with_context(|| {
                         format!("failed to rename temp file to final path for key `{key}`")
                     })?;
+                // The rename is atomic, but the parent directory entry must be
+                // durable for the new file to survive a crash.
+                if let Some(parent) = final_path.parent()
+                    && let Ok(parent_dir) = tokio::fs::File::open(parent).await
+                {
+                    let _ = parent_dir.sync_all().await;
+                }
                 Ok(())
             }
             Err(e) => {
@@ -214,9 +221,24 @@ impl kb_core::blob::Blob for LocalBlob {
             })?;
         }
 
-        tokio::fs::write(&path, &to_store)
+        let mut f = tokio::fs::File::create(&path)
+            .await
+            .with_context(|| format!("failed to create blob file at key `{key}`"))?;
+        f.write_all(&to_store)
             .await
             .with_context(|| format!("failed to write blob at key `{key}`"))?;
+        f.sync_all()
+            .await
+            .with_context(|| format!("failed to sync blob at key `{key}`"))?;
+        // A newly created file needs its parent directory synced on many
+        // filesystems (ext4, XFS) for the directory entry to survive a
+        // crash. Best-effort — some filesystems don't support fd sync on
+        // directories, and we already synced the file itself.
+        if let Some(parent) = path.parent()
+            && let Ok(parent_dir) = tokio::fs::File::open(parent).await
+        {
+            let _ = parent_dir.sync_all().await;
+        }
 
         Ok(())
     }

@@ -8,7 +8,7 @@
 # roll-ups. The only durable state. May also be supplied via the POSTGRES_URL env var.
 postgres_url = "postgres://kb:kb@localhost/kb"
 # Application URL: the non-privileged `kb_app` role (NOSUPERUSER NOBYPASSRLS, auto-created by
-# migration 0006) used for all tenant-scoped data so Postgres RLS is enforced (§13). Rotate the
+# the two-role model) used for all tenant-scoped data so Postgres RLS is enforced (§13). Rotate the
 # default `kb_app` password (ALTER ROLE kb_app PASSWORD '…') for any real deployment and update
 # this URL — it is read at connect time, so rotation needs no restart. Leave empty to run
 # single-role (RLS then relies on the explicit tenant_id filters only). Env: APP_POSTGRES_URL.
