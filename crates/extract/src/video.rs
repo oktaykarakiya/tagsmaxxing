@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Video extractor: ffmpeg scene-change keyframe extraction (capped at ~40 frames,
-//! `select='gt(scene,0.3)'`), audio track extraction + whisper transcription, and
-//! ffprobe metadata harvest (duration/resolution/codec/fps).
+//! Video extractor: ffmpeg keyframe extraction sampled across the whole timeline
+//! (capped at ~40 frames; see [`plan_keyframe_sampling`]), audio track extraction
+//! plus whisper transcription, and an ffprobe metadata harvest of
+//! duration/resolution/codec/fps.
 //!
 //! Produces [`Extracted`] with the transcript as `text`, ffprobe metadata as `meta`,
 //! and keyframe [`PageImage`]s for later VLM captioning. Transcript segments carry
@@ -122,6 +123,84 @@ fn parse_r_frame_rate(rate: &str) -> Option<f64> {
     Some(numerator / denominator)
 }
 
+// ── Keyframe sampling plan ─────────────────────────────────────────────────────
+
+/// Default scene-change threshold for the legacy fallback select filter.
+const SCENE_THRESHOLD: &str = "0.3";
+
+/// How to sample keyframes from a video for VLM analysis: the ffmpeg `-vf`
+/// filter to apply plus a hard output cap (`-frames:v`).
+///
+/// Built by [`plan_keyframe_sampling`], which spreads the budget across the
+/// **whole** timeline. This replaces the old `select='gt(scene,0.3)' -vframes N`,
+/// which walked the video front-to-back and stopped at the first `N` scene
+/// changes — so anything past the `N`-th cut was never sampled (a long or
+/// fast-cut video lost its entire tail), and a static video could yield far
+/// fewer than `N` frames (or none).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct KeyframeSampling {
+    /// The ffmpeg `-vf` filter expression (e.g. `thumbnail=n=37`).
+    vf: String,
+    /// Hard cap on emitted frames (ffmpeg `-frames:v`). A safety bound; the
+    /// filter is planned so the natural output already sits at or below it.
+    max_frames: usize,
+}
+
+/// Plan whole-timeline keyframe sampling for a video, given what ffprobe knows.
+///
+/// Strategy, by available metadata (most informative first):
+/// 1. **duration + fps known** → `thumbnail=n=B` with `B = ceil(total_frames / cap)`.
+///    ffmpeg's `thumbnail` filter emits the single most *representative* frame of
+///    each consecutive batch of `B` frames, so this yields one distinct frame per
+///    equal-size time window across the entire video — uniform coverage *and* a
+///    smart per-window pick. `ceil` keeps the batch count ≤ `cap`, so the
+///    `-frames:v cap` safety bound never truncates the tail.
+/// 2. **duration only** → `fps=cap/duration`: uniform time sampling that needs no
+///    frame rate (one frame every `duration/cap` seconds).
+/// 3. **neither** → legacy `select='gt(scene,SCENE_THRESHOLD)'`: scene-change
+///    detection (front-loaded, but the best we can do with no timeline info).
+///
+/// `cap == 0` yields an empty plan (no frames). A non-positive duration or fps is
+/// treated as unknown and falls through to the next tier.
+fn plan_keyframe_sampling(
+    duration_secs: Option<f64>,
+    fps: Option<f64>,
+    cap: usize,
+) -> KeyframeSampling {
+    let scene_fallback = || KeyframeSampling {
+        vf: format!("select='gt(scene,{SCENE_THRESHOLD})'"),
+        max_frames: cap,
+    };
+    if cap == 0 {
+        return KeyframeSampling {
+            vf: scene_fallback().vf,
+            max_frames: 0,
+        };
+    }
+    let dur = duration_secs.filter(|d| d.is_finite() && *d > 0.0);
+    let rate = fps.filter(|f| f.is_finite() && *f > 0.0);
+
+    match (dur, rate) {
+        (Some(d), Some(f)) => {
+            // total_frames / cap, rounded UP so batch count = ceil(total/B) ≤ cap.
+            let total_frames = (d * f).ceil().max(1.0);
+            let batch = (total_frames / cap as f64).ceil().max(1.0) as u64;
+            KeyframeSampling {
+                vf: format!("thumbnail=n={batch}"),
+                max_frames: cap,
+            }
+        }
+        (Some(d), None) => {
+            // One frame every d/cap seconds → ~cap frames spanning the whole video.
+            KeyframeSampling {
+                vf: format!("fps={cap}/{d}"),
+                max_frames: cap,
+            }
+        }
+        _ => scene_fallback(),
+    }
+}
+
 // ── MediaTool trait ──────────────────────────────────────────────────────────
 
 /// Internal abstraction over ffmpeg/ffprobe subprocess calls.
@@ -140,13 +219,15 @@ trait MediaTool: Send + Sync {
     /// Extract the audio track from `input` video bytes as 16 kHz mono WAV.
     async fn extract_audio(&self, input: &[u8], timeout: Duration) -> anyhow::Result<Vec<u8>>;
 
-    /// Extract scene-change keyframes from `input` video bytes.
+    /// Extract keyframes from `input` video bytes per the given `sampling` plan.
     ///
-    /// At most `cap` frames are returned, each a JPEG image.
+    /// `sampling` carries the ffmpeg `-vf` filter (planned by
+    /// [`plan_keyframe_sampling`] to span the whole timeline) and the hard
+    /// `-frames:v` cap. Returns one JPEG image per emitted frame.
     async fn extract_keyframes(
         &self,
         input: &[u8],
-        cap: usize,
+        sampling: &KeyframeSampling,
         timeout: Duration,
     ) -> anyhow::Result<Vec<Vec<u8>>>;
 }
@@ -256,7 +337,7 @@ impl MediaTool for RealMediaTool {
     async fn extract_keyframes(
         &self,
         input: &[u8],
-        cap: usize,
+        sampling: &KeyframeSampling,
         timeout: Duration,
     ) -> anyhow::Result<Vec<Vec<u8>>> {
         let tmp = Self::temp_file(input)?;
@@ -264,13 +345,16 @@ impl MediaTool for RealMediaTool {
             .map_err(|e| anyhow::anyhow!("VideoExtractor: failed to create temp dir: {e}"))?;
         let pattern = dir.path().join("frame_%04d.jpg");
 
+        // `sampling.vf` (planned by plan_keyframe_sampling) spreads the frame
+        // budget across the whole timeline; `-vsync vfr` keeps only the frames the
+        // filter emits; `-frames:v max_frames` is the hard safety cap.
         let output = tokio::time::timeout(
             timeout,
             tokio::process::Command::new("ffmpeg")
                 .args(["-i"])
                 .arg(tmp.path())
-                .args(["-vf", "select='gt(scene,0.3)'", "-vsync", "vfr", "-vframes"])
-                .arg(cap.to_string())
+                .args(["-vf", &sampling.vf, "-vsync", "vfr", "-frames:v"])
+                .arg(sampling.max_frames.to_string())
                 .args(["-f", "image2"])
                 .arg(&pattern)
                 .stdin(std::process::Stdio::null())
@@ -360,9 +444,9 @@ struct WhisperSegment {
 /// 3. **Audio track** — extracts the audio track (16 kHz mono WAV) via ffmpeg
 ///    and transcribes it with whisper-server. Segments are recorded with
 ///    `ts_offset` for deep-link retrieval.
-/// 4. **Keyframe extraction** — extracts scene-change keyframes (capped at
-///    `max_keyframes`, default 40) as JPEG [`PageImage`]s for later VLM
-///    captioning.
+/// 4. **Keyframe extraction** — samples keyframes across the whole timeline
+///    (capped at `max_keyframes`, default 40; see [`plan_keyframe_sampling`]) as
+///    JPEG [`PageImage`]s for later VLM captioning.
 ///
 /// The whisper base URL is hot-swappable via [`WhisperConfig`]
 /// (CLAUDE.md hot-swappable rule).
@@ -528,10 +612,17 @@ impl VideoExtractor {
             .transcribe_audio(&audio_wav, file.path.as_deref())
             .await?;
 
-        // 4. Keyframe extraction
+        // 4. Keyframe extraction. Plan the sampling from the ffprobe duration +
+        //    fps so frames span the WHOLE timeline (not just the first
+        //    `max_keyframes` scene changes — see plan_keyframe_sampling).
+        let sampling = plan_keyframe_sampling(
+            meta.get("duration_secs").and_then(Value::as_f64),
+            meta.get("fps").and_then(Value::as_f64),
+            self.max_keyframes,
+        );
         let frame_data = self
             .media_tool
-            .extract_keyframes(&file.bytes, self.max_keyframes, self.ffmpeg_timeout)
+            .extract_keyframes(&file.bytes, &sampling, self.ffmpeg_timeout)
             .await?;
         let page_images: Vec<PageImage> = frame_data
             .into_iter()
@@ -872,7 +963,7 @@ mod tests {
         async fn extract_keyframes(
             &self,
             _input: &[u8],
-            _cap: usize,
+            _sampling: &KeyframeSampling,
             _timeout: Duration,
         ) -> anyhow::Result<Vec<Vec<u8>>> {
             if self.keyframes_should_fail {
@@ -1039,6 +1130,75 @@ mod tests {
     #[test]
     fn frame_rate_rejects_zero_denominator() {
         assert!(parse_r_frame_rate("30/0").is_none());
+    }
+
+    // ── plan_keyframe_sampling (whole-timeline coverage) ────────────────────
+
+    /// duration + fps known → thumbnail with one batch per output frame, and the
+    /// batch count is bounded by `cap` so coverage spans the whole video.
+    #[test]
+    fn sampling_uses_thumbnail_with_full_coverage() {
+        // 120 s @ 30 fps = 3600 frames, cap 40 → batch = ceil(3600/40) = 90.
+        let s = plan_keyframe_sampling(Some(120.0), Some(30.0), 40);
+        assert_eq!(s.vf, "thumbnail=n=90");
+        assert_eq!(s.max_frames, 40);
+        // ceil keeps the batch count ≤ cap so `-frames:v cap` never truncates the
+        // tail: ceil(3600 / 90) = 40 ≤ 40.
+        let batches = (3600f64 / 90.0).ceil() as usize;
+        assert!(batches <= 40, "batch count {batches} must not exceed cap");
+    }
+
+    /// Non-divisible totals round the batch UP (never down), so the number of
+    /// emitted frames stays ≤ cap rather than overflowing and front-loading.
+    #[test]
+    fn sampling_rounds_batch_up_to_stay_within_cap() {
+        // 100 s @ 25 fps = 2500 frames, cap 40 → batch = ceil(2500/40)=63 → 40 batches.
+        let s = plan_keyframe_sampling(Some(100.0), Some(25.0), 40);
+        assert_eq!(s.vf, "thumbnail=n=63");
+        assert!((2500f64 / 63.0).ceil() as usize <= 40);
+    }
+
+    /// A video shorter than the cap (fewer frames than `cap`) samples every frame
+    /// (batch = 1) rather than erroring or padding.
+    #[test]
+    fn sampling_short_video_takes_every_frame() {
+        // 1 s @ 10 fps = 10 frames < cap 40 → batch = ceil(10/40)=1.
+        let s = plan_keyframe_sampling(Some(1.0), Some(10.0), 40);
+        assert_eq!(s.vf, "thumbnail=n=1");
+    }
+
+    /// duration known but fps missing → uniform fps sampling across the duration.
+    #[test]
+    fn sampling_duration_only_uses_fps_filter() {
+        let s = plan_keyframe_sampling(Some(80.0), None, 40);
+        assert_eq!(s.vf, "fps=40/80");
+        assert_eq!(s.max_frames, 40);
+    }
+
+    /// No timeline metadata → legacy scene-change fallback (unchanged behaviour).
+    #[test]
+    fn sampling_unknown_metadata_falls_back_to_scene_select() {
+        let s = plan_keyframe_sampling(None, None, 40);
+        assert_eq!(s.vf, "select='gt(scene,0.3)'");
+        assert_eq!(s.max_frames, 40);
+        // Non-positive / non-finite values are treated as unknown.
+        assert_eq!(
+            plan_keyframe_sampling(Some(0.0), Some(30.0), 40).vf,
+            "select='gt(scene,0.3)'"
+        );
+        assert_eq!(
+            plan_keyframe_sampling(Some(f64::NAN), Some(30.0), 40).vf,
+            "select='gt(scene,0.3)'"
+        );
+    }
+
+    /// cap == 0 → no frames emitted.
+    #[test]
+    fn sampling_zero_cap_yields_no_frames() {
+        assert_eq!(
+            plan_keyframe_sampling(Some(120.0), Some(30.0), 0).max_frames,
+            0
+        );
     }
 
     // ── VideoExtractor: happy path ──────────────────────────────────────────
