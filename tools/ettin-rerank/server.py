@@ -81,4 +81,7 @@ def rerank(req: RerankRequest) -> dict[str, list[dict[str, float | int]]]:
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8083"))
-    uvicorn.run(app, host="127.0.0.1", port=port, log_level="info")
+    # Bind all interfaces by default so the reranker is reachable on the LAN
+    # (override with HOST=127.0.0.1 to keep it host-local).
+    host = os.environ.get("HOST", "0.0.0.0")  # noqa: S104 — intentional LAN bind
+    uvicorn.run(app, host=host, port=port, log_level="info")

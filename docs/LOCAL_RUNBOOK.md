@@ -21,10 +21,17 @@ re-expose them on `0.0.0.0:9080-9082` and the app config
 
 | Role | Model | Port | How it runs |
 |---|---|---|---|
-| text / vision / code | **Qwen3.6-35B-A3B-VL** (`Qwen3.6-35B-A3B-APEX-I-Compact.gguf` + `mmproj-Qwen3.6-35B-A3B.gguf`) | 8080 | **llama.cpp b9592** (`~/.local/lib/llama-b9592/`), `--reasoning-budget 0 --chat-template-kwargs '{"enable_thinking":false}'` |
-| embeddings | **Qwen3-Embedding-4B** (`Qwen3-Embedding-4B-Q4_K_M.gguf`, 2560-dim) | 8081 | `llama-server`, `--embedding --pooling last` |
-| reranker | **ettin-reranker-400m-v1** | 8082 | torch + sentence-transformers sidecar (`tools/ettin-rerank/`) — **not** llama.cpp |
-| transcription (audio/video) | **Whisper large-v3-turbo** (`ggml-large-v3-turbo.bin`) | 8083 | whisper.cpp (CPU); **optional** — only for media ingestion |
+| text / vision / code | **Qwen3.6-35B-A3B-VL** (`Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q6_K_P.gguf` + `mmproj-Qwen3.6-35B-A3B.gguf`) | 8080 | **llama.cpp b9592** (`~/.local/lib/llama-b9592/`), GPU/Vulkan `-ngl 99`, `-c 262144 --parallel 4` (4×64k slots), `--reasoning-budget 0 --chat-template-kwargs '{"enable_thinking":false}'` |
+| embeddings | **Qwen3-Embedding-4B** (`Qwen3-Embedding-4B-Q4_K_M.gguf`, 2560-dim) | 8081 | `llama-server`, GPU/Vulkan `-ngl 99`, `--embedding --pooling last` |
+| reranker | **ettin-reranker-400m-v1** | 8082 | torch + sentence-transformers sidecar (`tools/ettin-rerank/`) — **not** llama.cpp; **CPU-only** (the lone non-GPU component: cpu-only torch + py3.14, gfx1103 has no usable ROCm) |
+| transcription (audio/video) | **Whisper large-v3-turbo** (`ggml-large-v3-turbo.bin`) | 8083 | whisper.cpp **GPU/Vulkan** (`-DGGML_VULKAN=ON`); **optional** — only for media ingestion |
+
+> **Network binding:** the host model servers (and the reranker sidecar) bind
+> **`0.0.0.0`** — reachable from the LAN (e.g. the llama web UI at
+> `http://<host-ip>:8080`, or pointing other apps/devices at the endpoints).
+> They are **unauthenticated**, so only do this on a trusted network; set
+> `HOST=127.0.0.1` (reranker) / edit `--host` in the script to revert to
+> host-local. The socat relays (container → host) are unchanged.
 
 ## What a reboot wipes (and what survives)
 
@@ -41,7 +48,7 @@ cd ~/Documents/projects/files_organizer
 
 # socat (for the relays) + the model files must be present
 command -v socat >/dev/null || sudo dnf install -y socat
-ls models/Qwen3.6-35B-A3B-APEX-I-Compact.gguf models/Qwen3-Embedding-4B-Q4_K_M.gguf \
+ls models/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q6_K_P.gguf models/Qwen3-Embedding-4B-Q4_K_M.gguf \
    models/mmproj-Qwen3.6-35B-A3B.gguf models/ggml-large-v3-turbo.bin
 
 # ettin reranker venv (only if missing)
@@ -54,7 +61,7 @@ ls models/Qwen3.6-35B-A3B-APEX-I-Compact.gguf models/Qwen3-Embedding-4B-Q4_K_M.g
 # whisper.cpp lives in /tmp → rebuild after a reboot (skip if you won't ingest audio/video)
 [ -x /tmp/whisper.cpp/build/bin/whisper-server ] || {
   git clone https://github.com/ggml-org/whisper.cpp /tmp/whisper.cpp
-  cmake -S /tmp/whisper.cpp -B /tmp/whisper.cpp/build -DGGML_NATIVE=ON -DWHISPER_BUILD_TESTS=OFF
+  cmake -S /tmp/whisper.cpp -B /tmp/whisper.cpp/build -DGGML_NATIVE=ON -DGGML_VULKAN=ON -DWHISPER_BUILD_TESTS=OFF
   cmake --build /tmp/whisper.cpp/build -j"$(nproc)" --target whisper-server
 }
 ```
@@ -73,7 +80,9 @@ bash scripts/start-models.sh start          # all four servers + relays + fan
 What it runs (for reference — the script is the source of truth):
 
 - **text/vision/code** (`:8080`) — Qwen3.6-35B-A3B-VL on **llama.cpp b9592**
-  (`~/.local/lib/llama-b9592/llama-server`, `LLAMA_BIN_TEXT`). The old
+  (`~/.local/lib/llama-b9592/llama-server`, `LLAMA_BIN_TEXT`), GPU/Vulkan
+  (`-ngl 99`) with `-c 262144 --parallel 4` (4 concurrent 64k slots, for
+  multi-app + web-UI use). The old
   2026-03 build segfaults on this model: its BPE pretokenizer falls back to a
   std::regex whose recursion overflows the stack on long uniform/symbol runs
   (that was "F5"). Flags: `--reasoning-budget 0` **and**
