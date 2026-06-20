@@ -29,6 +29,7 @@ use anyhow::Context;
 use clap::Parser;
 use kb_config::AppConfig;
 use kb_core::kind::DocKind;
+use kb_extract::archive::ArchiveExtractor;
 use kb_extract::audio::{AudioExtractor, WhisperConfig};
 use kb_extract::code::CodeExtractor;
 use kb_extract::document::DocumentExtractor;
@@ -141,28 +142,26 @@ async fn run() -> anyhow::Result<()> {
     };
 
     // ── Build extractor router ─────────────────────────────────────────────
-    // Document: native text for plain-text MIME, Tika for PDF/rich docs.
-    // Archive: Tika (incl. OOXML detected as zip, BUG-INGEST-05). Image: EXIF.
-    // TIKA_URL is hot-swappable via TikaConfig.
+    // Document: native text for plain-text MIME, Tika for PDF/rich docs. Image:
+    // EXIF + VLM caption. TIKA_URL is hot-swappable via TikaConfig.
     let tika_url =
         std::env::var("TIKA_URL").unwrap_or_else(|_| "http://localhost:9998".to_string());
-    // One TikaConfig shared (cloned) into both Tika-backed extractors so a
-    // runtime TikaConfig::set_url() reaches both — clones share the inner ArcSwap.
     let tika_config = TikaConfig::new(tika_url);
     let mut extractors: ExtractorRouter = std::collections::HashMap::new();
     extractors.insert(
         DocKind::Document,
         Arc::new(DocumentExtractor::new(TikaExtractor::new(
             http.clone(),
-            tika_config.clone(),
+            tika_config,
         ))),
     );
     extractors.insert(DocKind::Code, Arc::new(CodeExtractor));
     extractors.insert(DocKind::Image, Arc::new(ImageExtractor));
-    extractors.insert(
-        DocKind::Archive,
-        Arc::new(TikaExtractor::new(http.clone(), tika_config)),
-    );
+    // Archive: extract entry text in-process (zip/tar/tar.gz) so archive *contents*
+    // are searchable, with bomb/traversal guards (F2). Tika returned only a
+    // manifest. OOXML/JAR are reclassified away from zip, so only plain archives
+    // reach here.
+    extractors.insert(DocKind::Archive, Arc::new(ArchiveExtractor));
     // Audio/video: ffmpeg transcode + whisper-server transcription (BUG-INGEST
     // audio/video). WHISPER_URL is hot-swappable via WhisperConfig.
     let whisper_url =

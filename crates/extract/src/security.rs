@@ -97,6 +97,20 @@ pub const MAX_ARCHIVE_LISTING_BYTES: usize = 1_000_000;
 /// further archives are only recurred into up to this depth.
 pub const MAX_ARCHIVE_RECURSION_DEPTH: usize = 3;
 
+/// Maximum bytes read from a single archive entry when extracting its text
+/// content. Bounds memory for one pathologically large entry.
+pub const MAX_ARCHIVE_ENTRY_BYTES: usize = 4 * 1024 * 1024;
+
+/// Maximum total uncompressed bytes harvested across all entries of one archive.
+/// Defends against archive bombs (a tiny archive that expands enormously) by
+/// capping the total content the [`crate::archive`] extractor will read.
+pub const MAX_ARCHIVE_TOTAL_UNCOMPRESSED_BYTES: usize = 64 * 1024 * 1024;
+
+/// Maximum per-entry uncompressed/compressed size ratio before an entry is
+/// treated as a zip bomb and skipped. Classic zip-bomb entries expand by
+/// thousands of times; legitimate text compresses well under this bound.
+pub const MAX_ARCHIVE_COMPRESSION_RATIO: u64 = 200;
+
 // ── MIME allow-list ────────────────────────────────────────────────────────────
 
 /// MIME types accepted for ingestion.

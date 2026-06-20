@@ -5,6 +5,7 @@
 //!
 //! See plan §2 (per-filetype routing), §7 (pipeline), and §7.1 (video).
 
+pub mod archive;
 pub mod audio;
 pub mod binary;
 pub mod code;

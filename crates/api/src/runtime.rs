@@ -19,6 +19,7 @@ use kb_config::AppConfig;
 use kb_core::blob::Blob;
 use kb_core::kind::DocKind;
 use kb_core::session::SessionStore;
+use kb_extract::archive::ArchiveExtractor;
 use kb_extract::audio::{AudioExtractor, WhisperConfig};
 use kb_extract::code::CodeExtractor;
 use kb_extract::document::DocumentExtractor;
@@ -246,7 +247,7 @@ pub async fn build_runtime(
     // ── Extractor router ────────────────────────────────────────────────────
     // Tika (TIKA_URL, hot-swappable via TikaConfig) reads rich documents; the
     // Document extractor uses native text extraction for plain text and falls
-    // back to Tika for binary documents; Archive goes straight to Tika.
+    // back to Tika for binary documents; Archive reads entry text in-process.
     let tika_url =
         std::env::var("TIKA_URL").unwrap_or_else(|_| "http://localhost:9998".to_string());
     let tika_config = TikaConfig::new(tika_url);
@@ -255,15 +256,15 @@ pub async fn build_runtime(
         DocKind::Document,
         Arc::new(DocumentExtractor::new(TikaExtractor::new(
             http.clone(),
-            tika_config.clone(),
+            tika_config,
         ))),
     );
     extractors.insert(DocKind::Code, Arc::new(CodeExtractor));
     extractors.insert(DocKind::Image, Arc::new(ImageExtractor));
-    extractors.insert(
-        DocKind::Archive,
-        Arc::new(TikaExtractor::new(http.clone(), tika_config)),
-    );
+    // Archive: extract entry text in-process (zip/tar/tar.gz) so archive contents
+    // are searchable, with bomb/traversal guards (F2). Only plain archives reach
+    // here (OOXML/JAR are reclassified away from zip).
+    extractors.insert(DocKind::Archive, Arc::new(ArchiveExtractor));
     // Audio/video: ffmpeg transcode + whisper transcription (WHISPER_URL is
     // hot-swappable via the WhisperConfig ArcSwap).
     let whisper_url =
