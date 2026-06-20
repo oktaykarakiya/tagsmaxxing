@@ -46,6 +46,17 @@ const VLM_PROMPT: &str = "Describe this image concisely in 1-2 sentences, \
 /// resizes to ~980×980 internally.
 const MAX_IMAGE_DIM: u32 = 1024;
 
+/// JPEG quality (1–100) used when re-encoding a downscaled image for the VLM.
+///
+/// The downscale to [`MAX_IMAGE_DIM`] is the only resolution reduction the VLM
+/// needs (it resizes to ~980 px internally), but re-encoding at the `image`
+/// crate's default quality (75) adds visible artifacts that blur small text and
+/// fine detail — exactly what the VLM must read on scanned invoices, signs, and
+/// screenshots. 92 is visually lossless to the model while keeping payloads
+/// small (a 1024 px frame stays ~150–250 KB vs the multi-MB original), so caption
+/// and image-search quality improve at no UX cost.
+const VLM_JPEG_QUALITY: u8 = 92;
+
 /// MIME types that the VLM backend is known to support. Images with
 /// unsupported MIME types (e.g. `image/webp`) are silently skipped to
 /// prevent backend crashes (`vk::DeviceLostError` on AMD Vulkan).
@@ -242,13 +253,21 @@ fn resize_for_vlm(bytes: &[u8], mime: &str) -> Option<Vec<u8>> {
 
     let resized = img.resize_exact(new_w, new_h, image::imageops::FilterType::Lanczos3);
 
-    let mut buf = std::io::Cursor::new(Vec::new());
-    // Always encode as JPEG for predictable, compact output. The VLM
-    // decodes this natively and the quality difference vs PNG for a
-    // captioning prompt is negligible.
-    resized.write_to(&mut buf, image::ImageFormat::Jpeg).ok()?;
-
-    let out = buf.into_inner();
+    // Always encode as JPEG for predictable, compact output the VLM decodes
+    // natively. Encode at VLM_JPEG_QUALITY (not the image crate's default 75) so
+    // the downscale is the only quality reduction — preserving small-text
+    // legibility for captioning/OCR. JPEG has no alpha channel, so flatten to
+    // RGB8 once before encoding.
+    let rgb = resized.to_rgb8();
+    let mut out = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, VLM_JPEG_QUALITY)
+        .encode(
+            rgb.as_raw(),
+            rgb.width(),
+            rgb.height(),
+            image::ExtendedColorType::Rgb8,
+        )
+        .ok()?;
     tracing::debug!(
         original_bytes = bytes.len(),
         resized_bytes = out.len(),
@@ -424,6 +443,66 @@ mod tests {
         assert!(h <= MAX_IMAGE_DIM, "height {h} exceeds max {MAX_IMAGE_DIM}");
         // Output should be smaller than input.
         assert!(out.len() < jpeg_bytes.len(), "resized should be smaller");
+    }
+
+    /// The downscaled image is re-encoded at VLM_JPEG_QUALITY (92), not the
+    /// image crate's default (75): for detailed content the q92 output carries
+    /// more bytes (= more preserved detail) than a q75 re-encode of the same
+    /// pixels, while staying far smaller than the source. Uses a deterministic
+    /// high-frequency pattern, since flat colour compresses to nothing at any
+    /// quality and would not distinguish the two.
+    #[test]
+    fn resize_encodes_at_high_quality() {
+        use image::codecs::jpeg::JpegEncoder;
+        use image::{ExtendedColorType, RgbImage};
+
+        // 1600×1600 detailed image (exceeds MAX_IMAGE_DIM so it is re-encoded).
+        let mut img = RgbImage::new(1600, 1600);
+        for (x, y, px) in img.enumerate_pixels_mut() {
+            let v = ((x * 7) ^ (y * 13)) as u8;
+            *px = image::Rgb([v, v.wrapping_mul(3), v.wrapping_add(90)]);
+        }
+        let mut src = Vec::new();
+        JpegEncoder::new_with_quality(&mut src, 100)
+            .encode(
+                img.as_raw(),
+                img.width(),
+                img.height(),
+                ExtendedColorType::Rgb8,
+            )
+            .unwrap();
+
+        let out = resize_for_vlm(&src, "image/jpeg").expect("large image is re-encoded");
+
+        // Decodes as a valid JPEG within the dimension cap.
+        let decoded = image::load_from_memory(&out).unwrap();
+        let (w, h) = decoded.dimensions();
+        assert!(
+            w.max(h) <= MAX_IMAGE_DIM,
+            "longest edge {} exceeds {MAX_IMAGE_DIM}",
+            w.max(h)
+        );
+
+        // Re-encode the SAME downscaled pixels at the old default (75) and assert
+        // q92 preserves strictly more bytes — i.e. higher fidelity.
+        let rgb = decoded.to_rgb8();
+        let mut q75 = Vec::new();
+        JpegEncoder::new_with_quality(&mut q75, 75)
+            .encode(
+                rgb.as_raw(),
+                rgb.width(),
+                rgb.height(),
+                ExtendedColorType::Rgb8,
+            )
+            .unwrap();
+        assert!(
+            out.len() > q75.len(),
+            "q92 output ({} B) should retain more detail than q75 ({} B)",
+            out.len(),
+            q75.len(),
+        );
+        // Still far smaller than the full-size source.
+        assert!(out.len() < src.len(), "resized must be smaller than source");
     }
 
     // ── Error handling ─────────────────────────────────────────────────────
