@@ -21,7 +21,7 @@ re-expose them on `0.0.0.0:9080-9082` and the app config
 
 | Role | Model | Port | How it runs |
 |---|---|---|---|
-| text / vision / code | **Qwen3.6-35B-A3B-VL** (`Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q6_K_P.gguf` + `mmproj-Qwen3.6-35B-A3B.gguf`) | 8080 | **llama.cpp b9592** (`~/.local/lib/llama-b9592/`), GPU/Vulkan `-ngl 99`, `-c 262144 --parallel 4` (4×64k slots), `--reasoning-budget 0 --chat-template-kwargs '{"enable_thinking":false}'` |
+| text / vision / code | **Qwen3.6-35B-A3B-VL** (`Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q6_K_P.gguf` + `mmproj-Qwen3.6-35B-A3B.gguf`) | 8080 | **llama.cpp b9592** (`~/.local/lib/llama-b9592/`), GPU/Vulkan `-ngl 99`, `-c 262144 --parallel 2` (2×128k slots), `--reasoning-budget 0 --chat-template-kwargs '{"enable_thinking":false}'` |
 | embeddings | **Qwen3-Embedding-4B** (`Qwen3-Embedding-4B-Q4_K_M.gguf`, 2560-dim) | 8081 | `llama-server`, GPU/Vulkan `-ngl 99`, `--embedding --pooling last` |
 | reranker | **ettin-reranker-400m-v1** | 8082 | torch + sentence-transformers sidecar (`tools/ettin-rerank/`) — **not** llama.cpp; **CPU-only** (the lone non-GPU component: cpu-only torch + py3.14, gfx1103 has no usable ROCm) |
 | transcription (audio/video) | **Whisper large-v3-turbo** (`ggml-large-v3-turbo.bin`) | 8083 | whisper.cpp **GPU/Vulkan** (`-DGGML_VULKAN=ON`); **optional** — only for media ingestion |
@@ -81,7 +81,7 @@ What it runs (for reference — the script is the source of truth):
 
 - **text/vision/code** (`:8080`) — Qwen3.6-35B-A3B-VL on **llama.cpp b9592**
   (`~/.local/lib/llama-b9592/llama-server`, `LLAMA_BIN_TEXT`), GPU/Vulkan
-  (`-ngl 99`) with `-c 262144 --parallel 4` (4 concurrent 64k slots, for
+  (`-ngl 99`) with `-c 262144 --parallel 2` (2 concurrent 128k slots, for
   multi-app + web-UI use). The old
   2026-03 build segfaults on this model: its BPE pretokenizer falls back to a
   std::regex whose recursion overflows the stack on long uniform/symbol runs

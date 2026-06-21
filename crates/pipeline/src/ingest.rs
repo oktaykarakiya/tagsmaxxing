@@ -761,27 +761,27 @@ pub async fn process_retag_job(
 /// tagger prompt from multi-megabyte payloads.
 pub const MAX_USER_NOTE_BYTES: usize = 10 * 1024;
 
-/// Maximum document text fed into the single per-document tagging call (18 KB).
+/// Maximum document text fed into the single per-document tagging call (480 KB).
 ///
 /// The tagger prompt must fit the serving model's context window alongside the
-/// system prompt, user note, metadata and the JSON output budget. Unbounded
-/// extracted text (a ~200 KB document is ~27 k tokens) overflows an 8 k-token
-/// context: strict servers reject the request outright, and older llama.cpp
-/// builds silently truncated it instead — either way the surplus text never
-/// usefully reached the model (BUG-INGEST-18). A byte cap alone is NOT enough:
-/// see [`MAX_TAGGER_TEXT_TOKENS`] for the token-inflation half of the bound.
-pub const MAX_TAGGER_TEXT_BYTES: usize = 18 * 1024;
+/// system prompt, user note, metadata and the JSON output budget. Raised from
+/// the old 18 KB / 8k-context bound to match 128k-context backends (480 KB of
+/// prose ≈ 122 880 tokens at ~4 chars/token). The conservative token estimator
+/// in [`truncate_to_token_budget`] and the per-model retry halving loop in
+/// [`tag_with_context_retry`] together prevent actual context overflow.
+/// See [`MAX_TAGGER_TEXT_TOKENS`] for the token-inflation half of the bound.
+pub const MAX_TAGGER_TEXT_BYTES: usize = 480 * 1024;
 
 /// Worst-case token budget for the tagger's document text (BUG-INGEST-18).
 ///
 /// BPE token counts are not proportional to bytes: ASCII prose runs ~4
 /// bytes/token, but emoji and rare scripts can exceed one token *per byte
-/// pair* — an 18 KB emoji-dense document measured 11.6 k+ real tokens against
-/// an 8 k context. The text is therefore additionally truncated by
-/// [`truncate_to_token_budget`]'s conservative estimate. 4 800 tokens leaves
-/// room in an 8 192-token context for the system prompt (~800), a capped user
-/// note (≤ ~1 500), metadata/wrapping and the JSON output reserve.
-pub const MAX_TAGGER_TEXT_TOKENS: usize = 4_800;
+/// pair* — the old 18 KB cap with emoji-dense text could fire 11.6 k+ real
+/// tokens against an 8 k context. With 128k context per backend slot
+/// (2×128k = 262144 total), 122 880 tokens leaves room for the system prompt
+/// (~800), a capped user note (≤ ~1 500), metadata/wrapping and the JSON
+/// output reserve within the 128 000-token serving window.
+pub const MAX_TAGGER_TEXT_TOKENS: usize = 122_880;
 
 /// Worst-case token budget for the (already byte-capped) tagger user note.
 ///
@@ -1487,15 +1487,15 @@ mod tests {
 
     #[test]
     fn tagger_text_cap_bounds_pathological_documents() {
-        // BUG-INGEST-18: a ~200 KB single-segment document (~27 k tokens) must
-        // shrink to the tagger prompt budget so the request fits an 8 k-token
+        // BUG-INGEST-18: a ~600 KB single-segment document (~150 k tokens) must
+        // shrink to the tagger prompt budget so the request fits the 128 k-token
         // serving context instead of being rejected (or silently truncated by
         // older llama.cpp builds).
-        let huge = "A".repeat(200 * 1024);
+        let huge = "A".repeat(600 * 1024);
         let capped = bound_tagger_text(&huge);
         assert_eq!(capped.len(), MAX_TAGGER_TEXT_BYTES);
         // The ASCII estimate for the byte-capped text must already fit the
-        // token budget (18 KB ASCII ≈ 4 608 estimated tokens ≤ 4 800).
+        // token budget (480 KB ASCII ≈ 122 880 estimated tokens ≤ 122 880).
         const { assert!(MAX_TAGGER_TEXT_BYTES / 4 <= MAX_TAGGER_TEXT_TOKENS) };
     }
 
@@ -1573,9 +1573,9 @@ mod tests {
 
     #[test]
     fn user_note_token_cap_constants_fit_context_plan() {
-        // System (~800) + note (≤1 500) + text (≤4 800) + wrapping/output
-        // reserve must stay under the 8 192-token serving context.
-        const { assert!(800 + MAX_USER_NOTE_TOKENS + MAX_TAGGER_TEXT_TOKENS + 1_000 < 8_192) };
+        // System (~800) + note (≤1 500) + text (≤122 880) + wrapping/output
+        // reserve must stay under the 128 000-token serving context per slot.
+        const { assert!(800 + MAX_USER_NOTE_TOKENS + MAX_TAGGER_TEXT_TOKENS + 1_000 < 128_000) };
     }
 
     #[test]

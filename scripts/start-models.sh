@@ -3,7 +3,7 @@
 #
 # Launches (host-native, background):
 #   1. llama-server :8080  — Qwen3.6-35B-A3B-VL (text/vision/code), GPU/Vulkan,
-#                            4×64k ctx (-c 262144 --parallel 4) for multi-app use
+#                            2×128k ctx (-c 262144 --parallel 2) for multi-app use
 #   2. llama-server :8081  — Qwen3-Embedding-4B (embeddings, 2560-dim), GPU/Vulkan
 #   3. ettin reranker :8082 — torch + sentence-transformers sidecar (CPU-only here)
 #   4. whisper :8083        — whisper.cpp large-v3-turbo (audio/video), GPU/Vulkan
@@ -154,8 +154,8 @@ start_all() {
     echo
   fi
 
-  # ── text / vision / code — Qwen3.6-35B-A3B-VL :8080 (GPU, 4×64k ctx) ────
-  echo "── Starting :8080 text/vision/code (Qwen3.6-35B-A3B-VL, 4×64k ctx, GPU) ──"
+  # ── text / vision / code — Qwen3.6-35B-A3B-VL :8080 (GPU, 2×128k ctx) ────
+  echo "── Starting :8080 text/vision/code (Qwen3.6-35B-A3B-VL, 2×128k ctx, GPU) ──"
   if _listening 8080; then
     _green "  ✓ :8080 already listening (reusing)"
   else
@@ -167,13 +167,13 @@ start_all() {
     # alone no longer prevents thinking (the model still burns its max_tokens in
     # the think block) — Qwen3-family templates need enable_thinking=false,
     # which skips the <think> block at the template level like the old build did.
-    # -c 262144 --parallel 4: total context split into 4 concurrent slots of
-    # 64k each, so the endpoint serves multiple apps + the llama web UI at once
+    # -c 262144 --parallel 2: total context split into 2 concurrent slots of
+    # 128k each, so the endpoint serves multiple apps + the llama web UI at once
     # without starving any one of context. Native ctx is 262144, so no rope
     # scaling (no quality loss). KV ≈ 40 KB/token here (GQA, 2 KV heads) → ~10.5
     # GB total, fits the unified memory. -ngl 99 keeps all layers on the GPU
     # (Vulkan); mmproj stays GPU by default (do NOT pass --no-mmproj-offload).
-    nohup "$LLAMA_BIN_TEXT" -ngl 99 --temp 0 -c 262144 --parallel 4 --host 0.0.0.0 --port 8080 \
+    nohup "$LLAMA_BIN_TEXT" -ngl 99 --temp 0 -c 262144 --parallel 2 --host 0.0.0.0 --port 8080 \
       -m "$MODEL_DIR/$MODEL_TEXT" --mmproj "$MODEL_DIR/$MODEL_MMPROJ" \
       --reasoning-budget 0 --chat-template-kwargs '{"enable_thinking":false}' \
       >/tmp/llama-text-8080.log 2>&1 &
