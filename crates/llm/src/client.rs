@@ -546,10 +546,20 @@ impl LlamaClient {
                     return Ok(parsed);
                 }
                 Ok(resp) => {
-                    // Non-success (4xx, 5xx, …).
                     let status = resp.status();
                     let body_text = resp.text().await.unwrap_or_default();
-                    self.mark_unhealthy(&lease.backend_id);
+                    // Only server-side errors (5xx) and rate-limiting (429)
+                    // warrant marking the backend unhealthy.  A plain 4xx
+                    // (context overflow, bad request, validation failure, …)
+                    // means the server is alive and correctly rejected the
+                    // payload — flipping the health flag on 4xx creates a
+                    // self-inflicted outage where every concurrent caller
+                    // sees NoBackend for up to 10 s (the health-loop poll
+                    // interval), defeating the context-retry loop and burning
+                    // all retries against thin air.
+                    if status.is_server_error() || status.as_u16() == 429 {
+                        self.mark_unhealthy(&lease.backend_id);
+                    }
                     self.record_failure(&lease.backend_id);
                     kb_metrics::record_request(
                         kb_metrics::RequestOutcome::Error,

@@ -165,6 +165,7 @@ pub const ALLOWED_MIMES: &[&str] = &[
     "audio/wav",
     "audio/wave",
     "audio/ogg",
+    "audio/x-opus+ogg",
     "audio/flac",
     "audio/mp4",
     "audio/x-wav",

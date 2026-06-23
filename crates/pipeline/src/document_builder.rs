@@ -380,6 +380,8 @@ pub(crate) fn mime_to_doc_kind(mime: &str) -> DocKind {
         | "application/vnd.oasis.opendocument.spreadsheet"
         | "application/rtf"
         | "application/x-empty" => DocKind::Document,
+        // Email (RFC 822 / MIME message).
+        "message/rfc822" => DocKind::Email,
         // Text types — code detection needs file extension (deferred to P3-T4);
         // until then treat all text as Document.
         s if s.starts_with("text/") => DocKind::Document,
