@@ -35,11 +35,11 @@ LLAMA_BIN="${LLAMA_BIN:-$HOME/.local/bin/llama-server}"
 # remain byte-stable with the 2560-dim vectors already stored in Postgres.
 LLAMA_BIN_TEXT="${LLAMA_BIN_TEXT:-$HOME/.local/lib/llama-b9592/llama-server}"
 [ -x "$LLAMA_BIN_TEXT" ] || LLAMA_BIN_TEXT="$LLAMA_BIN"
-WHISPER_BIN="${WHISPER_BIN:-/tmp/whisper.cpp/build/bin/whisper-server}"
 ETTIN_VENV="${ETTIN_VENV:-$HOME/.venvs/ettin-rerank}"
 ECTL="${ECTL:-/usr/local/bin/ectool}"
 FAN_PCT="${FAN_PCT:-64}"
 MODEL_DIR="${MODEL_DIR:-./models}"
+WHISPER_BIN="${WHISPER_BIN:-${MODEL_DIR}/whisper-server}"
 
 MODEL_TEXT="${MODEL_TEXT:-Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q6_K_P.gguf}"
 MODEL_MMPROJ="${MODEL_MMPROJ:-mmproj-Qwen3.6-35B-A3B.gguf}"
@@ -221,6 +221,8 @@ start_all() {
         cmake -S /tmp/whisper.cpp -B /tmp/whisper.cpp/build -DGGML_NATIVE=ON -DGGML_VULKAN=ON -DWHISPER_BUILD_TESTS=OFF
         cmake --build /tmp/whisper.cpp/build -j"$(nproc)" --target whisper-server
       fi
+      cp /tmp/whisper.cpp/build/bin/whisper-server "$WHISPER_BIN"
+      _green "  ✓ whisper-server cached to $WHISPER_BIN"
     fi
     if _listening 8083; then
       _green "  ✓ :8083 already listening (reusing)"
