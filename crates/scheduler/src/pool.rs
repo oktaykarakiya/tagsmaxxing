@@ -412,6 +412,29 @@ impl Pool {
         }
         out
     }
+
+    /// Minimum context window size (in tokens) among healthy backends for a role.
+    ///
+    /// Returns `None` when no healthy backend for `role` has a known `ctx_tokens`
+    /// (all are `None`, or no backend serves the role).
+    pub fn role_context_tokens(&self, role: Role) -> Option<usize> {
+        let backends = self.backends_for(role);
+        if backends.is_empty() {
+            return None;
+        }
+        let mut min_ctx: Option<i64> = None;
+        for b in &backends {
+            if b.healthy.load(Ordering::Acquire)
+                && let Some(ctx) = b.ctx_tokens
+            {
+                match min_ctx {
+                    None => min_ctx = Some(ctx),
+                    Some(current) => min_ctx = Some(current.min(ctx)),
+                }
+            }
+        }
+        min_ctx.map(|t| t as usize)
+    }
 }
 
 #[cfg(test)]
@@ -767,6 +790,7 @@ mod tests {
             cooldown_until: Arc::new(std::sync::Mutex::new(None)),
             time_window: Arc::new(arc_swap::ArcSwap::new(std::sync::Arc::new(None))),
             bandwidth_limiter: Arc::new(arc_swap::ArcSwap::new(std::sync::Arc::new(None))),
+            ctx_tokens: None,
         });
 
         // Exhaust the single RPM token.
@@ -801,6 +825,7 @@ mod tests {
             cooldown_until: Arc::new(std::sync::Mutex::new(None)),
             time_window: Arc::new(arc_swap::ArcSwap::new(std::sync::Arc::new(None))),
             bandwidth_limiter: Arc::new(arc_swap::ArcSwap::new(std::sync::Arc::new(None))),
+            ctx_tokens: None,
         });
 
         let pool = Pool::new(vec![Arc::clone(&b)], Duration::from_secs(5));
@@ -981,5 +1006,144 @@ mod tests {
         assert_eq!(status, 200);
 
         mock.shutdown().await;
+    }
+
+    // ── role_context_tokens ──────────────────────────────────────────
+
+    #[test]
+    fn role_context_tokens_returns_none_when_no_backends() {
+        let pool = Pool::new(vec![], Duration::from_secs(5));
+        assert_eq!(pool.role_context_tokens(Role::Text), None);
+    }
+
+    #[test]
+    fn role_context_tokens_returns_none_when_all_unknown() {
+        let b = tb("b1", "http://x", vec![Role::Text], 0, 2);
+        let pool = Pool::new(vec![Arc::clone(&b)], Duration::from_secs(5));
+        assert_eq!(pool.role_context_tokens(Role::Text), None);
+    }
+
+    #[test]
+    fn role_context_tokens_returns_min_of_healthy() {
+        // Build backends with different ctx_tokens via direct construction.
+        let b1 = Arc::new(Backend {
+            id: "b1".into(),
+            adapter: Arc::new(kb_core::provider::NoopAdapter),
+            endpoint: Some("http://x:1".into()),
+            key: None,
+            model_id: "m1".into(),
+            caps: kb_core::capability::CapSet::from(Role::Text),
+            capacity: Capacity::new_slots(2),
+            max_concurrency: 2,
+            pricing: None,
+            data_class: kb_core::data_class::DataClass::Local,
+            priority: 0,
+            healthy: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            cooldown_until: Arc::new(std::sync::Mutex::new(None)),
+            time_window: Arc::new(arc_swap::ArcSwap::new(std::sync::Arc::new(None))),
+            bandwidth_limiter: Arc::new(arc_swap::ArcSwap::new(std::sync::Arc::new(None))),
+            ctx_tokens: Some(65536),
+        });
+        let b2 = Arc::new(Backend {
+            id: "b2".into(),
+            adapter: Arc::new(kb_core::provider::NoopAdapter),
+            endpoint: Some("http://x:2".into()),
+            key: None,
+            model_id: "m2".into(),
+            caps: kb_core::capability::CapSet::from(Role::Text),
+            capacity: Capacity::new_slots(2),
+            max_concurrency: 2,
+            pricing: None,
+            data_class: kb_core::data_class::DataClass::Local,
+            priority: 0,
+            healthy: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            cooldown_until: Arc::new(std::sync::Mutex::new(None)),
+            time_window: Arc::new(arc_swap::ArcSwap::new(std::sync::Arc::new(None))),
+            bandwidth_limiter: Arc::new(arc_swap::ArcSwap::new(std::sync::Arc::new(None))),
+            ctx_tokens: Some(131072),
+        });
+        let pool = Pool::new(
+            vec![Arc::clone(&b1), Arc::clone(&b2)],
+            Duration::from_secs(5),
+        );
+        assert_eq!(pool.role_context_tokens(Role::Text), Some(65536));
+    }
+
+    #[test]
+    fn role_context_tokens_skips_unhealthy() {
+        let b1 = Arc::new(Backend {
+            id: "b1".into(),
+            adapter: Arc::new(kb_core::provider::NoopAdapter),
+            endpoint: Some("http://x:1".into()),
+            key: None,
+            model_id: "m1".into(),
+            caps: kb_core::capability::CapSet::from(Role::Text),
+            capacity: Capacity::new_slots(2),
+            max_concurrency: 2,
+            pricing: None,
+            data_class: kb_core::data_class::DataClass::Local,
+            priority: 0,
+            healthy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            cooldown_until: Arc::new(std::sync::Mutex::new(None)),
+            time_window: Arc::new(arc_swap::ArcSwap::new(std::sync::Arc::new(None))),
+            bandwidth_limiter: Arc::new(arc_swap::ArcSwap::new(std::sync::Arc::new(None))),
+            ctx_tokens: Some(65536),
+        });
+        let b2 = Arc::new(Backend {
+            id: "b2".into(),
+            adapter: Arc::new(kb_core::provider::NoopAdapter),
+            endpoint: Some("http://x:2".into()),
+            key: None,
+            model_id: "m2".into(),
+            caps: kb_core::capability::CapSet::from(Role::Text),
+            capacity: Capacity::new_slots(2),
+            max_concurrency: 2,
+            pricing: None,
+            data_class: kb_core::data_class::DataClass::Local,
+            priority: 0,
+            healthy: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            cooldown_until: Arc::new(std::sync::Mutex::new(None)),
+            time_window: Arc::new(arc_swap::ArcSwap::new(std::sync::Arc::new(None))),
+            bandwidth_limiter: Arc::new(arc_swap::ArcSwap::new(std::sync::Arc::new(None))),
+            ctx_tokens: Some(131072),
+        });
+        let pool = Pool::new(
+            vec![Arc::clone(&b1), Arc::clone(&b2)],
+            Duration::from_secs(5),
+        );
+        // b1 is unhealthy, so only b2's ctx_tokens count.
+        assert_eq!(pool.role_context_tokens(Role::Text), Some(131072));
+    }
+
+    #[test]
+    fn role_context_tokens_some_backends_unknown() {
+        // One backend with known ctx_tokens, one with None — the None
+        // backend is skipped; the known value is returned.
+        let b_known = Arc::new(Backend {
+            id: "known".into(),
+            adapter: Arc::new(kb_core::provider::NoopAdapter),
+            endpoint: Some("http://x:1".into()),
+            key: None,
+            model_id: "mk".into(),
+            caps: kb_core::capability::CapSet::from(Role::Text),
+            capacity: Capacity::new_slots(2),
+            max_concurrency: 2,
+            pricing: None,
+            data_class: kb_core::data_class::DataClass::Local,
+            priority: 0,
+            healthy: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            cooldown_until: Arc::new(std::sync::Mutex::new(None)),
+            time_window: Arc::new(arc_swap::ArcSwap::new(std::sync::Arc::new(None))),
+            bandwidth_limiter: Arc::new(arc_swap::ArcSwap::new(std::sync::Arc::new(None))),
+            ctx_tokens: Some(128000),
+        });
+        let pool = Pool::new(
+            vec![
+                Arc::clone(&b_known),
+                tb("unk", "http://u", vec![Role::Text], 0, 2),
+            ],
+            Duration::from_secs(5),
+        );
+        assert_eq!(pool.role_context_tokens(Role::Text), Some(128000));
     }
 }

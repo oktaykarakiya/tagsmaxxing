@@ -331,6 +331,7 @@ mod tests {
             None, /* pricing */
             DataClass::Local,
             priority,
+            None, /* ctx_tokens */
         ))
     }
 
@@ -348,6 +349,7 @@ mod tests {
             Some(Pricing::new(input_price, output_price)),
             DataClass::Remote,
             0,
+            None, /* ctx_tokens */
         ))
     }
 
@@ -586,6 +588,7 @@ mod tests {
             None,
             DataClass::Local,
             0,
+            None,
         ));
         let b_embed1 = Arc::new(Backend::new(
             "4",
@@ -599,6 +602,7 @@ mod tests {
             None,
             DataClass::Local,
             0,
+            None,
         ));
 
         // Exhaust tier 0.
@@ -1195,6 +1199,7 @@ mod tests {
             cooldown_until: Arc::new(std::sync::Mutex::new(None)),
             time_window: Arc::new(arc_swap::ArcSwap::new(Arc::new(None))),
             bandwidth_limiter: Arc::new(arc_swap::ArcSwap::new(Arc::new(None))),
+            ctx_tokens: None,
         });
         let b_ok = tb("21", 2, 0);
 

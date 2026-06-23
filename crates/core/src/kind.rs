@@ -26,6 +26,9 @@ str_enum! {
         Archive = "archive",
         /// An opaque/unknown binary (hashes + `strings` + the user's note).
         Binary = "binary",
+        /// An .eml email file (RFC 822 / MIME multipart with headers,
+        /// body, and attachments).
+        Email = "email",
     }
 }
 
@@ -43,7 +46,7 @@ mod tests {
         assert_eq!(DocKind::Document.as_str(), "document");
         assert_eq!(DocKind::IdentityDocument.as_str(), "identity_document");
         assert_eq!(DocKind::Binary.as_str(), "binary");
-        assert_eq!(DocKind::all().len(), 8);
+        assert_eq!(DocKind::all().len(), 9);
     }
 
     #[test]

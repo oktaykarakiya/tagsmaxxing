@@ -77,6 +77,8 @@ base64 = "0.22"
 zeroize = { version = "1.8.2", features = ["derive", "alloc"] }
 # Image processing library for thumbnail generation (plan §20, P8-T13)
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
+# Fast and robust e-mail parsing library for RFC822/MIME messages
+mail-parser = "0.11.4"
 
 # Workspace-wide lints, inherited by every crate via `[lints] workspace = true`.
 # These enforce the §31 quality bar mechanically (docs, no-stubs, no-unwrap).

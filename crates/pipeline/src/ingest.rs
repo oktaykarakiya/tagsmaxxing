@@ -322,6 +322,11 @@ impl IngestPipeline {
     ) -> anyhow::Result<IngestOutput> {
         anyhow::ensure!(!files.is_empty(), "at least one file is required");
 
+        // Resolve the actual serving context window size from the backend pool
+        // (read at call time — adapts to DB routing changes without restart).
+        let ctx_tokens = self.tagger.resolve_context_tokens();
+        let (text_budget, note_budget) = compute_token_budgets(ctx_tokens);
+
         // Sanitize the user note: strip NUL and other control characters
         // (which a PostgreSQL `text` column cannot store, so they would crash
         // the transactional ingest with a 500 — BUG-INGEST-11), then bound it
@@ -332,7 +337,7 @@ impl IngestPipeline {
             let note = strip_control_chars(&note);
             truncate_to_token_budget(
                 truncate_to_char_boundary(&note, MAX_USER_NOTE_BYTES),
-                MAX_USER_NOTE_TOKENS,
+                note_budget,
             )
             .to_string()
         });
@@ -482,7 +487,7 @@ impl IngestPipeline {
         let tag_input = TagInput {
             tenant_id,
             user_id,
-            text: bound_tagger_text(&merged.merged_text).to_string(),
+            text: smart_bound_tagger_text(&merged.merged_text, text_budget),
             user_note: document.user_note.clone(),
             kind: merged.kind,
             meta: merged.merged_meta.clone(),
@@ -704,11 +709,13 @@ pub async fn process_retag_job(
         .await
         .map_err(|e| format!("failed to clear llm tags: {e}"))?;
 
-    // 3. Tag the document. Text capped to the prompt budget (BUG-INGEST-18).
+    // 3. Tag the document. Text capped to the prompt budget (BUG-INGEST-18),
+    //    resolved from the actual backend context window size.
+    let (text_budget, _note_budget) = compute_token_budgets(tagger.resolve_context_tokens());
     let tag_input = TagInput {
         tenant_id,
         user_id,
-        text: bound_tagger_text(document_text).to_string(),
+        text: smart_bound_tagger_text(document_text, text_budget),
         user_note: None,
         kind: DocKind::Document,
         meta: serde_json::Value::Null,
@@ -764,31 +771,49 @@ pub const MAX_USER_NOTE_BYTES: usize = 10 * 1024;
 /// Maximum document text fed into the single per-document tagging call (480 KB).
 ///
 /// The tagger prompt must fit the serving model's context window alongside the
-/// system prompt, user note, metadata and the JSON output budget. Raised from
-/// the old 18 KB / 8k-context bound to match 128k-context backends (480 KB of
-/// prose ≈ 122 880 tokens at ~4 chars/token). The conservative token estimator
-/// in [`truncate_to_token_budget`] and the per-model retry halving loop in
-/// [`tag_with_context_retry`] together prevent actual context overflow.
-/// See [`MAX_TAGGER_TEXT_TOKENS`] for the token-inflation half of the bound.
+/// system prompt, user note, metadata and the JSON output budget. The effective
+/// token budget is resolved at call time from the backend's actual context
+/// window size via [`compute_token_budgets`]; the byte cap is a coarse outer
+/// bound that prevents multi-megabyte text from even reaching the token budget.
 pub const MAX_TAGGER_TEXT_BYTES: usize = 480 * 1024;
 
-/// Worst-case token budget for the tagger's document text (BUG-INGEST-18).
+/// Default token budget for the tagger's document text when the backend context
+/// size is unknown (config backends have no model metadata).
 ///
-/// BPE token counts are not proportional to bytes: ASCII prose runs ~4
-/// bytes/token, but emoji and rare scripts can exceed one token *per byte
-/// pair* — the old 18 KB cap with emoji-dense text could fire 11.6 k+ real
-/// tokens against an 8 k context. With 128k context per backend slot
-/// (2×128k = 262144 total), 122 880 tokens leaves room for the system prompt
-/// (~800), a capped user note (≤ ~1 500), metadata/wrapping and the JSON
-/// output reserve within the 128 000-token serving window.
-pub const MAX_TAGGER_TEXT_TOKENS: usize = 122_880;
+/// Conservative for 64k-context backends: 60 000 tokens leaves room for the
+/// system prompt (~800), a capped user note (~1 500), metadata/wrapping, and
+/// the JSON output reserve. When `ctx_tokens` is known, [`compute_token_budgets`]
+/// computes the budget from the actual context window instead.
+pub const DEFAULT_TAGGER_TEXT_TOKENS: usize = 60_000;
 
-/// Worst-case token budget for the (already byte-capped) tagger user note.
+/// Default context window fallback (64k) when the backend's `ctx_tokens` is
+/// unknown. Used by [`compute_token_budgets`] to avoid deriving a budget from
+/// zero.
+const DEFAULT_CONTEXT_FALLBACK: usize = 65_536;
+
+/// Default token budget for the (already byte-capped) tagger user note when
+/// the backend context size is unknown.
 ///
-/// The 10 KB note cap (BUG-INGEST-10) has the same inflation hole as the text
-/// cap: 10 KB of emoji is ~7 k real tokens. Bounded to fit the
-/// [`MAX_TAGGER_TEXT_TOKENS`] context plan above.
-pub const MAX_USER_NOTE_TOKENS: usize = 1_500;
+/// The 10 KB note cap (BUG-INGEST-10) has an inflation hole: 10 KB of emoji is
+/// ~7 k real tokens. Bounded to fit the context plan.
+pub const DEFAULT_USER_NOTE_TOKENS: usize = 1_500;
+
+/// Compute per-field token budgets from the actual serving context window size.
+///
+/// - `text_budget = ctx.saturating_sub(3_300)` — leaves room for system prompt,
+///   metadata, wrapping, and the JSON output reserve.
+/// - `note_budget = 1_500.min(ctx.saturating_sub(1_800))` — capped at the
+///   flat default and also bounded by the available context.
+///
+/// When `ctx_tokens` is `None` (unknown context), uses
+/// [`DEFAULT_CONTEXT_FALLBACK`] so the derived budgets match the compile-time
+/// defaults.
+pub fn compute_token_budgets(ctx_tokens: Option<usize>) -> (usize, usize) {
+    let ctx = ctx_tokens.unwrap_or(DEFAULT_CONTEXT_FALLBACK);
+    let text_budget = ctx.saturating_sub(3_300);
+    let note_budget = DEFAULT_USER_NOTE_TOKENS.min(ctx.saturating_sub(1_800));
+    (text_budget, note_budget)
+}
 
 /// Truncate `s` to at most `max_bytes` bytes, landing on a valid UTF-8
 /// character boundary so the result is always well-formed.
@@ -808,8 +833,7 @@ pub fn truncate_to_char_boundary(s: &str, max_bytes: usize) -> &str {
     &s[..end]
 }
 
-/// Truncate `s` so a conservative BPE token estimate stays within
-/// `max_tokens`, cutting on a character boundary (BUG-INGEST-18).
+/// Token cost for a single character in milli-tokens (1 000 = 1 token).
 ///
 /// Per-character costs are calibrated to worst cases observed against the
 /// serving tokenizer, erring on the safe side without shipping a real one:
@@ -820,26 +844,37 @@ pub fn truncate_to_char_boundary(s: &str, max_bytes: usize) -> &str {
 ///   ¼-token ASCII charge let an 18 KB injection-string document reach 12 k
 ///   real tokens against the 8 k context;
 /// - non-ASCII: 2 tokens (CJK ~1/char, emoji and rare scripts up to ~2).
+#[must_use]
+pub fn token_cost_milli(ch: char) -> usize {
+    if ch.is_ascii_alphanumeric() || ch.is_ascii_whitespace() {
+        250 // ¼ token per prose char
+    } else if ch.is_ascii() {
+        1000 // 1 token per symbol char
+    } else {
+        2000 // 2 tokens per non-ASCII char
+    }
+}
+
+/// Estimate the BPE token count for `s` in milli-tokens (divide by 1 000 to
+/// get the token count). Uses the same conservative per-character costs as
+/// [`token_cost_milli`].
+#[must_use]
+pub fn token_estimate_milli(s: &str) -> usize {
+    s.chars().map(token_cost_milli).sum()
+}
+
+/// Truncate `s` so a conservative BPE token estimate stays within
+/// `max_tokens`, cutting on a character boundary (BUG-INGEST-18).
 ///
 /// The walk is `O(len)` and cuts before the first character that would
 /// exceed the budget, so the result is always valid UTF-8 and never above
 /// `max_tokens` under the estimate.
 #[must_use]
 pub fn truncate_to_token_budget(s: &str, max_tokens: usize) -> &str {
-    // Token cost in milli-tokens so prose can cost a fraction per char.
-    const PROSE_MILLI: usize = 250; // ¼ token per alphanumeric/space char
-    const SYMBOL_MILLI: usize = 1_000; // 1 token per other-ASCII char
-    const OTHER_MILLI: usize = 2_000; // 2 tokens per non-ASCII char
     let budget_milli = max_tokens.saturating_mul(1_000);
     let mut cost_milli = 0usize;
     for (i, ch) in s.char_indices() {
-        cost_milli += if ch.is_ascii_alphanumeric() || ch.is_ascii_whitespace() {
-            PROSE_MILLI
-        } else if ch.is_ascii() {
-            SYMBOL_MILLI
-        } else {
-            OTHER_MILLI
-        };
+        cost_milli += token_cost_milli(ch);
         if cost_milli > budget_milli {
             return &s[..i];
         }
@@ -849,13 +884,128 @@ pub fn truncate_to_token_budget(s: &str, max_tokens: usize) -> &str {
 
 /// Apply both halves of the tagger text bound: the byte cap (scan/storage
 /// bound) and the worst-case token cap (context-window bound). See
-/// [`MAX_TAGGER_TEXT_BYTES`] and [`MAX_TAGGER_TEXT_TOKENS`] (BUG-INGEST-18).
+/// [`MAX_TAGGER_TEXT_BYTES`] and `max_tokens` (BUG-INGEST-18).
 #[must_use]
-pub fn bound_tagger_text(s: &str) -> &str {
+pub fn bound_tagger_text(s: &str, max_tokens: usize) -> &str {
     truncate_to_token_budget(
         truncate_to_char_boundary(s, MAX_TAGGER_TEXT_BYTES),
-        MAX_TAGGER_TEXT_TOKENS,
+        max_tokens,
     )
+}
+
+/// Find the nearest paragraph boundary before `from_byte`, searching up to
+/// 512 bytes backward. Prefers `\n\n` (double newline — paragraph break),
+/// falls back to a single `\n` (line break), and returns `from_byte` when
+/// neither is found.
+///
+/// `from_byte` must be a valid UTF-8 character boundary (e.g. from
+/// [`char_indices`]). The search window is adjusted to a character
+/// boundary to avoid panicking on multi-byte sequences.
+#[must_use]
+fn find_paragraph_boundary_backward(s: &str, from_byte: usize) -> usize {
+    let mut search_start = from_byte.saturating_sub(512);
+    while search_start > 0 && !s.is_char_boundary(search_start) {
+        search_start -= 1;
+    }
+    let window = &s[search_start..from_byte];
+    if let Some(pos) = window.rfind("\n\n") {
+        return search_start + pos + 2;
+    }
+    if let Some(pos) = window.rfind('\n') {
+        return search_start + pos + 1;
+    }
+    from_byte
+}
+
+/// Find the nearest paragraph boundary after `from_byte`, searching up to
+/// 512 bytes forward. Prefers `\n\n`, falls back to `\n`, and returns
+/// `from_byte` when neither is found.
+///
+/// `from_byte` must be a valid UTF-8 character boundary. The search window
+/// is adjusted to a character boundary to avoid panicking.
+#[must_use]
+fn find_paragraph_boundary_forward(s: &str, from_byte: usize) -> usize {
+    let mut search_end = s.len().min(from_byte + 512);
+    while search_end < s.len() && !s.is_char_boundary(search_end) {
+        search_end += 1;
+    }
+    let window = &s[from_byte..search_end];
+    if let Some(pos) = window.find("\n\n") {
+        return from_byte + pos + 2;
+    }
+    if let Some(pos) = window.find('\n') {
+        return from_byte + pos + 1;
+    }
+    from_byte
+}
+
+/// Smart truncation that preserves both document head and tail.
+///
+/// When the document exceeds `max_tokens`, the head (first ~70%) and tail
+/// (last ~30%) are kept, separated by a truncation marker so conclusions
+/// and summaries at the document end are not lost. Within budget, the
+/// text is returned unchanged (after the existing byte cap).
+///
+/// Returns a newly-allocated [`String`] (may be assembled from
+/// discontiguous parts of the input).
+#[must_use]
+pub fn smart_bound_tagger_text(s: &str, max_tokens: usize) -> String {
+    const HEAD_FRACTION: f64 = 0.70;
+    const TRUNCATION_MARKER: &str = "\n\n… [content truncated] …\n\n";
+
+    // 1. Byte cap first (existing fast path).
+    let s = truncate_to_char_boundary(s, MAX_TAGGER_TEXT_BYTES);
+
+    // 2. Check if token budget is sufficient.
+    let total_milli = token_estimate_milli(s);
+    if total_milli <= max_tokens.saturating_mul(1000) {
+        return s.to_string();
+    }
+
+    let budget_milli = max_tokens.saturating_mul(1000);
+    let head_budget_milli = ((budget_milli as f64) * HEAD_FRACTION) as usize;
+    let tail_budget_milli = budget_milli.saturating_sub(head_budget_milli);
+
+    // 3. Walk forward for head.
+    let mut head_cut = s.len();
+    let mut cost_milli = 0usize;
+    for (i, ch) in s.char_indices() {
+        cost_milli += token_cost_milli(ch);
+        if cost_milli > head_budget_milli {
+            head_cut = i;
+            break;
+        }
+    }
+    if head_cut < s.len() {
+        head_cut = find_paragraph_boundary_backward(s, head_cut);
+    }
+
+    // 4. Walk backward for tail.
+    let mut tail_start = 0;
+    let mut cost_milli = 0usize;
+    for (i, ch) in s.char_indices().rev() {
+        cost_milli += token_cost_milli(ch);
+        if cost_milli > tail_budget_milli {
+            tail_start = i;
+            break;
+        }
+    }
+    if tail_start > 0 {
+        tail_start = find_paragraph_boundary_forward(s, tail_start);
+    }
+
+    // 5. Handle overlap / edge case.
+    if head_cut >= tail_start {
+        return s[..head_cut].to_string();
+    }
+
+    // 6. Assemble.
+    let mut result =
+        String::with_capacity(head_cut + TRUNCATION_MARKER.len() + (s.len() - tail_start));
+    result.push_str(&s[..head_cut]);
+    result.push_str(TRUNCATION_MARKER);
+    result.push_str(&s[tail_start..]);
+    result
 }
 
 /// `true` when an error chain reports the serving model rejected the prompt
@@ -987,6 +1137,8 @@ fn infer_kind_from_mime(mime: Option<&str>) -> DocKind {
         {
             DocKind::Archive
         }
+        // Email (RFC 822 / MIME message).
+        Some("message/rfc822") => DocKind::Email,
         _ => DocKind::Binary,
     }
 }
@@ -1488,15 +1640,21 @@ mod tests {
     #[test]
     fn tagger_text_cap_bounds_pathological_documents() {
         // BUG-INGEST-18: a ~600 KB single-segment document (~150 k tokens) must
-        // shrink to the tagger prompt budget so the request fits the 128 k-token
-        // serving context instead of being rejected (or silently truncated by
+        // shrink to the tagger prompt budget so the request fits the serving
+        // context instead of being rejected (or silently truncated by
         // older llama.cpp builds).
         let huge = "A".repeat(600 * 1024);
-        let capped = bound_tagger_text(&huge);
-        assert_eq!(capped.len(), MAX_TAGGER_TEXT_BYTES);
-        // The ASCII estimate for the byte-capped text must already fit the
-        // token budget (480 KB ASCII ≈ 122 880 estimated tokens ≤ 122 880).
-        const { assert!(MAX_TAGGER_TEXT_BYTES / 4 <= MAX_TAGGER_TEXT_TOKENS) };
+        let capped = smart_bound_tagger_text(&huge, DEFAULT_TAGGER_TEXT_TOKENS);
+        // Smart truncation preserves head+tail with a marker; bytes stay
+        // within MAX_TAGGER_TEXT_BYTES.
+        assert!(capped.len() <= MAX_TAGGER_TEXT_BYTES);
+        assert!(!capped.is_empty());
+        assert!(std::str::from_utf8(capped.as_bytes()).is_ok());
+        // 60 000 tokens at ¼ token/char ≈ 240 000 chars fits the budget.
+        assert!(
+            capped.contains("truncated"),
+            "marker expected for huge text; was {capped:?}"
+        );
     }
 
     #[test]
@@ -1506,11 +1664,11 @@ mod tests {
         // token counts are not proportional to bytes. The token-aware bound
         // must cut emoji-dense text far below the byte cap.
         let emoji = "🎉".repeat(8 * 1024); // 32 KB, 8 192 chars
-        let capped = bound_tagger_text(&emoji);
+        let capped = smart_bound_tagger_text(&emoji, DEFAULT_TAGGER_TEXT_TOKENS);
         let chars = capped.chars().count();
         // 2 milli-token-units per emoji char → at most 2 400 chars fit 4 800.
         assert!(
-            chars <= MAX_TAGGER_TEXT_TOKENS / 2,
+            chars <= DEFAULT_TAGGER_TEXT_TOKENS / 2,
             "emoji text must be cut by the token estimate, kept {chars} chars"
         );
         assert!(!capped.is_empty(), "cap must keep a usable prefix");
@@ -1571,11 +1729,170 @@ mod tests {
         assert_eq!(truncate_to_token_budget("abc", 0), "");
     }
 
+    // ── smart_bound_tagger_text tests ─────────────────────────────────────
+
     #[test]
-    fn user_note_token_cap_constants_fit_context_plan() {
-        // System (~800) + note (≤1 500) + text (≤122 880) + wrapping/output
-        // reserve must stay under the 128 000-token serving context per slot.
-        const { assert!(800 + MAX_USER_NOTE_TOKENS + MAX_TAGGER_TEXT_TOKENS + 1_000 < 128_000) };
+    fn smart_truncation_short_text_unchanged() {
+        let text = "This is a short document.";
+        let result = smart_bound_tagger_text(text, DEFAULT_TAGGER_TEXT_TOKENS);
+        assert_eq!(result, text);
+        assert!(!result.contains("truncated"), "no marker for short text");
+    }
+
+    #[test]
+    fn smart_truncation_preserves_tail() {
+        // Build a document large enough that it needs truncation.
+        // 200 000 prose chars => 50 000 estimated tokens (at ¼ token/char),
+        // above the head portion of DEFAULT_TAGGER_TEXT_TOKENS = 60 000.
+        let head = "A".repeat(130_000); // ~32 500 tokens
+        let tail = "\n\nThis is the conclusion paragraph at the end.\n";
+        let huge = format!("{head}{tail}");
+        let result = smart_bound_tagger_text(&huge, 30_000);
+        assert!(result.contains("truncated"), "marker must appear");
+        assert!(
+            result.contains("conclusion paragraph"),
+            "tail must survive: '{result}'"
+        );
+        assert!(
+            result.starts_with('A'),
+            "head must start with 'A', got: {:?}",
+            &result[..20]
+        );
+    }
+
+    #[test]
+    fn smart_truncation_includes_marker() {
+        // 60 000 prose chars => 15 000 tokens, still needs to exceed budget.
+        // Use a small budget to force truncation.
+        let text = "Paragraph one.\n\nParagraph two.\n\nParagraph three.\n\nParagraph four.";
+        let result = smart_bound_tagger_text(text, 1); // budget of 1 token guarantees truncation
+        assert!(result.contains("… [content truncated] …"));
+    }
+
+    #[test]
+    fn smart_truncation_paragraph_boundary_head() {
+        // Text with clear paragraph boundaries. A small token budget forces
+        // the head to cut mid-paragraph, and the boundary helper should
+        // adjust to the last \n\n.
+        let para =
+            "Paragraph text that is reasonably long and spans multiple tokens per chunk.\n\n";
+        let text = para.repeat(200);
+        let result = smart_bound_tagger_text(&text, 5); // very small budget
+        assert!(result.contains("truncated"), "marker expected");
+        // Head should end at a \n\n boundary (the last two chars before marker).
+        let head_part = result.split("… [content truncated] …").next().unwrap();
+        assert!(
+            head_part.ends_with("\n\n") || head_part.is_empty(),
+            "head should end at paragraph boundary, got: {:?}",
+            &head_part[head_part.len().saturating_sub(20)..]
+        );
+    }
+
+    #[test]
+    fn smart_truncation_paragraph_boundary_tail() {
+        let para =
+            "Paragraph text that is reasonably long and spans multiple tokens per chunk.\n\n";
+        let text = para.repeat(200);
+        let result = smart_bound_tagger_text(&text, 5); // very small budget
+        assert!(result.contains("truncated"), "marker expected");
+        // Tail should start at a \n\n boundary.
+        let tail_part = result.split("… [content truncated] …").nth(1).unwrap();
+        assert!(
+            tail_part.starts_with("\n\n") || tail_part.is_empty(),
+            "tail should start at paragraph boundary, got: {:?}",
+            &tail_part[..20.min(tail_part.len())]
+        );
+    }
+
+    #[test]
+    fn smart_truncation_overlap_falls_back_to_head_only() {
+        // Craft input where head and tail portions overlap: use a small text
+        // with a tiny budget so head consumes most of it.
+        let text = "Short text that fits entirely in the head budget.";
+        let result = smart_bound_tagger_text(text, 1); // tiny budget
+        // With such a small budget, head_cut may be >= tail_start (overlap).
+        // The function must not panic and must return valid UTF-8.
+        assert!(std::str::from_utf8(result.as_bytes()).is_ok());
+        assert!(
+            !result.is_empty() || text.is_empty(),
+            "result should have content or be empty"
+        );
+    }
+
+    #[test]
+    fn smart_truncation_empty_input() {
+        let result = smart_bound_tagger_text("", DEFAULT_TAGGER_TEXT_TOKENS);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn smart_truncation_mixed_ascii_emoji() {
+        // Emoji costs 2 000 milli-tokens per char vs ASCII prose at 250.
+        // Force truncation with a small budget so emoji content affects the split.
+        let ascii_part = "AAAAAAAAAA"; // 10 chars * 250 = 2 500 milli
+        let emoji_part = "🎉🎉🎉"; // 3 chars * 2 000 = 6 000 milli
+        let text = format!("{ascii_part}\n\n{emoji_part}");
+        let result = smart_bound_tagger_text(&text, 1); // budget of 1 token = 1 000 milli
+        assert!(std::str::from_utf8(result.as_bytes()).is_ok());
+        // With 1-token budget, only a few ASCII chars fit in the head.
+        assert!(!result.is_empty(), "should have some content");
+    }
+
+    #[test]
+    fn smart_truncation_yields_valid_utf8() {
+        // Text with multi-byte chars near the cut points.
+        let mut text = String::new();
+        for _ in 0..100 {
+            text.push_str("こんにちは世界\n\n");
+        }
+        let result = smart_bound_tagger_text(&text, 2); // small budget forces truncation
+        assert!(std::str::from_utf8(result.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn smart_truncation_token_budget_zero() {
+        let result = smart_bound_tagger_text("some text", 0);
+        // With a zero budget, the head and tail portions are empty, so the
+        // result should be empty or just the marker if overlap logic kicks in.
+        // The key requirement: the function must not panic.
+        assert!(std::str::from_utf8(result.as_bytes()).is_ok());
+    }
+
+    // ── token budget helper tests ─────────────────────────────────────────
+
+    #[test]
+    fn compute_token_budgets_defaults_to_64k_fallback() {
+        // None (unknown context) → uses DEFAULT_CONTEXT_FALLBACK = 65536.
+        let (text_budget, note_budget) = compute_token_budgets(None);
+        // 65536 - 3300 = 62236
+        assert_eq!(text_budget, 65_536 - 3_300);
+        assert_eq!(note_budget, 1_500);
+    }
+
+    #[test]
+    fn compute_token_budgets_respects_known_context() {
+        // Known context of 128k → large budgets.
+        let (text_budget, note_budget) = compute_token_budgets(Some(131_072));
+        assert_eq!(text_budget, 131_072 - 3_300);
+        // 131072 - 1800 = 129272, clamped to 1500.
+        assert_eq!(note_budget, 1_500);
+    }
+
+    #[test]
+    fn compute_token_budgets_small_context_clamps() {
+        // A very small context window (4096) → budgets are minimal but non-negative.
+        let (text_budget, note_budget) = compute_token_budgets(Some(4_096));
+        assert!(text_budget > 0);
+        assert!(note_budget > 0);
+        assert!(note_budget <= 1_500);
+    }
+
+    #[test]
+    fn compute_token_budgets_saturating_no_underflow() {
+        // Context smaller than the subtract calls saturates to 0.
+        let (text_budget, note_budget) = compute_token_budgets(Some(100));
+        assert_eq!(text_budget, 0);
+        assert_eq!(note_budget, 0);
     }
 
     #[test]

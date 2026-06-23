@@ -23,6 +23,7 @@ use kb_extract::archive::ArchiveExtractor;
 use kb_extract::audio::{AudioExtractor, WhisperConfig};
 use kb_extract::code::CodeExtractor;
 use kb_extract::document::DocumentExtractor;
+use kb_extract::email::EmailExtractor;
 use kb_extract::image::ImageExtractor;
 use kb_extract::tika::{TikaConfig, TikaExtractor};
 use kb_extract::video::VideoExtractor;
@@ -278,6 +279,7 @@ pub async fn build_runtime(
         DocKind::Video,
         Arc::new(VideoExtractor::new(http.clone(), whisper_config)),
     );
+    extractors.insert(DocKind::Email, Arc::new(EmailExtractor));
 
     // ── Pipeline components ─────────────────────────────────────────────────
     // Metering goes through the fail-open BufferedUsageRecorder (P14-T1) so a

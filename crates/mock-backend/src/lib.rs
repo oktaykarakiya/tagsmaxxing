@@ -78,6 +78,10 @@ pub struct Scenario {
     /// instead of default descending scores `[1.0, 0.9, 0.8, …]`. Useful for tests that
     /// need specific score values or length-mismatch scenarios.
     pub rerank_content: Option<Vec<f32>>,
+    /// The model's maximum context window size in tokens, if known.
+    /// Stored for inspection by integration tests that need to set
+    /// a specific context size for budget computation.
+    pub ctx_tokens: Option<i64>,
 }
 
 impl Default for Scenario {
@@ -91,6 +95,7 @@ impl Default for Scenario {
             embed_dim: None,
             rerank: ResponseMode::Healthy,
             rerank_content: None,
+            ctx_tokens: None,
         }
     }
 }

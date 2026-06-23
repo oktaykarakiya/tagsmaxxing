@@ -72,6 +72,9 @@ pub struct Backend {
     /// `None` means no bandwidth restriction.
     /// Wrapped in [`ArcSwap`] for hot-swappable rate changes without restart.
     pub bandwidth_limiter: Arc<ArcSwap<Option<BandwidthLimiter>>>,
+    /// The serving model's maximum context window in tokens, if known.
+    /// `None` means unknown (config backends have no model metadata).
+    pub ctx_tokens: Option<i64>,
 }
 
 impl Backend {
@@ -92,6 +95,7 @@ impl Backend {
         pricing: Option<Pricing>,
         data_class: DataClass,
         priority: u8,
+        ctx_tokens: Option<i64>,
     ) -> Self {
         Self {
             id: id.into(),
@@ -109,6 +113,7 @@ impl Backend {
             cooldown_until: Arc::new(Mutex::new(None)),
             time_window: Arc::new(ArcSwap::new(Arc::new(None))),
             bandwidth_limiter: Arc::new(ArcSwap::new(Arc::new(None))),
+            ctx_tokens,
         }
     }
 
@@ -131,6 +136,7 @@ impl Backend {
             None,  /* pricing — local by default */
             DataClass::Local,
             cfg.priority,
+            None, /* ctx_tokens — config backends have no model metadata */
         )
     }
 
@@ -262,6 +268,7 @@ pub fn test_backend(
         None,  /* pricing */
         DataClass::Local,
         priority,
+        None, /* ctx_tokens */
     )
 }
 
@@ -294,6 +301,7 @@ mod tests {
             None,
             DataClass::Local,
             7,
+            None, /* ctx_tokens */
         );
         assert_eq!(b.id, "b1");
         assert_eq!(b.endpoint.as_deref(), Some("http://x:8001"));
@@ -359,6 +367,7 @@ mod tests {
             None,
             DataClass::Local,
             0,
+            None, /* ctx_tokens */
         );
         assert_eq!(b.free(), 2);
         let permit = b.capacity.try_acquire().unwrap();
@@ -381,6 +390,7 @@ mod tests {
             None,
             DataClass::Local,
             0,
+            None, /* ctx_tokens */
         );
         let twin = b.clone();
         assert_eq!(twin.free(), 1);
@@ -447,6 +457,7 @@ mod tests {
             None,
             DataClass::Local,
             0,
+            None, /* ctx_tokens */
         );
         assert!(b.supports(Role::Text));
         assert!(b.supports(Role::Embed));
@@ -485,6 +496,7 @@ mod tests {
             Some(p),
             DataClass::Remote,
             1,
+            None, /* ctx_tokens */
         );
         assert_eq!(b.pricing.unwrap(), p);
         assert_eq!(b.data_class, DataClass::Remote);
@@ -506,6 +518,7 @@ mod tests {
             None,
             DataClass::Remote,
             1,
+            None, /* ctx_tokens */
         );
         assert_eq!(b.key.as_ref().unwrap().id(), "sk-abc123");
     }

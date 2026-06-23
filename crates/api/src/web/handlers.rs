@@ -932,6 +932,7 @@ fn kind_label(kind: &str) -> String {
         "code" => "Code".into(),
         "archive" => "Archives".into(),
         "binary" => "Binaries".into(),
+        "email" => "Emails".into(),
         other => {
             // Capitalize the first letter as a fallback.
             let mut chars = other.chars();

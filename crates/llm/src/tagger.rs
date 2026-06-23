@@ -195,8 +195,6 @@ impl JsonSchemaTagger {
         TAGGER_CONTRACT_VERSION
     }
 
-    // ── private helpers ──────────────────────────────────────────────────
-
     /// Build the full set of chat messages: a system instruction followed by a
     /// user message with explicitly-bracketed document content.
     fn build_messages(input: &TagInput) -> Vec<ChatMessage> {
@@ -451,6 +449,10 @@ impl Tagger for JsonSchemaTagger {
                 })
             }
         }
+    }
+
+    fn resolve_context_tokens(&self) -> Option<usize> {
+        self.client.context_tokens_for_role(Role::Text)
     }
 }
 

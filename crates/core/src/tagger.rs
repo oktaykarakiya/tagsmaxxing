@@ -54,4 +54,14 @@ pub trait Tagger: Send + Sync {
     /// # Errors
     /// Returns an error if the model call fails or the output violates the schema.
     async fn tag(&self, input: &TagInput, local_only: bool) -> anyhow::Result<TagOutput>;
+
+    /// Resolve the serving model's known context window size (in tokens).
+    ///
+    /// Returns `None` when the context size is unknown (config backends have
+    /// no model metadata). Callers use this at call time to compute token
+    /// budgets that adapt to the actual backend rather than a compile-time
+    /// constant.
+    fn resolve_context_tokens(&self) -> Option<usize> {
+        None
+    }
 }

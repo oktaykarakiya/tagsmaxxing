@@ -27,6 +27,7 @@ hex = { workspace = true }
 zip = { workspace = true }
 tar = { workspace = true }
 flate2 = { workspace = true }
+mail-parser = { workspace = true }
 
 [dev-dependencies]
 axum = "0.8"

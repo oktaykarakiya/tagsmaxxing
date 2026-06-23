@@ -57,7 +57,8 @@ fn mock_backend(
         slots, // max_concurrency
         pricing,
         data_class,
-        0, // priority
+        0,    // priority
+        None, // ctx_tokens
     ))
 }
 

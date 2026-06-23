@@ -207,6 +207,14 @@ impl LlamaClient {
         self.circuits.len()
     }
 
+    /// Minimum context window size (in tokens) among healthy backends for a role.
+    ///
+    /// Delegates to [`Pool::role_context_tokens`] and resolves at call time, so
+    /// context-size changes from DB routing reloads are observed without restart.
+    pub fn context_tokens_for_role(&self, role: Role) -> Option<usize> {
+        self.pool.role_context_tokens(role)
+    }
+
     // ── public API ──────────────────────────────────────────────────────
 
     /// Send a chat-completion request through the pool with failover.

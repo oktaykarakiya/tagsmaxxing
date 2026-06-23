@@ -184,6 +184,8 @@ pub const ALLOWED_MIMES: &[&str] = &[
     "application/x-xz",
     "application/zstd",
     "application/x-7z-compressed",
+    // Email files
+    "message/rfc822",
 ];
 
 // ── MIME deny-list ─────────────────────────────────────────────────────────────
@@ -538,6 +540,11 @@ fn detect_upload_mime(bytes: &[u8]) -> &'static str {
     if mime == "application/zip" {
         return classify_zip_container(bytes);
     }
+    // Emails are RFC 822 text — tree_magic_mini detects them as text/plain.
+    // Sniff for email headers so .eml files route to the Email extractor.
+    if mime == "text/plain" && looks_like_email(bytes) {
+        return "message/rfc822";
+    }
     mime
 }
 
@@ -587,6 +594,50 @@ fn classify_zip_container(bytes: &[u8]) -> &'static str {
     }
 
     "application/zip"
+}
+
+/// Return `true` when the first ~1 KB of `bytes` looks like an RFC 822 email.
+///
+/// Scans for at least 2 known email header names at line starts (e.g. `From:`,
+/// `To:`, `Subject:`, `Date:`, `MIME-Version:`, `Message-ID:`, `Received:`,
+/// `Return-Path:`, `Delivered-To:`). A `.eml` file is just text/plain to
+/// tree\_magic\_mini, so this content-based sniffing is needed to route it to
+/// the Email extractor rather than the Document/Text extractor.
+fn looks_like_email(bytes: &[u8]) -> bool {
+    const SCAN_LIMIT: usize = 1024;
+    let window = &bytes[..bytes.len().min(SCAN_LIMIT)];
+    let text = match std::str::from_utf8(window) {
+        Ok(t) => t,
+        Err(_) => return false,
+    };
+    let email_headers = [
+        "From:",
+        "To:",
+        "Cc:",
+        "Bcc:",
+        "Subject:",
+        "Date:",
+        "MIME-Version:",
+        "Message-ID:",
+        "Message-Id:",
+        "Received:",
+        "Return-Path:",
+        "Delivered-To:",
+        "Reply-To:",
+        "Content-Type:",
+        "Content-Transfer-Encoding:",
+        "In-Reply-To:",
+    ];
+    let mut found = 0usize;
+    for header in &email_headers {
+        if text.lines().any(|line| line.starts_with(header)) {
+            found += 1;
+            if found >= 2 {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Return `true` when `haystack` contains `needle` as a contiguous subslice.

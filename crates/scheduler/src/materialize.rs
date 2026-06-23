@@ -171,6 +171,7 @@ pub(crate) fn materialize_backend(entry: &RoutingEntry) -> Option<Backend> {
         pricing_for(model),
         model.data_class,
         0, /* priority — ordering comes from tiers/strategy, not this field */
+        model.ctx_tokens.map(i64::from),
     ))
 }
 
@@ -190,6 +191,7 @@ fn definition_matches(existing: &Backend, entry: &RoutingEntry) -> bool {
         || existing.pricing != pricing_for(model)
         || existing.caps.bits() != capset_for(entry).bits()
         || existing.max_concurrency != conc_for(model)
+        || existing.ctx_tokens != model.ctx_tokens.map(i64::from)
     {
         return false;
     }
@@ -446,6 +448,22 @@ mod tests {
 
         assert!(!Arc::ptr_eq(&first, &second), "changed endpoint rebuilds");
         assert_eq!(second.endpoint.as_deref(), Some("http://x:2"));
+    }
+
+    #[test]
+    fn sync_rebuilds_on_ctx_tokens_change() {
+        let map: DashMap<String, Arc<Backend>> = DashMap::new();
+        let e = entry(Role::Text, 3, "http://x:1");
+        sync_backends(&map, std::slice::from_ref(&e));
+        let first = Arc::clone(map.get("db:3").unwrap().value());
+
+        let mut bigger = e.clone();
+        bigger.model.ctx_tokens = Some(131072);
+        sync_backends(&map, std::slice::from_ref(&bigger));
+        let second = Arc::clone(map.get("db:3").unwrap().value());
+
+        assert!(!Arc::ptr_eq(&first, &second), "changed ctx_tokens rebuilds");
+        assert_eq!(second.ctx_tokens, Some(131072));
     }
 
     #[test]
