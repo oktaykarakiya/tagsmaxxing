@@ -166,7 +166,7 @@ async fn run() -> anyhow::Result<()> {
     // Audio/video: ffmpeg transcode + whisper-server transcription (BUG-INGEST
     // audio/video). WHISPER_URL is hot-swappable via WhisperConfig.
     let whisper_url =
-        std::env::var("WHISPER_URL").unwrap_or_else(|_| "http://localhost:9000".to_string());
+        std::env::var("WHISPER_URL").unwrap_or_else(|_| "http://localhost:8083".to_string());
     let whisper_config = WhisperConfig::new(whisper_url);
     extractors.insert(
         DocKind::Audio,

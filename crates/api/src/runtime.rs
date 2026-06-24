@@ -269,7 +269,7 @@ pub async fn build_runtime(
     // Audio/video: ffmpeg transcode + whisper transcription (WHISPER_URL is
     // hot-swappable via the WhisperConfig ArcSwap).
     let whisper_url =
-        std::env::var("WHISPER_URL").unwrap_or_else(|_| "http://localhost:9000".to_string());
+        std::env::var("WHISPER_URL").unwrap_or_else(|_| "http://localhost:8083".to_string());
     let whisper_config = WhisperConfig::new(whisper_url);
     extractors.insert(
         DocKind::Audio,
