@@ -46,42 +46,73 @@ pub use writer::RotatingWriter;
 /// (human-readable), controlled by `LOG_FORMAT`. The log level is filtered
 /// by `LOG_LEVEL` (default `info`).
 ///
+/// When the log directory cannot be created or the log file cannot be opened,
+/// the subscriber falls back to writing JSON logs to `stderr` so operators
+/// running via `cargo run` see output immediately — no logs are lost and no
+/// configuration change is needed.
+///
 /// # Errors
 ///
-/// Returns an error if the log directory cannot be created, the log file
-/// cannot be opened, or a global default subscriber is already set.
+/// Returns an error only if a global default subscriber is already set.
+/// Directory/disk errors trigger a fallback to stderr, not a hard failure.
 ///
 /// # Panics
 ///
 /// Panics if `LOG_MAX_GB` or `LOG_FILE_MAX_SIZE_MB` are zero (validated by
 /// [`LogConfig::from_env`]).
 pub fn init_tracing(config: &LogConfig) -> anyhow::Result<()> {
-    let writer = RotatingWriter::new(config)?;
-
     let env_filter = EnvFilter::try_new(&config.log_level).map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    match config.log_format {
-        LogFormat::Json => {
+    let writer_result = RotatingWriter::new(config);
+
+    match writer_result {
+        Ok(writer) => {
+            // File-based logging: directory was created, log file is open.
+            match config.log_format {
+                LogFormat::Json => {
+                    tracing_subscriber::registry()
+                        .with(
+                            fmt::layer()
+                                .json()
+                                .with_writer(writer)
+                                .with_target(true)
+                                .with_span_list(true)
+                                .with_ansi(false),
+                        )
+                        .with(env_filter)
+                        .try_init()
+                        .map_err(|e| anyhow::anyhow!("tracing subscriber already set: {e}"))?;
+                }
+                LogFormat::Pretty => {
+                    tracing_subscriber::registry()
+                        .with(
+                            fmt::layer()
+                                .pretty()
+                                .with_writer(writer)
+                                .with_target(true)
+                                .with_ansi(false),
+                        )
+                        .with(env_filter)
+                        .try_init()
+                        .map_err(|e| anyhow::anyhow!("tracing subscriber already set: {e}"))?;
+                }
+            }
+        }
+        Err(e) => {
+            // Fallback: log directory doesn't exist or is unwritable.
+            // Output JSON to stderr so cargo-run / host deployments see logs.
+            eprintln!(
+                "kb-logging: log directory {:?} is not writable ({e}); \
+                 falling back to stderr",
+                config.log_dir
+            );
             tracing_subscriber::registry()
                 .with(
                     fmt::layer()
                         .json()
-                        .with_writer(writer)
+                        .with_writer(std::io::stderr)
                         .with_target(true)
                         .with_span_list(true)
-                        .with_ansi(false),
-                )
-                .with(env_filter)
-                .try_init()
-                .map_err(|e| anyhow::anyhow!("tracing subscriber already set: {e}"))?;
-        }
-        LogFormat::Pretty => {
-            tracing_subscriber::registry()
-                .with(
-                    fmt::layer()
-                        .pretty()
-                        .with_writer(writer)
-                        .with_target(true)
                         .with_ansi(false),
                 )
                 .with(env_filter)
@@ -113,6 +144,25 @@ pub fn init_cli_tracing(level: &str) -> anyhow::Result<()> {
 
     Ok(())
 }
+
+// ── Request-extension correlation types ──────────────────────────────────────
+
+/// Newtype for a job id injected into request extensions so middleware can
+/// record it on the active tracing span.
+///
+/// Handlers that process a job (e.g. ingest worker) inject this into request
+/// extensions before calling inner logic; the middleware picks it up and
+/// records `job_id` on the span for log correlation.
+#[derive(Debug, Clone, Copy)]
+pub struct JobId(pub i64);
+
+/// Newtype for a document id injected into request extensions so middleware
+/// can record it on the active tracing span.
+///
+/// Handlers that operate on a specific document (e.g. search, retag) inject
+/// this; the middleware records `document_id` on the span for log correlation.
+#[derive(Debug, Clone, Copy)]
+pub struct DocumentId(pub i64);
 
 // ── Correlation span helpers (plan §18) ─────────────────────────────────────
 

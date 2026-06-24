@@ -647,6 +647,7 @@ async fn worker_loop<F, Fut>(
         match queue.claim_kinds(&kinds).await {
             Ok(Some(job)) => {
                 let job_id = job.id;
+                tracing::info!(%job_id, kind = %job.kind, doc_id = %job.document_id.map_or_else(|| "?".to_string(), |d| d.to_string()), "claimed job");
 
                 // Keep the lease alive while the handler runs. If an extension
                 // reports the job is no longer ours (reaped after a stall), the
@@ -680,15 +681,30 @@ async fn worker_loop<F, Fut>(
                 let outcome = match result {
                     Ok(()) => {
                         let _ = queue.complete(job_id).await;
+                        tracing::info!(%job_id, "job completed");
                         "done"
                     }
                     Err(e) => {
                         // Deterministic failures skip the retry budget — every
                         // retry would produce the same outcome (P15-T9).
                         let status = if let Some(msg) = e.strip_prefix(PERMANENT_ERROR_PREFIX) {
-                            queue.fail_permanent(job_id, msg).await
+                            let st = queue.fail_permanent(job_id, msg).await;
+                            tracing::error!(%job_id, attempts = %queue.max_retries(), error = %msg, "job permanently failed");
+                            st
                         } else {
-                            queue.fail(job_id, &e).await
+                            let st = queue.fail(job_id, &e).await;
+                            match st {
+                                Ok(JobStatus::Dead) => {
+                                    tracing::error!(%job_id, attempts = %queue.max_retries(), error = %e, "job permanently failed");
+                                }
+                                Ok(JobStatus::Failed) => {
+                                    tracing::warn!(%job_id, error = %e, "job failed and will retry");
+                                }
+                                _ => {
+                                    tracing::warn!(%job_id, error = %e, "job failed");
+                                }
+                            }
+                            st
                         };
                         match status {
                             Ok(JobStatus::Dead) => "dead",

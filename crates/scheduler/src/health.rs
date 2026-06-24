@@ -134,6 +134,21 @@ impl HealthLoop {
                 next_health(prev_healthy, probe_ok, prev_failures, threshold);
             failures.store(new_failures, Ordering::Release);
             backend.healthy.store(new_healthy, Ordering::Release);
+
+            // Log state transitions so operators can see backend health changes
+            // without scraping metrics.
+            if prev_healthy && !new_healthy {
+                tracing::warn!(
+                    backend_id = %backend.id,
+                    consecutive_failures = new_failures,
+                    "backend marked unhealthy"
+                );
+            } else if !prev_healthy && new_healthy {
+                tracing::info!(
+                    backend_id = %backend.id,
+                    "backend health restored"
+                );
+            }
         }
     }
 

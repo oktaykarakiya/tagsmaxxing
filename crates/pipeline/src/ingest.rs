@@ -838,6 +838,13 @@ pub fn compute_token_budgets(ctx_tokens: Option<usize>) -> (usize, usize) {
     let safe_ctx = (ctx as f64 * ESTIMATOR_SAFETY_FACTOR) as usize;
     let text_budget = safe_ctx.saturating_sub(3_300);
     let note_budget = DEFAULT_USER_NOTE_TOKENS.min(ctx.saturating_sub(1_800));
+    tracing::debug!(
+        resolved_ctx = ctx,
+        safe_ctx,
+        text_budget,
+        note_budget,
+        "computed tagger token budgets"
+    );
     (text_budget, note_budget)
 }
 
@@ -1077,8 +1084,25 @@ async fn tag_with_context_retry(
                     shrinks,
                     kept_bytes = cut,
                     target_tokens = target,
-                    "tagger prompt exceeded the model context; halving text (token-aware) and retrying"
+                    "context overflow detected, halving from {current_est} to {target} tokens"
                 );
+                tracing::debug!(
+                    shrinks,
+                    prev_token_est = current_est,
+                    target,
+                    kept_chars = cut,
+                    "halving tagger input for context retry"
+                );
+            }
+            Err(e) if shrinks >= MAX_CONTEXT_SHRINKS && is_context_overflow(&e) => {
+                tracing::error!(
+                    shrinks,
+                    max_halvings = MAX_CONTEXT_SHRINKS,
+                    remaining_text_len = tag_input.text.len(),
+                    "context overflow permanent after {} halvings; text cannot fit in any available model context window",
+                    MAX_CONTEXT_SHRINKS,
+                );
+                return Err(e);
             }
             other => return other,
         }

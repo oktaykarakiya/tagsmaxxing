@@ -560,6 +560,17 @@ impl LlamaClient {
                     if status.is_server_error() || status.as_u16() == 429 {
                         self.mark_unhealthy(&lease.backend_id);
                     }
+                    // Detect context-overflow 400s so operators can see which
+                    // backends are rejecting oversized prompts without digging
+                    // through the error chain.
+                    if status.as_u16() == 400 && body_text.contains("exceeds the available context")
+                    {
+                        tracing::warn!(
+                            backend_id = %lease.backend_id,
+                            tokens = %body_text,
+                            "context window overflow — text will be halved and retried"
+                        );
+                    }
                     self.record_failure(&lease.backend_id);
                     kb_metrics::record_request(
                         kb_metrics::RequestOutcome::Error,

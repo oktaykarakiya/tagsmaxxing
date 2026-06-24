@@ -141,6 +141,10 @@ pub async fn request_id_middleware(request: Request<axum::body::Body>, next: Nex
 /// runs outermost, this tenant span nests **inside** the active request span, and
 /// events emitted by handlers carry `request_id`, `tenant_id`, and `user_id`
 /// together.
+///
+/// Additional context fields — `tenant_id`, `job_id`, `document_id` — are
+/// recorded on the span when available from request extensions, so downstream
+/// log correlation works without handlers having to manage their own spans.
 async fn run_in_tenant_span(
     user: AuthUser,
     request: Request<axum::body::Body>,
@@ -148,6 +152,19 @@ async fn run_in_tenant_span(
 ) -> Result<Response, StatusCode> {
     let span =
         kb_logging::tenant_span(&user.tenant_id.to_string(), Some(&user.user_id.to_string()));
+
+    // Record additional correlation fields from request extensions when
+    // available (set by handlers in the ingest/search/document paths).
+    if let Some(tenant_id) = request.extensions().get::<AuthUser>().map(|u| u.tenant_id) {
+        span.record("tenant_id", tenant_id);
+    }
+    if let Some(job_id) = request.extensions().get::<kb_logging::JobId>() {
+        span.record("job_id", job_id.0);
+    }
+    if let Some(doc_id) = request.extensions().get::<kb_logging::DocumentId>() {
+        span.record("document_id", doc_id.0);
+    }
+
     run_maybe_idempotent(request, next).instrument(span).await
 }
 

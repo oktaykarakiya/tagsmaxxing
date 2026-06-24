@@ -320,6 +320,11 @@ impl Pool {
         // P9-T12: attach wait-queue notification so a waiter is woken when
         // this lease is dropped.
         if let Some(lease) = Self::try_fast_path(&cands, role) {
+            tracing::debug!(
+                backend_id = %lease.backend_id,
+                role = role.as_str(),
+                "acquired slot (fast path)"
+            );
             return Ok(lease.with_notify(role, Arc::clone(&self.wait_queue)));
         }
 

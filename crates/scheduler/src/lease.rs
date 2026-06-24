@@ -83,6 +83,7 @@ impl Lease {
 
 impl Drop for Lease {
     fn drop(&mut self) {
+        tracing::debug!(backend_id = %self.backend_id, "released slot");
         if let Some(ref notify) = self._on_drop {
             // The capacity permit's drop already ran (Rust drops fields in
             // declaration order, so `_guard` drops before `_on_drop`). Now
