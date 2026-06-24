@@ -229,7 +229,13 @@ async fn run() -> anyhow::Result<()> {
                 Arc::clone(&pg_store) as Arc<dyn kb_pipeline::ingest::IngestStore>,
             );
 
-            commands::ingest::run_ingest(&args, &pipeline, cli.tenant_id).await?;
+            commands::ingest::run_ingest(
+                &args,
+                &pipeline,
+                cli.tenant_id,
+                cfg.ingest.max_payload_bytes,
+            )
+            .await?;
         }
         Command::Search(args) => {
             let embed_llm = Arc::new(llm_factory());

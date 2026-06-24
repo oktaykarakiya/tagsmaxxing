@@ -514,6 +514,16 @@ impl IngestPipeline {
                     );
                     TagOutput::default()
                 }
+                // Non-media: the text has been halved by token estimate
+                // MAX_CONTEXT_SHRINKS times and still overflows —
+                // deterministic failure; do not burn the retry budget.
+                Err(e) if is_context_overflow(&e) => {
+                    return Err(anyhow::anyhow!(
+                        "{}context overflow after {} text halvings: {e:#}",
+                        crate::PERMANENT_ERROR_PREFIX,
+                        MAX_CONTEXT_SHRINKS
+                    ));
+                }
                 // Non-media: a transient backend-availability failure (no healthy
                 // backend, capacity exhausted, all retries failed / in cooldown) is
                 // not the client's fault — surface it as a typed BackendUnavailable so
@@ -791,6 +801,19 @@ pub const DEFAULT_TAGGER_TEXT_TOKENS: usize = 60_000;
 /// zero.
 const DEFAULT_CONTEXT_FALLBACK: usize = 65_536;
 
+/// Safety factor applied to the resolved context window before computing
+/// token budgets.  The character-level token estimator ([`token_cost_milli`])
+/// is a heuristic that can underestimate real BPE token counts by up to
+/// 2–4× for non-prose content (random alphanumerics, base64, injection
+/// strings).  Halving the available context gives a 2× safety margin that
+/// covers the worst measured case while still leaving ~30 k tokens for
+/// prose documents — far more than a useful tagger summary needs.
+const ESTIMATOR_SAFETY_FACTOR: f64 = 0.5;
+
+/// Halvings before giving up in [`tag_with_context_retry`]:
+/// with a 4 800-token budget the effective floor is ≥ 600 tokens.
+const MAX_CONTEXT_SHRINKS: usize = 3;
+
 /// Default token budget for the (already byte-capped) tagger user note when
 /// the backend context size is unknown.
 ///
@@ -800,17 +823,20 @@ pub const DEFAULT_USER_NOTE_TOKENS: usize = 1_500;
 
 /// Compute per-field token budgets from the actual serving context window size.
 ///
-/// - `text_budget = ctx.saturating_sub(3_300)` — leaves room for system prompt,
-///   metadata, wrapping, and the JSON output reserve.
-/// - `note_budget = 1_500.min(ctx.saturating_sub(1_800))` — capped at the
-///   flat default and also bounded by the available context.
+/// A [`ESTIMATOR_SAFETY_FACTOR`] is applied before deriving the text budget so
+/// the character-level estimator never risks a real BPE token overflow:
+/// `safe_ctx = floor(ctx × 0.5)`, then `text_budget = safe_ctx.saturating_sub(3_300)`.
+/// The note budget is not safety-factored — it is separately byte-capped and
+/// bounded at 1 500 tokens — so it uses the raw `ctx`.
 ///
 /// When `ctx_tokens` is `None` (unknown context), uses
 /// [`DEFAULT_CONTEXT_FALLBACK`] so the derived budgets match the compile-time
 /// defaults.
 pub fn compute_token_budgets(ctx_tokens: Option<usize>) -> (usize, usize) {
     let ctx = ctx_tokens.unwrap_or(DEFAULT_CONTEXT_FALLBACK);
-    let text_budget = ctx.saturating_sub(3_300);
+    // Apply safety factor so the heuristic estimator never risks a real overflow
+    let safe_ctx = (ctx as f64 * ESTIMATOR_SAFETY_FACTOR) as usize;
+    let text_budget = safe_ctx.saturating_sub(3_300);
     let note_budget = DEFAULT_USER_NOTE_TOKENS.min(ctx.saturating_sub(1_800));
     (text_budget, note_budget)
 }
@@ -1030,19 +1056,28 @@ async fn tag_with_context_retry(
     mut tag_input: TagInput,
     local_only: bool,
 ) -> anyhow::Result<TagOutput> {
-    /// Halvings before giving up: 4 800-token budget → ≥600 effective.
-    const MAX_CONTEXT_SHRINKS: usize = 3;
     let mut shrinks = 0;
     loop {
         match tagger.tag(&tag_input, local_only).await {
             Err(e) if shrinks < MAX_CONTEXT_SHRINKS && is_context_overflow(&e) => {
                 shrinks += 1;
-                let keep = tag_input.text.chars().count() / 2;
-                tag_input.text = tag_input.text.chars().take(keep).collect();
+                let current_est = token_estimate_milli(&tag_input.text) / 1_000;
+                let target = current_est.saturating_div(2).max(1);
+                let mut cost = 0usize;
+                let mut cut = tag_input.text.len();
+                for (i, ch) in tag_input.text.char_indices() {
+                    cost += token_cost_milli(ch);
+                    if cost.saturating_div(1_000) >= target {
+                        cut = i;
+                        break;
+                    }
+                }
+                tag_input.text.truncate(cut);
                 tracing::warn!(
                     shrinks,
-                    kept_chars = keep,
-                    "tagger prompt exceeded the model context; halving text and retrying"
+                    kept_bytes = cut,
+                    target_tokens = target,
+                    "tagger prompt exceeded the model context; halving text (token-aware) and retrying"
                 );
             }
             other => return other,
@@ -1358,7 +1393,11 @@ mod tests {
             .expect("must converge");
         assert_eq!(out.title, "ok");
         let calls = tagger.calls.lock().unwrap().clone();
-        assert_eq!(calls, vec![10_000, 5_000, 2_500], "halve until accepted");
+        assert_eq!(
+            calls,
+            vec![10_000, 4_999, 2_495],
+            "token-aware halving converges"
+        );
     }
 
     #[tokio::test]
@@ -1864,25 +1903,30 @@ mod tests {
     fn compute_token_budgets_defaults_to_64k_fallback() {
         // None (unknown context) → uses DEFAULT_CONTEXT_FALLBACK = 65536.
         let (text_budget, note_budget) = compute_token_budgets(None);
-        // 65536 - 3300 = 62236
-        assert_eq!(text_budget, 65_536 - 3_300);
+        // floor(65536 * 0.5) - 3300 = 29468
+        assert_eq!(
+            text_budget,
+            (65_536.0 * ESTIMATOR_SAFETY_FACTOR) as usize - 3_300
+        );
         assert_eq!(note_budget, 1_500);
     }
 
     #[test]
     fn compute_token_budgets_respects_known_context() {
-        // Known context of 128k → large budgets.
+        // Known context of 128k → large budgets, safety-factored.
         let (text_budget, note_budget) = compute_token_budgets(Some(131_072));
-        assert_eq!(text_budget, 131_072 - 3_300);
-        // 131072 - 1800 = 129272, clamped to 1500.
+        assert_eq!(
+            text_budget,
+            (131_072.0 * ESTIMATOR_SAFETY_FACTOR) as usize - 3_300
+        );
         assert_eq!(note_budget, 1_500);
     }
 
     #[test]
     fn compute_token_budgets_small_context_clamps() {
-        // A very small context window (4096) → budgets are minimal but non-negative.
+        // A very small context window (4096 * 0.5 = 2048 leaves no text budget).
         let (text_budget, note_budget) = compute_token_budgets(Some(4_096));
-        assert!(text_budget > 0);
+        assert_eq!(text_budget, 0);
         assert!(note_budget > 0);
         assert!(note_budget <= 1_500);
     }
@@ -1893,6 +1937,17 @@ mod tests {
         let (text_budget, note_budget) = compute_token_budgets(Some(100));
         assert_eq!(text_budget, 0);
         assert_eq!(note_budget, 0);
+    }
+
+    #[test]
+    fn compute_budgets_applies_safety_factor() {
+        let (text_budget, note_budget) = compute_token_budgets(Some(65_536));
+        // 65536 * 0.5 - 3300 = 29,468
+        assert!(
+            text_budget > 25_000 && text_budget < 35_000,
+            "expected ~29k text budget with 0.5 safety factor, got {text_budget}"
+        );
+        assert_eq!(note_budget, 1_500);
     }
 
     #[test]

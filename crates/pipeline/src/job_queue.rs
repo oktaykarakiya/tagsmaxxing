@@ -25,6 +25,7 @@ use sqlx::Row;
 use sqlx::postgres::{PgPool, PgRow};
 
 use crate::job_aging::AGING_STEP_SECS;
+use crate::job_lease::LEASE_EXPIRED_ERROR;
 
 // ── Backoff calculation ────────────────────────────────────
 
@@ -325,6 +326,69 @@ impl JobQueue {
         Ok(())
     }
 
+    /// Sweep all `running` jobs whose `locked_by` does NOT match the current
+    /// worker (`self.worker_id`).  This recovers jobs orphaned by a previous
+    /// process crash — the new process has a different PID, so `locked_by`
+    /// mismatch reliably identifies dead instances.  Jobs are requeued via
+    /// [`requeue_crashed`](Self::requeue_crashed) with no attempt penalty and no
+    /// backoff (the job didn't fail — the infrastructure did).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database operation fails.
+    pub async fn orphan_sweep(&self) -> anyhow::Result<usize> {
+        let result = sqlx::query(
+            "UPDATE jobs SET \
+                status = 'failed', \
+                lease_expires_at = NULL, \
+                locked_by = NULL, \
+                run_after = now() \
+             WHERE status = 'running' \
+               AND locked_by IS NOT NULL \
+               AND locked_by != $1 \
+             RETURNING id",
+        )
+        .bind(&self.worker_id)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to sweep orphaned running jobs")?;
+
+        let count = result.len();
+        if count > 0 {
+            tracing::info!(count, "recovered orphaned jobs from previous process");
+        }
+        Ok(count)
+    }
+
+    /// Requeue a `running` job that was orphaned by a process crash.  Does NOT
+    /// increment `attempts` and sets `run_after = now()` with zero backoff —
+    /// the job didn't fail, the infrastructure did.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database operation fails.
+    pub async fn requeue_crashed(&self, job_id: i64) -> anyhow::Result<()> {
+        let result = sqlx::query(
+            "UPDATE jobs SET \
+                status = 'failed', \
+                last_error = $2, \
+                lease_expires_at = NULL, \
+                locked_by = NULL, \
+                run_after = now() \
+             WHERE id = $1 AND status = 'running'",
+        )
+        .bind(job_id)
+        .bind(LEASE_EXPIRED_ERROR)
+        .execute(&self.pool)
+        .await
+        .context("failed to requeue crashed job")?;
+
+        if result.rows_affected() == 0 {
+            tracing::debug!(%job_id, "requeue_crashed: job not running, skipped");
+        }
+        Ok(())
+    }
+
     /// Mark a running job as failed.
     ///
     /// Reads the current attempt count under a row lock, increments it, stores the
@@ -422,7 +486,8 @@ impl JobQueue {
 
         if dead {
             sqlx::query(
-                "UPDATE jobs SET status = $1, attempts = $2, last_error = $3 \
+                "UPDATE jobs SET status = $1, attempts = $2, last_error = $3, \
+                        lease_expires_at = NULL, locked_by = NULL \
                  WHERE id = $4",
             )
             .bind(new_status.as_str())
@@ -462,7 +527,8 @@ impl JobQueue {
         } else {
             let run_after = Utc::now() + calculate_backoff(new_attempts, self.min_backoff_ms);
             sqlx::query(
-                "UPDATE jobs SET status = $1, attempts = $2, last_error = $3, run_after = $4 \
+                "UPDATE jobs SET status = $1, attempts = $2, last_error = $3, run_after = $4, \
+                        lease_expires_at = NULL, locked_by = NULL \
                  WHERE id = $5",
             )
             .bind(new_status.as_str())

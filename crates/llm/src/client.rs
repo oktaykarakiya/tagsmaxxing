@@ -615,6 +615,12 @@ impl LlamaClient {
     fn record_success(&self, backend_id: &str) {
         self.circuits.remove(backend_id);
         kb_metrics::record_circuit_breaker(backend_id, false);
+        // Restore backend health immediately — a successful call proves the
+        // backend is alive.  This avoids the up-to-10-second gap between a
+        // transient failure and the health loop's next probe.
+        if let Some(b) = self.pool.find_backend(backend_id) {
+            b.healthy.store(true, std::sync::atomic::Ordering::Release);
+        }
     }
 
     /// Record a failed call and trip the breaker if the threshold is reached.

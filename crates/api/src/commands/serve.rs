@@ -190,6 +190,10 @@ pub async fn run_serve(args: &ServeArgs) -> anyhow::Result<()> {
     // worker machines run `kb worker` (P15-T8) and this can be disabled with
     // [worker] enabled = false. Handles are joined at shutdown (drain).
     let worker_handles = if cfg.worker.enabled {
+        // Recover orphaned jobs from any previous crashed process (P16-T3).
+        if let Err(e) = job_queue.orphan_sweep().await {
+            tracing::error!(error = %e, "orphan sweep failed, jobs from previous process may be delayed");
+        }
         let workers = kb_api::worker_pool::spawn_ingest_workers(
             Arc::clone(&job_queue),
             Arc::clone(&ingest_pipeline),

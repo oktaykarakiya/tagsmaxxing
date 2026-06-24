@@ -655,35 +655,40 @@ pub async fn upload_submit(
     headers: HeaderMap,
     multipart: axum::extract::Multipart,
 ) -> Response {
+    // ── Resolve the ingest config per request (hot-swappable) ───────────────
+    let ingest_cfg = state
+        .app_config
+        .as_ref()
+        .map(|c| c.current().ingest.clone())
+        .unwrap_or_default();
+
     // ── 1. Parse multipart ──────────────────────────────────────────────────
-    let parsed = match crate::handlers::ingest::parse_multipart(
-        multipart,
-        crate::handlers::ingest::MAX_PAYLOAD_BYTES,
-    )
-    .await
-    {
-        Ok(p) => p,
-        Err(e) => {
-            // Over-size bodies → 413 Payload Too Large; malformed → 400 (F3).
-            let (status, code) = match &e {
-                crate::handlers::ingest::UploadParseError::TooLarge(_) => {
-                    (StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large")
-                }
-                crate::handlers::ingest::UploadParseError::Malformed(_) => {
-                    (StatusCode::BAD_REQUEST, "invalid_multipart")
-                }
-            };
-            tracing::warn!(error = %e, "upload_submit: bad multipart");
-            return (
-                status,
-                Json(serde_json::json!({
-                    "error": code,
-                    "message": e.to_string()
-                })),
-            )
-                .into_response();
-        }
-    };
+    let parsed =
+        match crate::handlers::ingest::parse_multipart(multipart, ingest_cfg.max_payload_bytes)
+            .await
+        {
+            Ok(p) => p,
+            Err(e) => {
+                // Over-size bodies → 413 Payload Too Large; malformed → 400 (F3).
+                let (status, code) = match &e {
+                    crate::handlers::ingest::UploadParseError::TooLarge(_) => {
+                        (StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large")
+                    }
+                    crate::handlers::ingest::UploadParseError::Malformed(_) => {
+                        (StatusCode::BAD_REQUEST, "invalid_multipart")
+                    }
+                };
+                tracing::warn!(error = %e, "upload_submit: bad multipart");
+                return (
+                    status,
+                    Json(serde_json::json!({
+                        "error": code,
+                        "message": e.to_string()
+                    })),
+                )
+                    .into_response();
+            }
+        };
 
     // ── 2. Validate CSRF (before other checks — failures are 403) ───────────
     if let Err((status, msg)) = csrf::validate_csrf(&headers, &parsed.csrf_token) {
@@ -808,12 +813,6 @@ pub async fn upload_submit(
 
     // ── 6. Process the upload — queued (default) or inline (P15-T5) ─────────
     // Same per-request hot-swappable mode switch as POST /api/ingest.
-    let ingest_cfg = state
-        .app_config
-        .as_ref()
-        .map(|c| c.current().ingest.clone())
-        .unwrap_or_default();
-
     if ingest_cfg.mode != "inline" {
         let job_queue = match state.job_queue.as_ref() {
             Some(q) => q,

@@ -419,8 +419,8 @@ pub fn build_router(state: AppState) -> Router {
             post(handlers::admin_quota::set_quota_override),
         )
         .layer(DefaultBodyLimit::max(
-            (handlers::ingest::MAX_PAYLOAD_BYTES + handlers::ingest::MULTIPART_FRAMING_HEADROOM)
-                as usize,
+            (kb_extract::security::MAX_INDIVIDUAL_FILE_BYTES
+                + handlers::ingest::MULTIPART_FRAMING_HEADROOM) as usize,
         ))
         .layer(from_fn_with_state(state.clone(), auth_middleware));
 

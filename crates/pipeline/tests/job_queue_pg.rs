@@ -939,7 +939,7 @@ async fn extend_lease_extends_own_running_job_only() -> anyhow::Result<()> {
 
 #[tokio::test]
 #[ignore = "requires Podman + image pull; run with --ignored"]
-async fn reaper_requeues_expired_lease_with_backoff() -> anyhow::Result<()> {
+async fn reaper_requeues_expired_lease_without_incrementing_attempts() -> anyhow::Result<()> {
     let s = setup().await?; // max_retries = 3
     let id = s
         .queue
@@ -951,13 +951,20 @@ async fn reaper_requeues_expired_lease_with_backoff() -> anyhow::Result<()> {
     let reaped = s.queue.reap_expired_leases().await?;
     assert_eq!(reaped, 1, "exactly the expired job is reaped");
 
-    // Normal fail() accounting applied: failed + attempts=1 + backoff + error.
+    // requeue_crashed: no attempt increment (crash ≠ failure),
+    // no backoff (run_after = now()), status = 'failed' with error stored.
     assert_eq!(job_status(&s.pool, id).await?, "failed");
-    assert_eq!(job_attempts(&s.pool, id).await?, 1);
+    assert_eq!(
+        job_attempts(&s.pool, id).await?,
+        0,
+        "crash recovery must not increment attempts"
+    );
+    let now = now_epoch(&s.pool).await?;
     let run_after = job_run_after_epoch(&s.pool, id).await?;
     assert!(
-        run_after > now_epoch(&s.pool).await?,
-        "backoff pushes run_after into the future"
+        (run_after - now).abs() < 5.0,
+        "crash recovery sets run_after ≈ now() (got delta {})",
+        run_after - now
     );
     let err: Option<String> = sqlx::query_scalar("SELECT last_error FROM jobs WHERE id = $1")
         .bind(id)
@@ -966,16 +973,16 @@ async fn reaper_requeues_expired_lease_with_backoff() -> anyhow::Result<()> {
     assert_eq!(err.as_deref(), Some(kb_pipeline::LEASE_EXPIRED_ERROR));
 
     // A second pass finds nothing (the job is no longer running) — the
-    // SELECT-then-fail race resolves as a skip, never a double-increment.
+    // SELECT-then-requeue_crashed race resolves as a skip, never a double-increment.
     assert_eq!(s.queue.reap_expired_leases().await?, 0);
-    assert_eq!(job_attempts(&s.pool, id).await?, 1);
+    assert_eq!(job_attempts(&s.pool, id).await?, 0);
     Ok(())
 }
 
 #[tokio::test]
 #[ignore = "requires Podman + image pull; run with --ignored"]
-async fn reaper_dead_letters_at_max_retries() -> anyhow::Result<()> {
-    let s = setup_queue(10, 1).await?; // max_retries = 1: first failure is fatal
+async fn reaper_does_not_dead_letter_crashed_jobs() -> anyhow::Result<()> {
+    let s = setup_queue(10, 1).await?; // max_retries = 1
     let id = s
         .queue
         .enqueue(s.tenant_id, None, None, None, JobKind::Ingest, 0)
@@ -984,11 +991,13 @@ async fn reaper_dead_letters_at_max_retries() -> anyhow::Result<()> {
     expire_lease(&s.pool, id).await?;
 
     assert_eq!(s.queue.reap_expired_leases().await?, 1);
+    // requeue_crashed does NOT increment attempts — crash ≠ failure.
     assert_eq!(
         job_status(&s.pool, id).await?,
-        "dead",
-        "retry budget exhausted → dead-letter"
+        "failed",
+        "crashed job is requeued, not dead-lettered"
     );
+    assert_eq!(job_attempts(&s.pool, id).await?, 0);
     Ok(())
 }
 
@@ -1010,7 +1019,7 @@ async fn reaper_ignores_live_leases() -> anyhow::Result<()> {
 
 #[tokio::test]
 #[ignore = "requires Podman + image pull; run with --ignored"]
-async fn reaped_job_is_reclaimable_after_backoff() -> anyhow::Result<()> {
+async fn reaped_job_is_reclaimable_after_crash_recovery() -> anyhow::Result<()> {
     let s = setup_queue(10, 3).await?; // 10 ms base backoff
     let id = s
         .queue
@@ -1020,15 +1029,14 @@ async fn reaped_job_is_reclaimable_after_backoff() -> anyhow::Result<()> {
     expire_lease(&s.pool, id).await?;
     assert_eq!(s.queue.reap_expired_leases().await?, 1);
 
-    // Skip the (tiny) backoff deterministically, then re-claim: the fresh
-    // claim stamps a fresh lease — full crashed-worker recovery round trip.
-    sqlx::query("UPDATE jobs SET run_after = now() WHERE id = $1")
-        .bind(id)
-        .execute(&s.pool)
-        .await?;
+    // requeue_crashed sets run_after = now(), so the job is immediately
+    // reclaimable — no manual backoff skip needed.
     let job = s.queue.claim().await?.expect("reaped job reclaimable");
     assert_eq!(job.id, id);
-    assert_eq!(job.attempts, 1);
+    assert_eq!(
+        job.attempts, 0,
+        "crash recovery must not increment attempts"
+    );
     let (lease, _) = job_lease(&s.pool, id).await?;
     assert!(
         lease.expect("fresh lease") > now_epoch(&s.pool).await?,
@@ -1244,5 +1252,178 @@ async fn worker_pool_routes_permanent_errors_to_immediate_dead() -> anyhow::Resu
         "prefix must be stripped from last_error: {last_error}"
     );
     assert_eq!(doc_status(&s.pool, doc_id).await?, "failed");
+    Ok(())
+}
+
+// ── orphan_sweep / requeue_crashed (P16-T3) ──────────────────────────────────
+
+/// Fetch a job's locked_by from the database.
+async fn job_locked_by(pool: &PgPool, job_id: i64) -> anyhow::Result<Option<String>> {
+    let val: Option<String> = sqlx::query_scalar("SELECT locked_by FROM jobs WHERE id = $1")
+        .bind(job_id)
+        .fetch_one(pool)
+        .await?;
+    Ok(val)
+}
+
+/// After a crash, orphan_sweep recovers running jobs from a different worker.
+#[tokio::test]
+#[ignore = "requires Podman + image pull; run with --ignored"]
+async fn orphan_sweep_recovers_jobs_from_other_worker() -> anyhow::Result<()> {
+    let s = setup().await?;
+    let current = &s.queue;
+    let other = Arc::new(JobQueue::new(s.pool.clone(), 1_000, 3).with_worker_id("other:1"));
+
+    // Enqueue + claim as "other" worker
+    let job_id = other
+        .enqueue(s.tenant_id, None, None, None, JobKind::Ingest, 0)
+        .await?;
+    other
+        .claim_kinds(&[JobKind::Ingest])
+        .await?
+        .expect("other worker should claim");
+    assert_eq!(
+        job_status(&s.pool, job_id).await?,
+        "running",
+        "claimed job should be running"
+    );
+    assert_eq!(
+        job_locked_by(&s.pool, job_id).await?,
+        Some("other:1".to_string()),
+        "locked_by should be other worker"
+    );
+
+    // Current worker sweeps — should recover the orphan
+    let count = current.orphan_sweep().await?;
+    assert_eq!(count, 1, "should recover 1 orphaned job");
+
+    // Verify the job is now claimable by current worker
+    assert_eq!(job_status(&s.pool, job_id).await?, "failed");
+    let claimed = current
+        .claim_kinds(&[JobKind::Ingest])
+        .await?
+        .expect("orphaned job should be claimable after sweep");
+    assert_eq!(claimed.id, job_id);
+
+    // Should NOT increment attempts (claim doesn't increment, requeue_crashed
+    // in orphan_sweep doesn't increment; enqueue starts at 0).
+    assert_eq!(
+        job_attempts(&s.pool, job_id).await?,
+        0,
+        "orphan sweep must not increment attempts"
+    );
+
+    Ok(())
+}
+
+/// requeue_crashed does NOT increment attempts — crash ≠ job failure.
+#[tokio::test]
+#[ignore = "requires Podman + image pull; run with --ignored"]
+async fn requeue_crashed_does_not_increment_attempts() -> anyhow::Result<()> {
+    let s = setup().await?;
+    let id = s
+        .queue
+        .enqueue(s.tenant_id, None, None, None, JobKind::Ingest, 0)
+        .await?;
+    let _ = s.queue.claim().await?.expect("claimable");
+    assert_eq!(job_status(&s.pool, id).await?, "running");
+    assert_eq!(job_attempts(&s.pool, id).await?, 0);
+
+    s.queue.requeue_crashed(id).await?;
+    assert_eq!(job_status(&s.pool, id).await?, "failed");
+    assert_eq!(
+        job_attempts(&s.pool, id).await?,
+        0,
+        "requeue_crashed must not increment attempts"
+    );
+
+    let last_error: Option<String> =
+        sqlx::query_scalar("SELECT last_error FROM jobs WHERE id = $1")
+            .bind(id)
+            .fetch_one(&s.pool)
+            .await?;
+    assert_eq!(
+        last_error.as_deref(),
+        Some(kb_pipeline::LEASE_EXPIRED_ERROR),
+        "requeue_crashed stores the expired-lease error"
+    );
+
+    Ok(())
+}
+
+/// orphan_sweep with the SAME worker_id does NOT recover its own running jobs.
+#[tokio::test]
+#[ignore = "requires Podman + image pull; run with --ignored"]
+async fn orphan_sweep_skips_own_running_jobs() -> anyhow::Result<()> {
+    let s = setup().await?;
+    let id = s
+        .queue
+        .enqueue(s.tenant_id, None, None, None, JobKind::Ingest, 0)
+        .await?;
+    let _ = s.queue.claim().await?.expect("own worker claims");
+    assert_eq!(job_status(&s.pool, id).await?, "running");
+
+    let count = s.queue.orphan_sweep().await?;
+    assert_eq!(count, 0, "own worker's running job must not be swept");
+    assert_eq!(
+        job_status(&s.pool, id).await?,
+        "running",
+        "own job remains running"
+    );
+
+    Ok(())
+}
+
+/// fail() clears lease_expires_at and locked_by (P16-T3 cleanup).
+#[tokio::test]
+#[ignore = "requires Podman + image pull; run with --ignored"]
+async fn fail_clears_lease_fields() -> anyhow::Result<()> {
+    let s = setup().await?;
+    let id = s
+        .queue
+        .enqueue(s.tenant_id, None, None, None, JobKind::Ingest, 0)
+        .await?;
+    let _ = s.queue.claim().await?.expect("claimable");
+    // Claim stamps lease fields.
+    let (lease_before, locked_before) = job_lease(&s.pool, id).await?;
+    assert!(lease_before.is_some(), "claim sets lease_expires_at");
+    assert!(locked_before.is_some(), "claim sets locked_by");
+
+    s.queue.fail(id, "test error").await?;
+    let (lease_after, locked_after) = job_lease(&s.pool, id).await?;
+    assert!(
+        lease_after.is_none(),
+        "fail must clear lease_expires_at (got {lease_after:?})"
+    );
+    assert!(
+        locked_after.is_none(),
+        "fail must clear locked_by (got {locked_after:?})"
+    );
+
+    Ok(())
+}
+
+/// fail_permanent dead-letter also clears lease fields.
+#[tokio::test]
+#[ignore = "requires Podman + image pull; run with --ignored"]
+async fn fail_permanent_clears_lease_fields() -> anyhow::Result<()> {
+    let s = setup().await?;
+    let id = s
+        .queue
+        .enqueue(s.tenant_id, None, None, None, JobKind::Ingest, 0)
+        .await?;
+    let _ = s.queue.claim().await?.expect("claimable");
+
+    s.queue.fail_permanent(id, "perm failure").await?;
+    let (lease_after, locked_after) = job_lease(&s.pool, id).await?;
+    assert!(
+        lease_after.is_none(),
+        "fail_permanent must clear lease_expires_at"
+    );
+    assert!(
+        locked_after.is_none(),
+        "fail_permanent must clear locked_by"
+    );
+
     Ok(())
 }

@@ -59,7 +59,11 @@ pub struct ErrorResponse {
     message: String,
 }
 
-/// Payload size limit for ingest requests: 100 MiB.
+/// Reference payload size limit for ingest requests: 100 MiB.
+///
+/// This is the canonical default constant, referenced by docs/comments.
+/// The actual runtime limit is read from the hot-swappable config field
+/// `ingest.max_payload_bytes` (overridable via `KB_MAX_UPLOAD_BYTES` env var).
 pub const MAX_PAYLOAD_BYTES: u64 = 100 * 1024 * 1024;
 
 /// Extra headroom on the HTTP body limit for multipart framing overhead
@@ -165,7 +169,7 @@ pub async fn ingest(
     };
 
     // ── Parse multipart ──────────────────────────────────────────────────────
-    let parsed = parse_multipart(multipart, MAX_PAYLOAD_BYTES)
+    let parsed = parse_multipart(multipart, ingest_cfg.max_payload_bytes)
         .await
         .map_err(multipart_error_to_response)?;
 

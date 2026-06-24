@@ -44,6 +44,9 @@ pub fn apply_env(cfg: &mut Config, env: &EnvMap) -> Result<(), ConfigError> {
     if let Some(v) = env.get("KB_MAX_RETRIES") {
         cfg.scheduler.max_retries = parse_env("KB_MAX_RETRIES", v)?;
     }
+    if let Some(v) = env.get("KB_MAX_UPLOAD_BYTES") {
+        cfg.ingest.max_payload_bytes = parse_env("KB_MAX_UPLOAD_BYTES", v)?;
+    }
     Ok(())
 }
 
@@ -141,6 +144,17 @@ mod tests {
             err,
             ConfigError::InvalidEnvValue { var: "PORT", .. }
         ));
+    }
+
+    #[test]
+    fn kb_max_upload_bytes_overrides_max_payload_bytes() {
+        let mut cfg = Config::default();
+        apply_env(
+            &mut cfg,
+            &map(&[("KB_MAX_UPLOAD_BYTES", "5242880")]), // 5 MiB
+        )
+        .unwrap();
+        assert_eq!(cfg.ingest.max_payload_bytes, 5 * 1024 * 1024);
     }
 
     #[test]

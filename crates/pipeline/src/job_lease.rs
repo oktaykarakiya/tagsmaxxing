@@ -52,14 +52,18 @@ impl JobQueue {
     /// Requeue running jobs whose lease has expired (crashed-worker recovery).
     ///
     /// Selects up to [`REAP_BATCH`] candidates **without holding locks** and
-    /// delegates each to [`fail`](Self::fail), which row-locks the job and
-    /// verifies it is still `running` — so a race with the job's own worker
-    /// (or another reaper) resolves safely: whoever loses the race simply
-    /// skips. Returns the number of jobs actually reaped.
+    /// delegates each to [`requeue_crashed`](JobQueue::requeue_crashed), which
+    /// row-locks the job and verifies it is still `running` — so a race with the
+    /// job's own worker (or another reaper) resolves safely: whoever loses the
+    /// race simply skips. Returns the number of jobs actually reaped.
+    ///
+    /// Unlike the old `fail()` path, `requeue_crashed` does **not** increment
+    /// `attempts` and sets `run_after = now()` with zero backoff — the job
+    /// didn't fail, the infrastructure did.
     ///
     /// # Errors
-    /// Returns an error if the candidate query fails (individual `fail` races
-    /// are skipped, not errors).
+    /// Returns an error if the candidate query fails (individual `requeue_crashed`
+    /// races are skipped, not errors).
     pub async fn reap_expired_leases(&self) -> anyhow::Result<u32> {
         let ids: Vec<i64> = sqlx::query_scalar(
             "SELECT id FROM jobs \
@@ -76,17 +80,16 @@ impl JobQueue {
 
         let mut reaped = 0u32;
         for id in ids {
-            match self.fail(id, LEASE_EXPIRED_ERROR).await {
-                Ok(status) => {
+            match self.requeue_crashed(id).await {
+                Ok(()) => {
                     tracing::warn!(
                         job_id = id,
-                        new_status = status.as_str(),
                         "reaped expired job lease (worker presumed crashed)"
                     );
                     reaped += 1;
                 }
                 // Lost the race (job completed / already failed / re-claimed
-                // between SELECT and fail) — fail() refused; skip.
+                // between SELECT and requeue_crashed) — requeue_crashed() refused; skip.
                 Err(e) => {
                     tracing::debug!(job_id = id, error = %e, "lease reap skipped (raced)");
                 }

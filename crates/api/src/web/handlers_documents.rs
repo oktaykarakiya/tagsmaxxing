@@ -743,31 +743,36 @@ pub async fn add_page(
     headers: HeaderMap,
     multipart: axum::extract::Multipart,
 ) -> Response {
-    let parsed = match crate::handlers::ingest::parse_multipart(
-        multipart,
-        crate::handlers::ingest::MAX_PAYLOAD_BYTES,
-    )
-    .await
-    {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::warn!(error = %e, "add_page: bad multipart");
-            let csrf = generate_fresh_csrf();
-            let mut resp = build_document_detail_page(
-                &state,
-                auth_user.tenant_id,
-                doc_id,
-                &csrf,
-                &format!("Invalid request: {e}"),
-            )
-            .await;
-            resp.headers_mut().insert(
-                axum::http::header::SET_COOKIE,
-                csrf::csrf_cookie_value(&csrf, state.session_ttl, state.secure_cookies),
-            );
-            return resp;
-        }
-    };
+    // ── Resolve the ingest config per request (hot-swappable) ───────────────
+    let ingest_cfg = state
+        .app_config
+        .as_ref()
+        .map(|c| c.current().ingest.clone())
+        .unwrap_or_default();
+
+    let parsed =
+        match crate::handlers::ingest::parse_multipart(multipart, ingest_cfg.max_payload_bytes)
+            .await
+        {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(error = %e, "add_page: bad multipart");
+                let csrf = generate_fresh_csrf();
+                let mut resp = build_document_detail_page(
+                    &state,
+                    auth_user.tenant_id,
+                    doc_id,
+                    &csrf,
+                    &format!("Invalid request: {e}"),
+                )
+                .await;
+                resp.headers_mut().insert(
+                    axum::http::header::SET_COOKIE,
+                    csrf::csrf_cookie_value(&csrf, state.session_ttl, state.secure_cookies),
+                );
+                return resp;
+            }
+        };
 
     // Validate CSRF.
     if let Err((_status, msg)) = csrf::validate_csrf(&headers, &parsed.csrf_token) {

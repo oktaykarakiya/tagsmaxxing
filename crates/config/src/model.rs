@@ -494,6 +494,9 @@ const fn default_max_pending_per_tenant() -> u32 {
 const fn default_max_pending_global() -> u32 {
     2000
 }
+const fn default_max_payload_bytes() -> u64 {
+    100 * 1024 * 1024
+}
 
 /// Upload-ingestion mode + bounded-queue admission (plan §16, P15-T4).
 ///
@@ -514,6 +517,11 @@ pub struct Ingest {
     /// Global cap on not-yet-done ingest jobs across all tenants.
     #[serde(default = "default_max_pending_global")]
     pub max_pending_global: u32,
+    /// Maximum total bytes allowed in a single multipart upload request
+    /// (default: 100 MiB). Override with `KB_MAX_UPLOAD_BYTES` env var.
+    /// Files larger than this are rejected with 413 Payload Too Large.
+    #[serde(default = "default_max_payload_bytes")]
+    pub max_payload_bytes: u64,
 }
 
 impl Default for Ingest {
@@ -522,6 +530,7 @@ impl Default for Ingest {
             mode: default_ingest_mode(),
             max_pending_per_tenant: default_max_pending_per_tenant(),
             max_pending_global: default_max_pending_global(),
+            max_payload_bytes: default_max_payload_bytes(),
         }
     }
 }
@@ -960,6 +969,11 @@ max_retries = 3
         assert_eq!(i.max_pending_global, 2000);
         let cfg: Config = toml::from_str("").expect("empty config parses");
         assert_eq!(cfg.ingest.mode, "queued");
+    }
+
+    #[test]
+    fn ingest_max_payload_bytes_defaults_to_100mb() {
+        assert_eq!(Ingest::default().max_payload_bytes, 100 * 1024 * 1024);
     }
 
     #[test]

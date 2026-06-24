@@ -21,8 +21,9 @@ pub async fn run_ingest(
     args: &IngestArgs,
     pipeline: &IngestPipeline,
     tenant_id: i64,
+    max_payload_bytes: u64,
 ) -> anyhow::Result<()> {
-    let files = read_files(&args.files)?;
+    let files = read_files(&args.files, max_payload_bytes)?;
 
     let note = args.note.clone();
     // CLI ingest runs as the operator (no per-user attribution), so usage is
@@ -50,14 +51,25 @@ pub async fn run_ingest(
 /// The `page_label` is left empty — multi-page labelling is handled by the
 /// `--as-document` flag at a higher level.
 ///
+/// Files exceeding `max_bytes` are rejected before reading.
+///
 /// # Errors
 ///
 /// Returns an error if any individual file cannot be read (missing, permission
-/// denied, etc.). The error message includes the offending path.
-fn read_files(paths: &[String]) -> anyhow::Result<Vec<IngestFile>> {
+/// denied, etc.) or exceeds the size limit. The error message includes the
+/// offending path.
+fn read_files(paths: &[String], max_bytes: u64) -> anyhow::Result<Vec<IngestFile>> {
     paths
         .iter()
         .map(|p| {
+            let metadata = std::fs::metadata(p)
+                .with_context(|| format!("failed to read metadata for '{p}'"))?;
+            if metadata.len() > max_bytes {
+                anyhow::bail!(
+                    "file '{p}' exceeds maximum upload size of {max_bytes} bytes ({len} bytes)",
+                    len = metadata.len()
+                );
+            }
             let bytes = std::fs::read(p).with_context(|| format!("failed to read file '{p}'"))?;
             Ok(IngestFile {
                 bytes,
@@ -77,6 +89,8 @@ mod tests {
     use std::io::Write;
     use tempfile::NamedTempFile;
 
+    const TEST_MAX_BYTES: u64 = 100 * 1024 * 1024;
+
     // ── read_files tests ──────────────────────────────────────────────────
 
     #[test]
@@ -85,7 +99,7 @@ mod tests {
         writeln!(tmp, "hello world").unwrap();
         let path = tmp.path().to_string_lossy().to_string();
 
-        let files = read_files(&[path]).unwrap();
+        let files = read_files(&[path], TEST_MAX_BYTES).unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].bytes, b"hello world\n");
         assert!(files[0].page_label.is_none());
@@ -105,7 +119,7 @@ mod tests {
             tmp2.path().to_string_lossy().to_string(),
             tmp3.path().to_string_lossy().to_string(),
         ];
-        let files = read_files(&paths).unwrap();
+        let files = read_files(&paths, TEST_MAX_BYTES).unwrap();
         assert_eq!(files.len(), 3);
         assert_eq!(files[0].bytes, b"aaa\n");
         assert_eq!(files[1].bytes, b"bbb\n");
@@ -114,10 +128,10 @@ mod tests {
 
     #[test]
     fn read_missing_file_returns_error() {
-        let result = read_files(&["/nonexistent/path/xyzzy.txt".to_string()]);
+        let result = read_files(&["/nonexistent/path/xyzzy.txt".to_string()], TEST_MAX_BYTES);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("failed to read file"));
+        assert!(err.contains("failed to read metadata"));
         assert!(err.contains("xyzzy.txt"));
     }
 
@@ -125,7 +139,7 @@ mod tests {
     fn read_empty_file_is_ok() {
         let tmp = NamedTempFile::new().unwrap();
         let path = tmp.path().to_string_lossy().to_string();
-        let files = read_files(&[path]).unwrap();
+        let files = read_files(&[path], TEST_MAX_BYTES).unwrap();
         assert_eq!(files.len(), 1);
         assert!(files[0].bytes.is_empty());
     }
@@ -137,7 +151,7 @@ mod tests {
         tmp.write_all(&data).unwrap();
         let path = tmp.path().to_string_lossy().to_string();
 
-        let files = read_files(&[path]).unwrap();
+        let files = read_files(&[path], TEST_MAX_BYTES).unwrap();
         assert_eq!(files[0].bytes, data);
     }
 
@@ -147,7 +161,19 @@ mod tests {
         writeln!(tmp, "content").unwrap();
         let path = tmp.path().to_string_lossy().to_string();
 
-        let files = read_files(std::slice::from_ref(&path)).unwrap();
+        let files = read_files(std::slice::from_ref(&path), TEST_MAX_BYTES).unwrap();
         assert_eq!(files[0].path.as_deref(), Some(&*path));
+    }
+
+    #[test]
+    fn oversized_file_is_rejected() {
+        let mut tmp = NamedTempFile::new().unwrap();
+        writeln!(tmp, "more than 10 bytes").unwrap();
+        let path = tmp.path().to_string_lossy().to_string();
+
+        let result = read_files(&[path], 5);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("exceeds maximum upload size"));
     }
 }
