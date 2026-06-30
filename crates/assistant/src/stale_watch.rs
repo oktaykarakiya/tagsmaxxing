@@ -22,7 +22,7 @@ pub enum WatchSchedule {
 impl WatchSchedule {
     /// Parse from a config/DB string.
     #[must_use]
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
             "daily" => Some(Self::Daily),
             "weekly" => Some(Self::Weekly),
@@ -103,9 +103,9 @@ mod tests {
 
     #[test]
     fn schedule_parsing() {
-        assert_eq!(WatchSchedule::from_str("daily"), Some(WatchSchedule::Daily));
-        assert_eq!(WatchSchedule::from_str("weekly"), Some(WatchSchedule::Weekly));
-        assert_eq!(WatchSchedule::from_str("bogus"), None);
+        assert_eq!(WatchSchedule::parse("daily"), Some(WatchSchedule::Daily));
+        assert_eq!(WatchSchedule::parse("weekly"), Some(WatchSchedule::Weekly));
+        assert_eq!(WatchSchedule::parse("bogus"), None);
     }
 
     #[test]
@@ -125,6 +125,57 @@ mod tests {
             last_checked_at: None,
             next_check_at: Utc::now() - Duration::hours(1),
             active: true,
+        };
+        assert!(watch.is_due(Utc::now()));
+    }
+
+    #[test]
+    fn stale_watch_not_due_yet() {
+        let watch = StaleWatch {
+            id: 2,
+            tenant_id: 1,
+            relpath: "future.txt".into(),
+            department: None,
+            schedule: WatchSchedule::Daily,
+            last_checked_at: None,
+            next_check_at: Utc::now() + Duration::hours(1),
+            active: true,
+        };
+        assert!(!watch.is_due(Utc::now()));
+    }
+
+    #[test]
+    fn stale_watch_daily_edge() {
+        let now = Utc::now();
+        let watch = StaleWatch {
+            id: 3,
+            tenant_id: 1,
+            relpath: "edge.txt".into(),
+            department: None,
+            schedule: WatchSchedule::Daily,
+            last_checked_at: Some(now - Duration::hours(24)),
+            next_check_at: now,
+            active: true,
+        };
+        assert!(watch.is_due(Utc::now()));
+    }
+
+    #[test]
+    fn stale_watch_monthly_interval() {
+        assert_eq!(WatchSchedule::Monthly.interval(), Duration::days(30));
+    }
+
+    #[test]
+    fn stale_watch_inactive_still_reports_due() {
+        let watch = StaleWatch {
+            id: 4,
+            tenant_id: 1,
+            relpath: "inactive.txt".into(),
+            department: None,
+            schedule: WatchSchedule::Daily,
+            last_checked_at: None,
+            next_check_at: Utc::now() - Duration::hours(1),
+            active: false,
         };
         assert!(watch.is_due(Utc::now()));
     }

@@ -60,3 +60,28 @@ impl Default for AssistantConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_defaults_have_expected_values() {
+        let cfg = AssistantConfig::default();
+        assert!(cfg.opencode_bin.is_none());
+        assert_eq!(cfg.prompt_timeout_secs, 300);
+        assert_eq!(cfg.context_budget_pct, 85);
+        assert!(cfg.sensitive_departments.contains(&"accounting".to_string()));
+        assert!(cfg.sensitive_departments.contains(&"legal".to_string()));
+        assert!(cfg.never_copy_patterns.contains(&"*.pem".to_string()));
+        assert!(cfg.never_copy_patterns.contains(&"token.json".to_string()));
+        assert!(cfg.date_prefix_regex.contains(r"\d{4}-\d{2}-\d{2}"));
+    }
+
+    #[test]
+    fn config_date_prefix_regex_compiles() {
+        let cfg = AssistantConfig::default();
+        let result = regex::Regex::new(&cfg.date_prefix_regex);
+        assert!(result.is_ok());
+    }
+}

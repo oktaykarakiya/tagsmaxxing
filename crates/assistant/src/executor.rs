@@ -175,4 +175,47 @@ mod tests {
         assert_eq!(strip_ansi("no escape codes here"), "no escape codes here");
         assert_eq!(strip_ansi(""), "");
     }
+
+    #[test]
+    fn strip_ansi_multiple_sequences() {
+        assert_eq!(
+            strip_ansi("\x1b[1mBold\x1b[0m and \x1b[32mgreen\x1b[0m"),
+            "Bold and green"
+        );
+    }
+
+    #[test]
+    fn strip_ansi_partial_escape_byte() {
+        // ESC without '[' — no else branch to push the byte, so it's dropped
+        assert_eq!(strip_ansi("\x1b"), "");
+    }
+
+    #[test]
+    fn strip_ansi_non_ascii() {
+        assert_eq!(strip_ansi("\x1b[33m警告\x1b[0m"), "警告");
+    }
+
+    #[test]
+    fn strip_ansi_no_sequences() {
+        assert_eq!(strip_ansi("plain text 123"), "plain text 123");
+    }
+
+    #[test]
+    fn strip_ansi_empty_string() {
+        assert_eq!(strip_ansi(""), "");
+    }
+
+    #[test]
+    fn strip_ansi_only_escapes() {
+        assert_eq!(strip_ansi("\x1b[1m\x1b[31m\x1b[0m"), "");
+    }
+
+    #[test]
+    fn executor_clone_preserves_config() {
+        let original = Executor::new(Path::new("/usr/bin/opencode"), "local/test-model", 30);
+        let clone = original.clone();
+        // Clone must succeed without panic
+        original.kill();
+        clone.kill();
+    }
 }

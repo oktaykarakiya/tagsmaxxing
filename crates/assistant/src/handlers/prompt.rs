@@ -72,7 +72,13 @@ pub async fn assistant_prompt_handler(
         .into_response();
     }
 
-    let executor = state.executor.as_ref().unwrap();
+    let executor = match &state.executor {
+        Some(e) => e,
+        None => {
+            return sse_single("Assistant is disabled: opencode_bin not configured".to_string())
+                .into_response();
+        }
+    };
 
     let session_key = form
         .session_key

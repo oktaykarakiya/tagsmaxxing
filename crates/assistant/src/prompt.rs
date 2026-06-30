@@ -160,4 +160,68 @@ mod tests {
         let pb = PromptBuilder::new(0);
         assert_eq!(pb.context_budget_pct, 1);
     }
+
+    #[test]
+    fn prompt_thread_continuity_section() {
+        let pb = PromptBuilder::new(85);
+        let result = pb.build("prompt", "", "", "", "Previous: we discussed invoices", 4096);
+        assert!(result.contains("[THREAD CONTINUITY]"));
+        assert!(result.contains("invoices"));
+    }
+
+    #[test]
+    fn prompt_decisions_section() {
+        let pb = PromptBuilder::new(85);
+        let result = pb.build("prompt", "", "", "Decided: use Rust", "", 4096);
+        assert!(result.contains("[USER DECISIONS]"));
+        assert!(result.contains("Rust"));
+    }
+
+    #[test]
+    fn prompt_exact_budget_boundary() {
+        let pb = PromptBuilder::new(85);
+        // budget = 400 * 0.85 = 340 tokens = 1360 chars
+        // format overhead with one section + "x": 38 chars
+        // content = 1360 - 38 = 1322 chars — exactly at boundary
+        let content = "a".repeat(1322);
+        let result = pb.build("x", &content, "", "", "", 400);
+        assert!(result.contains("[RELEVANT PAST CONTEXT]"));
+        assert!(result.contains("x"));
+        assert!(result.contains(&content), "full content should be present at exact boundary");
+    }
+
+    #[test]
+    fn prompt_user_prompt_exceeds_budget_alone() {
+        let pb = PromptBuilder::new(85);
+        let user_prompt = "x".repeat(500);
+        // budget = 100 * 0.85 = 85 tokens; user_section = ~127 tokens >= 85 → bare prompt
+        let result = pb.build(&user_prompt, &"y".repeat(500), "", "", "", 100);
+        assert_eq!(result, user_prompt);
+    }
+
+    #[test]
+    fn prompt_unicode_tokens() {
+        let tokens = PromptBuilder::estimate_tokens("🚀 hello 世界");
+        assert!(tokens > 0);
+    }
+
+    #[test]
+    fn prompt_all_sections_empty() {
+        let pb = PromptBuilder::new(85);
+        let result = pb.build("just a prompt", "", "", "", "", 4096);
+        assert_eq!(result, "just a prompt");
+    }
+
+    #[test]
+    fn prompt_section_priority_order() {
+        let pb = PromptBuilder::new(85);
+        let result = pb.build("go", "context-data", "task-data", "decision-data", "thread-data", 20000);
+        let task_pos = result.find("[USER TASK LIST]").unwrap();
+        let decision_pos = result.find("[USER DECISIONS]").unwrap();
+        let context_pos = result.find("[RELEVANT PAST CONTEXT]").unwrap();
+        let thread_pos = result.find("[THREAD CONTINUITY]").unwrap();
+        assert!(task_pos < decision_pos);
+        assert!(decision_pos < context_pos);
+        assert!(context_pos < thread_pos);
+    }
 }

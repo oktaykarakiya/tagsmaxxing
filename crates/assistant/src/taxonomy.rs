@@ -99,7 +99,7 @@ impl Taxonomy {
             return "confidential";
         }
         // Root-level files with no subdirectory are "internal"
-        if path.parent().map_or(true, |p| p.as_os_str().is_empty()) {
+        if path.parent().is_none_or(|p| p.as_os_str().is_empty()) {
             return "internal";
         }
         "public"
@@ -223,5 +223,54 @@ mod tests {
         assert!(Regex::new(&re).unwrap().is_match("my-secret-file.txt"));
         assert!(Regex::new(&re).unwrap().is_match("secret.json"));
         assert!(!Regex::new(&re).unwrap().is_match("public.txt"));
+    }
+
+    #[test]
+    fn classify_path_confidential() {
+        let t = test_taxonomy();
+        let classification = t.classify_path(Path::new("accounting/report.pdf"));
+        assert_eq!(classification, "confidential");
+    }
+
+    #[test]
+    fn classify_path_internal() {
+        let t = test_taxonomy();
+        let classification = t.classify_path(Path::new("readme.md"));
+        assert_eq!(classification, "internal");
+    }
+
+    #[test]
+    fn classify_path_public() {
+        let t = test_taxonomy();
+        let classification = t.classify_path(Path::new("marketing/brochure.pdf"));
+        assert_eq!(classification, "public");
+    }
+
+    #[test]
+    fn is_sensitive_nested() {
+        let t = test_taxonomy();
+        assert!(t.is_sensitive_path(Path::new("company/accounting/reports/x.pdf")));
+    }
+
+    #[test]
+    fn is_sensitive_non_sensitive() {
+        let t = test_taxonomy();
+        assert!(!t.is_sensitive_path(Path::new("marketing/ads/campaign.pdf")));
+    }
+
+    #[test]
+    fn double_extension_date_prefixed() {
+        let t = test_taxonomy();
+        assert!(t.is_date_prefixed("2026-01-15_backup.tar.gz"));
+    }
+
+    #[test]
+    fn hidden_file_dot_gitignore_safe() {
+        let t = test_taxonomy();
+        assert!(!t.is_safe_extension(".gitignore"));
+        assert!(t.is_safe_extension(".json"));
+        assert!(t.is_safe_extension(".md"));
+        assert!(t.is_safe_extension(".toml"));
+        assert!(t.is_safe_extension(".rs"));
     }
 }

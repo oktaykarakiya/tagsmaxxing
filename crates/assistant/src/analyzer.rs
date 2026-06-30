@@ -177,4 +177,77 @@ mod tests {
         // No violations for date-prefixed files, adequate length, no memory issues
         assert!(improvements.is_empty());
     }
+
+    #[test]
+    fn analyzer_balanced_memory_blocks() {
+        let a = test_analyzer();
+        let improvements = a.analyze(
+            "<!-- AGENT_MEMORY_START -->\n- rule\n<!-- AGENT_MEMORY_END -->",
+            &["2026-06-30_report.csv".into()],
+            10,
+            100,
+        );
+        assert!(improvements.is_empty());
+    }
+
+    #[test]
+    fn analyzer_multiple_violations() {
+        let a = test_analyzer();
+        let improvements = a.analyze("ok", &["report.pdf".into()], 100, 1);
+        assert!(improvements.len() >= 2);
+        let has_short = improvements.iter().any(|i| i.message.contains("Short response"));
+        let has_naming = improvements.iter().any(|i| i.message.contains("missing"));
+        assert!(has_short);
+        assert!(has_naming);
+    }
+
+    #[test]
+    fn analyzer_no_changed_files() {
+        let a = test_analyzer();
+        let improvements = a.analyze(
+            "A detailed response with enough tokens to avoid the short-response check.",
+            &[],
+            10,
+            50,
+        );
+        assert!(improvements.iter().all(|i| !i.message.contains("missing")));
+    }
+
+    #[test]
+    fn analyzer_custom_low_min_tokens() {
+        let taxonomy = Taxonomy::from_config(&AssistantConfig::default()).unwrap();
+        let a = Analyzer::new(taxonomy, 5);
+        let improvements = a.analyze(
+            "This response has enough tokens to be above the custom low minimum.",
+            &[],
+            100,
+            20,
+        );
+        assert!(improvements.iter().all(|i| !i.message.contains("Short response")));
+    }
+
+    #[test]
+    fn analyzer_custom_high_min_tokens() {
+        let taxonomy = Taxonomy::from_config(&AssistantConfig::default()).unwrap();
+        let a = Analyzer::new(taxonomy, 50);
+        let improvements = a.analyze(
+            "Short reply.",
+            &[],
+            100,
+            20,
+        );
+        assert!(improvements.iter().any(|i| i.message.contains("Short response")));
+    }
+
+    #[test]
+    fn analyzer_html_in_response_does_not_false_trigger() {
+        let a = test_analyzer();
+        let improvements = a.analyze(
+            "click <!-- AGENT_MEMORY_START --> here <!-- AGENT_MEMORY_END -->",
+            &[],
+            10,
+            50,
+        );
+        assert!(improvements.iter().all(|i| !i.message.contains("AGENT_MEMORY")));
+    }
 }

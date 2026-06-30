@@ -203,4 +203,167 @@ mod tests {
 
         sandbox.cleanup();
     }
+
+    #[test]
+    fn commercial_blocks_sensitive_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let company = tempfile::tempdir().unwrap();
+        std::fs::create_dir(company.path().join("accounting")).unwrap();
+        std::fs::write(company.path().join("accounting").join("ledger.xlsx"), "data").unwrap();
+
+        let taxonomy = Taxonomy::from_config(&AssistantConfig::default()).unwrap();
+        let sandbox = Sandbox::new(
+            tmp.path(),
+            "test-sensitive-dirs",
+            company.path(),
+            taxonomy,
+            true,
+        );
+        sandbox.setup().unwrap();
+
+        assert!(!sandbox.root().join("accounting").exists());
+
+        sandbox.cleanup();
+    }
+
+    #[test]
+    fn commercial_blocks_system_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let company = tempfile::tempdir().unwrap();
+        std::fs::write(company.path().join("AGENTS.md"), "agents").unwrap();
+        std::fs::write(company.path().join("company-profile.json"), "profile").unwrap();
+
+        let taxonomy = Taxonomy::from_config(&AssistantConfig::default()).unwrap();
+        let sandbox = Sandbox::new(
+            tmp.path(),
+            "test-system-files",
+            company.path(),
+            taxonomy,
+            true,
+        );
+        sandbox.setup().unwrap();
+
+        assert!(!sandbox.root().join("AGENTS.md").exists());
+        assert!(!sandbox.root().join("company-profile.json").exists());
+
+        sandbox.cleanup();
+    }
+
+    #[test]
+    fn excluded_dirs_always_skipped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let company = tempfile::tempdir().unwrap();
+        std::fs::create_dir(company.path().join("logs")).unwrap();
+        std::fs::write(company.path().join("logs").join("error.log"), "err").unwrap();
+
+        let taxonomy = Taxonomy::from_config(&AssistantConfig::default()).unwrap();
+        let sandbox = Sandbox::new(
+            tmp.path(),
+            "test-excluded-dirs",
+            company.path(),
+            taxonomy,
+            false,
+        );
+        sandbox.setup().unwrap();
+
+        assert!(!sandbox.root().join("logs").exists());
+
+        sandbox.cleanup();
+    }
+
+    #[test]
+    fn sandbox_copies_department_subdirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let company = tempfile::tempdir().unwrap();
+        std::fs::create_dir(company.path().join("marketing")).unwrap();
+        std::fs::write(company.path().join("marketing").join("brochure.pdf"), "pdf").unwrap();
+
+        let taxonomy = Taxonomy::from_config(&AssistantConfig::default()).unwrap();
+        let sandbox = Sandbox::new(
+            tmp.path(),
+            "test-copies-dirs",
+            company.path(),
+            taxonomy,
+            false,
+        );
+        sandbox.setup().unwrap();
+
+        assert!(sandbox.root().join("marketing").exists());
+        assert!(sandbox.root().join("marketing").join("brochure.pdf").exists());
+
+        sandbox.cleanup();
+    }
+
+    #[test]
+    fn sandbox_cleanup_removes_all() {
+        let tmp = tempfile::tempdir().unwrap();
+        let company = tempfile::tempdir().unwrap();
+        std::fs::write(company.path().join("readme.md"), "# Test").unwrap();
+
+        let taxonomy = Taxonomy::from_config(&AssistantConfig::default()).unwrap();
+        let sandbox = Sandbox::new(
+            tmp.path(),
+            "test-cleanup",
+            company.path(),
+            taxonomy,
+            false,
+        );
+        sandbox.setup().unwrap();
+        assert!(sandbox.root().exists());
+
+        sandbox.cleanup();
+        assert!(!sandbox.root().exists());
+    }
+
+    #[test]
+    fn sandbox_multiple_mixed_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let company = tempfile::tempdir().unwrap();
+        std::fs::write(company.path().join("readme.md"), "# Test").unwrap();
+        std::fs::write(company.path().join("token.json"), "secret").unwrap();
+        std::fs::write(company.path().join("server.pem"), "key").unwrap();
+        std::fs::write(company.path().join("report.pdf"), "data").unwrap();
+
+        let taxonomy = Taxonomy::from_config(&AssistantConfig::default()).unwrap();
+        let sandbox = Sandbox::new(
+            tmp.path(),
+            "test-mixed-files",
+            company.path(),
+            taxonomy,
+            false,
+        );
+        sandbox.setup().unwrap();
+
+        assert!(sandbox.root().join("readme.md").exists());
+        assert!(sandbox.root().join("report.pdf").exists());
+        assert!(!sandbox.root().join("token.json").exists());
+        assert!(!sandbox.root().join("server.pem").exists());
+
+        sandbox.cleanup();
+    }
+
+    #[test]
+    fn empty_company_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let company = tempfile::tempdir().unwrap();
+
+        let taxonomy = Taxonomy::from_config(&AssistantConfig::default()).unwrap();
+        let sandbox = Sandbox::new(
+            tmp.path(),
+            "test-empty",
+            company.path(),
+            taxonomy,
+            false,
+        );
+        sandbox.setup().unwrap();
+
+        assert!(sandbox.root().exists());
+        let entries: Vec<_> = std::fs::read_dir(sandbox.root())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .collect();
+        assert!(entries.is_empty());
+
+        sandbox.cleanup();
+    }
 }

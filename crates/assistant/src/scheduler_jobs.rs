@@ -46,3 +46,37 @@ impl SentinelJob {
         ]
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn sentinel_job_names_are_unique() {
+        let names: Vec<_> = SentinelJob::all().iter().map(|j| j.name()).collect();
+        let unique: HashSet<_> = names.iter().collect();
+        assert_eq!(unique.len(), names.len());
+    }
+
+    #[test]
+    fn sentinel_cron_expressions_parse() {
+        for job in SentinelJob::all() {
+            let cron = job.cron();
+            let fields: Vec<_> = cron.split_whitespace().collect();
+            assert_eq!(
+                fields.len(),
+                5,
+                "cron expr for {:?} should have 5 fields, got {}: {:?}",
+                job,
+                fields.len(),
+                cron
+            );
+        }
+    }
+
+    #[test]
+    fn sentinel_jobs_count() {
+        assert_eq!(SentinelJob::all().len(), 3);
+    }
+}

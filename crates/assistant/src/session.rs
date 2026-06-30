@@ -92,3 +92,66 @@ impl Default for SessionManager {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+
+    #[test]
+    fn session_manager_new_succeeds() {
+        let _sm = SessionManager::new();
+    }
+
+    #[test]
+    fn session_manager_clone_independent() {
+        let sm1 = SessionManager::new();
+        let sm2 = sm1.clone();
+        let _both = (sm1, sm2);
+    }
+
+    #[test]
+    fn session_status_as_str() {
+        assert_eq!(SessionStatus::Idle.as_str(), "idle");
+        assert_eq!(SessionStatus::Running.as_str(), "running");
+        assert_eq!(SessionStatus::Done.as_str(), "done");
+        assert_eq!(SessionStatus::Killed.as_str(), "killed");
+    }
+
+    #[test]
+    fn session_serialization_roundtrip() {
+        let now = Utc::now();
+        let session = AssistantSession {
+            id: 42,
+            tenant_id: 1,
+            user_id: 7,
+            session_key: "test-key".into(),
+            model_ref: "local/qwen-35b".into(),
+            department: Some("legal".into()),
+            status: SessionStatus::Idle,
+            sandbox_path: Some("/tmp/sandbox/test".into()),
+            prompt_count: 3,
+            total_tokens: 15000,
+            created_at: now,
+            finished_at: Some(now),
+        };
+
+        let json = serde_json::to_string(&session).expect("serialize");
+        let roundtripped: AssistantSession = serde_json::from_str(&json).expect("deserialize");
+
+        assert_eq!(roundtripped.id, session.id);
+        assert_eq!(roundtripped.tenant_id, session.tenant_id);
+        assert_eq!(roundtripped.user_id, session.user_id);
+        assert_eq!(roundtripped.session_key, session.session_key);
+        assert_eq!(roundtripped.model_ref, session.model_ref);
+        assert_eq!(roundtripped.department, session.department);
+        assert_eq!(roundtripped.status, session.status);
+        assert_eq!(roundtripped.sandbox_path, session.sandbox_path);
+        assert_eq!(roundtripped.prompt_count, session.prompt_count);
+        assert_eq!(roundtripped.total_tokens, session.total_tokens);
+        assert_eq!(roundtripped.finished_at, session.finished_at);
+
+        let json_lower = json.to_lowercase();
+        assert!(json_lower.contains(r#""status":"idle""#));
+    }
+}

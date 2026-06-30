@@ -41,7 +41,10 @@ pub struct ActionTracker {
 
 impl ActionTracker {
     /// Create a new tracker with compiled regexes.
+    ///
+    /// All regex patterns are hardcoded — they will never fail to compile.
     #[must_use]
+    #[allow(clippy::expect_used)]
     pub fn new() -> Self {
         Self {
             remind: Regex::new(
@@ -238,8 +241,9 @@ fn parse_month_day(text: &str, today: NaiveDate) -> Option<NaiveDate> {
     ];
 
     for (name, month) in months {
-        if let Some(rest) = text.strip_prefix(&format!("{name} ")) {
-            if let Ok(day) = rest.trim().parse::<u32>() {
+        if let Some(rest) = text.strip_prefix(&format!("{name} "))
+            && let Ok(day) = rest.trim().parse::<u32>()
+        {
                 let year = if *month < today.month()
                     || (*month == today.month() && day < today.day())
                 {
@@ -249,7 +253,6 @@ fn parse_month_day(text: &str, today: NaiveDate) -> Option<NaiveDate> {
                 };
                 return NaiveDate::from_ymd_opt(year, *month, day);
             }
-        }
     }
     None
 }
@@ -322,5 +325,103 @@ mod tests {
         assert!(formatted.contains("pay invoice"));
         assert!(formatted.contains("2026-07-01"));
         assert!(formatted.contains("use Rust"));
+    }
+
+    #[test]
+    fn detect_multiple_in_one_prompt() {
+        let tracker = ActionTracker::new();
+        let items = tracker.detect(
+            "Remind me to call client by Friday. TODO: update docs. Decision: use Postgres.",
+        );
+        assert_eq!(items.len(), 3);
+        let kinds: Vec<ActionKind> = items.iter().map(|i| i.kind).collect();
+        assert!(kinds.contains(&ActionKind::Reminder));
+        assert!(kinds.contains(&ActionKind::Task));
+        assert!(kinds.contains(&ActionKind::Decision));
+    }
+
+    #[test]
+    fn detect_remind_with_on() {
+        let tracker = ActionTracker::new();
+        let items = tracker.detect("Remind me to pay rent on next week");
+        assert!(!items.is_empty());
+        assert_eq!(items[0].kind, ActionKind::Reminder);
+        assert!(items[0].due_date.is_some());
+    }
+
+    #[test]
+    fn detect_remind_with_before() {
+        let tracker = ActionTracker::new();
+        let items = tracker.detect("Remind me to submit report before tomorrow");
+        assert!(!items.is_empty());
+        assert_eq!(items[0].kind, ActionKind::Reminder);
+    }
+
+    #[test]
+    fn parse_in_n_days() {
+        let result = parse_due_date("in 5 days");
+        assert!(result.is_some());
+        let date_str = result.unwrap();
+        assert!(date_str.starts_with("202"));
+        assert_eq!(date_str.len(), 10);
+        assert_eq!(&date_str[4..5], "-");
+        assert_eq!(&date_str[7..8], "-");
+    }
+
+    #[test]
+    fn parse_next_week() {
+        let result = parse_due_date("next week");
+        assert!(result.is_some());
+        let date_str = result.unwrap();
+        assert!(date_str.starts_with("202"));
+        assert_eq!(date_str.len(), 10);
+    }
+
+    #[test]
+    fn parse_weekday_friday() {
+        let result = parse_due_date("friday");
+        assert!(result.is_some());
+        assert!(result.unwrap().starts_with("202"));
+    }
+
+    #[test]
+    fn detect_empty_prompt() {
+        let tracker = ActionTracker::new();
+        let items = tracker.detect("");
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn detect_no_matches() {
+        let tracker = ActionTracker::new();
+        let items = tracker.detect("hello world how are you");
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn detect_overlapping_no_duplicate() {
+        let tracker = ActionTracker::new();
+        let items = tracker.detect("Task: review code due Friday");
+        assert!(items.len() <= 2, "expected at most 2 items, got {}", items.len());
+        assert!(items.iter().any(|i| i.due_date.is_some()), "should have dated task");
+    }
+
+    #[test]
+    fn format_pending_mixed_types() {
+        let items = vec![
+            DetectedAction {
+                text: "review code".into(),
+                due_date: Some("2026-07-01".into()),
+                kind: ActionKind::Task,
+            },
+            DetectedAction {
+                text: "use Rust".into(),
+                due_date: None,
+                kind: ActionKind::Decision,
+            },
+        ];
+        let output = ActionTracker::format_pending(&items);
+        assert!(output.contains("review code"));
+        assert!(output.contains("use Rust"));
     }
 }
