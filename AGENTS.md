@@ -1,5 +1,74 @@
 # Multi-Role Sweep Waves — Implementation Methodology
 
+## Non-Negotiable Testing Rule
+
+There is no valid excuse for not running ALL tests after ANY code change.
+This machine is meant to execute everything. If a command times out, re-run
+with a larger timeout. If a step genuinely cannot complete (OOM, disk full),
+STOP and surface it explicitly — never silently proceed as if it succeeded.
+
+"Slow" is never a reason to skip. "Probably fine" is never a reason to skip.
+"Only changed one file" is never a reason to skip. Every code change, no
+matter how small, requires the full sweep. Every single time.
+
+### Mandatory sequence after EVERY code change, in this exact order:
+
+1. **Baseline** (before changes) — capture pass/fail counts of the full suite.
+   Without a baseline, pre-existing failures are indistinguishable from
+   regressions.
+
+2. **`cargo build --workspace --all-targets`** — verify every crate compiles,
+   including tests, examples, and doc-tests. No warnings allowed.
+
+3. **`cargo test --workspace --all-features`** — unit tests, integration tests,
+   doctests across every crate. All must pass.
+
+4. **`cargo clippy --workspace --all-features -- -D warnings`** — zero lints.
+   Zero warnings. Clippy is as strict as the compiler.
+
+5. **`just up --rebuild`** — rebuild the container image from source, start
+   the FULL local stack: GPU model servers, socat relays, watchdog, Podman
+   containers (postgres, tika, app, caddy). Wait for health check.
+
+   The correct rebuild command is:
+   ```
+   just up --rebuild
+   ```
+   Or without `just`:
+   ```
+   bash scripts/dev-up.sh start --rebuild
+   ```
+
+6. **`E2E_LLAMA=host ./test/run.sh pytest tests -m "not judge and not perf"`** —
+   run the full E2E Playwright test suite against the live production-equivalent
+   stack. Every route, every workflow, every integration surface.
+
+   For the full quality gate including LLM-as-judge:
+   ```
+   E2E_LLAMA=host ./test/run.sh quality
+   ```
+
+7. **Compare against baseline** — subtract the pre-change failure counts from
+   the post-change failure counts. Only NEW failures (not in baseline) count
+   as regressions. Infrastructure failures (connection refused, pool exhausted)
+   are always excluded regardless of baseline.
+
+### No step may be skipped.
+
+No "targeted re-run only on the changed file." No "unit tests passed so E2E
+can't be broken." No "the change is trivial." Full Sweep-and-Verify, every
+time, or do not claim done. The final gate is: full suite passes with zero
+new non-infrastructure failures vs baseline.
+
+### Exit code classification
+
+| Exit code | Outcome | Meaning |
+|-----------|---------|---------|
+| 0 | `passed` | Clean run, zero failures |
+| 124 | `timed_out` | Shell timeout — re-run with larger timeout |
+| 127 | `missing_command` | Command not found |
+| other | `failed` | Real test failure — BLOCKS |
+
 ## Empirical proof — no assumptions
 - Every issue must be proven empirically: reproduce the failure, root-cause it
   with concrete data, fix it, and prove the fix eliminates the failure.
