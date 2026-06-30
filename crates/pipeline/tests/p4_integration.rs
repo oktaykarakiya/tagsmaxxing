@@ -14,7 +14,7 @@
 //! embeddings and tag assignments precisely.
 //!
 //! This test is `#[ignore]` in `just ci` because it requires Podman +
-//! `pgvector/pgvector:pg17`. Run with:
+//! `paradedb/paradedb:pg17`. Run with:
 //!
 //! ```bash
 //! DOCKER_HOST="unix://$XDG_RUNTIME_DIR/podman/podman.sock" \
@@ -94,7 +94,7 @@ mod tests {
 
     // ── Store setup (testcontainers) ─────────────────────────────────────────
 
-    /// Connect to a pgvector/pgvector:pg17 testcontainers Postgres, run
+    /// Connect to a paradedb/paradedb:pg17 testcontainers Postgres, run
     /// migrations, insert a tenant row, and set `app.current_tenant` for
     /// RLS compatibility.
     async fn setup_store() -> anyhow::Result<PgStore> {

@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+//! Extension methods on [`kb_config::Config`] for assistant settings.
+
+/// Assistant-specific configuration section.
+///
+/// When `opencode_bin` is [`None`], the assistant module is dormant — all routes
+/// return 404 and no background jobs start.
+#[derive(Debug, Clone)]
+pub struct AssistantConfig {
+    /// Path to the `opencode` CLI binary. `None` disables the assistant.
+    pub opencode_bin: Option<String>,
+
+    /// Maximum subprocess runtime per prompt (seconds). Default 300.
+    pub prompt_timeout_secs: u64,
+
+    /// Model reference for agent tasks, e.g. `"local/qwen-35b"`.
+    pub model_ref: String,
+
+    /// Conference budget: max fraction of context window for augmented prompts.
+    /// Default 85 (percent).
+    pub context_budget_pct: u8,
+
+    /// Sensitive department directory names — skipped for commercial API sandboxes.
+    pub sensitive_departments: Vec<String>,
+
+    /// Glob patterns for files never copied to the sandbox.
+    pub never_copy_patterns: Vec<String>,
+
+    /// Regex for enforced date-prefix file naming.
+    pub date_prefix_regex: String,
+}
+
+impl Default for AssistantConfig {
+    fn default() -> Self {
+        Self {
+            opencode_bin: None,
+            prompt_timeout_secs: 300,
+            model_ref: String::new(),
+            context_budget_pct: 85,
+            sensitive_departments: vec![
+                "accounting".into(),
+                "finance".into(),
+                "hr".into(),
+                "legal".into(),
+                "compliance-risk".into(),
+                "security".into(),
+                "sales".into(),
+            ],
+            never_copy_patterns: vec![
+                "*.pem".into(),
+                "token.json".into(),
+                "*secret*".into(),
+                "*credential*".into(),
+                ".env".into(),
+                "*.key".into(),
+                "auth.json".into(),
+            ],
+            date_prefix_regex: r"^\d{4}-\d{2}-\d{2}_[a-z0-9](?:[a-z0-9\-]*[a-z0-9])?\.[a-z0-9]+(\.[a-z0-9]+)?$".into(),
+        }
+    }
+}

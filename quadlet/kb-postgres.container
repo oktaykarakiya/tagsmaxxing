@@ -1,4 +1,4 @@
-# kb-postgres.container — Postgres + pgvector (plan §14, P7-T3).
+# kb-postgres.container — Postgres + pgvector + pg_search (ParadeDB).
 #
 # Two-role RLS model (P6-T14, §13): the POSTGRES_USER is the PRIVILEGED
 # owner/superuser for migrations + cross-tenant job queue. Migration 0006
@@ -9,15 +9,14 @@
 # reach it at localhost:5432.
 
 [Container]
-Image=docker.io/pgvector/pgvector:pg17
+Image=docker.io/paradedb/paradedb:latest
 Pod=kb.pod
 
 Environment=POSTGRES_USER=kb POSTGRES_PASSWORD=kb POSTGRES_DB=kb POSTGRES_INITDB_ARGS=--data-checksums
 
-Volume=kb-pgdata.volume:/var/lib/postgresql/data
+Volume=kb-pgdata.volume:/var/lib/postgresql
 
-# Headroom for parallel pgvector HNSW index builds (default /dev/shm in a
-# container is a cramped 64 MB).
+# Headroom for parallel pgvector HNSW + ParadeDB BM25 index builds.
 ShmSize=268435456
 
 # pg_isready over TCP — the init-phase socket-only server won't false-positive.

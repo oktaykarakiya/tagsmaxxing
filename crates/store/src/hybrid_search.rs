@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Hybrid search SQL implementation — vector (HNSW cosine) + keyword (ts_rank on tsv),
-//! fused with Reciprocal Rank Fusion and rolled up to document-level [`Hit`]s with
-//! deep-link provenance (plan §8, P4-T3).
+//! Hybrid search SQL implementation — vector (HNSW cosine) + keyword (BM25 via
+//! ParadeDB pg_search), fused with Reciprocal Rank Fusion and rolled up to
+//! document-level [`Hit`]s with deep-link provenance (plan §8, P4-T3).
 //!
 //! The module runs two queries inside a single `PgStore::hybrid_search` call:
 //! 1. Vector top-N via `chunks.embedding <=> CAST($vec AS vector) ORDER BY distance LIMIT N`
-//! 2. Keyword top-N via `ts_rank(tsv, websearch_to_tsquery('simple', $q)) ORDER BY rank DESC`
+//! 2. Keyword top-N via `paradedb.score_bm25(c.id) with c.id @@@ paradedb.parse($q)`
 //!
 //! Both arms **overscan** the index (bounded by [`overscan_limit`]) and then keep
 //! only the best chunk per document ([`dedup_best_chunk_per_document`]) so each
@@ -126,7 +126,7 @@ pub(crate) async fn run_hybrid_search(
 /// `query.top_k`, decrypting snippets exactly as [`run_hybrid_search`] does. There is no
 /// vector query, no RRF fusion, and no rerank.
 ///
-/// Because lexical relevance order from `ORDER BY ts_rank(...) DESC` already ranks the
+/// Because BM25 relevance order from `ORDER BY paradedb.score_bm25(...) DESC` already ranks the
 /// rows, position in the returned `Vec` is the rank — we synthesise a descending score
 /// from that rank so `document_rollup` keeps each document's best (earliest) chunk.
 ///
@@ -164,7 +164,7 @@ pub(crate) async fn run_keyword_search(
         .await
         .context("failed to commit keyword_search transaction")?;
 
-    // The DB returns rows in descending ts_rank order, so position == rank. Synthesise a
+    // The DB returns rows in descending BM25 score order, so position == rank. Synthesise a
     // strictly-decreasing score from the rank so document_rollup keeps the best chunk per
     // document (mirrors how RRF scores feed rollup in hybrid search).
     let ranked: Vec<(i64, f32)> = kw_chunks
@@ -320,10 +320,10 @@ async fn execute_vector_query(
     Ok(dedup_best_chunk_per_document(rows, query.top_k))
 }
 
-/// Run the keyword (ts_rank on tsv) top-N query, returning the best chunk of
-/// each of up to `top_k` distinct documents (same diversification as the
-/// vector arm — a many-matching-chunks document must not starve the rest).
-/// When `query.text` is empty or whitespace-only the keyword signal
+/// Run the keyword (BM25 via ParadeDB pg_search) top-N query, returning the
+/// best chunk of each of up to `top_k` distinct documents (same diversification
+/// as the vector arm — a many-matching-chunks document must not starve the
+/// rest).  When `query.text` is empty or whitespace-only the keyword signal
 /// contributes nothing — return an empty list.
 async fn execute_keyword_query(
     conn: &mut PgConnection,
@@ -340,13 +340,11 @@ async fn execute_keyword_query(
 
     let mut builder = build_base_select();
     // Keyword match condition — must come before optional filters.
-    builder.push(" AND c.tsv @@ plainto_tsquery('simple', ");
+    builder.push(" AND c.id @@@ paradedb.parse(");
     builder.push_bind(query_text.clone());
     builder.push(")");
     push_filters(&mut builder, &query.filters, tag_ids);
-    builder.push(" ORDER BY ts_rank(c.tsv, plainto_tsquery('simple', ");
-    builder.push_bind(query_text);
-    builder.push(")) DESC LIMIT ");
+    builder.push(" ORDER BY paradedb.score_bm25(c.id) DESC LIMIT ");
     builder.push_bind(overscan_limit(query.top_k) as i64);
 
     let rows = builder
@@ -656,21 +654,22 @@ mod tests {
     fn keyword_query_structure() {
         let filters = QueryFilters::default();
         let mut builder = build_base_select();
-        builder.push(" AND c.tsv @@ websearch_to_tsquery('simple', ");
+        builder.push(" AND c.id @@@ paradedb.parse(");
         builder.push_bind("test query");
         builder.push(")");
         push_filters(&mut builder, &filters, &[]);
-        builder.push(" ORDER BY ts_rank(c.tsv, websearch_to_tsquery('simple', ");
-        builder.push_bind("test query");
-        builder.push(")) DESC LIMIT ");
+        builder.push(" ORDER BY paradedb.score_bm25(c.id) DESC LIMIT ");
         builder.push_bind(10i64);
 
         let sql = builder.sql();
         assert!(
-            sql.contains("tsv @@ websearch_to_tsquery"),
-            "missing tsv match: {sql}"
+            sql.contains("@@@ paradedb.parse"),
+            "missing bm25 match: {sql}"
         );
-        assert!(sql.contains("ts_rank"), "missing ts_rank: {sql}");
+        assert!(
+            sql.contains("paradedb.score_bm25"),
+            "missing bm25 score: {sql}"
+        );
         assert!(sql.contains("DESC"), "missing DESC: {sql}");
     }
 

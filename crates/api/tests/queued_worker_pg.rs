@@ -6,7 +6,7 @@
 //! drains a staged upload to `ready` via the spawned worker pool — the same
 //! wiring `kb serve` starts.
 //!
-//! Needs **Podman** + network to pull `pgvector/pgvector`; gated `#[ignore]`:
+//! Needs **Podman** + network to pull `paradedb/paradedb`; gated `#[ignore]`:
 //!
 //! ```text
 //! systemctl --user start podman.socket

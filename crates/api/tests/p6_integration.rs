@@ -17,7 +17,7 @@
 //! 6. **Metrics** — GET /metrics returns valid Prometheus text exposition format.
 //!
 //! These tests are `#[ignore]` in `just ci` because they require Podman +
-//! `pgvector/pgvector:pg17`. Run with:
+//! `paradedb/paradedb:pg17`. Run with:
 //!
 //! ```bash
 //! systemctl --user start podman.socket

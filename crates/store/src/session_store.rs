@@ -776,7 +776,7 @@ mod tests {
         use testcontainers::runners::AsyncRunner;
         use testcontainers::{GenericImage, ImageExt};
 
-        let container = GenericImage::new("pgvector/pgvector", "pg17")
+        let container = GenericImage::new("paradedb/paradedb", "latest")
             .with_exposed_port(5432u16.tcp())
             .with_wait_for(WaitFor::message_on_stderr(
                 "database system is ready to accept connections",

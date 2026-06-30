@@ -3,7 +3,7 @@
 //! Integration tests for plan-driven quota enforcement (P11-T5) against a real
 //! pgvector Postgres container.
 //!
-//! These tests need **Podman** and network access to pull `pgvector/pgvector`.
+//! These tests need **Podman** and network access to pull `paradedb/paradedb`.
 //! They are gated `#[ignore]` so `just ci` stays green when no container runtime
 //! is available. Run them explicitly against the Podman socket:
 //!

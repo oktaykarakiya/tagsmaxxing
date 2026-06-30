@@ -13,7 +13,7 @@
 //! * pick up routes created after startup via LISTEN/NOTIFY without a
 //!   restart.
 //!
-//! Needs **Podman** + network to pull `pgvector/pgvector`; gated `#[ignore]`.
+//! Needs **Podman** + network to pull `paradedb/paradedb`; gated `#[ignore]`.
 //! Run single-threaded — each test runs the migrations on a fresh database,
 //! and the `CREATE ROLE kb_app` is **cluster-global**, so
 //! concurrent runs race:

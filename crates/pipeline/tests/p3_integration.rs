@@ -6,7 +6,7 @@
 //! testcontainers.
 //!
 //! This test is `#[ignore]` in `just ci` because it requires Podman +
-//! `pgvector/pgvector:pg17`. Run with:
+//! `paradedb/paradedb:pg17`. Run with:
 //!
 //! ```bash
 //! DOCKER_HOST="unix://$XDG_RUNTIME_DIR/podman/podman.sock" \

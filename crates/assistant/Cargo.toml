@@ -1,0 +1,36 @@
+[package]
+name = "kb-assistant"
+description = "AI assistant agent orchestration — OpenCode CLI wrapper with sandboxed execution, streaming, action tracking, and scheduled maintenance."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+kb-core = { workspace = true }
+kb-config = { workspace = true }
+kb-llm = { workspace = true }
+kb-store = { workspace = true }
+kb-pipeline = { workspace = true }
+kb-metrics = { workspace = true }
+tokio = { workspace = true, features = ["sync", "process", "io-util", "fs", "rt"] }
+tokio-stream = "0.1"
+axum = { version = "0.8", features = ["multipart"] }
+askama = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+regex = "1"
+tempfile = { workspace = true }
+async-trait = { workspace = true }
+sqlx = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
+kb-testsupport = { workspace = true }

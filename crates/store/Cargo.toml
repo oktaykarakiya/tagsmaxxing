@@ -1,6 +1,6 @@
 [package]
 name = "kb-store"
-description = "Store implementation: Postgres + pgvector (sqlx). Hybrid search lives here."
+description = "Store implementation: Postgres + pgvector + pg_search (ParadeDB BM25). Hybrid search lives here."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

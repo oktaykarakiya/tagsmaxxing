@@ -4,7 +4,7 @@
 //! pgvector Postgres container: staged pending document → `process_queued_ingest`
 //! → document/files `ready` with chunks; replay is idempotent.
 //!
-//! Needs **Podman** + network to pull `pgvector/pgvector`; gated `#[ignore]`:
+//! Needs **Podman** + network to pull `paradedb/paradedb`; gated `#[ignore]`:
 //!
 //! ```text
 //! systemctl --user start podman.socket

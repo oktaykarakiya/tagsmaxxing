@@ -24,7 +24,7 @@ use kb_core::file::FileRecord;
 use kb_core::status::ProcessingStatus;
 use sqlx::Postgres;
 
-use crate::pg_store::{PgStore, begin_tenant_tx, ingest_advisory_key};
+use crate::pg_store::{PgStore, begin_tenant_tx, format_vector, ingest_advisory_key};
 
 /// Result of staging an upload as a pending document (queued-ingest mode).
 #[derive(Debug)]
@@ -66,12 +66,18 @@ impl PgStore {
         );
 
         // Encrypt the user note up front if a KEK is configured (the title and
-        // summary are unknown until the worker tags the document).
-        let user_note_enc = if self.kek().is_some() {
-            let dek = self.get_or_create_tenant_dek(doc.tenant_id).await?;
+        // summary are unknown until the worker tags the document).  Fetch the
+        // DEK once — the stub-chunk path below reuses the same key.
+        let dek = if self.kek().is_some() {
+            Some(self.get_or_create_tenant_dek(doc.tenant_id).await?)
+        } else {
+            None
+        };
+
+        let user_note_enc = if let Some(ref d) = dek {
             doc.user_note
                 .as_deref()
-                .map(|s| envelope::encrypt_column(&dek, s))
+                .map(|s| envelope::encrypt_column(d, s))
                 .transpose()
                 .context("failed to encrypt pending document user_note")?
         } else {
@@ -187,6 +193,46 @@ impl PgStore {
             .await
             .context("failed to stage pending file")?;
             file_ids.push(fid);
+        }
+
+        // Stub chunks for immediate keyword searchability (P15-UX):
+        // each pending file gets one stub chunk carrying its filename (and the
+        // user note, if provided) so the document appears in keyword-search
+        // results even before the worker finishes AI enrichment.  The worker's
+        // `transactional_ingest` deletes all chunks `WHERE file_id = $1` before
+        // inserting the real ones, so stubs are automatically cleaned up.
+        // Re-staged documents already carry chunks from the prior cycle; skip.
+        if !reused {
+            let zero_vec = format_vector(&vec![0.0f32; 2560]);
+            for (file, &fid) in files.iter().zip(file_ids.iter()) {
+                let mut content = file.path.as_deref().unwrap_or("unnamed").to_string();
+                if let Some(ref note) = doc.user_note {
+                    content.push(' ');
+                    content.push_str(note);
+                }
+                let content_enc = dek
+                    .as_ref()
+                    .map(|d| envelope::encrypt_column(d, &content))
+                    .transpose()
+                    .context("failed to encrypt stub chunk content")?;
+                sqlx::query(
+                    "INSERT INTO chunks \
+                     (tenant_id,document_id,file_id,page_no,idx,content,content_enc,ts_offset,embedding) \
+                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,CAST($9 AS vector))",
+                )
+                .bind(doc.tenant_id)
+                .bind(document_id)
+                .bind(fid)
+                .bind(file.page_no)
+                .bind(0i32)
+                .bind(&content)
+                .bind(&content_enc)
+                .bind(None::<f64>)
+                .bind(&zero_vec)
+                .execute(&mut *tx)
+                .await
+                .context("failed to insert stub chunk")?;
+            }
         }
 
         tx.commit()

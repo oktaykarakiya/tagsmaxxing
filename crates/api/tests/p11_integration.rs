@@ -17,7 +17,7 @@
 //! 7. **Plan quota** — pro tenant within 5 GB → ok; free exceeds 50 MB → 413.
 //!
 //! These tests are `#[ignore]` in `just ci` because they require Podman +
-//! `pgvector/pgvector:pg17`. Run with:
+//! `paradedb/paradedb:pg17`. Run with:
 //!
 //! ```bash
 //! systemctl --user start podman.socket

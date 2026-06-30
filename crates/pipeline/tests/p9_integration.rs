@@ -8,7 +8,7 @@
 //! and exercises the full tiered-routing scheduler against them.
 //!
 //! Tests are `#[ignore]` in `just ci` because they require Podman +
-//! `pgvector/pgvector:pg17`. Run with:
+//! `paradedb/paradedb:pg17`. Run with:
 //!
 //! ```bash
 //! systemctl --user start podman.socket

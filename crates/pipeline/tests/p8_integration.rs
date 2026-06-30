@@ -14,7 +14,7 @@
 //!    jobs; failure tolerance.
 //! 4. Orphan GC + integrity scan with mock runners: full cycle, edge cases.
 //!
-//! **#[ignore] tests (need Podman + pgvector/pgvector:pg17):**
+//! **#[ignore] tests (need Podman + paradedb/paradedb:pg17):**
 //! 5. Orphan GC with PgStore-backed runner: create file records in DB, orphan blobs
 //!    on disk, run GC, verify cleanup.
 //! 6. Integrity scan with PgStore-backed runner: insert file records, run scan,
@@ -1099,7 +1099,7 @@ async fn setup_pg_store() -> anyhow::Result<Arc<kb_store::PgStore>> {
     Ok(Arc::new(store))
 }
 
-#[ignore = "needs Podman + pgvector/pgvector:pg17 testcontainer"]
+#[ignore = "needs Podman + paradedb/paradedb:pg17 testcontainer"]
 #[tokio::test]
 async fn orphan_gc_with_real_pgstore_deletes_orphan_blobs() -> anyhow::Result<()> {
     let (_blob_guard, blob_dir) = temp_dir();
@@ -1162,7 +1162,7 @@ async fn orphan_gc_with_real_pgstore_deletes_orphan_blobs() -> anyhow::Result<()
     Ok(())
 }
 
-#[ignore = "needs Podman + pgvector/pgvector:pg17 testcontainer"]
+#[ignore = "needs Podman + paradedb/paradedb:pg17 testcontainer"]
 #[tokio::test]
 async fn orphan_gc_grace_period_preserves_recent_blobs() -> anyhow::Result<()> {
     let (_blob_guard, blob_dir) = temp_dir();
@@ -1237,7 +1237,7 @@ impl IntegrityScanRunner for PgIntegrityScanRunner {
     }
 }
 
-#[ignore = "needs Podman + pgvector/pgvector:pg17 testcontainer"]
+#[ignore = "needs Podman + paradedb/paradedb:pg17 testcontainer"]
 #[tokio::test]
 async fn integrity_scan_with_real_pgstore_verifies_hashes() -> anyhow::Result<()> {
     let (_blob_guard, blob_dir) = temp_dir();
@@ -1296,7 +1296,7 @@ async fn integrity_scan_with_real_pgstore_verifies_hashes() -> anyhow::Result<()
 /// Default set of vacuumable tables per the allowlist.
 const VACUUM_TABLES: &[&str] = &["files", "chunks", "documents", "tags", "document_tags"];
 
-#[ignore = "needs Podman + pgvector/pgvector:pg17 testcontainer"]
+#[ignore = "needs Podman + paradedb/paradedb:pg17 testcontainer"]
 #[tokio::test]
 async fn maintenance_vacuum_handler_runs_on_real_postgres() -> anyhow::Result<()> {
     let store = setup_pg_store().await?;
@@ -1308,7 +1308,7 @@ async fn maintenance_vacuum_handler_runs_on_real_postgres() -> anyhow::Result<()
     Ok(())
 }
 
-#[ignore = "needs Podman + pgvector/pgvector:pg17 testcontainer"]
+#[ignore = "needs Podman + paradedb/paradedb:pg17 testcontainer"]
 #[tokio::test]
 async fn maintenance_reembed_check_handler_runs_on_real_postgres() -> anyhow::Result<()> {
     let store = setup_pg_store().await?;
@@ -1321,7 +1321,7 @@ async fn maintenance_reembed_check_handler_runs_on_real_postgres() -> anyhow::Re
     Ok(())
 }
 
-#[ignore = "needs Podman + pgvector/pgvector:pg17 testcontainer"]
+#[ignore = "needs Podman + paradedb/paradedb:pg17 testcontainer"]
 #[tokio::test]
 async fn maintenance_reembed_check_detects_mismatch() -> anyhow::Result<()> {
     let store = setup_pg_store().await?;

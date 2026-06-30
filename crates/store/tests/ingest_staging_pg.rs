@@ -4,7 +4,7 @@
 //! real pgvector Postgres container.
 //!
 //! These tests need **Podman** (this project targets Podman exclusively) and
-//! network access to pull `pgvector/pgvector`. They are gated `#[ignore]` so
+//! network access to pull `paradedb/paradedb`. They are gated `#[ignore]` so
 //! `just ci` stays green when no container runtime is available. Run them
 //! explicitly against the Podman socket:
 //!

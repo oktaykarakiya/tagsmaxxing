@@ -28,6 +28,19 @@ cov_min_secure := "85"
 default:
     @just --list
 
+# ── dev server ──────────────────────────────────────────────────────────────
+
+# Start the full local stack: host model servers, relays, watchdog, Podman
+# containers (postgres, tika, app, caddy). Idempotent — safe to re-run.
+# Pass --rebuild to rebuild the app container image before starting.
+up *ARGS:
+    bash scripts/dev-up.sh {{ARGS}}
+
+# Tear down the full local stack (-v wipe). Stops host model servers, watchdog,
+# relays, and Podman containers.
+down:
+    bash scripts/dev-up.sh down
+
 # ── individual gates ─────────────────────────────────────────────────────────
 
 # Format the whole workspace in place.

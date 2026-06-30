@@ -12,7 +12,7 @@
 //! 3. **Export** — export tenant A's data → valid ZIP with manifest, JSONL, and blobs.
 //!
 //! These tests are `#[ignore]` in `just ci` because they require Podman +
-//! `pgvector/pgvector:pg17`. Run with:
+//! `paradedb/paradedb:pg17`. Run with:
 //!
 //! ```bash
 //! systemctl --user start podman.socket

@@ -22,7 +22,7 @@ mod tests {
     #[test]
     fn embeds_the_schema_migrations() {
         let versions: Vec<i64> = MIGRATOR.iter().map(|m| m.version).collect();
-        assert_eq!(versions, vec![1]);
+        assert_eq!(versions, vec![1, 2, 3]);
     }
 
     /// Forward-only and monotonic: no down/reversible scripts, strictly increasing versions,
@@ -240,7 +240,14 @@ mod tests {
                 && sql.contains("halfvec_cosine_ops"),
             "missing HNSW halfvec index"
         );
-        assert!(sql.contains("USING GIN (tsv)"), "missing GIN tsv index");
+        assert!(
+            sql.contains("CREATE EXTENSION IF NOT EXISTS pg_search"),
+            "missing pg_search extension"
+        );
+        assert!(
+            sql.contains("paradedb.create_bm25"),
+            "missing bm25 index creation"
+        );
         for idx in [
             "documents_meta_gin",
             "files_meta_gin",
@@ -380,10 +387,14 @@ mod tests {
         assert!(sql.contains("500000"), "pro plan: 500K token budget");
         assert!(sql.contains("2000000"), "team plan: 2M token budget");
 
-        // ── j) Generated column ────────────────────────────────────────────────
+        // ── j) ParadeDB BM25 replaces tsvector ──────────────────────────────────
         assert!(
-            sql.contains("GENERATED ALWAYS AS (to_tsvector('simple', content)) STORED"),
-            "missing generated tsvector column"
+            sql.contains("DROP INDEX IF EXISTS chunks_tsv_gin"),
+            "missing tsvector GIN index drop"
+        );
+        assert!(
+            sql.contains("DROP COLUMN IF EXISTS tsv"),
+            "missing tsv column drop"
         );
     }
 }

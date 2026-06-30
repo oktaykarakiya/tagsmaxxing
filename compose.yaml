@@ -2,7 +2,7 @@
 #
 # Services (start unconditionally):
 #   * app            — the kb binary (built from Containerfile, P7-T1)
-#   * postgres       — pgvector/pgvector Postgres, the only durable state (plan §5)
+#   * postgres       — ParadeDB Postgres (pgvector + pg_search), the only durable state (plan §5)
 #   * tika           — Apache Tika, document text/metadata extraction (plan §2)
 #
 # GPU profile (`--profile gpu`):
@@ -194,7 +194,8 @@ services:
     #
     # Image is fully qualified (docker.io/… = the Docker Hub registry) to satisfy Podman's
     # strict short-name policy with no interactive registry prompt.
-    image: ${POSTGRES_IMAGE:-docker.io/pgvector/pgvector:pg17}
+    # ParadeDB bundles Postgres 17 + pgvector + pg_search (BM25) + pg_sparse.
+    image: ${POSTGRES_IMAGE:-docker.io/paradedb/paradedb:latest}
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-kb}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kb}
@@ -208,7 +209,10 @@ services:
     ports:
       - "${POSTGRES_BIND:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      # ParadeDB (Postgres 18+) stores data in a version-specific subdirectory
+      # under /var/lib/postgresql; mount the parent so pg_upgrade works across
+      # version bumps.
+      - pgdata:/var/lib/postgresql
     # Headroom for parallel pgvector HNSW index builds (plan §5); default /dev/shm
     # in a container is a cramped 64 MB.
     shm_size: "256mb"

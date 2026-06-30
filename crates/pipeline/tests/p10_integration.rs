@@ -16,7 +16,7 @@
 //!    various inputs.
 //! 5. Audit types: DecryptAuditEvent creation, serialization, and enum wire strings.
 //!
-//! **#[ignore] tests (need Podman + pgvector/pgvector:pg17):**
+//! **#[ignore] tests (need Podman + paradedb/paradedb:pg17):**
 //! 6. Crypto-shred full cycle: create tenant in real PgStore → insert DEK → store
 //!    encrypted blob → retrieve plaintext → shred tenant → verify data unrecoverable
 //!    (DEK gone, data gone, tombstone created).
@@ -640,7 +640,7 @@ async fn setup_pg_store_with_tenant() -> anyhow::Result<(Arc<kb_store::PgStore>,
     Ok((Arc::new(store), tenant_id))
 }
 
-#[ignore = "needs Podman + pgvector/pgvector:pg17 testcontainer"]
+#[ignore = "needs Podman + paradedb/paradedb:pg17 testcontainer"]
 #[tokio::test]
 async fn crypto_shred_full_cycle_create_retrieve_shred_unrecoverable() -> anyhow::Result<()> {
     let kek: Arc<dyn KeyEncryptionKey> = Arc::new(test_kek_a());
@@ -742,7 +742,7 @@ async fn crypto_shred_full_cycle_create_retrieve_shred_unrecoverable() -> anyhow
     Ok(())
 }
 
-#[ignore = "needs Podman + pgvector/pgvector:pg17 testcontainer"]
+#[ignore = "needs Podman + paradedb/paradedb:pg17 testcontainer"]
 #[tokio::test]
 async fn crypto_shred_idempotent_noop_on_already_deleted_tenant() -> anyhow::Result<()> {
     let (store, tenant_id) = setup_pg_store_with_tenant().await?;
@@ -760,7 +760,7 @@ async fn crypto_shred_idempotent_noop_on_already_deleted_tenant() -> anyhow::Res
     Ok(())
 }
 
-#[ignore = "needs Podman + pgvector/pgvector:pg17 testcontainer"]
+#[ignore = "needs Podman + paradedb/paradedb:pg17 testcontainer"]
 #[tokio::test]
 async fn crypto_shred_only_deletes_target_tenant() -> anyhow::Result<()> {
     let (store, tenant_1) = setup_pg_store_with_tenant().await?;
@@ -786,7 +786,7 @@ async fn crypto_shred_only_deletes_target_tenant() -> anyhow::Result<()> {
 // 7. DECRYPT AUDIT PERSISTENCE (#[ignore] — needs testcontainers)
 // ═════════════════════════════════════════════════════════════════════════════════
 
-#[ignore = "needs Podman + pgvector/pgvector:pg17 testcontainer"]
+#[ignore = "needs Podman + paradedb/paradedb:pg17 testcontainer"]
 #[tokio::test]
 async fn decrypt_audit_insert_and_list_by_tenant() -> anyhow::Result<()> {
     let (store, tenant_id) = setup_pg_store_with_tenant().await?;
@@ -850,7 +850,7 @@ async fn decrypt_audit_insert_and_list_by_tenant() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[ignore = "needs Podman + pgvector/pgvector:pg17 testcontainer"]
+#[ignore = "needs Podman + paradedb/paradedb:pg17 testcontainer"]
 #[tokio::test]
 async fn decrypt_audit_cross_tenant_list_sees_all_tenants() -> anyhow::Result<()> {
     let (store, tenant_1) = setup_pg_store_with_tenant().await?;
@@ -892,7 +892,7 @@ async fn decrypt_audit_cross_tenant_list_sees_all_tenants() -> anyhow::Result<()
     Ok(())
 }
 
-#[ignore = "needs Podman + pgvector/pgvector:pg17 testcontainer"]
+#[ignore = "needs Podman + paradedb/paradedb:pg17 testcontainer"]
 #[tokio::test]
 async fn decrypt_audit_limit_respects_bound() -> anyhow::Result<()> {
     let (store, tenant_id) = setup_pg_store_with_tenant().await?;
@@ -921,7 +921,7 @@ async fn decrypt_audit_limit_respects_bound() -> anyhow::Result<()> {
 // 8. KEK ROTATION WITH DB DEK (#[ignore] — needs testcontainers)
 // ═════════════════════════════════════════════════════════════════════════════════
 
-#[ignore = "needs Podman + pgvector/pgvector:pg17 testcontainer"]
+#[ignore = "needs Podman + paradedb/paradedb:pg17 testcontainer"]
 #[tokio::test]
 async fn kek_rotation_with_db_stored_dek_re_wrap_and_verify() -> anyhow::Result<()> {
     let old_kek: Arc<dyn KeyEncryptionKey> = Arc::new(test_kek_a());
@@ -998,7 +998,7 @@ async fn kek_rotation_with_db_stored_dek_re_wrap_and_verify() -> anyhow::Result<
     Ok(())
 }
 
-#[ignore = "needs Podman + pgvector/pgvector:pg17 testcontainer"]
+#[ignore = "needs Podman + paradedb/paradedb:pg17 testcontainer"]
 #[tokio::test]
 async fn kek_rotation_new_kek_after_rotation_decrypts_document() -> anyhow::Result<()> {
     let old_kek: Arc<dyn KeyEncryptionKey> = Arc::new(test_kek_a());

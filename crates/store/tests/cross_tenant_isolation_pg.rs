@@ -16,7 +16,7 @@
 //! a no-op and these tests could not pass honestly (docs/analysis/07-rls-enforcement-blocker.md).
 //!
 //! These tests need **Podman** (this project targets Podman exclusively) and network access to
-//! pull `pgvector/pgvector`. They are gated `#[ignore]` so `just ci` stays green when no
+//! pull `paradedb/paradedb`. They are gated `#[ignore]` so `just ci` stays green when no
 //! container runtime is available. Run them via the lane:
 //!
 //! ```text

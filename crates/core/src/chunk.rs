@@ -20,7 +20,7 @@ pub struct Chunk {
     pub page_no: Option<i32>,
     /// 0-based index of the chunk within its source.
     pub idx: i32,
-    /// The chunk text (also fed to the keyword `tsvector`).
+    /// The chunk text (also fed to the BM25 keyword index).
     pub content: String,
     /// Seconds into the audio/video for transcript chunks; `None` otherwise.
     pub ts_offset: Option<f64>,

@@ -14,7 +14,7 @@
 //! 7. **Account deletion** — delete account → shred job enqueued
 //!
 //! All tests are `#[ignore]` in `just ci` because they require Podman +
-//! `pgvector/pgvector:pg17`. Run with:
+//! `paradedb/paradedb:pg17`. Run with:
 //!
 //! ```bash
 //! systemctl --user start podman.socket

@@ -228,7 +228,7 @@ impl RetrievalPipeline {
         );
 
         // Blend RRF hybrid-search scores with reranker scores.
-        // RRF encodes keyword (ts_rank) + vector (cosine) signal that the
+        // RRF encodes keyword (BM25) + vector (cosine) signal that the
         // cross-encoder may not fully capture on its own, especially with
         // quantised models. Blending preserves the exact-match term boost
         // while still deferring to the reranker for semantic relevance.

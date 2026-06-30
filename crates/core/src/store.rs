@@ -49,7 +49,7 @@ pub trait Store: Send + Sync {
     /// unavailable (plan §8, §13, §29; P14-T5).
     ///
     /// Unlike [`Store::hybrid_search`], this takes **no query embedding**: it runs only
-    /// the lexical (`ts_rank` on `tsv`) query, rolls the matching chunks up to documents,
+    /// the lexical (BM25 via ParadeDB pg_search) query, rolls the matching chunks up to documents,
     /// and truncates to `query.top_k`. There is no vector query, no RRF fusion, and no
     /// rerank — so it requires no AI backend and is never metered.
     ///

@@ -5,7 +5,7 @@
 //! acceptance of P0-T6).
 //!
 //! This test needs **Podman** (this project targets Podman exclusively) and network access to
-//! pull the `pgvector/pgvector` image, so it is gated `#[ignore]` and does NOT run in `just ci`
+//! pull the `paradedb/paradedb` image, so it is gated `#[ignore]` and does NOT run in `just ci`
 //! (pulls may be offline). Run it explicitly against the Podman socket testcontainers talks to:
 //!
 //! ```text
