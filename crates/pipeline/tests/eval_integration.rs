@@ -312,7 +312,7 @@ mod tests {
             "SELECT c.document_id, c.content \
              FROM chunks c \
              WHERE c.tenant_id = 1 AND c.id @@@ paradedb.parse('Rust') \
-             ORDER BY paradedb.score_bm25(c.id) DESC",
+             ORDER BY paradedb.score(c.id) DESC",
         )
         .fetch_all(&pool)
         .await

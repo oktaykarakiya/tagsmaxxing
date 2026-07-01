@@ -6,7 +6,7 @@
 //!
 //! The module runs two queries inside a single `PgStore::hybrid_search` call:
 //! 1. Vector top-N via `chunks.embedding <=> CAST($vec AS vector) ORDER BY distance LIMIT N`
-//! 2. Keyword top-N via `paradedb.score_bm25(c.id) with c.id @@@ paradedb.parse($q)`
+//! 2. Keyword top-N via `paradedb.score(c.id) with c.id @@@ paradedb.parse($q)`
 //!
 //! Both arms **overscan** the index (bounded by [`overscan_limit`]) and then keep
 //! only the best chunk per document ([`dedup_best_chunk_per_document`]) so each
@@ -126,7 +126,7 @@ pub(crate) async fn run_hybrid_search(
 /// `query.top_k`, decrypting snippets exactly as [`run_hybrid_search`] does. There is no
 /// vector query, no RRF fusion, and no rerank.
 ///
-/// Because BM25 relevance order from `ORDER BY paradedb.score_bm25(...) DESC` already ranks the
+/// Because BM25 relevance order from `ORDER BY paradedb.score(...) DESC` already ranks the
 /// rows, position in the returned `Vec` is the rank — we synthesise a descending score
 /// from that rank so `document_rollup` keeps each document's best (earliest) chunk.
 ///
@@ -344,7 +344,7 @@ async fn execute_keyword_query(
     builder.push_bind(query_text.clone());
     builder.push(")");
     push_filters(&mut builder, &query.filters, tag_ids);
-    builder.push(" ORDER BY paradedb.score_bm25(c.id) DESC LIMIT ");
+    builder.push(" ORDER BY paradedb.score(c.id) DESC LIMIT ");
     builder.push_bind(overscan_limit(query.top_k) as i64);
 
     let rows = builder
@@ -658,7 +658,7 @@ mod tests {
         builder.push_bind("test query");
         builder.push(")");
         push_filters(&mut builder, &filters, &[]);
-        builder.push(" ORDER BY paradedb.score_bm25(c.id) DESC LIMIT ");
+        builder.push(" ORDER BY paradedb.score(c.id) DESC LIMIT ");
         builder.push_bind(10i64);
 
         let sql = builder.sql();
@@ -667,7 +667,7 @@ mod tests {
             "missing bm25 match: {sql}"
         );
         assert!(
-            sql.contains("paradedb.score_bm25"),
+            sql.contains("paradedb.score"),
             "missing bm25 score: {sql}"
         );
         assert!(sql.contains("DESC"), "missing DESC: {sql}");
