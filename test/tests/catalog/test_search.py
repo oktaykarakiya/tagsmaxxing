@@ -358,7 +358,7 @@ def test_browser_search_results(page):
     # Navigate to search and find the ingested document.
     page.goto("/search")
     page.fill("input[name='q']", marker)
-    page.click("#search-form button[type='submit']")
+    page.press("input[name='q']", "Enter")
 
     # Wait for HTMX to swap results into #results.
     page.wait_for_selector("#results a[href*='/documents/']", timeout=45_000)

@@ -313,6 +313,18 @@ pub async fn account_page(
         format_tokens,
     );
 
+    // ── Document & file counts ────────────────────────────────────────────
+    let document_count = state
+        .pg_store
+        .get_document_count(auth_user.tenant_id)
+        .await
+        .unwrap_or(0);
+    let file_count = state
+        .pg_store
+        .get_file_count(auth_user.tenant_id)
+        .await
+        .unwrap_or(0);
+
     let page = AccountPage {
         csrf_token: csrf_token.clone(),
         email,
@@ -324,6 +336,8 @@ pub async fn account_page(
         email_verified: auth_user.email_verified,
         storage_bar,
         token_bar,
+        document_count,
+        file_count,
         error: String::new(),
     };
 
@@ -1599,6 +1613,8 @@ mod tests {
                 limit_display: "500.0K".into(),
                 percent: 50,
             },
+            document_count: 0,
+            file_count: 0,
             error: String::new(),
         };
         let html = page.render().expect("account template must render");
@@ -1637,6 +1653,8 @@ mod tests {
                 limit_display: "10.0K".into(),
                 percent: 0,
             },
+            document_count: 0,
+            file_count: 0,
             error: String::new(),
         };
         let html = page.render().expect("account template must render");
@@ -2165,6 +2183,8 @@ mod tests {
                 limit_display: "Unlimited".into(),
                 percent: 0,
             },
+            document_count: 0,
+            file_count: 0,
             error: "Something broke".into(),
         };
         let html = page
@@ -2332,6 +2352,8 @@ mod tests {
                 limit_display: "Unlimited".into(),
                 percent: 0,
             },
+            document_count: 0,
+            file_count: 0,
             error: String::new(),
         };
         let html = page.render().expect("render");
@@ -2407,6 +2429,8 @@ mod tests {
                 limit_display: "10.0K".into(),
                 percent: 5,
             },
+            document_count: 0,
+            file_count: 0,
             error: "Plan lookup failed".into(),
         };
         let html = page.render().expect("render");

@@ -429,10 +429,8 @@ pub fn build_router(state: AppState) -> Router {
 
     // Assistant routes — mounted via nest_service with its own state type.
     // Returns None when opencode_bin is unset or retrieval pipeline is absent.
-    let asst_router = kb_assistant::handlers::build_assistant_router(
-        &state.pg_store,
-        &state.retrieval_pipeline,
-    );
+    let asst_router =
+        kb_assistant::handlers::build_assistant_router(&state.pg_store, &state.retrieval_pipeline);
 
     // Merge public + protected API + Web UI, attach shared state.
     // The degradation middleware wraps the entire router so every
@@ -442,9 +440,7 @@ pub fn build_router(state: AppState) -> Router {
     // The request-id layer is outermost so every request (including CORS
     // preflights and degradation handling) runs inside the correlation span
     // and carries `request_id` in its logs (plan §18, P14-T11).
-    let mut app = public
-        .merge(api)
-        .merge(web);
+    let mut app = public.merge(api).merge(web);
 
     // Mount assistant routes with their own state type (None when disabled).
     if let Some(asst) = asst_router {
@@ -453,8 +449,7 @@ pub fn build_router(state: AppState) -> Router {
 
     // Innermost added layer → runs closest to routing, so the `MatchedPath`
     // extension is populated and HTTP RED metrics get per-route labels.
-    app
-        .layer(from_fn(http_metrics_middleware))
+    app.layer(from_fn(http_metrics_middleware))
         .layer(from_fn_with_state(
             state.clone(),
             degradation_middleware::degradation_middleware,

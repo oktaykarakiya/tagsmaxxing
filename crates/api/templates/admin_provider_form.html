@@ -2,33 +2,33 @@
 {% block title %}{% if provider_id.is_some() %}Edit Provider{% else %}New Provider{% endif %} — Admin{% endblock %}
 {% block content %}
 <div class="min-h-full">
-  <nav class="bg-white border-b border-gray-200 px-4 py-3 flex items-center gap-6">
-    <a href="/search" class="text-sm font-semibold text-gray-700 hover:text-gray-900">← Back to Search</a>
-    <span class="text-gray-400">|</span>
-    <a href="/admin" class="text-sm text-gray-600 hover:text-indigo-600">Dashboard</a>
-    {% if is_super_admin %}<a href="/admin/tenants" class="text-sm text-gray-600 hover:text-indigo-600">Tenants</a>{% endif %}
-    <a href="/admin/providers" class="text-sm font-semibold text-indigo-600">Providers</a>
-    <a href="/admin/models" class="text-sm text-gray-600 hover:text-indigo-600">Models</a>
-    <a href="/admin/routes" class="text-sm text-gray-600 hover:text-indigo-600">Routes</a>
+  <nav class="bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700 px-4 py-3 flex items-center gap-6">
+    <a href="/search" class="text-sm font-semibold text-gray-700 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-200">← Back to Search</a>
+    <span class="text-gray-400 dark:text-gray-500">|</span>
+    <a href="/admin" class="text-sm text-gray-600 dark:text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400">Dashboard</a>
+    {% if is_super_admin %}<a href="/admin/tenants" class="text-sm text-gray-600 dark:text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400">Tenants</a>{% endif %}
+    <a href="/admin/providers" class="text-sm font-semibold text-indigo-600 dark:text-indigo-400">Providers</a>
+    <a href="/admin/models" class="text-sm text-gray-600 dark:text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400">Models</a>
+    <a href="/admin/routes" class="text-sm text-gray-600 dark:text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400">Routes</a>
   </nav>
   <main class="max-w-3xl mx-auto px-4 py-8">
-    <h1 class="text-2xl font-bold text-gray-900 mb-6">{% if provider_id.is_some() %}Edit Provider — {{ name }}{% else %}New Provider{% endif %}</h1>
+    <h1 class="text-2xl font-bold text-gray-900 dark:text-gray-100 mb-6">{% if provider_id.is_some() %}Edit Provider — {{ name }}{% else %}New Provider{% endif %}</h1>
 
     {% if !error.is_empty() %}
-    <div class="bg-red-50 border border-red-200 text-red-800 rounded-lg p-4 mb-6">{{ error }}</div>
+    <div class="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-800 dark:text-red-300 rounded-lg p-4 mb-6">{{ error }}</div>
     {% endif %}
 
-    <form method="post" action="{% if provider_id.is_some() %}/admin/providers/{{ provider_id.unwrap() }}{% else %}/admin/providers{% endif %}" class="bg-white rounded-lg shadow p-6 space-y-5">
+    <form method="post" action="{% if provider_id.is_some() %}/admin/providers/{{ provider_id.unwrap() }}{% else %}/admin/providers{% endif %}" class="bg-white dark:bg-gray-900 rounded-lg shadow dark:shadow-gray-900/30 p-6 space-y-5">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 
       <div>
-        <label class="block text-sm font-medium text-gray-700 mb-1">Name</label>
-        <input type="text" name="name" required value="{{ name }}" class="border border-gray-300 rounded-md px-3 py-2 w-full text-sm" placeholder="e.g. llama-gpu, openai-paid">
+        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Name</label>
+        <input type="text" name="name" required value="{{ name }}" class="border border-gray-300 dark:border-gray-600 rounded-md px-3 py-2 w-full text-sm" placeholder="e.g. llama-gpu, openai-paid">
       </div>
 
       <div>
-        <label class="block text-sm font-medium text-gray-700 mb-1">Kind</label>
-        <select name="kind" class="border border-gray-300 rounded-md px-3 py-2 w-full text-sm">
+        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Kind</label>
+        <select name="kind" class="border border-gray-300 dark:border-gray-600 rounded-md px-3 py-2 w-full text-sm">
           {% for k in kind_options %}
           <option value="{{ k }}" {% if k.as_str() == kind.as_str() %}selected{% endif %}>{{ k }}</option>
           {% endfor %}
@@ -36,26 +36,26 @@
       </div>
 
       <div>
-        <label class="block text-sm font-medium text-gray-700 mb-1">Endpoint (base URL)</label>
-        <input type="url" name="endpoint" value="{{ endpoint }}" class="border border-gray-300 rounded-md px-3 py-2 w-full text-sm font-mono" placeholder="http://localhost:8080/v1">
-        <p class="mt-1 text-xs text-gray-500">Required for HTTP-based providers; leave empty for native SDK providers.</p>
+        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Endpoint (base URL)</label>
+        <input type="url" name="endpoint" value="{{ endpoint }}" class="border border-gray-300 dark:border-gray-600 rounded-md px-3 py-2 w-full text-sm font-mono" placeholder="http://localhost:8080/v1">
+        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Required for HTTP-based providers; leave empty for native SDK providers.</p>
       </div>
 
       <div>
-        <label class="block text-sm font-medium text-gray-700 mb-1">API Key</label>
-        <input type="password" name="api_key" value="" class="border border-gray-300 rounded-md px-3 py-2 w-full text-sm font-mono" placeholder="{{ api_key_placeholder }}">
-        <p class="mt-1 text-xs text-gray-500">Leave blank to keep the current key. The key is encrypted at rest and masked in the UI.</p>
+        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">API Key</label>
+        <input type="password" name="api_key" value="" class="border border-gray-300 dark:border-gray-600 rounded-md px-3 py-2 w-full text-sm font-mono" placeholder="{{ api_key_placeholder }}">
+        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Leave blank to keep the current key. The key is encrypted at rest and masked in the UI.</p>
       </div>
 
       <div>
-        <label class="block text-sm font-medium text-gray-700 mb-1">Extra Headers (JSON)</label>
-        <textarea name="headers_json" rows="3" class="border border-gray-300 rounded-md px-3 py-2 w-full text-sm font-mono" placeholder='{"anthropic-version":"2023-06-01"}'>{{ headers_json }}</textarea>
-        <p class="mt-1 text-xs text-gray-500">Optional JSON object of extra HTTP headers sent with every request.</p>
+        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Extra Headers (JSON)</label>
+        <textarea name="headers_json" rows="3" class="border border-gray-300 dark:border-gray-600 rounded-md px-3 py-2 w-full text-sm font-mono" placeholder='{"anthropic-version":"2023-06-01"}'>{{ headers_json }}</textarea>
+        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Optional JSON object of extra HTTP headers sent with every request.</p>
       </div>
 
       <div class="flex gap-3 pt-2">
-        <button type="submit" class="bg-indigo-600 text-white px-6 py-2 rounded-md text-sm font-medium hover:bg-indigo-700">{% if provider_id.is_some() %}Save Changes{% else %}Create Provider{% endif %}</button>
-        <a href="/admin/providers" class="bg-gray-100 text-gray-700 px-6 py-2 rounded-md text-sm font-medium hover:bg-gray-200">Cancel</a>
+        <button type="submit" class="bg-indigo-600 dark:bg-indigo-500 text-white px-6 py-2 rounded-md text-sm font-medium hover:bg-indigo-700 dark:hover:bg-indigo-400">{% if provider_id.is_some() %}Save Changes{% else %}Create Provider{% endif %}</button>
+        <a href="/admin/providers" class="bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 px-6 py-2 rounded-md text-sm font-medium hover:bg-gray-200 dark:hover:bg-gray-700">Cancel</a>
       </div>
     </form>
   </main>

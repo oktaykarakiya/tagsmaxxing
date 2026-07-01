@@ -140,7 +140,7 @@ def test_search_result_click_opens_document_detail(api, page):
     flows.browser_login(page, tenant, email, password)
     page.goto("/search")
     page.fill("input[name='q']", marker)
-    page.click("#search-form button[type='submit']")
+    page.press("input[name='q']", "Enter")
 
     # Results swap into #results via HTMX; wait for the ingested doc's result.
     result_link = page.locator(f"#results a[href='/documents/{doc_id}']").first
@@ -222,10 +222,10 @@ def test_search_empty_state_for_no_match(page):
     flows.browser_login(page, slug, email, password)
     page.goto("/search")
     page.fill("input[name='q']", flows.unique_marker("zznomatch"))
-    page.click("#search-form button[type='submit']")
+    page.press("input[name='q']", "Enter")
 
     # The HTMX fragment must swap in the explicit empty state…
-    page.wait_for_selector("#results :text('No results found')",
+    page.wait_for_selector("#results :text('No results for')",
                            timeout=SEARCH_TIMEOUT_MS)
     # …with zero document result links (no error page, no stale hits).
     expect(page.locator("#results a[href*='/documents/']")).to_have_count(0)
@@ -249,7 +249,7 @@ def test_search_kind_filter_control_narrows_results(api, page):
     flows.browser_login(page, tenant, email, password)
     page.goto("/search")
     page.fill("input[name='q']", marker)
-    page.click("#search-form button[type='submit']")
+    page.press("input[name='q']", "Enter")
 
     doc_link = page.locator(f"#results a[href='/documents/{doc_id}']")
     # Unfiltered: the text document is among the results.

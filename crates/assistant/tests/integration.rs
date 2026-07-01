@@ -16,8 +16,9 @@ mod integration {
     use kb_store::MIGRATOR;
     use sqlx::PgPool;
 
-    const MIGRATION_SQL: &str =
-        include_str!("../../store/migrations/0003_assistant_schema.sql");
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    const MIGRATION_SQL: &str = include_str!("../../store/migrations/0003_assistant_schema.sql");
 
     // ── Test 1: migration applies clean against real Postgres ──────────────
 
@@ -26,21 +27,17 @@ mod integration {
     /// table it creates is present in `information_schema.tables`.
     #[tokio::test]
     #[ignore = "needs container runtime (Podman) and network"]
-    async fn migration_0003_applies_clean() {
-        let db = kb_testsupport::fresh_db().await.expect("fresh_db");
-        let pool = PgPool::connect(&db.admin_url)
-            .await
-            .expect("admin pool connect");
+    async fn migration_0003_applies_clean() -> TestResult {
+        let db = kb_testsupport::fresh_db().await?;
+        let pool = PgPool::connect(&db.admin_url).await?;
 
-        MIGRATOR.run(&pool).await.expect("migrations run");
+        MIGRATOR.run(&pool).await?;
 
         // ── Migration record exists ──────────────────────────────────
-        let version: i64 = sqlx::query_scalar(
-            "SELECT version FROM _sqlx_migrations WHERE version = 3",
-        )
-        .fetch_one(&pool)
-        .await
-        .expect("migration 0003 record");
+        let version: i64 =
+            sqlx::query_scalar("SELECT version FROM _sqlx_migrations WHERE version = 3")
+                .fetch_one(&pool)
+                .await?;
 
         assert_eq!(version, 3, "migration version should be 3");
 
@@ -64,6 +61,7 @@ mod integration {
 
             assert!(exists, "table '{table}' should exist after migration 0003");
         }
+        Ok(())
     }
 
     // ── Test 2: pure-SQL validation — all table DDL present ───────────────
@@ -106,10 +104,7 @@ mod integration {
 
         for table in rls_tables {
             let needle = format!("ALTER TABLE {table} ENABLE ROW LEVEL SECURITY");
-            assert!(
-                MIGRATION_SQL.contains(&needle),
-                "missing RLS for {table}"
-            );
+            assert!(MIGRATION_SQL.contains(&needle), "missing RLS for {table}");
         }
     }
 
@@ -125,10 +120,7 @@ mod integration {
         ];
 
         for idx in indexes {
-            assert!(
-                MIGRATION_SQL.contains(idx),
-                "missing index {idx}"
-            );
+            assert!(MIGRATION_SQL.contains(idx), "missing index {idx}");
         }
 
         // Extra sanity: the UNIQUE constraint on stale_watches is a UNIQUE INDEX

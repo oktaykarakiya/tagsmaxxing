@@ -166,9 +166,10 @@ def test_create_and_delete_route(page):
     )
 
     # 4. Delete the route.
-    # The delete button is in a form; use the route row.
+    # The delete button is a <button type="submit"> inside a form with
+    # action ending in /delete and an onsubmit JS confirm dialog.
     route_row = page.locator("tbody tr").first
-    delete_btn = route_row.locator("button:has-text('Delete')")
+    delete_btn = route_row.locator("form[action*='/delete'] button[type='submit']")
     # Playwright's dialog handler for the JS confirm.
     page.on("dialog", lambda d: d.accept())
     delete_btn.click()
@@ -372,7 +373,7 @@ def _delete_routes_matching(page, needle):
         row = page.locator("tr", has=page.locator(f"text={needle}")).first
         if row.count() == 0:
             break
-        btn = row.locator("button:has-text('Delete')")
+        btn = row.locator("form[action*='/delete'] button[type='submit']")
         if btn.count() == 0:
             break
         page.once("dialog", lambda d: d.accept())

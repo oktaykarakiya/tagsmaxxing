@@ -175,9 +175,9 @@ def test_html_in_search_query_not_reflected_unescaped(page):
     page.wait_for_load_state("networkidle")
 
     page.fill("input[name='q']", _IMG_XSS)
-    page.click("#search-form button[type='submit']")
+    page.press("input[name='q']", "Enter")
     # The HTMX fragment replaces #results, removing the initial empty-state copy.
-    page.wait_for_selector("text=Find anything, instantly", state="detached", timeout=60_000)
+    page.wait_for_selector("text=Search across all your documents", state="detached", timeout=60_000)
     page.wait_for_timeout(600)
 
     assert not _xss_fired(page), "search query was reflected and executed — reflected XSS"

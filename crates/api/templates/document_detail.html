@@ -14,8 +14,8 @@
 
     {# ── Error banner ────────────────────────────────────────────────────── #}
     {% if !error.is_empty() %}
-    <div class="bg-red-50 border-b border-red-200">
-        <div class="max-w-5xl mx-auto px-4 py-3 text-sm text-red-700">
+    <div class="bg-red-50 dark:bg-red-900/20 border-b border-red-200 dark:border-red-800">
+        <div class="max-w-5xl mx-auto px-4 py-3 text-sm text-red-700 dark:text-red-400">
             {{ error }}
         </div>
     </div>
@@ -27,51 +27,51 @@
         <div class="flex flex-wrap items-start justify-between gap-4 mb-6">
             <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-3 mb-2">
-                    <h1 class="text-2xl font-bold text-gray-900 truncate">
+                    <h1 class="text-2xl font-bold text-gray-900 dark:text-gray-100 truncate">
                         {% if title.is_empty() %}Untitled document{% else %}{{ title }}{% endif %}
                     </h1>
                     <span class="inline-flex items-center rounded-md px-2.5 py-0.5 text-xs font-semibold uppercase tracking-wide
                         {% if kind == "image" %}
-                        bg-pink-50 text-pink-700 ring-1 ring-pink-600/20
+                        bg-pink-50 dark:bg-pink-900/30 text-pink-700 dark:text-pink-300 ring-1 ring-pink-600/20
                         {% else if kind == "audio" %}
-                        bg-purple-50 text-purple-700 ring-1 ring-purple-600/20
+                        bg-purple-50 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 ring-1 ring-purple-600/20
                         {% else if kind == "video" %}
-                        bg-orange-50 text-orange-700 ring-1 ring-orange-600/20
+                        bg-orange-50 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300 ring-1 ring-orange-600/20
                         {% else if kind == "identity_document" %}
-                        bg-red-50 text-red-700 ring-1 ring-red-600/20
+                        bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400 ring-1 ring-red-600/20
                         {% else if kind == "code" %}
                         bg-cyan-50 text-cyan-700 ring-1 ring-cyan-600/20
                         {% else if kind == "archive" %}
-                        bg-amber-50 text-amber-700 ring-1 ring-amber-600/20
+                        bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 ring-1 ring-amber-600/20
                         {% else if kind == "binary" %}
                         bg-slate-100 text-slate-700 ring-1 ring-slate-500/20
                         {% else %}
-                        bg-blue-50 text-blue-700 ring-1 ring-blue-600/20
+                        bg-blue-50 dark:bg-blue-900/30 text-blue-700 ring-1 ring-blue-600/20
                         {% endif %}">
                         {{ kind }}
                     </span>
                     <span class="inline-flex items-center rounded-md px-2.5 py-0.5 text-xs font-medium
                         {% if status == "ready" %}
-                        bg-green-50 text-green-700 ring-1 ring-green-600/20
+                        bg-green-50 dark:bg-green-900/30 text-green-700 ring-1 ring-green-600/20
                         {% else if status == "processing" %}
-                        bg-yellow-50 text-yellow-700 ring-1 ring-yellow-600/20
+                        bg-yellow-50 dark:bg-yellow-900/20 text-yellow-700 ring-1 ring-yellow-600/20
                         {% else if status == "failed" || status == "error" %}
-                        bg-red-50 text-red-700 ring-1 ring-red-600/20
+                        bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400 ring-1 ring-red-600/20
                         {% else %}
-                        bg-gray-50 text-gray-600 ring-1 ring-gray-500/20
+                        bg-gray-50 dark:bg-gray-800 text-gray-600 dark:text-gray-400 ring-1 ring-gray-500/20
                         {% endif %}">
                         {{ status }}
                     </span>
                 </div>
                 {% if !summary.is_empty() %}
-                <p class="text-gray-600 leading-relaxed">{{ summary }}</p>
+                <p class="text-gray-600 dark:text-gray-400 leading-relaxed">{{ summary }}</p>
                 {% endif %}
             </div>
             {# ── Re-tag button ────────────────────────────────────────────── #}
             <form method="post" action="/documents/{{ doc_id }}/retag" class="shrink-0">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                 <button type="submit"
-                        class="inline-flex items-center gap-1.5 rounded-lg bg-indigo-50 px-4 py-2 text-sm font-medium text-indigo-700 hover:bg-indigo-100 border border-indigo-200 transition">
+                        class="inline-flex items-center gap-1.5 rounded-lg bg-indigo-50 dark:bg-indigo-950 px-4 py-2 text-sm font-medium text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 border border-indigo-200 dark:border-indigo-800 transition">
                     <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                               d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
@@ -84,14 +84,14 @@
         {# ── Failed-ingest alert + retry (P15-T9) ────────────────────────── #}
         {% if status == "failed" %}
         <div id="ingest-failed-alert"
-             class="mb-6 rounded-lg border border-red-200 bg-red-50 p-4 flex flex-wrap items-start justify-between gap-4">
+             class="mb-6 rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 p-4 flex flex-wrap items-start justify-between gap-4">
             <div class="flex-1 min-w-0">
-                <h2 class="text-sm font-semibold text-red-800">Processing failed</h2>
-                <p class="mt-1 text-sm text-red-700">
+                <h2 class="text-sm font-semibold text-red-800 dark:text-red-300">Processing failed</h2>
+                <p class="mt-1 text-sm text-red-700 dark:text-red-400">
                     This document could not be processed. You can retry — the upload itself is safely stored.
                 </p>
                 {% if !last_error.is_empty() %}
-                <p class="mt-2 text-xs font-mono text-red-600 break-all" data-testid="ingest-last-error">{{ last_error }}</p>
+                <p class="mt-2 text-xs font-mono text-red-600 dark:text-red-400 break-all" data-testid="ingest-last-error">{{ last_error }}</p>
                 {% endif %}
             </div>
             <form method="post" action="/documents/{{ doc_id }}/retry" class="shrink-0">
@@ -110,18 +110,18 @@
 
         {# ── Metadata grid ───────────────────────────────────────────────── #}
         <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
-            <div class="bg-white rounded-lg border border-gray-200 p-4">
-                <dt class="text-xs font-medium text-gray-500 uppercase tracking-wide">Created</dt>
-                <dd class="mt-1 text-sm text-gray-900">{{ created_at }}</dd>
+            <div class="bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-700 p-4">
+                <dt class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">Created</dt>
+                <dd class="mt-1 text-sm text-gray-900 dark:text-gray-100">{{ created_at }}</dd>
             </div>
-            <div class="bg-white rounded-lg border border-gray-200 p-4">
-                <dt class="text-xs font-medium text-gray-500 uppercase tracking-wide">Pages</dt>
-                <dd class="mt-1 text-sm text-gray-900">{{ page_count }}</dd>
+            <div class="bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-700 p-4">
+                <dt class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">Pages</dt>
+                <dd class="mt-1 text-sm text-gray-900 dark:text-gray-100">{{ page_count }}</dd>
             </div>
             {% if !user_note.is_empty() %}
-            <div class="bg-white rounded-lg border border-gray-200 p-4 sm:col-span-1">
-                <dt class="text-xs font-medium text-gray-500 uppercase tracking-wide">User note</dt>
-                <dd class="mt-1 text-sm text-gray-900">{{ user_note }}</dd>
+            <div class="bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-700 p-4 sm:col-span-1">
+                <dt class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">User note</dt>
+                <dd class="mt-1 text-sm text-gray-900 dark:text-gray-100">{{ user_note }}</dd>
             </div>
             {% endif %}
         </div>
@@ -129,17 +129,17 @@
         {# ── Tags section ─────────────────────────────────────────────────── #}
         <section class="mb-8">
             <div class="flex items-center justify-between mb-3">
-                <h2 class="text-base font-semibold text-gray-900">Tags</h2>
+                <h2 class="text-base font-semibold text-gray-900 dark:text-gray-100">Tags</h2>
             </div>
             <div class="flex flex-wrap gap-2 mb-4">
                 {% for tag in tags %}
-                <span class="inline-flex items-center gap-1 rounded-full bg-indigo-50 px-3 py-1 text-sm text-indigo-700 border border-indigo-200">
+                <span class="inline-flex items-center gap-1 rounded-full bg-indigo-50 dark:bg-indigo-950 px-3 py-1 text-sm text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800">
                     {{ tag.tag_name }}
                     <form method="post" action="/documents/{{ doc_id }}/tags/{{ tag.tag_id }}/remove" class="inline-flex items-center">
                         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                         <button type="submit"
                                 title="Remove tag"
-                                class="ml-0.5 inline-flex h-4 w-4 items-center justify-center rounded-full text-indigo-400 hover:bg-indigo-200 hover:text-indigo-700 transition">
+                                class="ml-0.5 inline-flex h-4 w-4 items-center justify-center rounded-full text-indigo-400 dark:text-indigo-500 hover:bg-indigo-200 dark:hover:bg-indigo-800 hover:text-indigo-700 dark:hover:text-indigo-300 transition">
                             <svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
                             </svg>
@@ -148,7 +148,7 @@
                 </span>
                 {% endfor %}
                 {% if tags.is_empty() %}
-                <span class="text-sm text-gray-400 italic">No tags yet</span>
+                <span class="text-sm text-gray-400 dark:text-gray-500 italic">No tags yet</span>
                 {% endif %}
             </div>
             {# ── Add tag form with autocomplete ───────────────────────────── #}
@@ -160,7 +160,7 @@
                            list="tag-suggestions"
                            placeholder="Add a tag…"
                            autocomplete="off"
-                           class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 placeholder-gray-400 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/30">
+                           class="w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 shadow-sm dark:shadow-gray-900/50 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/30 dark:focus:ring-indigo-400/20">
                     <datalist id="tag-suggestions">
                         {% for name in tenant_tag_names %}
                         <option value="{{ name }}">
@@ -168,7 +168,7 @@
                     </datalist>
                 </div>
                 <button type="submit"
-                        class="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 transition">
+                        class="rounded-lg bg-indigo-600 dark:bg-indigo-500 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 dark:hover:bg-indigo-400 transition">
                     Add
                 </button>
             </form>
@@ -177,10 +177,10 @@
         {# ── Pages section ────────────────────────────────────────────────── #}
         <section class="mb-8">
             <div class="flex items-center justify-between mb-3">
-                <h2 class="text-base font-semibold text-gray-900">Pages</h2>
+                <h2 class="text-base font-semibold text-gray-900 dark:text-gray-100">Pages</h2>
                 <form method="post" action="/documents/{{ doc_id }}/add-page" enctype="multipart/form-data" class="inline-flex">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                    <label class="inline-flex items-center gap-1.5 rounded-lg bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 border border-gray-300 cursor-pointer transition">
+                    <label class="inline-flex items-center gap-1.5 rounded-lg bg-white dark:bg-gray-900 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 border border-gray-300 dark:border-gray-600 cursor-pointer transition">
                         <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
                         </svg>
@@ -190,36 +190,36 @@
                 </form>
             </div>
             {% if files.is_empty() %}
-            <p class="text-sm text-gray-400 italic">No files</p>
+            <p class="text-sm text-gray-400 dark:text-gray-500 italic">No files</p>
             {% else %}
             <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4" id="page-strip">
                 {% for file in files %}
-                <div class="group relative bg-white rounded-lg border border-gray-200 p-3 hover:shadow-md transition"
+                <div class="group relative bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-700 p-3 hover:shadow-md transition"
                      data-file-id="{{ file.file_id }}" data-page-no="{{ file.page_no }}">
                     {# ── Page thumbnail / icon ─────────────────────────────── #}
                     <a href="/api/documents/{{ doc_id }}/file/{{ file.file_id }}"
                        title="Download original file"
                        class="block mb-2">
-                        <div class="aspect-square rounded-md bg-gray-100 flex items-center justify-center overflow-hidden">
+                        <div class="aspect-square rounded-md bg-gray-100 dark:bg-gray-800 flex items-center justify-center overflow-hidden">
                             <span class="text-3xl">{{ file.icon }}</span>
                         </div>
                     </a>
                     {# ── Page info ─────────────────────────────────────────── #}
                     <div class="space-y-0.5">
-                        <p class="text-xs font-medium text-gray-900 truncate" title="{{ file.label }}">
+                        <p class="text-xs font-medium text-gray-900 dark:text-gray-100 truncate" title="{{ file.label }}">
                             {% if !file.label.is_empty() %}{{ file.label }}{% else %}Page {{ file.page_no }}{% endif %}
                         </p>
-                        <p class="text-xs text-gray-500">
+                        <p class="text-xs text-gray-500 dark:text-gray-400">
                             {% if !file.size_display.is_empty() %}{{ file.size_display }}{% endif %}
                         </p>
                     </div>
                     {# ── Download link ─────────────────────────────────────── #}
                     <a href="/api/documents/{{ doc_id }}/file/{{ file.file_id }}"
-                       class="absolute top-2 right-2 rounded-full bg-white/90 p-1 text-gray-400 opacity-0 group-hover:opacity-100 hover:text-indigo-600 transition shadow-sm"
+                       class="absolute top-2 right-2 rounded-full bg-white/90 dark:bg-gray-900/90 p-1 text-gray-400 dark:text-gray-500 opacity-0 group-hover:opacity-100 hover:text-indigo-600 dark:hover:text-indigo-400 transition shadow-sm dark:shadow-gray-900/50"
                        title="Download">
                         <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                  d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+                                   d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
                         </svg>
                     </a>
                 </div>
@@ -231,28 +231,28 @@
         {# ── Page reorder form ───────────────────────────────────────────── #}
         {% if files.len() > 1 %}
         <section class="mb-8">
-            <details class="bg-white rounded-lg border border-gray-200 p-4">
-                <summary class="text-sm font-medium text-gray-700 cursor-pointer hover:text-gray-900">
+            <details class="bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-700 p-4">
+                <summary class="text-sm font-medium text-gray-700 dark:text-gray-300 cursor-pointer hover:text-gray-900 dark:hover:text-gray-200">
                     Reorder pages
                 </summary>
                 <form method="post" action="/documents/{{ doc_id }}/reorder" class="mt-3 space-y-2" id="reorder-form" onsubmit="return buildReorderData()">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                     <input type="hidden" name="file_ids" id="reorder-file-ids" value="">
                     <input type="hidden" name="page_nos" id="reorder-page-nos" value="">
-                    <p class="text-xs text-gray-500 mb-2">Assign new page numbers (1-based). All entries must be unique and sequential.</p>
+                    <p class="text-xs text-gray-500 dark:text-gray-400 mb-2">Assign new page numbers (1-based). All entries must be unique and sequential.</p>
                     {% for file in files %}
                     <div class="flex items-center gap-2">
-                        <span class="text-xs text-gray-500 w-24 truncate">{% if !file.label.is_empty() %}{{ file.label }}{% else %}Page {{ file.page_no }}{% endif %}</span>
+                        <span class="text-xs text-gray-500 dark:text-gray-400 w-24 truncate">{% if !file.label.is_empty() %}{{ file.label }}{% else %}Page {{ file.page_no }}{% endif %}</span>
                         <input type="number"
                                value="{{ file.page_no }}"
                                min="1"
                                max="{{ files.len() }}"
-                               class="reorder-input w-16 rounded border border-gray-300 px-2 py-1 text-sm text-gray-900 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500/30"
+                               class="reorder-input w-16 rounded border border-gray-300 dark:border-gray-600 px-2 py-1 text-sm text-gray-900 dark:text-gray-100 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500/30 dark:focus:ring-indigo-400/20"
                                data-file-id="{{ file.file_id }}">
                     </div>
                     {% endfor %}
                     <button type="submit"
-                            class="mt-3 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 transition">
+                            class="mt-3 rounded-lg bg-indigo-600 dark:bg-indigo-500 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 dark:hover:bg-indigo-400 transition">
                         Save order
                     </button>
                 </form>
@@ -263,11 +263,11 @@
         {# ── Combined metadata section ────────────────────────────────────── #}
         {% if !meta_json.is_empty() && meta_json != "{}" %}
         <section class="mb-8">
-            <details class="bg-white rounded-lg border border-gray-200 p-4">
-                <summary class="text-sm font-medium text-gray-700 cursor-pointer hover:text-gray-900">
+            <details class="bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-700 p-4">
+                <summary class="text-sm font-medium text-gray-700 dark:text-gray-300 cursor-pointer hover:text-gray-900 dark:hover:text-gray-200">
                     Metadata
                 </summary>
-                <pre class="mt-3 text-xs text-gray-600 whitespace-pre-wrap overflow-auto max-h-80"><code>{{ meta_json }}</code></pre>
+                <pre class="mt-3 text-xs text-gray-600 dark:text-gray-400 whitespace-pre-wrap overflow-auto max-h-80"><code>{{ meta_json }}</code></pre>
             </details>
         </section>
         {% endif %}

@@ -4,11 +4,11 @@
 
 use std::sync::Arc;
 
+use askama::Template;
 use axum::Extension;
 use axum::Form;
 use axum::response::sse::{Event, Sse};
 use axum::response::{Html, IntoResponse};
-use askama::Template;
 use serde::Deserialize;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
@@ -51,14 +51,16 @@ pub struct PromptForm {
 
 // ── Handlers ─────────────────────────────────────────────────────────────────
 
-pub async fn assistant_page(
-    Extension(state): Extension<Arc<AssistantState>>,
-) -> impl IntoResponse {
+pub async fn assistant_page(Extension(state): Extension<Arc<AssistantState>>) -> impl IntoResponse {
     // Use the same template as the main dashboard
     let template = AssistantPage {
         model_ref: state.cfg.model_ref.clone(),
     };
-    Html(template.render().unwrap_or_else(|e| format!("Template error: {e}")))
+    Html(
+        template
+            .render()
+            .unwrap_or_else(|e| format!("Template error: {e}")),
+    )
 }
 
 pub async fn assistant_prompt_handler(
@@ -66,10 +68,8 @@ pub async fn assistant_prompt_handler(
     Form(form): Form<PromptForm>,
 ) -> impl IntoResponse {
     if state.executor.is_none() {
-        return sse_single(
-            "Assistant is disabled: opencode_bin not configured".to_string(),
-        )
-        .into_response();
+        return sse_single("Assistant is disabled: opencode_bin not configured".to_string())
+            .into_response();
     }
 
     let executor = match &state.executor {
@@ -91,15 +91,16 @@ pub async fn assistant_prompt_handler(
         env.insert("OPC_DEPARTMENT".into(), dept.clone());
     }
 
-    match executor.execute(&work_dir, &session_key, &form.text, env).await {
+    match executor
+        .execute(&work_dir, &session_key, &form.text, env)
+        .await
+    {
         Ok(rx) => {
             let stream = ReceiverStream::new(rx)
                 .map(|line| Ok::<_, anyhow::Error>(Event::default().data(line)));
             Sse::new(stream).into_response()
         }
-        Err(e) => {
-            sse_single(format!("Failed to start agent: {e}")).into_response()
-        }
+        Err(e) => sse_single(format!("Failed to start agent: {e}")).into_response(),
     }
 }
 
@@ -107,5 +108,9 @@ pub async fn assistant_sessions_handler(
     Extension(_state): Extension<Arc<AssistantState>>,
 ) -> impl IntoResponse {
     let template = AssistantSessionsPage { session_count: 0 };
-    Html(template.render().unwrap_or_else(|e| format!("Template error: {e}")))
+    Html(
+        template
+            .render()
+            .unwrap_or_else(|e| format!("Template error: {e}")),
+    )
 }

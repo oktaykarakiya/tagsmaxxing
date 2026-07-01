@@ -4,31 +4,31 @@
 
 {% block content %}
 <div class="flex min-h-[80vh] items-center justify-center">
-    <div class="w-full max-w-md space-y-8 rounded-xl bg-white p-8 shadow-lg">
+    <div class="w-full max-w-md space-y-8 rounded-xl bg-white dark:bg-gray-900 p-8 shadow-lg dark:shadow-gray-950">
         <div>
-            <div class="rounded-lg border-2 border-amber-400 bg-amber-50 px-4 py-3 text-center text-sm font-semibold text-amber-900">
+            <div class="rounded-lg border-2 border-amber-400 bg-amber-50 dark:bg-amber-900/20 px-4 py-3 text-center text-sm font-semibold text-amber-900">
                 ⚠ Experimental preview — not a finished product. Do not rely on it for real data.
             </div>
-            <h2 class="text-center text-3xl font-bold tracking-tight text-gray-900">
+            <h1 class="text-center text-3xl font-bold tracking-tight text-gray-900 dark:text-gray-100">
                 Create your account
-            </h2>
-            <p class="mt-2 text-center text-sm text-gray-500">
+            </h1>
+            <p class="mt-2 text-center text-sm text-gray-500 dark:text-gray-400">
                 Already have an account?
-                <a href="/login" class="font-medium text-indigo-600 hover:text-indigo-500">
+                <a href="/login" class="font-medium text-indigo-600 dark:text-indigo-400 hover:text-indigo-500 dark:hover:text-indigo-400">
                     Log in
                 </a>
             </p>
-            <p class="text-center text-xs text-gray-400">
+            <p class="text-center text-xs text-gray-400 dark:text-gray-500">
                 Need a new workspace?
-                <a href="/signup" class="font-medium text-indigo-600 hover:text-indigo-500">
+                <a href="/signup" class="font-medium text-indigo-600 dark:text-indigo-400 hover:text-indigo-500 dark:hover:text-indigo-400">
                     Create one here
                 </a>
             </p>
         </div>
 
         {% if !error.is_empty() %}
-        <div class="rounded-md bg-red-50 p-4 border border-red-200">
-            <p class="text-sm text-red-800">{{ error }}</p>
+        <div class="rounded-md bg-red-50 dark:bg-red-900/20 p-4 border border-red-200 dark:border-red-800">
+            <p class="text-sm text-red-800 dark:text-red-300">{{ error }}</p>
         </div>
         {% endif %}
 
@@ -37,38 +37,38 @@
 
             <div class="space-y-4">
                 <div>
-                    <label for="tenant_slug" class="block text-sm font-medium text-gray-700">
+                    <label for="tenant_slug" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
                         Tenant slug
                     </label>
                     <input id="tenant_slug" name="tenant_slug" type="text" required
                            value="{{ tenant_slug }}"
-                           class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 placeholder-gray-400 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 sm:text-sm"
+                           class="mt-1 block w-full rounded-md border border-gray-300 dark:border-gray-600 px-3 py-2 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 shadow-sm dark:shadow-gray-900/50 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:focus:ring-indigo-400 sm:text-sm"
                            placeholder="your-tenant">
                 </div>
 
                 <div>
-                    <label for="email" class="block text-sm font-medium text-gray-700">
+                    <label for="email" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
                         Email address
                     </label>
                     <input id="email" name="email" type="email" autocomplete="email" required
                            value="{{ email }}"
-                           class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 placeholder-gray-400 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 sm:text-sm"
+                           class="mt-1 block w-full rounded-md border border-gray-300 dark:border-gray-600 px-3 py-2 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 shadow-sm dark:shadow-gray-900/50 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:focus:ring-indigo-400 sm:text-sm"
                            placeholder="you@example.com">
                 </div>
 
                 <div>
-                    <label for="password" class="block text-sm font-medium text-gray-700">
+                    <label for="password" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
                         Password
                     </label>
                     <input id="password" name="password" type="password" autocomplete="new-password" required
                            minlength="8"
-                           class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 placeholder-gray-400 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 sm:text-sm">
-                    <p class="mt-1 text-xs text-gray-500">At least 8 characters.</p>
+                           class="mt-1 block w-full rounded-md border border-gray-300 dark:border-gray-600 px-3 py-2 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 shadow-sm dark:shadow-gray-900/50 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:focus:ring-indigo-400 sm:text-sm">
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">At least 8 characters.</p>
                 </div>
             </div>
 
             <button type="submit"
-                    class="flex w-full justify-center rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 transition">
+                    class="flex w-full justify-center rounded-md bg-indigo-600 dark:bg-indigo-500 px-4 py-2 text-sm font-semibold text-white shadow-sm dark:shadow-gray-900/50 hover:bg-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:focus:ring-indigo-400 focus:ring-offset-2 transition">
                 Create account
             </button>
         </form>

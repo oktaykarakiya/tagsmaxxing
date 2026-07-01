@@ -2,49 +2,49 @@
 {% block title %}Tenants — Admin{% endblock %}
 {% block content %}
 <div class="min-h-full">
-  <nav class="bg-white border-b border-gray-200 px-4 py-3 flex items-center gap-6">
-    <a href="/search" class="text-sm font-semibold text-gray-700 hover:text-gray-900">← Back to Search</a>
-    <span class="text-gray-400">|</span>
-    <a href="/admin" class="text-sm text-gray-600 hover:text-indigo-600">Dashboard</a>
-    <a href="/admin/tenants" class="text-sm font-semibold text-indigo-600">Tenants</a>
-    <a href="/admin/users" class="text-sm text-gray-600 hover:text-indigo-600">Users</a>
-    <a href="/admin/jobs" class="text-sm text-gray-600 hover:text-indigo-600">Jobs</a>
-    <a href="/admin/tags" class="text-sm text-gray-600 hover:text-indigo-600">Tags</a>
+  <nav class="bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700 px-4 py-3 flex items-center gap-6">
+    <a href="/search" class="text-sm font-semibold text-gray-700 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-200">← Back to Search</a>
+    <span class="text-gray-400 dark:text-gray-500">|</span>
+    <a href="/admin" class="text-sm text-gray-600 dark:text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400">Dashboard</a>
+    <a href="/admin/tenants" class="text-sm font-semibold text-indigo-600 dark:text-indigo-400">Tenants</a>
+    <a href="/admin/users" class="text-sm text-gray-600 dark:text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400">Users</a>
+    <a href="/admin/jobs" class="text-sm text-gray-600 dark:text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400">Jobs</a>
+    <a href="/admin/tags" class="text-sm text-gray-600 dark:text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400">Tags</a>
   </nav>
   <main class="max-w-7xl mx-auto px-4 py-8">
-    <h1 class="text-2xl font-bold text-gray-900 mb-6">Tenant Management</h1>
+    <h1 class="text-2xl font-bold text-gray-900 dark:text-gray-100 mb-6">Tenant Management</h1>
 
     {% if !error.is_empty() %}
-    <div class="bg-red-50 border border-red-200 text-red-800 rounded-lg p-4 mb-6">{{ error }}</div>
+    <div class="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-800 dark:text-red-300 rounded-lg p-4 mb-6">{{ error }}</div>
     {% endif %}
 
-    <div class="bg-white rounded-lg shadow overflow-hidden">
-      <table class="min-w-full divide-y divide-gray-200">
-        <thead class="bg-gray-50">
+    <div class="bg-white dark:bg-gray-900 rounded-lg shadow dark:shadow-gray-900/30 overflow-hidden">
+      <table class="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+        <thead class="bg-gray-50 dark:bg-gray-950">
           <tr>
-            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">ID</th>
-            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Slug</th>
-            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
-            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Storage Quota</th>
-            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Token Quota</th>
-            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Budget</th>
-            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Created</th>
+            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">ID</th>
+            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Slug</th>
+            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Name</th>
+            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Storage Quota</th>
+            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Token Quota</th>
+            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Budget</th>
+            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Created</th>
           </tr>
         </thead>
-        <tbody class="divide-y divide-gray-200">
+        <tbody class="divide-y divide-gray-200 dark:divide-gray-700">
           {% for t in tenants %}
           <tr>
-            <td class="px-4 py-2 text-sm text-gray-900">{{ t.id }}</td>
-            <td class="px-4 py-2 text-sm text-gray-600">{{ t.slug }}</td>
-            <td class="px-4 py-2 text-sm font-medium text-gray-900">{{ t.name }}</td>
-            <td class="px-4 py-2 text-sm text-gray-600">{{ t.quota_bytes_display }}</td>
-            <td class="px-4 py-2 text-sm text-gray-600">{{ t.quota_tokens_display }}</td>
-            <td class="px-4 py-2 text-sm text-gray-600">{{ t.budget_display }}</td>
-            <td class="px-4 py-2 text-sm text-gray-500">{{ t.created_at }}</td>
+            <td class="px-4 py-2 text-sm text-gray-900 dark:text-gray-100">{{ t.id }}</td>
+            <td class="px-4 py-2 text-sm text-gray-600 dark:text-gray-400">{{ t.slug }}</td>
+            <td class="px-4 py-2 text-sm font-medium text-gray-900 dark:text-gray-100">{{ t.name }}</td>
+            <td class="px-4 py-2 text-sm text-gray-600 dark:text-gray-400">{{ t.quota_bytes_display }}</td>
+            <td class="px-4 py-2 text-sm text-gray-600 dark:text-gray-400">{{ t.quota_tokens_display }}</td>
+            <td class="px-4 py-2 text-sm text-gray-600 dark:text-gray-400">{{ t.budget_display }}</td>
+            <td class="px-4 py-2 text-sm text-gray-500 dark:text-gray-400">{{ t.created_at }}</td>
           </tr>
           {% endfor %}
           {% if tenants.is_empty() %}
-          <tr><td colspan="7" class="px-4 py-4 text-sm text-gray-500 text-center">No tenants found.</td></tr>
+          <tr><td colspan="7" class="px-4 py-4 text-sm text-gray-500 dark:text-gray-400 text-center">No tenants found.</td></tr>
           {% endif %}
         </tbody>
       </table>

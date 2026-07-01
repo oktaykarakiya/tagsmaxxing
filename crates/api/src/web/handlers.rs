@@ -1638,7 +1638,7 @@ mod tests {
         let body = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
         let body_str = std::str::from_utf8(&body).unwrap();
         assert!(
-            body_str.contains("No results found") || body_str.contains("get started"),
+            body_str.contains("No results for") || body_str.contains("Search across"),
             "empty query should show empty state; got: {body_str}"
         );
     }
@@ -1706,7 +1706,7 @@ mod tests {
         };
         let html = empty.render().expect("render");
         assert!(html.contains("Basic results"));
-        assert!(html.contains("No results found"));
+        assert!(html.contains("No results for"));
     }
 
     /// When `degraded` is false (the normal hybrid path), no notice is rendered.
@@ -1849,7 +1849,7 @@ mod tests {
         let body = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
         let body_str = std::str::from_utf8(&body).unwrap();
         assert!(
-            body_str.contains("No results found"),
+            body_str.contains("No results for"),
             "empty results should show no-results state; got: {body_str}"
         );
 

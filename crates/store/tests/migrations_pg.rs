@@ -86,6 +86,11 @@ async fn migrations_apply_on_fresh_pgvector() -> TestResult {
         "chunks",
         "jobs",
         "usage_events",
+        "assistant_sessions",
+        "assistant_action_items",
+        "assistant_decisions",
+        "assistant_stale_watches",
+        "assistant_transcripts",
     ] {
         let row = sqlx::query(
             "SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname = $1",

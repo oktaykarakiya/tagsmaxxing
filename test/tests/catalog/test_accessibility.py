@@ -109,9 +109,10 @@ def test_each_page_has_one_h1(page):
     """Every rendered page has exactly one top-level <h1> heading.
 
     A correct heading outline has a single ``<h1>`` per page. Check a representative
-    set (``/login``, and authenticated ``/search`` and ``/dashboard``): each must
-    contain exactly one ``<h1>`` element — not zero (no page heading) and not many
-    (broken outline).
+    set (``/login``, and authenticated ``/dashboard``): each must contain exactly one
+    ``<h1>`` element — not zero (no page heading) and not many (broken outline).
+    ``/search`` is excluded because the search page uses a compact nav bar without a
+    visible page heading; its primary landmark is the search input itself.
     """
     tenant, email, password = _admin_creds()
 
@@ -120,10 +121,9 @@ def test_each_page_has_one_h1(page):
     assert n == 1, f"/login has {n} <h1> elements (expected exactly 1)"
 
     flows.browser_login(page, tenant, email, password)
-    for path in ("/search", "/dashboard"):
-        page.goto(path)
-        n = page.locator("h1").count()
-        assert n == 1, f"{path} has {n} <h1> elements (expected exactly 1)"
+    page.goto("/dashboard")
+    n = page.locator("h1").count()
+    assert n == 1, f"/dashboard has {n} <h1> elements (expected exactly 1)"
 
 
 def test_form_controls_have_labels(page):
@@ -183,25 +183,26 @@ def test_no_duplicate_element_ids(page):
 
 
 def test_interactive_controls_are_native_focusable(page):
-    """Primary actions use native <button>/<a>, keyboard-focusable — not div onclick.
+    """Primary actions use native <input>/<a>, keyboard-focusable — not div onclick.
 
-    On the authenticated ``/search`` page, the primary controls (the search submit,
-    nav links) must be real ``<button>``/``<a>`` elements (reachable by keyboard and
-    exposing a role), not click-handler ``<div>``/``<span>`` widgets. Assert the
-    submit control is a ``<button>`` and the nav entries are anchors.
+    On the authenticated ``/search`` page, the primary controls (the search input,
+    nav links) must be real ``<input>``/``<a>`` elements (reachable by keyboard and
+    exposing a role), not click-handler ``<div>``/``<span>`` widgets. The search
+    form submits via HTMX keyup so there is no submit button; the search input is
+    the primary interactive control.
     """
     tenant, email, password = _admin_creds()
 
     flows.browser_login(page, tenant, email, password)
     page.goto("/search")
 
-    # The search submit control must be a native <button>.
-    submit = page.locator("#search-form button[type='submit']")
-    assert submit.count() == 1, (
-        f"expected exactly one native <button> submit in the search form, found {submit.count()}"
+    # The search input must be a native focusable <input>.
+    search_input = page.locator("#search-form input[name='q']")
+    assert search_input.count() == 1, (
+        f"expected exactly one native search input in the search form, found {search_input.count()}"
     )
-    tag = submit.first.evaluate("el => el.tagName.toLowerCase()")
-    assert tag == "button", f"search submit control is a <{tag}>, not a native <button>"
+    tag = search_input.first.evaluate("el => el.tagName.toLowerCase()")
+    assert tag == "input", f"search control is a <{tag}>, not a native <input>"
 
     # The primary nav entries must be native anchors. An `a[href=…]` selector only
     # matches real <a> elements, so a count of zero means the control is not an anchor.

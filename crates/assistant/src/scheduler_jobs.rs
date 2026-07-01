@@ -31,9 +31,9 @@ impl SentinelJob {
     /// Cron expression.
     pub fn cron(self) -> &'static str {
         match self {
-            Self::MemoryConsolidation => "0 3 * * *",     // daily at 3 AM
-            Self::MemoryPruning => "0 4 * * 0",           // weekly Sunday at 4 AM
-            Self::StaleWatchCheck => "0 6 * * *",         // daily at 6 AM
+            Self::MemoryConsolidation => "0 3 * * *", // daily at 3 AM
+            Self::MemoryPruning => "0 4 * * 0",       // weekly Sunday at 4 AM
+            Self::StaleWatchCheck => "0 6 * * *",     // daily at 6 AM
         }
     }
 

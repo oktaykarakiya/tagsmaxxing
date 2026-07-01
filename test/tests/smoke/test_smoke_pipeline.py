@@ -44,7 +44,7 @@ def test_ingest_then_search_roundtrip(api, page):
     flows.browser_login(page, tenant, email, password)
     page.goto("/search")
     page.fill("input[name='q']", marker)
-    page.click("#search-form button[type='submit']")
+    page.press("input[name='q']", "Enter")
     # Results swap into #results via HTMX; wait for a document link to appear.
     page.wait_for_selector("#results a[href*='/documents/']", timeout=45_000)
     assert page.locator("#results a[href*='/documents/']").count() >= 1, (

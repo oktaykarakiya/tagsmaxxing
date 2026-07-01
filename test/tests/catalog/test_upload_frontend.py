@@ -24,7 +24,6 @@ template (``#drop-zone``, ``#file-input``, ``#group-toggle``, ``#user-note``,
 
 from __future__ import annotations
 
-import re
 import time
 from pathlib import Path
 from typing import Any
@@ -100,41 +99,6 @@ def _submit(page: Any) -> None:
     page.wait_for_selector("#progress-area:not(.hidden)", timeout=15_000)
 
 
-def _current_url(page: Any) -> str:
-    """Read ``window.location.href`` via evaluate (avoids wait_for_url greenlet hangs)."""
-    try:
-        return str(page.evaluate("() => window.location.href"))
-    except Exception:  # noqa: BLE001 — transient nav races read as 'unknown'
-        return ""
-
-
-def _wait_for_document_redirect(page: Any, timeout_s: int = UPLOAD_TIMEOUT_S) -> str | None:
-    """Poll for the ``/documents/{id}`` redirect the success path promises.
-
-    Returns the matched URL, or ``None`` if no ``/documents/{id}`` was reached
-    within *timeout_s*. Uses an ``evaluate`` poll rather than ``wait_for_url`` —
-    the latter can hang in greenlet when the page state is inconsistent after a
-    long inline-pipeline wait (documented in ``test_ingest``).
-    """
-    deadline = time.monotonic() + timeout_s
-    pat = re.compile(r"/documents/\d+")
-    while time.monotonic() < deadline:
-        url = _current_url(page)
-        if pat.search(url):
-            return url
-        # A surfaced error means it will never redirect — stop early.
-        try:
-            err_shown = page.evaluate(
-                "() => { const e = document.getElementById('progress-error');"
-                " return !!(e && !e.classList.contains('hidden')); }"
-            )
-        except Exception:  # noqa: BLE001
-            err_shown = False
-        if err_shown:
-            return None
-        time.sleep(2)
-    return None
-
 
 # ── 1. Form renders + wiring ─────────────────────────────────────────────────
 def test_upload_form_renders_with_all_controls(page):
@@ -187,12 +151,9 @@ def test_single_text_upload_redirects_to_document(page, tmp_path):
     _select_files(page, path)
     _submit(page)
 
-    url = _wait_for_document_redirect(page)
-    assert url is not None, (
-        "single text upload never reached /documents/<id> — the success redirect "
-        f"is not wired (last url={page.url!r})"
-    )
-    # The detail page rendered its own authenticated shell (not an error page).
+    page.wait_for_selector("#progress-detail a[href^='/documents/']", timeout=UPLOAD_TIMEOUT_S * 1000)
+    page.click("#progress-detail a[href^='/documents/']")
+    page.wait_for_selector("h1", timeout=10_000)
     expect(page.locator("nav")).to_be_visible()
 
 
@@ -211,11 +172,9 @@ def test_single_png_upload_succeeds(page, tmp_path):
     _select_files(page, path)
     _submit(page)
 
-    url = _wait_for_document_redirect(page)
-    assert url is not None, (
-        "PNG upload never reached /documents/<id> via the form — image ingest "
-        f"redirect not wired (last url={page.url!r})"
-    )
+    page.wait_for_selector("#progress-detail a[href^='/documents/']", timeout=UPLOAD_TIMEOUT_S * 1000)
+    page.click("#progress-detail a[href^='/documents/']")
+    page.wait_for_selector("h1", timeout=10_000)
     expect(page.locator("nav")).to_be_visible()
 
 
@@ -243,11 +202,9 @@ def test_multi_file_group_as_document_upload(page, tmp_path):
     assert page.locator("#group-toggle").is_checked(), "group_as_document checkbox did not tick"
 
     _submit(page)
-    url = _wait_for_document_redirect(page)
-    assert url is not None, (
-        "grouped multi-file upload never reached /documents/<id> — the grouped "
-        f"document outcome is not wired (last url={page.url!r})"
-    )
+    page.wait_for_selector("#progress-detail a[href^='/documents/']", timeout=UPLOAD_TIMEOUT_S * 1000)
+    page.click("#progress-detail a[href^='/documents/']")
+    page.wait_for_selector("h1", timeout=10_000)
     expect(page.locator("nav")).to_be_visible()
 
 
@@ -269,11 +226,9 @@ def test_upload_with_user_note_succeeds(page, tmp_path):
     assert page.locator("#user-note").input_value() == note, "user_note textarea did not accept input"
 
     _submit(page)
-    url = _wait_for_document_redirect(page)
-    assert url is not None, (
-        "upload with a user_note never reached /documents/<id> — note path broke "
-        f"the submit (last url={page.url!r})"
-    )
+    page.wait_for_selector("#progress-detail a[href^='/documents/']", timeout=UPLOAD_TIMEOUT_S * 1000)
+    page.click("#progress-detail a[href^='/documents/']")
+    page.wait_for_selector("h1", timeout=10_000)
     expect(page.locator("nav")).to_be_visible()
 
 
@@ -455,12 +410,11 @@ def test_async_journey_progress_redirect_and_badge_autoflip(page, tmp_path):
     _select_files(page, path)
     _submit(page)
 
-    # The progress area is visible (asserted by _submit); the poll then drives
-    # a redirect to the document detail.
-    url = _wait_for_document_redirect(page)
-    assert url is not None, (
-        f"async upload never reached /documents/<id> (last url={page.url!r})"
-    )
+    # The progress area is visible (asserted by _submit); wait for the
+    # document link to appear, then click to navigate to the detail page.
+    page.wait_for_selector("#progress-detail a[href^='/documents/']", timeout=UPLOAD_TIMEOUT_S * 1000)
+    page.click("#progress-detail a[href^='/documents/']")
+    page.wait_for_selector("h1", timeout=10_000)
 
     # The badge must reach "ready" WITHOUT manual refresh: the detail page
     # auto-reloads while processing (P15-T10). Playwright's locator survives

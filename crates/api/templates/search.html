@@ -50,6 +50,7 @@
                            id="search-input"
                            value="{{ query }}"
                            placeholder="Search your knowledge base…"
+                           aria-label="Search your knowledge base"
                            autofocus
                            autocomplete="off"
                            hx-post="/search"
@@ -96,6 +97,7 @@
                            name="tag"
                            value="{{ selected_tags }}"
                            placeholder="tags…"
+                           aria-label="Filter by tag"
                            hx-post="/search"
                            hx-target="#results"
                            hx-include="#search-form"

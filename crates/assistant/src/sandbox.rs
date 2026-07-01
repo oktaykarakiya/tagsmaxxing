@@ -14,8 +14,14 @@ use crate::taxonomy::Taxonomy;
 
 /// Operational artifact directory names excluded from sandbox copies.
 const EXCLUDED_DIRS: &[&str] = &[
-    "logs", ".git", "__pycache__", "node_modules",
-    "sessions", "memory", ".backup", ".opencode",
+    "logs",
+    ".git",
+    "__pycache__",
+    "node_modules",
+    "sessions",
+    "memory",
+    ".backup",
+    ".opencode",
 ];
 
 /// System files that are blocked from sandbox when using a commercial API model.
@@ -139,7 +145,13 @@ fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
 /// Sanitize a session key for use as a directory name.
 fn sanitize_session_key(key: &str) -> String {
     key.chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -164,13 +176,7 @@ mod tests {
         std::fs::write(company.path().join("readme.md"), "# Test").unwrap();
 
         let taxonomy = Taxonomy::from_config(&AssistantConfig::default()).unwrap();
-        let sandbox = Sandbox::new(
-            tmp.path(),
-            "test-session",
-            company.path(),
-            taxonomy,
-            false,
-        );
+        let sandbox = Sandbox::new(tmp.path(), "test-session", company.path(), taxonomy, false);
         sandbox.setup().unwrap();
         assert!(sandbox.root().exists());
         assert!(sandbox.root().join("readme.md").exists());
@@ -209,7 +215,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let company = tempfile::tempdir().unwrap();
         std::fs::create_dir(company.path().join("accounting")).unwrap();
-        std::fs::write(company.path().join("accounting").join("ledger.xlsx"), "data").unwrap();
+        std::fs::write(
+            company.path().join("accounting").join("ledger.xlsx"),
+            "data",
+        )
+        .unwrap();
 
         let taxonomy = Taxonomy::from_config(&AssistantConfig::default()).unwrap();
         let sandbox = Sandbox::new(
@@ -289,7 +299,13 @@ mod tests {
         sandbox.setup().unwrap();
 
         assert!(sandbox.root().join("marketing").exists());
-        assert!(sandbox.root().join("marketing").join("brochure.pdf").exists());
+        assert!(
+            sandbox
+                .root()
+                .join("marketing")
+                .join("brochure.pdf")
+                .exists()
+        );
 
         sandbox.cleanup();
     }
@@ -301,13 +317,7 @@ mod tests {
         std::fs::write(company.path().join("readme.md"), "# Test").unwrap();
 
         let taxonomy = Taxonomy::from_config(&AssistantConfig::default()).unwrap();
-        let sandbox = Sandbox::new(
-            tmp.path(),
-            "test-cleanup",
-            company.path(),
-            taxonomy,
-            false,
-        );
+        let sandbox = Sandbox::new(tmp.path(), "test-cleanup", company.path(), taxonomy, false);
         sandbox.setup().unwrap();
         assert!(sandbox.root().exists());
 
@@ -348,13 +358,7 @@ mod tests {
         let company = tempfile::tempdir().unwrap();
 
         let taxonomy = Taxonomy::from_config(&AssistantConfig::default()).unwrap();
-        let sandbox = Sandbox::new(
-            tmp.path(),
-            "test-empty",
-            company.path(),
-            taxonomy,
-            false,
-        );
+        let sandbox = Sandbox::new(tmp.path(), "test-empty", company.path(), taxonomy, false);
         sandbox.setup().unwrap();
 
         assert!(sandbox.root().exists());

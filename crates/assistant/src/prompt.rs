@@ -73,8 +73,8 @@ impl PromptBuilder {
         prompt.push_str(user_prompt);
 
         // Cap to budget if needed
-        let budget_tokens = (max_tokens as f64 * (f64::from(self.context_budget_pct) / 100.0))
-            as usize;
+        let budget_tokens =
+            (max_tokens as f64 * (f64::from(self.context_budget_pct) / 100.0)) as usize;
         let prompt_tokens = Self::estimate_tokens(&prompt);
         if prompt_tokens > budget_tokens {
             // Simple truncation: keep the user prompt, truncate context
@@ -89,7 +89,10 @@ impl PromptBuilder {
             for (label, content) in &sections {
                 let header = format!("# [{label}]\n");
                 truncated.push_str(&header);
-                let snippet: String = content.chars().take(context_chars / sections.len()).collect();
+                let snippet: String = content
+                    .chars()
+                    .take(context_chars / sections.len())
+                    .collect();
                 truncated.push_str(&snippet);
                 truncated.push_str("\n\n");
             }
@@ -139,14 +142,7 @@ mod tests {
     fn budget_cap_truncates_large_context() {
         let pb = PromptBuilder::new(50);
         let huge_context = "x".repeat(10_000);
-        let result = pb.build(
-            "simple prompt",
-            &huge_context,
-            "",
-            "",
-            "",
-            100,
-        );
+        let result = pb.build("simple prompt", &huge_context, "", "", "", 100);
         // Should be truncated
         assert!(result.len() < huge_context.len() + 200);
         // Must still contain the user prompt
@@ -164,7 +160,14 @@ mod tests {
     #[test]
     fn prompt_thread_continuity_section() {
         let pb = PromptBuilder::new(85);
-        let result = pb.build("prompt", "", "", "", "Previous: we discussed invoices", 4096);
+        let result = pb.build(
+            "prompt",
+            "",
+            "",
+            "",
+            "Previous: we discussed invoices",
+            4096,
+        );
         assert!(result.contains("[THREAD CONTINUITY]"));
         assert!(result.contains("invoices"));
     }
@@ -187,7 +190,10 @@ mod tests {
         let result = pb.build("x", &content, "", "", "", 400);
         assert!(result.contains("[RELEVANT PAST CONTEXT]"));
         assert!(result.contains("x"));
-        assert!(result.contains(&content), "full content should be present at exact boundary");
+        assert!(
+            result.contains(&content),
+            "full content should be present at exact boundary"
+        );
     }
 
     #[test]
@@ -215,7 +221,14 @@ mod tests {
     #[test]
     fn prompt_section_priority_order() {
         let pb = PromptBuilder::new(85);
-        let result = pb.build("go", "context-data", "task-data", "decision-data", "thread-data", 20000);
+        let result = pb.build(
+            "go",
+            "context-data",
+            "task-data",
+            "decision-data",
+            "thread-data",
+            20000,
+        );
         let task_pos = result.find("[USER TASK LIST]").unwrap();
         let decision_pos = result.find("[USER DECISIONS]").unwrap();
         let context_pos = result.find("[RELEVANT PAST CONTEXT]").unwrap();

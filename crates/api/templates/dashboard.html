@@ -13,34 +13,34 @@
 <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
   <!-- Page header -->
   <div class="mb-8">
-    <h1 class="text-2xl font-bold text-gray-900">Dashboard</h1>
-    <p class="text-sm text-gray-500 mt-1">{{ tenant_name }} · {{ plan_name }} Plan</p>
+    <h1 class="text-2xl font-bold text-gray-900 dark:text-gray-100">Dashboard</h1>
+    <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">{{ tenant_name }} · {{ plan_name }} Plan</p>
   </div>
 
   {% if !error.is_empty() %}
-  <div class="rounded-md bg-red-50 p-4 border border-red-200 mb-6">
-    <p class="text-sm text-red-700">{{ error }}</p>
+  <div class="rounded-md bg-red-50 dark:bg-red-900/20 p-4 border border-red-200 dark:border-red-800 mb-6">
+    <p class="text-sm text-red-700 dark:text-red-400">{{ error }}</p>
   </div>
   {% endif %}
 
   {% if !email_verified %}
-  <div class="rounded-md bg-yellow-50 p-4 border border-yellow-200 mb-6">
-    <p class="text-sm text-yellow-700">⚠️ Verify your email to enable all features.</p>
+  <div class="rounded-md bg-yellow-50 dark:bg-yellow-900/20 p-4 border border-yellow-200 dark:border-yellow-800 mb-6">
+    <p class="text-sm text-yellow-700 dark:text-yellow-400">⚠️ Verify your email to enable all features.</p>
   </div>
   {% endif %}
 
   {# ── Approaching-limit warnings (non-blocking, P14-T13) ──────────────── #}
   {% for warn in limit_warnings %}
   {% if warn.severity == "atcap" %}
-  <div class="rounded-md bg-red-50 p-4 border border-red-200 mb-4">
-    <p class="text-sm text-red-700">{{ warn.message }}
-      <a href="/account/plan" class="font-medium underline hover:text-red-900">Upgrade your plan</a>.
+  <div class="rounded-md bg-red-50 dark:bg-red-900/20 p-4 border border-red-200 dark:border-red-800 mb-4">
+    <p class="text-sm text-red-700 dark:text-red-400">{{ warn.message }}
+      <a href="/account/plan" class="font-medium underline hover:text-red-900 dark:hover:text-red-300">Upgrade your plan</a>.
     </p>
   </div>
   {% else %}
-  <div class="rounded-md bg-amber-50 p-4 border border-amber-200 mb-4">
-    <p class="text-sm text-amber-700">{{ warn.message }}
-      <a href="/account/plan" class="font-medium underline hover:text-amber-900">Manage plan</a>.
+  <div class="rounded-md bg-amber-50 dark:bg-amber-900/20 p-4 border border-amber-200 dark:border-amber-800 mb-4">
+    <p class="text-sm text-amber-700 dark:text-amber-400">{{ warn.message }}
+      <a href="/account/plan" class="font-medium underline hover:text-amber-900 dark:hover:text-amber-300">Manage plan</a>.
     </p>
   </div>
   {% endif %}
@@ -48,33 +48,33 @@
 
   <!-- Stat cards row -->
   <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-    <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
-      <p class="text-xs text-gray-500 uppercase tracking-wide">Documents</p>
-      <p class="text-2xl font-bold text-gray-900 mt-1">{{ document_count }}</p>
+    <div class="bg-white dark:bg-gray-900 rounded-lg shadow-sm dark:shadow-gray-900/50 border border-gray-200 dark:border-gray-700 p-4">
+      <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wide">Documents</p>
+      <p class="text-2xl font-bold text-gray-900 dark:text-gray-100 mt-1">{{ document_count }}</p>
     </div>
-    <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
-      <p class="text-xs text-gray-500 uppercase tracking-wide">Files</p>
-      <p class="text-2xl font-bold text-gray-900 mt-1">{{ file_count }}</p>
+    <div class="bg-white dark:bg-gray-900 rounded-lg shadow-sm dark:shadow-gray-900/50 border border-gray-200 dark:border-gray-700 p-4">
+      <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wide">Files</p>
+      <p class="text-2xl font-bold text-gray-900 dark:text-gray-100 mt-1">{{ file_count }}</p>
     </div>
-    <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
-      <p class="text-xs text-gray-500 uppercase tracking-wide">Tags</p>
-      <p class="text-2xl font-bold text-gray-900 mt-1">{{ tag_count }}</p>
+    <div class="bg-white dark:bg-gray-900 rounded-lg shadow-sm dark:shadow-gray-900/50 border border-gray-200 dark:border-gray-700 p-4">
+      <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wide">Tags</p>
+      <p class="text-2xl font-bold text-gray-900 dark:text-gray-100 mt-1">{{ tag_count }}</p>
     </div>
-    <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
-      <p class="text-xs text-gray-500 uppercase tracking-wide">Spend (this month)</p>
-      <p class="text-2xl font-bold text-gray-900 mt-1">{{ spend_display }}</p>
+    <div class="bg-white dark:bg-gray-900 rounded-lg shadow-sm dark:shadow-gray-900/50 border border-gray-200 dark:border-gray-700 p-4">
+      <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wide">Spend (this month)</p>
+      <p class="text-2xl font-bold text-gray-900 dark:text-gray-100 mt-1">{{ spend_display }}</p>
     </div>
   </div>
 
   <!-- Quota bars -->
   <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
     <!-- Storage bar -->
-    <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-5">
+    <div class="bg-white dark:bg-gray-900 rounded-lg shadow-sm dark:shadow-gray-900/50 border border-gray-200 dark:border-gray-700 p-5">
       <div class="flex justify-between items-baseline mb-2">
-        <span class="text-sm font-medium text-gray-700">{{ storage_bar.label }}</span>
-        <span class="text-xs text-gray-500">{{ storage_bar.used_display }} / {{ storage_bar.limit_display }}</span>
+        <span class="text-sm font-medium text-gray-700 dark:text-gray-300">{{ storage_bar.label }}</span>
+        <span class="text-xs text-gray-500 dark:text-gray-400">{{ storage_bar.used_display }} / {{ storage_bar.limit_display }}</span>
       </div>
-      <div class="w-full bg-gray-200 rounded-full h-3">
+      <div class="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-3">
         {% if storage_bar.percent > 90 %}
         <div class="bg-red-500 h-3 rounded-full" style="width: {{ storage_bar.percent }}%"></div>
         {% else if storage_bar.percent > 70 %}
@@ -83,16 +83,16 @@
         <div class="bg-indigo-500 h-3 rounded-full" style="width: {{ storage_bar.percent }}%"></div>
         {% endif %}
       </div>
-      <p class="text-xs text-gray-400 mt-1">{{ storage_bar.percent }}% of plan quota</p>
+      <p class="text-xs text-gray-400 dark:text-gray-500 mt-1">{{ storage_bar.percent }}% of plan quota</p>
     </div>
 
     <!-- Token bar -->
-    <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-5">
+    <div class="bg-white dark:bg-gray-900 rounded-lg shadow-sm dark:shadow-gray-900/50 border border-gray-200 dark:border-gray-700 p-5">
       <div class="flex justify-between items-baseline mb-2">
-        <span class="text-sm font-medium text-gray-700">{{ token_bar.label }}</span>
-        <span class="text-xs text-gray-500">{{ token_bar.used_display }} / {{ token_bar.limit_display }}</span>
+        <span class="text-sm font-medium text-gray-700 dark:text-gray-300">{{ token_bar.label }}</span>
+        <span class="text-xs text-gray-500 dark:text-gray-400">{{ token_bar.used_display }} / {{ token_bar.limit_display }}</span>
       </div>
-      <div class="w-full bg-gray-200 rounded-full h-3">
+      <div class="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-3">
         {% if token_bar.percent > 90 %}
         <div class="bg-red-500 h-3 rounded-full" style="width: {{ token_bar.percent }}%"></div>
         {% else if token_bar.percent > 70 %}
@@ -101,23 +101,23 @@
         <div class="bg-indigo-500 h-3 rounded-full" style="width: {{ token_bar.percent }}%"></div>
         {% endif %}
       </div>
-      <p class="text-xs text-gray-400 mt-1">{{ token_bar.percent }}% of plan budget</p>
+      <p class="text-xs text-gray-400 dark:text-gray-500 mt-1">{{ token_bar.percent }}% of plan budget</p>
     </div>
   </div>
 
   {# ── Per-user usage breakdown (P14-T13) ─────────────────────────────── #}
-  <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-5 mb-8">
-    <h2 class="text-sm font-semibold text-gray-700 mb-4">Usage by User (this month)</h2>
+  <div class="bg-white dark:bg-gray-900 rounded-lg shadow-sm dark:shadow-gray-900/50 border border-gray-200 dark:border-gray-700 p-5 mb-8">
+    <h2 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-4">Usage by User (this month)</h2>
     {% if per_user_usage.is_empty() %}
-    <p class="text-sm text-gray-400">No attributed AI usage this month yet.</p>
+    <p class="text-sm text-gray-400 dark:text-gray-500">No attributed AI usage this month yet.</p>
     {% else %}
-    <ul class="divide-y divide-gray-100">
+    <ul class="divide-y divide-gray-100 dark:divide-gray-800">
       {% for u in per_user_usage %}
       <li class="flex items-center justify-between py-2 text-sm">
-        <span class="{% if u.is_system %}text-gray-400 italic{% else %}text-gray-700{% endif %}">
+        <span class="{% if u.is_system %}text-gray-400 dark:text-gray-500 italic{% else %}text-gray-700 dark:text-gray-300{% endif %}">
           {{ u.label }}
         </span>
-        <span class="text-gray-500 tabular-nums">{{ u.tokens_display }} tokens</span>
+        <span class="text-gray-500 dark:text-gray-400 tabular-nums">{{ u.tokens_display }} tokens</span>
       </li>
       {% endfor %}
     </ul>
@@ -125,21 +125,21 @@
   </div>
 
   <!-- Daily token chart -->
-  <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-5 mb-8">
-    <h2 class="text-sm font-semibold text-gray-700 mb-4">Daily Token Usage</h2>
+  <div class="bg-white dark:bg-gray-900 rounded-lg shadow-sm dark:shadow-gray-900/50 border border-gray-200 dark:border-gray-700 p-5 mb-8">
+    <h2 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-4">Daily Token Usage</h2>
     <div class="relative" style="height: 250px;">
       <canvas id="daily-token-chart"></canvas>
     </div>
     {% if daily_chart_json == "[]" %}
-    <p class="text-xs text-gray-400 text-center mt-2">No usage data this month yet.</p>
+    <p class="text-xs text-gray-400 dark:text-gray-500 text-center mt-2">No usage data this month yet.</p>
     {% endif %}
   </div>
 
   <!-- Activity feed -->
-  <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-5">
-    <h2 class="text-sm font-semibold text-gray-700 mb-4">Recent Activity</h2>
+  <div class="bg-white dark:bg-gray-900 rounded-lg shadow-sm dark:shadow-gray-900/50 border border-gray-200 dark:border-gray-700 p-5">
+    <h2 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-4">Recent Activity</h2>
     {% if activity_feed.is_empty() %}
-    <p class="text-sm text-gray-400">No activity yet. Upload some files to get started.</p>
+    <p class="text-sm text-gray-400 dark:text-gray-500">No activity yet. Upload some files to get started.</p>
     {% else %}
     <div class="space-y-3">
       {% for entry in activity_feed %}
@@ -147,8 +147,8 @@
         <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium {{ entry.kind_css }}">
           {{ entry.kind }}
         </span>
-        <span class="text-gray-700">{{ entry.description }}</span>
-        <span class="text-gray-400 ml-auto whitespace-nowrap">{{ entry.timestamp }}</span>
+        <span class="text-gray-700 dark:text-gray-300">{{ entry.description }}</span>
+        <span class="text-gray-400 dark:text-gray-500 ml-auto whitespace-nowrap">{{ entry.timestamp }}</span>
       </div>
       {% endfor %}
     </div>
@@ -160,6 +160,11 @@
 {% block scripts %}
 <script>
 (function() {
+  var isDark = document.documentElement.classList.contains('dark');
+  var promptColor = isDark ? '#818cf8' : '#6366f1';
+  var completionColor = isDark ? '#c7d2fe' : '#a5b4fc';
+  var gridColor = isDark ? '#374151' : '#f3f4f6';
+
   var raw = {{ daily_chart_json|safe }};
   if (!raw || raw.length === 0) return;
 
@@ -178,13 +183,13 @@
         {
           label: 'Prompt',
           data: promptData,
-          backgroundColor: '#6366f1',
+          backgroundColor: promptColor,
           borderRadius: 2
         },
         {
           label: 'Completion',
           data: completionData,
-          backgroundColor: '#a5b4fc',
+          backgroundColor: completionColor,
           borderRadius: 2
         }
       ]
@@ -208,7 +213,7 @@
               return v;
             }
           },
-          grid: { color: '#f3f4f6' }
+          grid: { color: gridColor }
         }
       },
       plugins: {

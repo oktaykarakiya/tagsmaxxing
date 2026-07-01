@@ -98,7 +98,7 @@ def test_search_query_persists_in_input(page):
     flows.browser_login(page, *_admin_creds())
     page.goto("/search")
     page.fill("input[name='q']", marker)
-    page.click("#search-form button[type='submit']")
+    page.press("input[name='q']", "Enter")
 
     # The HTMX round-trip completes: the matched document renders in the results.
     expect(
@@ -141,7 +141,7 @@ def test_search_result_card_shows_snippet_and_tags(api, page):
     flows.browser_login(page, tenant, email, password)
     page.goto("/search")
     page.fill("input[name='q']", marker)
-    page.click("#search-form button[type='submit']")
+    page.press("input[name='q']", "Enter")
 
     card = page.locator(f"#results li:has(a[href='/documents/{doc_id}'])").first
     expect(card).to_be_visible(timeout=SEARCH_TIMEOUT_MS)
@@ -173,7 +173,7 @@ def test_search_deeplink_shows_provenance(page):
     flows.browser_login(page, *_admin_creds())
     page.goto("/search")
     page.fill("input[name='q']", marker)
-    page.click("#search-form button[type='submit']")
+    page.press("input[name='q']", "Enter")
 
     card = page.locator(f"#results li:has(a[href='/documents/{doc_id}'])").first
     expect(card).to_be_visible(timeout=SEARCH_TIMEOUT_MS)
@@ -228,7 +228,7 @@ def test_tag_filter_via_ui_narrows_results(api, page):
     # A query that finds the document (unfiltered baseline).
     page.goto("/search")
     page.fill("input[name='q']", marker)
-    page.click("#search-form button[type='submit']")
+    page.press("input[name='q']", "Enter")
     doc_link = page.locator(f"#results a[href='/documents/{doc_id}']")
     expect(doc_link).to_have_count(1, timeout=SEARCH_TIMEOUT_MS)
 
@@ -236,12 +236,12 @@ def test_tag_filter_via_ui_narrows_results(api, page):
 
     # Filtering by an unrelated tag narrows the results — the doc drops out.
     tag_input.fill(unrelated)
-    page.click("#search-form button[type='submit']")
+    page.press("input[name='q']", "Enter")
     expect(doc_link).to_have_count(0, timeout=SEARCH_TIMEOUT_MS)
 
     # Filtering by the document's own tag includes it again.
     tag_input.fill(tag_name)
-    page.click("#search-form button[type='submit']")
+    page.press("input[name='q']", "Enter")
     expect(doc_link).to_have_count(1, timeout=SEARCH_TIMEOUT_MS)
 
 
@@ -258,7 +258,7 @@ def test_search_shows_result_count(page):
     flows.browser_login(page, *_admin_creds())
     page.goto("/search")
     page.fill("input[name='q']", marker)
-    page.click("#search-form button[type='submit']")
+    page.press("input[name='q']", "Enter")
 
     # Wait for the matched doc so the results region has finished rendering.
     expect(
@@ -313,7 +313,7 @@ def test_search_ranks_better_match_first_in_ui(page):
         "input[name='q']",
         f"how to install rooftop solar panels on my house roof {marker}",
     )
-    page.click("#search-form button[type='submit']")
+    page.press("input[name='q']", "Enter")
 
     # The strong document must render (its body contains the full query
     # phrase + the marker, so the keyword arm pins it into the results even

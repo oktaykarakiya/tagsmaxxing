@@ -107,6 +107,11 @@ mod tests {
             "stripe_events",
             "api_tokens",
             "tenant_monthly_usage",
+            "assistant_sessions",
+            "assistant_action_items",
+            "assistant_decisions",
+            "assistant_stale_watches",
+            "assistant_transcripts",
         ] {
             assert!(
                 sql.contains(&format!("CREATE TABLE {table} ")),
@@ -265,6 +270,14 @@ mod tests {
             "usage_events_tenant_created",
             "jobs_running_lease",
             "jobs_tenant_pending",
+            "idx_asst_sessions_tenant",
+            "idx_asst_sessions_user",
+            "idx_asst_actions_tenant",
+            "idx_asst_actions_user",
+            "idx_asst_decisions_tenant",
+            "idx_asst_stale_watch_unique",
+            "idx_asst_stale_watch_due",
+            "idx_asst_transcripts_session",
         ] {
             assert!(sql.contains(idx), "missing index: {idx}");
         }
@@ -276,8 +289,8 @@ mod tests {
         // ── f) RLS ─────────────────────────────────────────────────────────────
         let rls_enable_count = sql.matches("ENABLE ROW LEVEL SECURITY").count();
         assert!(
-            rls_enable_count >= 10,
-            "expected >=10 ENABLE ROW LEVEL SECURITY, found {rls_enable_count}"
+            rls_enable_count >= 15,
+            "expected >=15 ENABLE ROW LEVEL SECURITY, found {rls_enable_count}"
         );
         let rls_force_count = sql.matches("FORCE ROW LEVEL SECURITY").count();
         assert!(

@@ -106,6 +106,7 @@ pub(crate) struct KindFilter {
 /// Mirrors [`kb_core::query::Hit`] but carries `kind` as an `Option<String>`
 /// for rendering the kind badge.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub(crate) struct SearchResultHit {
     /// Document id (links to `/documents/{id}`).
     pub document_id: i64,
@@ -398,6 +399,10 @@ pub(crate) struct AccountPage {
     pub storage_bar: QuotaBar,
     /// Token usage progress bar.
     pub token_bar: QuotaBar,
+    /// Number of documents in this tenant.
+    pub document_count: i64,
+    /// Number of files in this tenant.
+    pub file_count: i64,
     /// Error message (empty when none).
     pub error: String,
 }

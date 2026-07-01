@@ -47,10 +47,8 @@ impl ActionTracker {
     #[allow(clippy::expect_used)]
     pub fn new() -> Self {
         Self {
-            remind: Regex::new(
-                r"(?i)remind\s+me\s+to\s+(.+?)\s+(?:by|on|before)\s+(.+)",
-            )
-            .expect("hardcoded regex"),
+            remind: Regex::new(r"(?i)remind\s+me\s+to\s+(.+?)\s+(?:by|on|before)\s+(.+)")
+                .expect("hardcoded regex"),
             task: Regex::new(r"(?i)(?:task|todo):\s*(.+?)\s+(?:due|by)\s+(.+)")
                 .expect("hardcoded regex"),
             task_no_date: Regex::new(r"(?i)(?:task|todo):\s*(.+)").expect("hardcoded regex"),
@@ -91,7 +89,10 @@ impl ActionTracker {
         for caps in self.task_no_date.captures_iter(prompt) {
             let text = caps.get(1).map(|m| m.as_str().trim()).unwrap_or("");
             // Skip if this was already captured by the dated variant
-            if items.iter().any(|i| i.text == text && i.kind == ActionKind::Task) {
+            if items
+                .iter()
+                .any(|i| i.text == text && i.kind == ActionKind::Task)
+            {
                 continue;
             }
             items.push(DetectedAction {
@@ -184,7 +185,11 @@ fn parse_due_date(text: &str) -> Option<String> {
 
     // Day of week
     if let Some(days) = parse_weekday_offset(&text_lower) {
-        return Some((today + Duration::days(days)).format("%Y-%m-%d").to_string());
+        return Some(
+            (today + Duration::days(days))
+                .format("%Y-%m-%d")
+                .to_string(),
+        );
     }
 
     // Month + day (e.g., "March 15")
@@ -197,11 +202,7 @@ fn parse_due_date(text: &str) -> Option<String> {
 
 fn parse_in_days(text: &str) -> Option<i64> {
     let re = Regex::new(r"in\s+(\d+)\s+days?").ok()?;
-    re.captures(text)?
-        .get(1)?
-        .as_str()
-        .parse::<i64>()
-        .ok()
+    re.captures(text)?.get(1)?.as_str().parse::<i64>().ok()
 }
 
 fn parse_weekday_offset(text: &str) -> Option<i64> {
@@ -220,10 +221,9 @@ fn parse_weekday_offset(text: &str) -> Option<i64> {
             let today = Utc::now().date_naive();
             let today_wd = today.weekday();
             let target = *weekday;
-            let days_until = (target.num_days_from_monday() as i64
-                - today_wd.num_days_from_monday() as i64
-                + 7)
-                % 7;
+            let days_until =
+                (target.num_days_from_monday() as i64 - today_wd.num_days_from_monday() as i64 + 7)
+                    % 7;
             return Some(if days_until == 0 { 7 } else { days_until });
         }
     }
@@ -232,27 +232,42 @@ fn parse_weekday_offset(text: &str) -> Option<i64> {
 
 fn parse_month_day(text: &str, today: NaiveDate) -> Option<NaiveDate> {
     let months: &[(&str, u32)] = &[
-        ("january", 1), ("february", 2), ("march", 3), ("april", 4),
-        ("may", 5), ("june", 6), ("july", 7), ("august", 8),
-        ("september", 9), ("october", 10), ("november", 11), ("december", 12),
-        ("jan", 1), ("feb", 2), ("mar", 3), ("apr", 4),
-        ("jun", 6), ("jul", 7), ("aug", 8), ("sep", 9),
-        ("oct", 10), ("nov", 11), ("dec", 12),
+        ("january", 1),
+        ("february", 2),
+        ("march", 3),
+        ("april", 4),
+        ("may", 5),
+        ("june", 6),
+        ("july", 7),
+        ("august", 8),
+        ("september", 9),
+        ("october", 10),
+        ("november", 11),
+        ("december", 12),
+        ("jan", 1),
+        ("feb", 2),
+        ("mar", 3),
+        ("apr", 4),
+        ("jun", 6),
+        ("jul", 7),
+        ("aug", 8),
+        ("sep", 9),
+        ("oct", 10),
+        ("nov", 11),
+        ("dec", 12),
     ];
 
     for (name, month) in months {
         if let Some(rest) = text.strip_prefix(&format!("{name} "))
             && let Ok(day) = rest.trim().parse::<u32>()
         {
-                let year = if *month < today.month()
-                    || (*month == today.month() && day < today.day())
-                {
-                    today.year() + 1
-                } else {
-                    today.year()
-                };
-                return NaiveDate::from_ymd_opt(year, *month, day);
-            }
+            let year = if *month < today.month() || (*month == today.month() && day < today.day()) {
+                today.year() + 1
+            } else {
+                today.year()
+            };
+            return NaiveDate::from_ymd_opt(year, *month, day);
+        }
     }
     None
 }
@@ -402,8 +417,15 @@ mod tests {
     fn detect_overlapping_no_duplicate() {
         let tracker = ActionTracker::new();
         let items = tracker.detect("Task: review code due Friday");
-        assert!(items.len() <= 2, "expected at most 2 items, got {}", items.len());
-        assert!(items.iter().any(|i| i.due_date.is_some()), "should have dated task");
+        assert!(
+            items.len() <= 2,
+            "expected at most 2 items, got {}",
+            items.len()
+        );
+        assert!(
+            items.iter().any(|i| i.due_date.is_some()),
+            "should have dated task"
+        );
     }
 
     #[test]

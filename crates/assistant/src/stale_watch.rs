@@ -110,8 +110,14 @@ mod tests {
 
     #[test]
     fn default_dept_schedules() {
-        assert_eq!(default_schedule_for_department("legal"), WatchSchedule::Weekly);
-        assert_eq!(default_schedule_for_department("accounting"), WatchSchedule::Monthly);
+        assert_eq!(
+            default_schedule_for_department("legal"),
+            WatchSchedule::Weekly
+        );
+        assert_eq!(
+            default_schedule_for_department("accounting"),
+            WatchSchedule::Monthly
+        );
     }
 
     #[test]

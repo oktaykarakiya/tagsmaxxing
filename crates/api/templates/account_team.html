@@ -9,38 +9,38 @@
     {% call nav::app_nav("account", csrf_token) %}{% endcall %}
 
     {# ── Sub-navigation tabs ─────────────────────────────────────────────── #}
-    <div class="bg-white border-b border-gray-200">
+    <div class="bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700">
         <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
             <nav class="flex space-x-8 -mb-px" aria-label="Account tabs">
-                <a href="/account" class="border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm">Overview</a>
-                <a href="/account/team" class="border-indigo-500 text-indigo-600 whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm">Team</a>
-                <a href="/account/plan" class="border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm">Plan</a>
-                <a href="/account/danger" class="border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm">Danger Zone</a>
+                <a href="/account" class="border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:border-gray-300 whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm">Overview</a>
+                <a href="/account/team" class="border-indigo-500 text-indigo-600 dark:text-indigo-400 whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm">Team</a>
+                <a href="/account/plan" class="border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:border-gray-300 whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm">Plan</a>
+                <a href="/account/danger" class="border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:border-gray-300 whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm">Danger Zone</a>
             </nav>
         </div>
     </div>
 
     <main class="flex-1 max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8 w-full">
         {% if !error.is_empty() %}
-        <div class="mb-6 rounded-md bg-red-50 p-4 border border-red-200">
-            <p class="text-sm text-red-800">{{ error }}</p>
+        <div class="mb-6 rounded-md bg-red-50 dark:bg-red-900/20 p-4 border border-red-200 dark:border-red-800">
+            <p class="text-sm text-red-800 dark:text-red-300">{{ error }}</p>
         </div>
         {% endif %}
 
         {# ── Invite form (Owner/Admin only) ───────────────────────────────── #}
         {% if is_admin_or_owner %}
-        <div class="mb-8 rounded-lg border border-gray-200 bg-white p-6">
-            <h3 class="text-lg font-semibold text-gray-900 mb-4">Invite a Team Member</h3>
+        <div class="mb-8 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-6">
+            <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4">Invite a Team Member</h3>
             <form method="post" action="/account/team/invite" class="flex flex-col sm:flex-row gap-3">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                 <input type="email" name="email" placeholder="colleague@example.com" required
-                       class="flex-1 rounded-md border border-gray-300 px-3 py-2 text-gray-900 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 text-sm">
-                <select name="role" class="rounded-md border border-gray-300 px-3 py-2 text-gray-900 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 text-sm">
+                       class="flex-1 rounded-md border border-gray-300 dark:border-gray-600 px-3 py-2 text-gray-900 dark:text-gray-100 shadow-sm dark:shadow-gray-900/50 focus:border-indigo-500 focus:ring-indigo-500 dark:focus:ring-indigo-400 text-sm">
+                <select name="role" class="rounded-md border border-gray-300 dark:border-gray-600 px-3 py-2 text-gray-900 dark:text-gray-100 shadow-sm dark:shadow-gray-900/50 focus:border-indigo-500 focus:ring-indigo-500 dark:focus:ring-indigo-400 text-sm">
                     <option value="member">Member</option>
                     {% if is_owner %}<option value="admin">Admin</option>{% endif %}
                     {% if is_owner %}<option value="owner">Owner</option>{% endif %}
                 </select>
-                <button type="submit" class="rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 transition whitespace-nowrap">
+                <button type="submit" class="rounded-md bg-indigo-600 dark:bg-indigo-500 px-4 py-2 text-sm font-semibold text-white shadow-sm dark:shadow-gray-900/50 hover:bg-indigo-500 transition whitespace-nowrap">
                     Send Invite
                 </button>
             </form>
@@ -49,25 +49,25 @@
 
         {# ── Team members list ────────────────────────────────────────────── #}
         <div>
-            <h3 class="text-lg font-semibold text-gray-900 mb-4">Team Members ({{ members.len() }})</h3>
-            <div class="overflow-hidden rounded-lg border border-gray-200 bg-white">
-                <table class="min-w-full divide-y divide-gray-200">
-                    <thead class="bg-gray-50">
+            <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4">Team Members ({{ members.len() }})</h3>
+            <div class="overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900">
+                <table class="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+                    <thead class="bg-gray-50 dark:bg-gray-950">
                         <tr>
-                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Email</th>
-                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Role</th>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Email</th>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Role</th>
                             {% if is_admin_or_owner %}
-                            <th scope="col" class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                            <th scope="col" class="px-6 py-3 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Actions</th>
                             {% endif %}
                         </tr>
                     </thead>
-                    <tbody class="divide-y divide-gray-200">
+                    <tbody class="divide-y divide-gray-200 dark:divide-gray-700">
                         {% for member in members %}
-                        <tr class="hover:bg-gray-50">
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        <tr class="hover:bg-gray-50 dark:hover:bg-gray-800">
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100">
                                 {{ member.email }}
                                 {% if member.is_current_user %}
-                                <span class="ml-1 text-xs text-gray-400">(you)</span>
+                                <span class="ml-1 text-xs text-gray-400 dark:text-gray-500">(you)</span>
                                 {% endif %}
                             </td>
                             <td class="px-6 py-4 whitespace-nowrap">
@@ -76,15 +76,14 @@
                                     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                                     <input type="hidden" name="user_id" value="{{ member.user_id }}">
                                     <select name="new_role" onchange="this.form.submit()"
-                                            class="rounded-md border border-gray-300 px-2 py-1 text-xs text-gray-900 shadow-sm focus:border-indigo-500 focus:ring-indigo-500">
+                                            class="rounded-md border border-gray-300 dark:border-gray-600 px-2 py-1 text-xs text-gray-900 dark:text-gray-100 shadow-sm dark:shadow-gray-900/50 focus:border-indigo-500 focus:ring-indigo-500 dark:focus:ring-indigo-400">
                                         {% for opt in member.role_options %}
                                         <option value="{{ opt.value }}" {% if opt.selected %}selected{% endif %}>{{ opt.value }}</option>
                                         {% endfor %}
                                     </select>
                                 </form>
                                 {% else %}
-                                <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium capitalize
-                                    {% if member.role_label == "owner" %}bg-purple-100 text-purple-800
+                                <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium capitalize {% if member.role_label =="owner" %}bg-purple-100 text-purple-800
                                     {% else if member.role_label == "admin" %}bg-blue-100 text-blue-800
                                     {% else %}bg-gray-100 text-gray-800{% endif %}">
                                     {{ member.role_label }}
@@ -103,9 +102,9 @@
                                     </button>
                                 </form>
                                 {% else if member.is_current_user %}
-                                <span class="text-xs text-gray-400">—</span>
+                                <span class="text-xs text-gray-400 dark:text-gray-500">—</span>
                                 {% else %}
-                                <span class="text-xs text-gray-400">Owner only</span>
+                                <span class="text-xs text-gray-400 dark:text-gray-500">Owner only</span>
                                 {% endif %}
                             </td>
                             {% endif %}
@@ -116,7 +115,7 @@
             </div>
 
             {% if members.is_empty() %}
-            <p class="text-sm text-gray-500 mt-4 text-center">No team members found.</p>
+            <p class="text-sm text-gray-500 dark:text-gray-400 mt-4 text-center">No team members found.</p>
             {% endif %}
         </div>
     </main>

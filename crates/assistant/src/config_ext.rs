@@ -56,7 +56,9 @@ impl Default for AssistantConfig {
                 "*.key".into(),
                 "auth.json".into(),
             ],
-            date_prefix_regex: r"^\d{4}-\d{2}-\d{2}_[a-z0-9](?:[a-z0-9\-]*[a-z0-9])?\.[a-z0-9]+(\.[a-z0-9]+)?$".into(),
+            date_prefix_regex:
+                r"^\d{4}-\d{2}-\d{2}_[a-z0-9](?:[a-z0-9\-]*[a-z0-9])?\.[a-z0-9]+(\.[a-z0-9]+)?$"
+                    .into(),
         }
     }
 }
@@ -71,7 +73,10 @@ mod tests {
         assert!(cfg.opencode_bin.is_none());
         assert_eq!(cfg.prompt_timeout_secs, 300);
         assert_eq!(cfg.context_budget_pct, 85);
-        assert!(cfg.sensitive_departments.contains(&"accounting".to_string()));
+        assert!(
+            cfg.sensitive_departments
+                .contains(&"accounting".to_string())
+        );
         assert!(cfg.sensitive_departments.contains(&"legal".to_string()));
         assert!(cfg.never_copy_patterns.contains(&"*.pem".to_string()));
         assert!(cfg.never_copy_patterns.contains(&"token.json".to_string()));

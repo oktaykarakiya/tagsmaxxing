@@ -1,8 +1,24 @@
 {# ── Shared Web-UI macros ──────────────────────────────────────────────────
    Imported (not rendered directly), so this file needs no backing template
    struct. Keep markup here in sync across every authenticated page rather than
-   hand-copying a <nav> into each template (which is how the menus drifted).
-#}
+   hand-copying a <nav> into each template (which is how the menus drifted). #}
+
+{# ── Theme toggle button SVG (sun/moon) ──────────────────────────────────── #}
+{% macro theme_toggle() %}
+<button type="button" onclick="toggleTheme()"
+        title="Toggle dark mode"
+        class="rounded-full p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+        aria-label="Toggle dark mode">
+  <svg class="h-4 w-4 hidden dark:block" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+          d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/>
+  </svg>
+  <svg class="h-4 w-4 block dark:hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+          d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/>
+  </svg>
+</button>
+{% endmacro %}
 
 {# Primary application navigation bar shown on every authenticated page.
 
@@ -13,20 +29,19 @@
                   token (logout does not validate it, so an empty value is inert).
 #}
 {% macro app_nav(active, csrf_token) %}
-<nav class="bg-white shadow-sm border-b border-gray-200">
+<nav class="bg-white dark:bg-gray-900 shadow-sm border-b border-gray-200 dark:border-gray-800">
   <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
     <div class="flex justify-between h-14 items-center">
-      <a href="/dashboard" class="font-semibold text-lg text-gray-900">📊 tagsmaxxing</a>
-      <div class="flex items-center gap-4 text-sm">
+      <a href="/dashboard" class="font-semibold text-lg text-gray-900 dark:text-gray-100">📊 tagsmaxxing</a>
+
+      <div class="hidden sm:flex items-center gap-4 text-sm">
         <a href="/dashboard"
-           {% if active == "dashboard" %}aria-current="page" class="text-indigo-600 font-medium"{% else %}class="text-gray-600 hover:text-gray-900"{% endif %}>Dashboard</a>
+           {% if active == "dashboard" %}aria-current="page" class="text-indigo-600 dark:text-indigo-400 font-medium"{% else %}class="text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200"{% endif %}>Dashboard</a>
         <a href="/search"
-           {% if active == "search" %}aria-current="page" class="text-indigo-600 font-medium"{% else %}class="text-gray-600 hover:text-gray-900"{% endif %}>Search</a>
+           {% if active == "search" %}aria-current="page" class="text-indigo-600 dark:text-indigo-400 font-medium"{% else %}class="text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200"{% endif %}>Search</a>
         <a href="/upload"
-           {% if active == "upload" %}aria-current="page" class="text-indigo-600 font-medium"{% else %}class="text-gray-600 hover:text-gray-900"{% endif %}>Upload</a>
-        {# Async-ingestion indicator (P15-T10): hidden until /api/jobs reports
-           in-flight ingest work for this tenant. #}
-        <span id="nav-processing-indicator" class="hidden items-center gap-1.5 rounded-full bg-yellow-50 px-2.5 py-0.5 text-xs font-medium text-yellow-800 ring-1 ring-yellow-600/20"
+           {% if active == "upload" %}aria-current="page" class="text-indigo-600 dark:text-indigo-400 font-medium"{% else %}class="text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200"{% endif %}>Upload</a>
+        <span id="nav-processing-indicator" class="hidden items-center gap-1.5 rounded-full bg-yellow-50 dark:bg-yellow-900/30 px-2.5 py-0.5 text-xs font-medium text-yellow-800 dark:text-yellow-300 ring-1 ring-yellow-600/20 dark:ring-yellow-400/20"
               title="Documents still being processed in the background">
           <svg class="h-3 w-3 animate-spin" fill="none" viewBox="0 0 24 24" aria-hidden="true">
             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
@@ -35,18 +50,61 @@
           Processing <span id="nav-processing-count">0</span>
         </span>
         <a href="/account"
-           {% if active == "account" %}aria-current="page" class="text-indigo-600 font-medium"{% else %}class="text-gray-600 hover:text-gray-900"{% endif %}>Account</a>
+           {% if active == "account" %}aria-current="page" class="text-indigo-600 dark:text-indigo-400 font-medium"{% else %}class="text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200"{% endif %}>Account</a>
         <form action="/logout" method="post" class="inline">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <button type="submit" class="text-gray-500 hover:text-red-600">Log out</button>
+          <button type="submit" class="text-gray-500 dark:text-gray-400 hover:text-red-600 dark:hover:text-red-400">Log out</button>
         </form>
+        {% call theme_toggle() %}{% endcall %}
+      </div>
+
+      <div class="flex items-center gap-2 sm:hidden">
+        {% call theme_toggle() %}{% endcall %}
+        <button type="button"
+                onclick="document.getElementById('mobile-drawer').classList.toggle('hidden'); document.getElementById('mobile-overlay').classList.toggle('hidden')"
+                class="rounded-md p-2 -mr-2 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 focus:outline-none min-h-[44px] min-w-[44px]"
+                aria-label="Open menu">
+          <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/>
+          </svg>
+        </button>
       </div>
     </div>
   </div>
 </nav>
+
+<div id="mobile-overlay" class="hidden fixed inset-0 z-40 bg-black/30 transition-opacity sm:hidden"
+     onclick="document.getElementById('mobile-drawer').classList.add('hidden'); this.classList.add('hidden')"></div>
+<div id="mobile-drawer" class="hidden fixed inset-y-0 right-0 z-50 w-64 bg-white dark:bg-gray-900 shadow-xl sm:hidden">
+  <div class="flex items-center justify-between px-4 h-14 border-b border-gray-200 dark:border-gray-800">
+    <span class="font-semibold text-sm text-gray-900 dark:text-gray-100">Menu</span>
+    <button type="button"
+            onclick="document.getElementById('mobile-drawer').classList.add('hidden'); document.getElementById('mobile-overlay').classList.add('hidden')"
+            class="rounded-md p-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 focus:outline-none"
+            aria-label="Close menu">
+      <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+      </svg>
+    </button>
+  </div>
+  <nav class="px-4 pt-4 space-y-1" aria-label="Mobile navigation">
+    <a href="/dashboard"
+       class="block rounded-lg px-3 py-2.5 text-sm {% if active == "dashboard" %}text-indigo-600 dark:text-indigo-400 font-medium bg-indigo-50 dark:bg-indigo-900/30{% else %}text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800{% endif %}">Dashboard</a>
+    <a href="/search"
+       class="block rounded-lg px-3 py-2.5 text-sm {% if active == "search" %}text-indigo-600 dark:text-indigo-400 font-medium bg-indigo-50 dark:bg-indigo-900/30{% else %}text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800{% endif %}">Search</a>
+    <a href="/upload"
+       class="block rounded-lg px-3 py-2.5 text-sm {% if active == "upload" %}text-indigo-600 dark:text-indigo-400 font-medium bg-indigo-50 dark:bg-indigo-900/30{% else %}text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800{% endif %}">Upload</a>
+    <a href="/account"
+       class="block rounded-lg px-3 py-2.5 text-sm {% if active == "account" %}text-indigo-600 dark:text-indigo-400 font-medium bg-indigo-50 dark:bg-indigo-900/30{% else %}text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800{% endif %}">Account</a>
+    <hr class="border-gray-200 dark:border-gray-800 my-2">
+    <form action="/logout" method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="w-full text-left block rounded-lg px-3 py-2.5 text-sm text-gray-500 dark:text-gray-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20">Log out</button>
+    </form>
+  </nav>
+</div>
+
 <script>
-  // Nav "processing N" indicator (P15-T10): one fetch per page load, then a
-  // slow refresh only while work is in flight. Fed by GET /api/jobs `active`.
   (function () {
     const el = document.getElementById('nav-processing-indicator');
     const count = document.getElementById('nav-processing-count');
@@ -68,7 +126,7 @@
           el.classList.remove('inline-flex');
           if (timer) { clearInterval(timer); timer = null; }
         }
-      } catch (_e) { /* nav decoration only — never break the page */ }
+      } catch (_e) { /* nav decoration only */ }
     }
     refresh();
   })();
@@ -79,25 +137,66 @@
    Thin translucent bar with logo + compact menu. Designed to stay out of the way
    and let the search bar take focus. No processing indicator. #}
 {% macro search_nav(active, csrf_token) %}
-<nav class="sticky top-0 z-10 h-10 bg-white/80 backdrop-blur border-b border-gray-100">
+<nav class="sticky top-0 z-10 h-10 bg-white/80 dark:bg-gray-950/80 backdrop-blur border-b border-gray-100 dark:border-gray-800">
   <div class="max-w-7xl mx-auto px-3 sm:px-6 h-full">
     <div class="flex justify-between items-center h-full">
-      <a href="/dashboard" class="text-sm font-semibold text-gray-700 tracking-tight">tagsmaxxing</a>
-      <div class="flex items-center gap-3 text-xs">
+      <a href="/dashboard" class="text-sm font-semibold text-gray-700 dark:text-gray-300 tracking-tight">tagsmaxxing</a>
+
+      <div class="hidden sm:flex items-center gap-3 text-xs">
         <a href="/dashboard"
-           class="text-gray-500 hover:text-gray-900">Dashboard</a>
+           class="text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200">Dashboard</a>
         <a href="/search"
-           class="text-gray-900 font-medium">Search</a>
+           class="text-gray-900 dark:text-gray-100 font-medium" aria-current="page">Search</a>
         <a href="/upload"
-           class="text-gray-500 hover:text-gray-900">Upload</a>
+           class="text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200">Upload</a>
         <a href="/account"
-           class="text-gray-500 hover:text-gray-900">Account</a>
+           class="text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200">Account</a>
         <form action="/logout" method="post" class="inline">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <button type="submit" class="text-gray-400 hover:text-red-500">Log out</button>
+          <button type="submit" class="text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400">Log out</button>
         </form>
+        {% call theme_toggle() %}{% endcall %}
+      </div>
+
+      <div class="flex items-center gap-1 sm:hidden">
+        {% call theme_toggle() %}{% endcall %}
+        <button type="button"
+                onclick="document.getElementById('mobile-drawer-s').classList.toggle('hidden'); document.getElementById('mobile-overlay-s').classList.toggle('hidden')"
+                class="rounded-md p-2 -mr-2 text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 focus:outline-none min-h-[44px] min-w-[44px]"
+                aria-label="Open menu">
+          <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/>
+          </svg>
+        </button>
       </div>
     </div>
   </div>
 </nav>
+
+<div id="mobile-overlay-s" class="hidden fixed inset-0 z-40 bg-black/30 transition-opacity sm:hidden"
+     onclick="document.getElementById('mobile-drawer-s').classList.add('hidden'); this.classList.add('hidden')"></div>
+<div id="mobile-drawer-s" class="hidden fixed inset-y-0 right-0 z-50 w-64 bg-white dark:bg-gray-900 shadow-xl sm:hidden">
+  <div class="flex items-center justify-between px-4 h-10 border-b border-gray-200 dark:border-gray-800">
+    <span class="font-semibold text-xs text-gray-900 dark:text-gray-100">Menu</span>
+    <button type="button"
+            onclick="document.getElementById('mobile-drawer-s').classList.add('hidden'); document.getElementById('mobile-overlay-s').classList.add('hidden')"
+            class="rounded-md p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 focus:outline-none"
+            aria-label="Close menu">
+      <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+      </svg>
+    </button>
+  </div>
+  <nav class="px-3 pt-3 space-y-0.5" aria-label="Mobile navigation">
+    <a href="/dashboard" class="block rounded-lg px-3 py-2 text-xs text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800">Dashboard</a>
+    <a href="/search" class="block rounded-lg px-3 py-2 text-xs font-medium text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30" aria-current="page">Search</a>
+    <a href="/upload" class="block rounded-lg px-3 py-2 text-xs text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800">Upload</a>
+    <a href="/account" class="block rounded-lg px-3 py-2 text-xs text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800">Account</a>
+    <hr class="border-gray-200 dark:border-gray-800 my-1">
+    <form action="/logout" method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="w-full text-left block rounded-lg px-3 py-2 text-xs text-gray-500 dark:text-gray-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20">Log out</button>
+    </form>
+  </nav>
+</div>
 {% endmacro %}

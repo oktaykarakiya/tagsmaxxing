@@ -43,7 +43,7 @@ pub async fn security_headers_middleware(request: Request, next: Next) -> Respon
     // for styles is required by Tailwind's runtime CSS engine.
     let csp_value = concat!(
         "default-src 'self'; ",
-        "script-src 'self' 'unsafe-inline' https://unpkg.com cdn.tailwindcss.com; ",
+        "script-src 'self' 'unsafe-inline' https://unpkg.com cdn.tailwindcss.com cdn.jsdelivr.net; ",
         "style-src 'self' 'unsafe-inline'; ",
         "img-src 'self' data: blob:; ",
         "connect-src 'self'; ",
@@ -181,7 +181,7 @@ mod tests {
         // All required directives must be present.
         assert!(csp.contains("default-src 'self'"));
         assert!(
-            csp.contains("script-src 'self' 'unsafe-inline' https://unpkg.com cdn.tailwindcss.com")
+            csp.contains("script-src 'self' 'unsafe-inline' https://unpkg.com cdn.tailwindcss.com cdn.jsdelivr.net")
         );
         assert!(csp.contains("img-src 'self' data: blob:"));
         assert!(csp.contains("form-action 'self'"));

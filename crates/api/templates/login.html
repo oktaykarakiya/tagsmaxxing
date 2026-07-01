@@ -4,22 +4,22 @@
 
 {% block content %}
 <div class="flex min-h-[80vh] items-center justify-center">
-    <div class="w-full max-w-md space-y-8 rounded-xl bg-white p-8 shadow-lg">
+    <div class="w-full max-w-md space-y-8 rounded-xl bg-white dark:bg-gray-900 p-8 shadow-lg dark:shadow-gray-950">
         <div>
-            <h2 class="text-center text-3xl font-bold tracking-tight text-gray-900">
+            <h1 class="text-center text-3xl font-bold tracking-tight text-gray-900 dark:text-gray-100">
                 Log in to your account
-            </h2>
-            <p class="mt-2 text-center text-sm text-gray-500">
+            </h1>
+            <p class="mt-2 text-center text-sm text-gray-500 dark:text-gray-400">
                 Or
-                <a href="/register" class="font-medium text-indigo-600 hover:text-indigo-500">
+                <a href="/register" class="font-medium text-indigo-600 dark:text-indigo-400 hover:text-indigo-500 dark:hover:text-indigo-400">
                     create a new account
                 </a>
             </p>
         </div>
 
         {% if !error.is_empty() %}
-        <div class="rounded-md bg-red-50 p-4 border border-red-200">
-            <p class="text-sm text-red-800">{{ error }}</p>
+        <div class="rounded-md bg-red-50 dark:bg-red-900/20 p-4 border border-red-200 dark:border-red-800">
+            <p class="text-sm text-red-800 dark:text-red-300">{{ error }}</p>
         </div>
         {% endif %}
 
@@ -28,55 +28,55 @@
 
             <div class="space-y-4">
                 <div>
-                    <label for="tenant_slug" class="block text-sm font-medium text-gray-700">
+                    <label for="tenant_slug" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
                         Tenant slug
                     </label>
                     <input id="tenant_slug" name="tenant_slug" type="text" required
                            value="{{ tenant_slug }}"
-                           class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 placeholder-gray-400 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 sm:text-sm"
+                           class="mt-1 block w-full rounded-md border border-gray-300 dark:border-gray-600 px-3 py-2 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 shadow-sm dark:shadow-gray-900/50 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:focus:ring-indigo-400 sm:text-sm"
                            placeholder="your-tenant">
                 </div>
 
                 <div>
-                    <label for="email" class="block text-sm font-medium text-gray-700">
+                    <label for="email" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
                         Email address
                     </label>
                     <input id="email" name="email" type="email" autocomplete="email" required
                            value="{{ email }}"
-                           class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 placeholder-gray-400 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 sm:text-sm"
+                           class="mt-1 block w-full rounded-md border border-gray-300 dark:border-gray-600 px-3 py-2 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 shadow-sm dark:shadow-gray-900/50 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:focus:ring-indigo-400 sm:text-sm"
                            placeholder="you@example.com">
                 </div>
 
                 <div>
-                    <label for="password" class="block text-sm font-medium text-gray-700">
+                    <label for="password" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
                         Password
                     </label>
                     <input id="password" name="password" type="password" autocomplete="current-password" required
-                           class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 placeholder-gray-400 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 sm:text-sm">
+                           class="mt-1 block w-full rounded-md border border-gray-300 dark:border-gray-600 px-3 py-2 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 shadow-sm dark:shadow-gray-900/50 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:focus:ring-indigo-400 sm:text-sm">
                 </div>
             </div>
 
             <div class="flex items-center justify-between">
-                <label class="flex items-center gap-2 text-sm text-gray-600">
+                <label class="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400">
                     <input type="checkbox" name="remember_me" value="true"
-                           class="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+                           class="h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-indigo-600 dark:text-indigo-400 focus:ring-indigo-500 dark:focus:ring-indigo-400">
                     Remember me
                 </label>
 
-                <a href="/forgot" class="text-sm font-medium text-indigo-600 hover:text-indigo-500">
+                <a href="/forgot" class="text-sm font-medium text-indigo-600 dark:text-indigo-400 hover:text-indigo-500 dark:hover:text-indigo-400">
                     Forgot password?
                 </a>
             </div>
 
             <button type="submit"
-                    class="flex w-full justify-center rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 transition">
+                    class="flex w-full justify-center rounded-md bg-indigo-600 dark:bg-indigo-500 px-4 py-2 text-sm font-semibold text-white shadow-sm dark:shadow-gray-900/50 hover:bg-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:focus:ring-indigo-400 focus:ring-offset-2 transition">
                 Log in
             </button>
         </form>
 
-        <p class="text-center text-sm text-gray-500">
+        <p class="text-center text-sm text-gray-500 dark:text-gray-400">
             Don't have a workspace?
-            <a href="/signup" class="font-medium text-indigo-600 hover:text-indigo-500">
+            <a href="/signup" class="font-medium text-indigo-600 dark:text-indigo-400 hover:text-indigo-500 dark:hover:text-indigo-400">
                 Create one
             </a>
         </p>

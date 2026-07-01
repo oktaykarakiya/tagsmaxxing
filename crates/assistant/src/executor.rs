@@ -73,20 +73,15 @@ impl Executor {
         #[allow(unused_mut)] mut env: HashMap<String, String>,
     ) -> Result<mpsc::Receiver<String>, std::io::Error> {
         let mut cmd = Command::new(&self.opencode_bin);
-        cmd.args([
-            "run",
-            "--model",
-            &self.model_ref,
-            "--dir",
-        ])
-        .arg(working_dir.as_os_str())
-        .args(["--session", session_key])
-        .arg(prompt)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        // opencode reads stdin, so we close it
-        .stdin(Stdio::null())
-        .kill_on_drop(true);
+        cmd.args(["run", "--model", &self.model_ref, "--dir"])
+            .arg(working_dir.as_os_str())
+            .args(["--session", session_key])
+            .arg(prompt)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            // opencode reads stdin, so we close it
+            .stdin(Stdio::null())
+            .kill_on_drop(true);
 
         for (k, v) in env.drain() {
             cmd.env(k, v);
@@ -167,7 +162,10 @@ mod tests {
     fn strip_ansi_codes() {
         assert_eq!(strip_ansi("\x1b[32mhello\x1b[0m"), "hello");
         assert_eq!(strip_ansi("plain text"), "plain text");
-        assert_eq!(strip_ansi("\x1b[1;32mbold green\x1b[0m normal"), "bold green normal");
+        assert_eq!(
+            strip_ansi("\x1b[1;32mbold green\x1b[0m normal"),
+            "bold green normal"
+        );
     }
 
     #[test]

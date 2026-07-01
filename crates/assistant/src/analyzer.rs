@@ -103,13 +103,16 @@ impl Analyzer {
 
         if has_open && !has_close {
             improvements.push(Improvement {
-                message: "AGENT_MEMORY_START without matching AGENT_MEMORY_END — block may be malformed".into(),
+                message:
+                    "AGENT_MEMORY_START without matching AGENT_MEMORY_END — block may be malformed"
+                        .into(),
                 severity: Severity::Warning,
             });
         }
         if has_close && !has_open {
             improvements.push(Improvement {
-                message: "AGENT_MEMORY_END without AGENT_MEMORY_START — block may be malformed".into(),
+                message: "AGENT_MEMORY_END without AGENT_MEMORY_START — block may be malformed"
+                    .into(),
                 severity: Severity::Warning,
             });
         }
@@ -131,7 +134,11 @@ mod tests {
     fn flags_short_responses() {
         let a = test_analyzer();
         let improvements = a.analyze("ok", &[], 100, 1);
-        assert!(improvements.iter().any(|i| i.message.contains("Short response")));
+        assert!(
+            improvements
+                .iter()
+                .any(|i| i.message.contains("Short response"))
+        );
     }
 
     #[test]
@@ -144,13 +151,12 @@ mod tests {
     #[test]
     fn flags_unbalanced_memory_blocks() {
         let a = test_analyzer();
-        let improvements = a.analyze(
-            "some text <!-- AGENT_MEMORY_START --> stuff",
-            &[],
-            10,
-            100,
+        let improvements = a.analyze("some text <!-- AGENT_MEMORY_START --> stuff", &[], 10, 100);
+        assert!(
+            improvements
+                .iter()
+                .any(|i| i.message.contains("AGENT_MEMORY"))
         );
-        assert!(improvements.iter().any(|i| i.message.contains("AGENT_MEMORY")));
     }
 
     #[test]
@@ -195,7 +201,9 @@ mod tests {
         let a = test_analyzer();
         let improvements = a.analyze("ok", &["report.pdf".into()], 100, 1);
         assert!(improvements.len() >= 2);
-        let has_short = improvements.iter().any(|i| i.message.contains("Short response"));
+        let has_short = improvements
+            .iter()
+            .any(|i| i.message.contains("Short response"));
         let has_naming = improvements.iter().any(|i| i.message.contains("missing"));
         assert!(has_short);
         assert!(has_naming);
@@ -223,20 +231,23 @@ mod tests {
             100,
             20,
         );
-        assert!(improvements.iter().all(|i| !i.message.contains("Short response")));
+        assert!(
+            improvements
+                .iter()
+                .all(|i| !i.message.contains("Short response"))
+        );
     }
 
     #[test]
     fn analyzer_custom_high_min_tokens() {
         let taxonomy = Taxonomy::from_config(&AssistantConfig::default()).unwrap();
         let a = Analyzer::new(taxonomy, 50);
-        let improvements = a.analyze(
-            "Short reply.",
-            &[],
-            100,
-            20,
+        let improvements = a.analyze("Short reply.", &[], 100, 20);
+        assert!(
+            improvements
+                .iter()
+                .any(|i| i.message.contains("Short response"))
         );
-        assert!(improvements.iter().any(|i| i.message.contains("Short response")));
     }
 
     #[test]
@@ -248,6 +259,10 @@ mod tests {
             10,
             50,
         );
-        assert!(improvements.iter().all(|i| !i.message.contains("AGENT_MEMORY")));
+        assert!(
+            improvements
+                .iter()
+                .all(|i| !i.message.contains("AGENT_MEMORY"))
+        );
     }
 }

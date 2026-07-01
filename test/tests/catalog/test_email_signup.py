@@ -619,7 +619,7 @@ def test_full_user_journey_signup_verify_upload(page):
 
     # If we landed on /search, search for the marker.
     page.fill("input[name='q']", marker)
-    page.click("#search-form button[type='submit']")
+    page.press("input[name='q']", "Enter")
     page.wait_for_selector("#results a[href*='/documents/']", timeout=30_000)
     assert page.locator("#results a[href*='/documents/']").count() >= 1, (
         f"browser search for {marker!r} should find the uploaded document"

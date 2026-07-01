@@ -8,38 +8,38 @@
 
 {% block content %}
 {# ── Navigation ─────────────────────────────────────────────────────────── #}
-<nav class="bg-white/90 backdrop-blur-sm border-b border-gray-200 sticky top-0 z-50">
+<nav class="bg-white/90 backdrop-blur-sm border-b border-gray-200 dark:border-gray-700 sticky top-0 z-50">
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div class="flex justify-between h-14 items-center">
-            <a href="/" class="text-lg font-bold text-indigo-600 tracking-tight">tagsmaxxing</a>
+            <a href="/" class="text-lg font-bold text-indigo-600 dark:text-indigo-400 tracking-tight">tagsmaxxing</a>
             <div class="flex items-center space-x-1 sm:space-x-4">
-                <a href="/features" class="text-sm text-gray-600 hover:text-indigo-600 px-2 py-1">Features</a>
-                <a href="/pricing" class="text-sm text-gray-600 hover:text-indigo-600 px-2 py-1">Pricing</a>
-                <a href="/faq" class="text-sm text-gray-600 hover:text-indigo-600 px-2 py-1">FAQ</a>
-                <a href="/login" class="text-sm text-gray-600 hover:text-indigo-600 px-2 py-1">Log in</a>
-                <a href="/register" class="ml-2 rounded-md bg-indigo-600 px-4 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 transition">Sign up</a>
+                <a href="/features" class="text-sm text-gray-600 dark:text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400 px-2 py-1">Features</a>
+                <a href="/pricing" class="text-sm text-gray-600 dark:text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400 px-2 py-1">Pricing</a>
+                <a href="/faq" class="text-sm text-gray-600 dark:text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400 px-2 py-1">FAQ</a>
+                <a href="/login" class="text-sm text-gray-600 dark:text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400 px-2 py-1">Log in</a>
+                <a href="/register" class="ml-2 rounded-md bg-indigo-600 dark:bg-indigo-500 px-4 py-1.5 text-sm font-semibold text-white shadow-sm dark:shadow-gray-900/50 hover:bg-indigo-500 dark:hover:bg-indigo-400 transition">Sign up</a>
             </div>
         </div>
     </div>
 </nav>
 
 {# ── Content ────────────────────────────────────────────────────────────── #}
-<section class="bg-white">
+<section class="bg-white dark:bg-gray-900">
     <div class="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-16">
-        <h1 class="text-3xl sm:text-4xl font-extrabold tracking-tight text-gray-900">Acceptable Use Policy</h1>
-        <p class="mt-2 text-sm text-gray-500">Last updated: June 1, 2026</p>
+        <h1 class="text-3xl sm:text-4xl font-extrabold tracking-tight text-gray-900 dark:text-gray-100">Acceptable Use Policy</h1>
+        <p class="mt-2 text-sm text-gray-500 dark:text-gray-400">Last updated: June 1, 2026</p>
 
-        <div class="mt-12 space-y-12 text-gray-700 leading-relaxed">
+        <div class="mt-12 space-y-12 text-gray-700 dark:text-gray-300 leading-relaxed">
 
             {# Overview #}
             <section>
-                <h2 class="text-lg font-semibold text-gray-900">1. Purpose</h2>
+                <h2 class="text-lg font-semibold text-gray-900 dark:text-gray-100">1. Purpose</h2>
                 <p class="mt-3">This Acceptable Use Policy (&ldquo;AUP&rdquo;) sets out the rules for using the tagsmaxxing file knowledge base service (&ldquo;the Service&rdquo;). By using the Service, you agree to comply with this AUP. Violation of this AUP may result in suspension or termination of your account.</p>
             </section>
 
             {# Prohibited Content #}
             <section>
-                <h2 class="text-lg font-semibold text-gray-900">2. Prohibited Content</h2>
+                <h2 class="text-lg font-semibold text-gray-900 dark:text-gray-100">2. Prohibited Content</h2>
                 <p class="mt-3">You may not upload, store, or process content that:</p>
                 <ul class="mt-2 list-disc pl-6 space-y-1">
                     <li>Violates any applicable law, regulation, or third-party right;</li>
@@ -55,7 +55,7 @@
 
             {# Prohibited Activities #}
             <section>
-                <h2 class="text-lg font-semibold text-gray-900">3. Prohibited Activities</h2>
+                <h2 class="text-lg font-semibold text-gray-900 dark:text-gray-100">3. Prohibited Activities</h2>
                 <p class="mt-3">You may not:</p>
                 <ul class="mt-2 list-disc pl-6 space-y-1">
                     <li>Attempt to gain unauthorized access to the Service, other users&rsquo; accounts, or the underlying infrastructure;</li>
@@ -71,7 +71,7 @@
 
             {# AI Usage #}
             <section>
-                <h2 class="text-lg font-semibold text-gray-900">4. AI Model Usage</h2>
+                <h2 class="text-lg font-semibold text-gray-900 dark:text-gray-100">4. AI Model Usage</h2>
                 <p class="mt-3">When using AI model features (tagging, embedding, reranking, captioning), you must not:</p>
                 <ul class="mt-2 list-disc pl-6 space-y-1">
                     <li>Submit content designed to exploit, jailbreak, or prompt-inject the models;</li>
@@ -82,7 +82,7 @@
 
             {# Enforcement #}
             <section>
-                <h2 class="text-lg font-semibold text-gray-900">5. Enforcement</h2>
+                <h2 class="text-lg font-semibold text-gray-900 dark:text-gray-100">5. Enforcement</h2>
                 <p class="mt-3">We reserve the right to investigate violations of this AUP and take appropriate action, including:</p>
                 <ul class="mt-2 list-disc pl-6 space-y-1">
                     <li>Removing or blocking access to prohibited content;</li>
@@ -95,13 +95,13 @@
 
             {# Reporting #}
             <section>
-                <h2 class="text-lg font-semibold text-gray-900">6. Reporting Violations</h2>
-                <p class="mt-3">If you become aware of any violation of this AUP, please report it to <a href="mailto:oktaykarakiya@protonmail.com" class="text-indigo-600 hover:underline">oktaykarakiya@protonmail.com</a>. We review all reports and take appropriate action. We protect the confidentiality of reporters to the extent permitted by law.</p>
+                <h2 class="text-lg font-semibold text-gray-900 dark:text-gray-100">6. Reporting Violations</h2>
+                <p class="mt-3">If you become aware of any violation of this AUP, please report it to <a href="mailto:oktaykarakiya@protonmail.com" class="text-indigo-600 dark:text-indigo-400 hover:underline">oktaykarakiya@protonmail.com</a>. We review all reports and take appropriate action. We protect the confidentiality of reporters to the extent permitted by law.</p>
             </section>
 
             {# Changes #}
             <section>
-                <h2 class="text-lg font-semibold text-gray-900">7. Changes to This Policy</h2>
+                <h2 class="text-lg font-semibold text-gray-900 dark:text-gray-100">7. Changes to This Policy</h2>
                 <p class="mt-3">We may update this AUP from time to time. Material changes will be communicated via email and/or an in-app notice. The date at the top of this page reflects the most recent revision.</p>
             </section>
 
@@ -110,16 +110,16 @@
 </section>
 
 {# ── Footer ──────────────────────────────────────────────────────────── #}
-<footer class="border-t border-gray-200 bg-white py-10">
+<footer class="border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 py-10">
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div class="flex flex-col sm:flex-row justify-between items-center gap-4">
-            <p class="text-sm text-gray-400">&copy; 2026 tagsmaxxing. <a href="mailto:oktaykarakiya@protonmail.com" class="hover:text-gray-600 underline">oktaykarakiya@protonmail.com</a></p>
+            <p class="text-sm text-gray-400 dark:text-gray-500">&copy; 2026 tagsmaxxing. <a href="mailto:oktaykarakiya@protonmail.com" class="hover:text-gray-600 dark:hover:text-gray-400 underline">oktaykarakiya@protonmail.com</a></p>
             <div class="flex space-x-6">
-                <a href="/features" class="text-sm text-gray-400 hover:text-gray-600">Features</a>
-                <a href="/pricing" class="text-sm text-gray-400 hover:text-gray-600">Pricing</a>
-                <a href="/faq" class="text-sm text-gray-400 hover:text-gray-600">FAQ</a>
-                <a href="/terms" class="text-sm text-gray-400 hover:text-gray-600">Terms</a>
-                <a href="/privacy" class="text-sm text-gray-400 hover:text-gray-600">Privacy</a>
+                <a href="/features" class="text-sm text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-400">Features</a>
+                <a href="/pricing" class="text-sm text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-400">Pricing</a>
+                <a href="/faq" class="text-sm text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-400">FAQ</a>
+                <a href="/terms" class="text-sm text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-400">Terms</a>
+                <a href="/privacy" class="text-sm text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-400">Privacy</a>
             </div>
         </div>
     </div>
