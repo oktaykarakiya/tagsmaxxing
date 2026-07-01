@@ -250,19 +250,26 @@ async fn build_document_detail_page(
 
     let tenant_tag_names: Vec<String> = all_tags.iter().map(|t| t.name.clone()).collect();
 
-    let file_entries: Vec<DocumentFileEntry> = files
-        .iter()
-        .map(|f| DocumentFileEntry {
-            file_id: f.id,
-            page_no: f.page_no,
-            label: f
-                .page_label
-                .clone()
-                .unwrap_or_else(|| format!("Page {}", f.page_no)),
-            icon: mime_icon(f.mime.as_deref().unwrap_or("")).to_string(),
-            size_display: f.size_bytes.map(format_file_size).unwrap_or_default(),
-        })
-        .collect();
+    let file_entries: Vec<DocumentFileEntry> = {
+        let mut entries = Vec::with_capacity(files.len());
+        for f in &files {
+            let mime = f.mime.clone().unwrap_or_default();
+            let download_url = format!("/api/documents/{doc_id}/file/{}", f.id);
+            entries.push(DocumentFileEntry {
+                file_id: f.id,
+                page_no: f.page_no,
+                label: f
+                    .page_label
+                    .clone()
+                    .unwrap_or_else(|| format!("Page {}", f.page_no)),
+                icon: mime_icon(&mime).to_string(),
+                size_display: f.size_bytes.map(format_file_size).unwrap_or_default(),
+                mime,
+                download_url,
+            });
+        }
+        entries
+    };
 
     // Failure UX (P15-T9): surface the latest ingest error on failed docs.
     // Sanitized for display: bounded length, and Askama HTML-escapes it.

@@ -216,6 +216,10 @@ pub(crate) struct DocumentFileEntry {
     pub icon: String,
     /// File size in a human-readable format (e.g. "2.4 MB").
     pub size_display: String,
+    /// MIME type of the file (e.g. "image/png", "video/mp4").
+    pub mime: String,
+    /// Presigned download URL for the original file.
+    pub download_url: String,
 }
 
 // ── Auth flow page types (P12-T2) ─────────────────────────────────────────────────

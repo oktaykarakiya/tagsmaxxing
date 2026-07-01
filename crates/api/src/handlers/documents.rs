@@ -233,6 +233,10 @@ pub async fn file_download(
 /// Build a 302 redirect response with presigned URL location, Content-Type,
 /// and Content-Disposition headers.
 ///
+/// Browsable types (image/*, video/*, audio/*, application/pdf) use
+/// `Content-Disposition: inline` so they render in the browser.
+/// All other types use `attachment` to force a download.
+///
 /// Extracted for testability — unit tests can verify the response shape
 /// without needing a database or blob store.
 fn build_redirect_response(
@@ -240,9 +244,18 @@ fn build_redirect_response(
     content_type: &str,
     page_label: Option<&str>,
 ) -> Result<axum::response::Response, axum::http::Error> {
-    let disposition = match page_label {
-        Some(label) if !label.is_empty() => format!("attachment; filename=\"{label}\""),
-        _ => "attachment".to_owned(),
+    let is_browsable = content_type.starts_with("image/")
+        || content_type.starts_with("video/")
+        || content_type.starts_with("audio/")
+        || content_type == "application/pdf";
+
+    let disposition = if is_browsable {
+        "inline".to_owned()
+    } else {
+        match page_label {
+            Some(label) if !label.is_empty() => format!("attachment; filename=\"{label}\""),
+            _ => "attachment".to_owned(),
+        }
     };
 
     axum::response::Response::builder()
@@ -618,7 +631,8 @@ mod tests {
     }
 
     #[test]
-    fn redirect_response_content_disposition_includes_filename_from_label() {
+    fn redirect_response_content_disposition_inline_for_browsable_types() {
+        // PDF is browsable → inline
         let response = build_redirect_response(
             "http://example.com/f",
             "application/pdf",
@@ -630,9 +644,25 @@ mod tests {
             .headers()
             .get(CONTENT_DISPOSITION.to_string())
             .unwrap();
+        assert_eq!(cd.to_str().unwrap(), "inline");
+    }
+
+    #[test]
+    fn redirect_response_content_disposition_attachment_for_non_browsable_with_label() {
+        let response = build_redirect_response(
+            "http://example.com/f",
+            "text/html",
+            Some("page.html"),
+        )
+        .unwrap();
+
+        let cd = response
+            .headers()
+            .get(CONTENT_DISPOSITION.to_string())
+            .unwrap();
         assert_eq!(
             cd.to_str().unwrap(),
-            "attachment; filename=\"report-2025.pdf\""
+            "attachment; filename=\"page.html\""
         );
     }
 
@@ -650,7 +680,8 @@ mod tests {
     }
 
     #[test]
-    fn redirect_response_content_disposition_with_special_characters_in_label() {
+    fn redirect_response_browsable_image_is_inline() {
+        // Images are browsable → inline, no filename in disposition
         let response = build_redirect_response(
             "http://example.com/f",
             "image/jpeg",
@@ -662,11 +693,7 @@ mod tests {
             .headers()
             .get(CONTENT_DISPOSITION.to_string())
             .unwrap();
-        assert!(
-            cd.to_str()
-                .unwrap()
-                .contains("vacation photo (summer 2025).jpg")
-        );
+        assert_eq!(cd.to_str().unwrap(), "inline");
     }
 
     #[test]

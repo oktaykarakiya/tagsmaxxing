@@ -196,12 +196,16 @@
                 {% for file in files %}
                 <div class="group relative bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-700 p-3 hover:shadow-md transition"
                      data-file-id="{{ file.file_id }}" data-page-no="{{ file.page_no }}">
-                    {# ── Page thumbnail / icon ─────────────────────────────── #}
-                    <a href="/api/documents/{{ doc_id }}/file/{{ file.file_id }}"
-                       title="Download original file"
+                    {# ── Page thumbnail / preview ─────────────────────────── #}
+                    <a href="{{ file.download_url }}"
+                       title="{% if file.mime.starts_with("image/") || file.mime.starts_with("video/") || file.mime.starts_with("audio/") || file.mime == "application/pdf" %}View file{% else %}Download file{% endif %}"
                        class="block mb-2">
                         <div class="aspect-square rounded-md bg-gray-100 dark:bg-gray-800 flex items-center justify-center overflow-hidden">
+                            {% if file.mime.starts_with("image/") %}
+                            <img src="{{ file.download_url }}" alt="{{ file.label }}" class="w-full h-full object-cover" loading="lazy">
+                            {% else %}
                             <span class="text-3xl">{{ file.icon }}</span>
+                            {% endif %}
                         </div>
                     </a>
                     {# ── Page info ─────────────────────────────────────────── #}
@@ -213,10 +217,10 @@
                             {% if !file.size_display.is_empty() %}{{ file.size_display }}{% endif %}
                         </p>
                     </div>
-                    {# ── Download link ─────────────────────────────────────── #}
-                    <a href="/api/documents/{{ doc_id }}/file/{{ file.file_id }}"
+                    {# ── Download/view link ────────────────────────────────── #}
+                    <a href="{{ file.download_url }}"
                        class="absolute top-2 right-2 rounded-full bg-white/90 dark:bg-gray-900/90 p-1 text-gray-400 dark:text-gray-500 opacity-0 group-hover:opacity-100 hover:text-indigo-600 dark:hover:text-indigo-400 transition shadow-sm dark:shadow-gray-900/50"
-                       title="Download">
+                       title="{% if file.mime.starts_with("image/") || file.mime.starts_with("video/") || file.mime.starts_with("audio/") || file.mime == "application/pdf" %}View{% else %}Download{% endif %}">
                         <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                    d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
