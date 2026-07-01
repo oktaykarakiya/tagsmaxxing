@@ -112,7 +112,7 @@ CREATE TABLE users (
     email TEXT NOT NULL,
     password_hash TEXT NOT NULL,
     role TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('owner', 'admin', 'member')),
-    email_verified BOOLEAN NOT NULL DEFAULT false,
+    email_verified BOOLEAN NOT NULL DEFAULT true,
     email_verify_token TEXT,
     password_reset_token TEXT,
     password_reset_expires TIMESTAMPTZ,
