@@ -41,6 +41,8 @@
            {% if active == "search" %}aria-current="page" class="text-indigo-600 dark:text-indigo-400 font-medium"{% else %}class="text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200"{% endif %}>Search</a>
         <a href="/upload"
            {% if active == "upload" %}aria-current="page" class="text-indigo-600 dark:text-indigo-400 font-medium"{% else %}class="text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200"{% endif %}>Upload</a>
+        <a href="/assistant"
+           {% if active == "assistant" %}aria-current="page" class="text-indigo-600 dark:text-indigo-400 font-medium"{% else %}class="text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200"{% endif %}>Assistant</a>
         <span id="nav-processing-indicator" class="hidden items-center gap-1.5 rounded-full bg-yellow-50 dark:bg-yellow-900/30 px-2.5 py-0.5 text-xs font-medium text-yellow-800 dark:text-yellow-300 ring-1 ring-yellow-600/20 dark:ring-yellow-400/20"
               title="Documents still being processed in the background">
           <svg class="h-3 w-3 animate-spin" fill="none" viewBox="0 0 24 24" aria-hidden="true">
@@ -148,7 +150,9 @@
         <a href="/search"
            class="text-gray-900 dark:text-gray-100 font-medium" aria-current="page">Search</a>
         <a href="/upload"
-           class="text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200">Upload</a>
+            class="text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200">Upload</a>
+        <a href="/assistant"
+            class="text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200">Assistant</a>
         <a href="/account"
            class="text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200">Account</a>
         <form action="/logout" method="post" class="inline">
@@ -191,6 +195,7 @@
     <a href="/dashboard" class="block rounded-lg px-3 py-2 text-xs text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800">Dashboard</a>
     <a href="/search" class="block rounded-lg px-3 py-2 text-xs font-medium text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30" aria-current="page">Search</a>
     <a href="/upload" class="block rounded-lg px-3 py-2 text-xs text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800">Upload</a>
+    <a href="/assistant" class="block rounded-lg px-3 py-2 text-xs text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800">Assistant</a>
     <a href="/account" class="block rounded-lg px-3 py-2 text-xs text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800">Account</a>
     <hr class="border-gray-200 dark:border-gray-800 my-1">
     <form action="/logout" method="post">

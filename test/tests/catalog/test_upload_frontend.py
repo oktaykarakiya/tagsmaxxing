@@ -154,7 +154,7 @@ def test_single_text_upload_redirects_to_document(page, tmp_path):
     page.wait_for_selector("#progress-detail a[href^='/documents/']", timeout=UPLOAD_TIMEOUT_S * 1000)
     page.click("#progress-detail a[href^='/documents/']")
     page.wait_for_selector("h1", timeout=10_000)
-    expect(page.locator("nav")).to_be_visible()
+    expect(page.locator("nav").first).to_be_visible()
 
 
 # ── 3. Single image (PNG) upload ─────────────────────────────────────────────
@@ -175,7 +175,7 @@ def test_single_png_upload_succeeds(page, tmp_path):
     page.wait_for_selector("#progress-detail a[href^='/documents/']", timeout=UPLOAD_TIMEOUT_S * 1000)
     page.click("#progress-detail a[href^='/documents/']")
     page.wait_for_selector("h1", timeout=10_000)
-    expect(page.locator("nav")).to_be_visible()
+    expect(page.locator("nav").first).to_be_visible()
 
 
 # ── 4. Multi-file selection + group_as_document ──────────────────────────────
@@ -205,7 +205,7 @@ def test_multi_file_group_as_document_upload(page, tmp_path):
     page.wait_for_selector("#progress-detail a[href^='/documents/']", timeout=UPLOAD_TIMEOUT_S * 1000)
     page.click("#progress-detail a[href^='/documents/']")
     page.wait_for_selector("h1", timeout=10_000)
-    expect(page.locator("nav")).to_be_visible()
+    expect(page.locator("nav").first).to_be_visible()
 
 
 # ── 5. user_note accompanies the upload ──────────────────────────────────────
@@ -229,7 +229,7 @@ def test_upload_with_user_note_succeeds(page, tmp_path):
     page.wait_for_selector("#progress-detail a[href^='/documents/']", timeout=UPLOAD_TIMEOUT_S * 1000)
     page.click("#progress-detail a[href^='/documents/']")
     page.wait_for_selector("h1", timeout=10_000)
-    expect(page.locator("nav")).to_be_visible()
+    expect(page.locator("nav").first).to_be_visible()
 
 
 # ── 6. Rejected file surfaces an error without crashing the page ──────────────

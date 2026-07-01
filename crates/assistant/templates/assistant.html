@@ -3,32 +3,55 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Assistant — TagsMaxxing</title>
+    <title>AI Assistant — tagsmaxxing</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = { darkMode: 'class' };
+    </script>
+    <script>
+        (function() {
+            if (localStorage.getItem('dark') === 'true' || 
+                (!localStorage.getItem('dark') && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+                document.documentElement.classList.add('dark');
+            }
+        })();
+        function toggleTheme() {
+            document.documentElement.classList.toggle('dark');
+            localStorage.setItem('dark', document.documentElement.classList.contains('dark'));
+        }
+    </script>
     <script src="https://unpkg.com/htmx.org@2.0.4"></script>
     <script src="https://unpkg.com/htmx-ext-sse@2.2.2/sse.js"></script>
 </head>
-<body class="bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100 min-h-screen">
+<body class="bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-gray-100 min-h-screen">
     <div class="max-w-4xl mx-auto px-4 py-8">
-        <!-- Header -->
         <div class="mb-8">
-            <h1 class="text-2xl font-bold">AI Assistant</h1>
-            <p class="text-gray-500 dark:text-gray-400 text-sm">Model: {{ model_ref }}</p>
+            <h1 class="text-2xl font-bold dark:text-gray-100">AI Assistant</h1>
+            <p class="text-gray-500 dark:text-gray-400 text-sm mt-1">
+                Ask questions about your knowledge base. Type a prompt to search and analyze your documents.
+            </p>
         </div>
 
-        <!-- Main layout: output log + input -->
         <div class="space-y-6">
-            <!-- Output log -->
             <div id="output-log"
-                 class="bg-gray-100 dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg p-4 h-96 overflow-y-auto font-mono text-sm"
+                 class="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg p-6 min-h-64 text-sm text-gray-500 dark:text-gray-400"
                  hx-ext="sse"
                  sse-connect="/assistant/prompt"
                  sse-swap="message"
                  hx-swap="beforeend">
-                <p class="text-gray-500 dark:text-gray-600">Waiting for a prompt...</p>
+                <div class="space-y-4">
+                    <p>Your AI assistant can help you:</p>
+                    <ul class="list-disc pl-5 space-y-1">
+                        <li>Find documents matching your query</li>
+                        <li>Summarize and analyze your knowledge base</li>
+                        <li>Extract action items and decisions</li>
+                        <li>Organize and tag your content</li>
+                    </ul>
+                    <p class="text-xs text-gray-400 mt-4">The full agent requires the <code class="bg-gray-100 dark:bg-gray-800 px-1 rounded">opencode</code> binary.
+                    Basic Q&A powered by search is available below.</p>
+                </div>
             </div>
 
-            <!-- Prompt input form -->
             <form id="prompt-form"
                   hx-post="/assistant/prompt"
                   hx-target="#output-log"
@@ -37,42 +60,40 @@
                   class="flex gap-2">
                 <input type="text"
                        name="text"
-                       placeholder="Ask the assistant anything..."
+                       placeholder="Ask anything about your documents..."
                        required
-                       class="flex-1 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg px-4 py-3 text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                       class="flex-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg px-4 py-3 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:focus:ring-indigo-400">
                 <button type="submit"
-                        class="bg-blue-600 hover:bg-blue-700 text-white font-medium px-6 py-3 rounded-lg transition-colors">
-                    Send
+                        class="bg-indigo-600 hover:bg-indigo-700 dark:bg-indigo-500 dark:hover:bg-indigo-600 text-white font-medium px-6 py-3 rounded-lg transition-colors">
+                    Ask
                 </button>
-                <div id="spinner" class="htmx-indicator">
-                    <div class="animate-spin h-5 w-5 border-2 border-blue-400 border-t-transparent rounded-full"></div>
-                </div>
             </form>
 
-            <!-- Kill button -->
-            <div class="flex justify-end">
-                <button id="kill-btn"
-                        onclick="fetch('/assistant/kill', {method:'POST'})"
-                        class="text-red-600 dark:text-red-400 hover:text-red-500 dark:hover:text-red-300 text-sm underline">
-                    Kill running session
-                </button>
+            <div id="spinner" class="htmx-indicator text-center text-sm text-gray-400">
+                <div class="inline-block animate-spin h-4 w-4 border-2 border-indigo-400 border-t-transparent rounded-full mr-2 align-middle"></div>
+                Thinking...
             </div>
 
-            <!-- Session info (HTMX partial) -->
+            <div class="flex justify-between items-center">
+                <form action="/assistant/prompt" method="post" class="inline">
+                    <input type="hidden" name="text" value="What documents do I have? Summarize my knowledge base.">
+                    <button type="submit"
+                            hx-post="/assistant/prompt"
+                            hx-target="#output-log"
+                            hx-swap="innerHTML"
+                            class="text-sm text-indigo-500 dark:text-indigo-400 hover:underline">
+                        What documents do I have?
+                    </button>
+                </form>
+            </div>
+
             <div id="session-info"
                  hx-get="/assistant/sessions"
                  hx-trigger="load"
-                 hx-swap="innerHTML">
+                 hx-swap="innerHTML"
+                 class="text-xs text-gray-400">
             </div>
         </div>
     </div>
-
-    <script>
-        // Clear output log on new prompt
-        document.getElementById('prompt-form').addEventListener('htmx:beforeRequest', function() {
-            document.getElementById('output-log').innerHTML =
-                '<p class="text-gray-500 dark:text-gray-600">Running...</p>';
-        });
-    </script>
 </body>
 </html>

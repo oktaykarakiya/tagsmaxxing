@@ -2,10 +2,9 @@
 
 //! axum route handlers and router builder for the AI assistant.
 //!
-//! Exposes [`build_assistant_router`] which returns a unit-state `Router`
-//! ready for `nest_service` mounting.  The [`AssistantState`] is injected
-//! via an `Extension` layer so the callers extract it with
-//! `Extension<Arc<AssistantState>>`.
+//! Exposes [`build_assistant_router`] which always returns a router.
+//! When `opencode_bin` is configured, the full agent is available (SSE streaming).
+//! When it is not configured, a basic Q&A interface is shown.
 
 use std::sync::Arc;
 
@@ -41,40 +40,46 @@ pub struct AssistantState {
 
 /// Build the assistant sub-router.
 ///
-/// Uses unit state `()` so it can be mounted via `nest_service`. State is
-/// passed through an `Extension<Arc<AssistantState>>` layer.
-///
-/// Returns `None` when the assistant is disabled.
+/// Always returns a router. When `opencode_bin` is unconfigured, the assistant
+/// page shows a basic Q&A interface. When configured, full agent SSE streaming
+/// is available at `POST /assistant/prompt`.
 #[must_use]
 pub fn build_assistant_router(
     store: &Arc<PgStore>,
     pipeline: &Option<Arc<RetrievalPipeline>>,
-) -> Option<Router> {
-    let pipeline = pipeline.as_ref()?;
+) -> Router {
     let asst_cfg = AssistantConfig::default();
-    let opencode_bin = asst_cfg.opencode_bin.as_ref()?;
 
-    let executor = Executor::new(
-        std::path::Path::new(opencode_bin),
-        &asst_cfg.model_ref,
-        asst_cfg.prompt_timeout_secs,
-    );
+    let executor = asst_cfg.opencode_bin.as_ref().map(|bin| {
+        Executor::new(
+            std::path::Path::new(bin),
+            &asst_cfg.model_ref,
+            asst_cfg.prompt_timeout_secs,
+        )
+    });
+
     let prompt_builder = PromptBuilder::new(asst_cfg.context_budget_pct);
+
+    let pipeline = match pipeline.as_ref() {
+        Some(p) => Arc::clone(p),
+        None => {
+            tracing::warn!("retrieval pipeline not configured — assistant disabled");
+            return Router::new();
+        }
+    };
 
     let state = Arc::new(AssistantState {
         cfg: asst_cfg,
         store: Arc::clone(store),
-        pipeline: Arc::clone(pipeline),
-        executor: Some(executor),
+        pipeline,
+        executor,
         prompt_builder,
         sessions: SessionManager::new(),
     });
 
-    let router = Router::new()
+    Router::new()
         .route("/", get(prompt::assistant_page))
         .route("/prompt", post(prompt::assistant_prompt_handler))
         .route("/sessions", get(prompt::assistant_sessions_handler))
-        .layer(Extension(state));
-
-    Some(router)
+        .layer(Extension(state))
 }
