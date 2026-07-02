@@ -43,7 +43,6 @@ pub struct AssistantState {
 /// Always returns a router. When `opencode_bin` is unconfigured, the assistant
 /// page shows a basic Q&A interface. When configured, full agent SSE streaming
 /// is available at `POST /assistant/prompt`.
-#[must_use]
 pub fn build_assistant_router(
     store: &Arc<PgStore>,
     pipeline: &Option<Arc<RetrievalPipeline>>,

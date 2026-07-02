@@ -28,6 +28,7 @@ fn sse_single(msg: String) -> Sse<impl tokio_stream::Stream<Item = Result<Event,
 #[derive(Template)]
 #[template(path = "assistant.html")]
 pub struct AssistantPage {
+    #[allow(dead_code)]
     pub model_ref: String,
 }
 
