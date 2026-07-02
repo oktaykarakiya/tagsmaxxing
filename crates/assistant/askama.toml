@@ -1,0 +1,5 @@
+# Also resolve templates from the kb-api crate so the assistant pages can
+# extend the shared `base.html` and reuse the `_macros.html` navigation shell
+# instead of hand-copying markup (which is how the navbars drifted apart).
+[general]
+dirs = ["templates", "../api/templates"]

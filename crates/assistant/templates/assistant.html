@@ -1,32 +1,21 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Assistant — tagsmaxxing</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script>
-        tailwind.config = { darkMode: 'class' };
-    </script>
-    <script>
-        (function() {
-            if (localStorage.getItem('dark') === 'true' || 
-                (!localStorage.getItem('dark') && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
-                document.documentElement.classList.add('dark');
-            }
-        })();
-        function toggleTheme() {
-            document.documentElement.classList.toggle('dark');
-            localStorage.setItem('dark', document.documentElement.classList.contains('dark'));
-        }
-    </script>
-    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
-    <script src="https://unpkg.com/htmx-ext-sse@2.2.2/sse.js"></script>
-</head>
-<body class="bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-gray-100 min-h-screen">
-    <div class="max-w-4xl mx-auto px-4 py-8">
+{% extends "base.html" %}
+{% import "_macros.html" as nav %}
+
+{% block title %}Assistant{% endblock %}
+
+{% block head_extra %}
+<script src="https://unpkg.com/htmx.org@2.0.4"></script>
+<script src="https://unpkg.com/htmx-ext-sse@2.2.2/sse.js"></script>
+{% endblock %}
+
+{% block content %}
+<div class="min-h-screen flex flex-col">
+    {# ── Navigation bar (shared macro; logout ignores the CSRF token) ────── #}
+    {% call nav::app_nav("assistant", "") %}{% endcall %}
+
+    <main class="flex-1 w-full max-w-4xl mx-auto px-4 py-8">
         <div class="mb-8">
-            <h1 class="text-2xl font-bold dark:text-gray-100">AI Assistant</h1>
+            <h1 class="text-2xl font-bold text-gray-900 dark:text-gray-100">AI Assistant</h1>
             <p class="text-gray-500 dark:text-gray-400 text-sm mt-1">
                 Ask questions about your knowledge base. Type a prompt to search and analyze your documents.
             </p>
@@ -94,6 +83,6 @@
                  class="text-xs text-gray-400">
             </div>
         </div>
-    </div>
-</body>
-</html>
+    </main>
+</div>
+{% endblock %}

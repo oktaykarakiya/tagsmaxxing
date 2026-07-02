@@ -1,35 +1,35 @@
 {# HTMX partial fragment — swapped into #results on /search POST. #}
 
 {% if degraded %}
-<p class="text-xs text-amber-600 mb-4 px-1">
+<p class="text-xs text-amber-600 dark:text-amber-400 mb-4 px-1">
     Basic results only &mdash; AI search budget reached.
 </p>
 {% endif %}
 
 {% if hits.is_empty() %}
     <div class="flex flex-col items-center justify-center py-16 sm:py-20 text-center">
-        <svg class="h-12 w-12 text-gray-200 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <svg class="h-12 w-12 text-gray-200 dark:text-gray-700 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1"
                   d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
         </svg>
-        <p class="text-sm text-gray-500 mb-1">No results for <span class="font-medium text-gray-700">&ldquo;{{ query }}&rdquo;</span></p>
-        <p class="text-xs text-gray-400">Try different keywords or broader terms.</p>
+        <p class="text-sm text-gray-500 dark:text-gray-400 mb-1">No results for <span class="font-medium text-gray-700 dark:text-gray-300">&ldquo;{{ query }}&rdquo;</span></p>
+        <p class="text-xs text-gray-400 dark:text-gray-500">Try different keywords or broader terms.</p>
     </div>
 
 {% else %}
-    <p class="text-xs text-gray-400 mb-6 px-1">
+    <p class="text-xs text-gray-400 dark:text-gray-500 mb-6 px-1">
         {{ hits.len() }} result{% if hits.len() != 1 %}s{% endif %}
-        {% if !query.is_empty() %}for <span class="text-gray-600">&ldquo;{{ query }}&rdquo;</span>{% endif %}
+        {% if !query.is_empty() %}for <span class="text-gray-600 dark:text-gray-300">&ldquo;{{ query }}&rdquo;</span>{% endif %}
     </p>
 
     <ul class="space-y-0">
         {% for hit in hits %}
-        <li class="py-4 border-b border-gray-100 last:border-b-0">
+        <li class="py-4 border-b border-gray-100 dark:border-gray-800 last:border-b-0">
             <a href="/documents/{{ hit.document_id }}"
                class="block group">
 
                 {# URL / provenance line #}
-                <p class="text-xs text-gray-400 mb-0.5 leading-none">
+                <p class="text-xs text-gray-400 dark:text-gray-500 mb-0.5 leading-none">
                     /documents/{{ hit.document_id }}
                     {% if let Some(page) = hit.page_no %}
                     &nbsp;&middot;&nbsp;page {{ page }}
@@ -37,17 +37,17 @@
                     &nbsp;&middot;&nbsp;{{ "{:.1}"|format(ts) }}s
                     {% endif %}
                     {% if let Some(kind) = hit.kind %}
-                    &nbsp;&middot;&nbsp;<span class="text-[10px] text-gray-400">{{ kind }}</span>
+                    &nbsp;&middot;&nbsp;<span class="text-[10px] text-gray-400 dark:text-gray-500">{{ kind }}</span>
                     {% endif %}
                 </p>
 
                 {# Title #}
-                <h3 class="text-lg sm:text-xl text-blue-700 group-hover:underline leading-snug mb-1">
+                <h3 class="text-lg sm:text-xl text-blue-700 dark:text-blue-400 group-hover:underline leading-snug mb-1">
                     {{ hit.title.as_deref().unwrap_or("Untitled") }}
                 </h3>
 
                 {# Snippet #}
-                <p class="text-sm text-gray-600 leading-relaxed line-clamp-3">
+                <p class="text-sm text-gray-600 dark:text-gray-400 leading-relaxed line-clamp-3">
                     {{ hit.snippet }}
                 </p>
             </a>

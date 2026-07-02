@@ -115,3 +115,46 @@ pub async fn assistant_sessions_handler(
             .unwrap_or_else(|e| format!("Template error: {e}")),
     )
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+
+    // ── Shared app-nav regression test ─────────────────────────────────────
+    // Regression: the assistant page used to render as a standalone document
+    // with no navigation at all, stranding users. It must extend the shared
+    // `base.html` shell and expose every primary nav destination.
+    #[test]
+    fn assistant_page_renders_shared_nav() {
+        let page = AssistantPage {
+            model_ref: "test/model".into(),
+        };
+        let html = page.render().expect("assistant template must render");
+
+        for href in ["/dashboard", "/search", "/upload", "/assistant", "/account"] {
+            assert!(
+                html.contains(&format!("href=\"{href}\"")),
+                "assistant-page nav must link to {href}"
+            );
+        }
+        // Active-page highlighting for the e2e nav journey.
+        assert!(
+            html.contains("aria-current=\"page\""),
+            "assistant nav must mark the active page"
+        );
+        // The logout control from the shared macro is present.
+        assert!(
+            html.contains("action=\"/logout\""),
+            "assistant-page nav must contain the logout form"
+        );
+    }
+
+    #[test]
+    fn sessions_fragment_renders_count() {
+        let fragment = AssistantSessionsPage { session_count: 3 };
+        let html = fragment.render().expect("sessions template must render");
+        assert!(html.contains("3 sessions recorded"));
+    }
+}
