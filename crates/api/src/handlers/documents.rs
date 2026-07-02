@@ -649,21 +649,15 @@ mod tests {
 
     #[test]
     fn redirect_response_content_disposition_attachment_for_non_browsable_with_label() {
-        let response = build_redirect_response(
-            "http://example.com/f",
-            "text/html",
-            Some("page.html"),
-        )
-        .unwrap();
+        let response =
+            build_redirect_response("http://example.com/f", "text/html", Some("page.html"))
+                .unwrap();
 
         let cd = response
             .headers()
             .get(CONTENT_DISPOSITION.to_string())
             .unwrap();
-        assert_eq!(
-            cd.to_str().unwrap(),
-            "attachment; filename=\"page.html\""
-        );
+        assert_eq!(cd.to_str().unwrap(), "attachment; filename=\"page.html\"");
     }
 
     #[test]

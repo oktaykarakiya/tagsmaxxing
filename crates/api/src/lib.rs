@@ -436,7 +436,7 @@ pub fn build_router(state: AppState) -> Router {
         .nest_service("/assistant", asst_router)
         .layer(from_fn_with_state(state.clone(), auth_middleware));
 
-    let mut app = public.merge(api).merge(web).merge(assistant);
+    let app = public.merge(api).merge(web).merge(assistant);
 
     // Innermost added layer → runs closest to routing, so the `MatchedPath`
     // extension is populated and HTTP RED metrics get per-route labels.

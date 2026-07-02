@@ -4,4 +4,12 @@
 [advisories]
 ignore = [
     "RUSTSEC-2023-0071", # rsa Marvin Attack — only pulled via sqlx-mysql, we use Postgres only
+    # quick-xml < 0.41 DoS advisories (quadratic attribute check / unbounded xmlns
+    # allocations). Transitive ONLY via object_store's `aws` feature, parsing XML
+    # responses from our own configured S3/MinIO endpoint — trusted infrastructure,
+    # not attacker-supplied input. Unfixable today: patched quick-xml is 0.41.0 but
+    # even object_store 0.14.0 pins `quick-xml ^0.40.1`. Remove once object_store
+    # depends on quick-xml >= 0.41. (Mirrored in deny.toml.)
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
 ]

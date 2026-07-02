@@ -157,6 +157,8 @@ fn sanitize_session_key(key: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
     use super::*;
     use crate::config_ext::AssistantConfig;
 

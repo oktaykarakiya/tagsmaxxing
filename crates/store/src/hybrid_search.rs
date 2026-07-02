@@ -666,10 +666,7 @@ mod tests {
             sql.contains("@@@ paradedb.parse"),
             "missing bm25 match: {sql}"
         );
-        assert!(
-            sql.contains("paradedb.score"),
-            "missing bm25 score: {sql}"
-        );
+        assert!(sql.contains("paradedb.score"), "missing bm25 score: {sql}");
         assert!(sql.contains("DESC"), "missing DESC: {sql}");
     }
 

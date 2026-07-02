@@ -183,6 +183,8 @@ fn fnmatch_to_regex(pattern: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
     use super::*;
 
     fn test_taxonomy() -> Taxonomy {

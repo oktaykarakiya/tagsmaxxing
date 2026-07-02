@@ -24,6 +24,15 @@ ignore = [
     # `PemObject`, which axum-server has not yet migrated to. Revisit/remove this
     # once axum-server ships a release that drops rustls-pemfile.
     "RUSTSEC-2025-0134", # rustls-pemfile unmaintained — transitive via axum-server tls-rustls
+    # quick-xml < 0.41 quadratic attribute checking / unbounded namespace-declaration
+    # allocation (DoS via crafted XML). Pulled in transitively ONLY by object_store's
+    # `aws` feature, where it parses XML responses from OUR configured S3/MinIO blob
+    # endpoint — trusted operator infrastructure, not attacker-supplied input. No fix
+    # is reachable: the patched quick-xml is 0.41.0, but even the latest object_store
+    # (0.14.0) pins `quick-xml ^0.40.1`. Remove both IDs once object_store ships a
+    # release depending on quick-xml >= 0.41.
+    "RUSTSEC-2026-0194", # quick-xml O(N²) duplicate-attribute check — transitive via object_store aws
+    "RUSTSEC-2026-0195", # quick-xml unbounded xmlns declarations — transitive via object_store aws
 ]
 
 [licenses]

@@ -274,6 +274,8 @@ fn parse_month_day(text: &str, today: NaiveDate) -> Option<NaiveDate> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
     use super::*;
 
     #[test]
