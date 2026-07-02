@@ -11,6 +11,13 @@ STOP and surface it explicitly — never silently proceed as if it succeeded.
 "Only changed one file" is never a reason to skip. Every code change, no
 matter how small, requires the full sweep. Every single time.
 
+If a command times out, the ONLY valid response is to re-run it with a longer
+timeout. A timeout is NOT a "pass" — it means the command didn't finish. Never
+treat a timeout as "no output = no failures." Re-run, re-run, re-run until it
+completes. Never skip an E2E run, never skip a build, never skip a test suite.
+If the process genuinely cannot complete (real disk full, real OOM), STOP
+everything and surface the blocker — do not proceed past it silently.
+
 ### Mandatory sequence after EVERY code change, in this exact order:
 
 1. **Baseline** (before changes) — capture pass/fail counts of the full suite.
