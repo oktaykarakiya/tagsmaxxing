@@ -427,15 +427,16 @@ pub fn build_router(state: AppState) -> Router {
     // Web UI routes (P6-T4).
     let web = web::build_web_router(state.clone());
 
-    // Assistant routes — always mounted. Uses search pipeline for basic Q&A
-    // when opencode_bin is unconfigured; full agent SSE when configured.
+    // Assistant routes — always mounted, behind auth middleware.
     let asst_router =
         kb_assistant::handlers::build_assistant_router(&state.pg_store, &state.retrieval_pipeline);
 
-    let mut app = public.merge(api).merge(web);
+    // Wrap assistant in a protected sub-router so auth middleware applies.
+    let assistant = axum::Router::new()
+        .nest_service("/assistant", asst_router)
+        .layer(from_fn_with_state(state.clone(), auth_middleware));
 
-    // Mount assistant routes (always present).
-    app = app.nest_service("/assistant", asst_router);
+    let mut app = public.merge(api).merge(web).merge(assistant);
 
     // Innermost added layer → runs closest to routing, so the `MatchedPath`
     // extension is populated and HTTP RED metrics get per-route labels.
