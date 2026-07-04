@@ -325,7 +325,7 @@ impl IngestPipeline {
         // Resolve the actual serving context window size from the backend pool
         // (read at call time — adapts to DB routing changes without restart).
         let ctx_tokens = self.tagger.resolve_context_tokens();
-        let (text_budget, note_budget) = compute_token_budgets(ctx_tokens);
+        let (text_budget, note_budget) = compute_token_budgets(ctx_tokens, None);
 
         // Sanitize the user note: strip NUL and other control characters
         // (which a PostgreSQL `text` column cannot store, so they would crash
@@ -721,7 +721,8 @@ pub async fn process_retag_job(
 
     // 3. Tag the document. Text capped to the prompt budget (BUG-INGEST-18),
     //    resolved from the actual backend context window size.
-    let (text_budget, _note_budget) = compute_token_budgets(tagger.resolve_context_tokens());
+    let (text_budget, _note_budget) =
+        compute_token_budgets(tagger.resolve_context_tokens(), Some(document_text));
     let tag_input = TagInput {
         tenant_id,
         user_id,
@@ -808,7 +809,50 @@ const DEFAULT_CONTEXT_FALLBACK: usize = 65_536;
 /// strings).  Halving the available context gives a 2× safety margin that
 /// covers the worst measured case while still leaving ~30 k tokens for
 /// prose documents — far more than a useful tagger summary needs.
+///
+/// For prose-dominant text (≥85 % ASCII alphanumeric or whitespace
+/// characters) the heuristic is accurate and [`compute_dynamic_safety_factor`]
+/// uses a higher factor (0.8) to recover nearly double the token budget
+/// at no extra risk.  The conservative 0.5 value here is the fallback for
+/// symbol-dense content and for callers that cannot provide a text sample.
 const ESTIMATOR_SAFETY_FACTOR: f64 = 0.5;
+
+/// Safety factor for prose-dominant text where the 4-char:1-token heuristic
+/// is accurate (≥85 % ASCII alphanumeric/whitespace).
+const PROSE_SAFETY_FACTOR: f64 = 0.8;
+
+/// Minimum fraction of ASCII prose characters (alphanumeric + whitespace)
+/// in a text sample to qualify for the higher [`PROSE_SAFETY_FACTOR`].
+const PROSE_RATIO_THRESHOLD: f64 = 0.85;
+
+/// Compute a safety factor dynamically from a text sample.
+///
+/// Samples up to 4096 characters.  If ≥85 % of characters are ASCII
+/// alphanumeric or whitespace (typical prose content), returns
+/// [`PROSE_SAFETY_FACTOR`] (0.8).  Otherwise falls back to
+/// [`ESTIMATOR_SAFETY_FACTOR`] (0.5) for symbol-dense or mixed content.
+///
+/// Returns the default conservative factor when `text` is `None` or empty.
+pub fn compute_dynamic_safety_factor(text: Option<&str>) -> f64 {
+    let text = match text {
+        Some(t) if !t.is_empty() => t,
+        _ => return ESTIMATOR_SAFETY_FACTOR,
+    };
+    let sample: Vec<char> = text.chars().take(4096).collect();
+    if sample.is_empty() {
+        return ESTIMATOR_SAFETY_FACTOR;
+    }
+    let prose_count = sample
+        .iter()
+        .filter(|c| c.is_ascii_alphanumeric() || c.is_ascii_whitespace())
+        .count();
+    let ratio = prose_count as f64 / sample.len() as f64;
+    if ratio >= PROSE_RATIO_THRESHOLD {
+        PROSE_SAFETY_FACTOR
+    } else {
+        ESTIMATOR_SAFETY_FACTOR
+    }
+}
 
 /// Halvings before giving up in [`tag_with_context_retry`]:
 /// with a 4 800-token budget the effective floor is ≥ 600 tokens.
@@ -823,23 +867,31 @@ pub const DEFAULT_USER_NOTE_TOKENS: usize = 1_500;
 
 /// Compute per-field token budgets from the actual serving context window size.
 ///
-/// A [`ESTIMATOR_SAFETY_FACTOR`] is applied before deriving the text budget so
-/// the character-level estimator never risks a real BPE token overflow:
-/// `safe_ctx = floor(ctx × 0.5)`, then `text_budget = safe_ctx.saturating_sub(3_300)`.
+/// The safety factor is derived dynamically from `text_sample` via
+/// [`compute_dynamic_safety_factor`]: prose-dominant text (≥85 % ASCII
+/// alphanumeric/whitespace) uses 0.8, recovering nearly double the token
+/// budget compared to the conservative 0.5 fallback for symbol-dense content.
+///
+/// Derivation: `safe_ctx = floor(ctx × factor)`, then
+/// `text_budget = safe_ctx.saturating_sub(3_300)`.
 /// The note budget is not safety-factored — it is separately byte-capped and
 /// bounded at 1 500 tokens — so it uses the raw `ctx`.
 ///
 /// When `ctx_tokens` is `None` (unknown context), uses
 /// [`DEFAULT_CONTEXT_FALLBACK`] so the derived budgets match the compile-time
 /// defaults.
-pub fn compute_token_budgets(ctx_tokens: Option<usize>) -> (usize, usize) {
+pub fn compute_token_budgets(
+    ctx_tokens: Option<usize>,
+    text_sample: Option<&str>,
+) -> (usize, usize) {
     let ctx = ctx_tokens.unwrap_or(DEFAULT_CONTEXT_FALLBACK);
-    // Apply safety factor so the heuristic estimator never risks a real overflow
-    let safe_ctx = (ctx as f64 * ESTIMATOR_SAFETY_FACTOR) as usize;
+    let factor = compute_dynamic_safety_factor(text_sample);
+    let safe_ctx = (ctx as f64 * factor) as usize;
     let text_budget = safe_ctx.saturating_sub(3_300);
     let note_budget = DEFAULT_USER_NOTE_TOKENS.min(ctx.saturating_sub(1_800));
     tracing::debug!(
         resolved_ctx = ctx,
+        safety_factor = factor,
         safe_ctx,
         text_budget,
         note_budget,
@@ -1926,7 +1978,7 @@ mod tests {
     #[test]
     fn compute_token_budgets_defaults_to_64k_fallback() {
         // None (unknown context) → uses DEFAULT_CONTEXT_FALLBACK = 65536.
-        let (text_budget, note_budget) = compute_token_budgets(None);
+        let (text_budget, note_budget) = compute_token_budgets(None, None);
         // floor(65536 * 0.5) - 3300 = 29468
         assert_eq!(
             text_budget,
@@ -1938,7 +1990,7 @@ mod tests {
     #[test]
     fn compute_token_budgets_respects_known_context() {
         // Known context of 128k → large budgets, safety-factored.
-        let (text_budget, note_budget) = compute_token_budgets(Some(131_072));
+        let (text_budget, note_budget) = compute_token_budgets(Some(131_072), None);
         assert_eq!(
             text_budget,
             (131_072.0 * ESTIMATOR_SAFETY_FACTOR) as usize - 3_300
@@ -1949,7 +2001,7 @@ mod tests {
     #[test]
     fn compute_token_budgets_small_context_clamps() {
         // A very small context window (4096 * 0.5 = 2048 leaves no text budget).
-        let (text_budget, note_budget) = compute_token_budgets(Some(4_096));
+        let (text_budget, note_budget) = compute_token_budgets(Some(4_096), None);
         assert_eq!(text_budget, 0);
         assert!(note_budget > 0);
         assert!(note_budget <= 1_500);
@@ -1958,14 +2010,14 @@ mod tests {
     #[test]
     fn compute_token_budgets_saturating_no_underflow() {
         // Context smaller than the subtract calls saturates to 0.
-        let (text_budget, note_budget) = compute_token_budgets(Some(100));
+        let (text_budget, note_budget) = compute_token_budgets(Some(100), None);
         assert_eq!(text_budget, 0);
         assert_eq!(note_budget, 0);
     }
 
     #[test]
     fn compute_budgets_applies_safety_factor() {
-        let (text_budget, note_budget) = compute_token_budgets(Some(65_536));
+        let (text_budget, note_budget) = compute_token_budgets(Some(65_536), None);
         // 65536 * 0.5 - 3300 = 29,468
         assert!(
             text_budget > 25_000 && text_budget < 35_000,

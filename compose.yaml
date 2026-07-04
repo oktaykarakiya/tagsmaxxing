@@ -59,6 +59,8 @@ services:
       # Omit to skip auto-seeding (create the first tenant manually).
       BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-admin@local.kb}
       BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-admin}
+      # AI Assistant — path to the OpenCode CLI binary.
+      OPENCODE_BIN: ${OPENCODE_BIN:-}
       # Config file path (used by both `serve` and CLI subcommands).
       KB_CONFIG: /etc/kb/config.toml
       # Logging (plan §18).
@@ -96,11 +98,13 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:9999/health"]
-      interval: 30s
+      interval: 5s
       timeout: 3s
       start_period: 10s
       retries: 3
     restart: unless-stopped
+    mem_limit: "2g"
+    mem_reservation: "1g"
 
   # ── Dedicated ingest workers (P15-T12, plan §16) ───────────────────────────────
   # OPTIONAL: `kb serve` already embeds a worker pool ([worker].enabled), so the
@@ -278,6 +282,8 @@ services:
     depends_on:
       - app
     restart: unless-stopped
+    mem_limit: "256m"
+    mem_reservation: "64m"
 
   # ── PgBouncer connection pooler (plan §22, P8-T8) ──────────────────────────
   #
@@ -320,7 +326,7 @@ services:
       LLAMA_ARG_HOST: "0.0.0.0"
       LLAMA_ARG_PORT: "8080"
       LLAMA_ARG_N_GPU_LAYERS: ${LLAMA_N_GPU_LAYERS:-99}
-      LLAMA_ARG_CTX_SIZE: ${LLAMA_CTX_SIZE:-8192}
+      LLAMA_ARG_CTX_SIZE: ${LLAMA_CTX_SIZE:-65536}
     # CDI device mount for Podman GPU access (nvidia.com/gpu=all).
     # To use a specific GPU index: `nvidia.com/gpu=0` or `nvidia.com/gpu=0,1`.
     devices:
@@ -332,6 +338,7 @@ services:
       start_period: 30s
       retries: 3
     restart: unless-stopped
+    mem_limit: "48g"
 
   # ── whisper.cpp server (GPU profile) — OpenAI-compatible audio transcription ──
   whisper-server:
@@ -352,6 +359,7 @@ services:
       start_period: 15s
       retries: 3
     restart: unless-stopped
+    mem_limit: "4g"
 
 volumes:
   pgdata:

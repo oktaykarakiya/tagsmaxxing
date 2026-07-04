@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-
+#![allow(clippy::empty_line_after_doc_comments)]
 //! Web UI route handlers: login page, register page, logout, root redirect,
 //! and the search page with HTMX results (P6-T5).
 //!
@@ -38,12 +38,24 @@ use serde::Deserialize;
 use crate::AppState;
 use crate::AuthUser;
 use crate::handlers::auth::{LoginRequest, RegisterRequest};
+use kb_core::store::Store;
 
 use super::csrf;
 use super::templates::{
     KindFilter, LoginPage, RegisterPage, SearchPage, SearchResultHit, SearchResultsPartial,
     UploadPage,
 };
+
+/// SSE stream response type used by [`search_stream`].
+type SseResponse = axum::response::Sse<
+    std::pin::Pin<
+        Box<
+            dyn tokio_stream::Stream<
+                    Item = Result<axum::response::sse::Event, std::convert::Infallible>,
+                > + Send,
+        >,
+    >,
+>;
 
 // ── Form data types (deserialized from application/x-www-form-urlencoded) ──
 
@@ -450,8 +462,78 @@ pub async fn search_page(State(state): State<Arc<AppState>>) -> Result<Response,
 /// This handler is called by HTMX when the search form is submitted. It validates
 /// the CSRF token, runs the retrieval pipeline, and renders a
 /// [`SearchResultsPartial`] fragment that HTMX swaps into the `#results` container.
-///
-/// If the pipeline is not configured or the search fails, an error fragment is returned.
+
+/// Batch-fetch canonical tag names for up to `doc_ids.len()` documents.
+async fn fetch_tags_batch(
+    pg_store: &Arc<kb_store::PgStore>,
+    tenant_id: i64,
+    doc_ids: &[i64],
+) -> std::collections::HashMap<i64, Vec<String>> {
+    pg_store
+        .get_tags_for_documents(tenant_id, doc_ids)
+        .await
+        .unwrap_or_default()
+}
+
+/// Wrap query-term matches in a snippet with <mark> tags (HTML-safe).
+fn highlight_snippet(snippet: &str, query_text: &str) -> String {
+    if query_text.is_empty() || snippet.is_empty() {
+        return html_escape_simple(snippet);
+    }
+    let safe = html_escape_simple(snippet);
+    let query_lower = query_text.to_lowercase();
+    let haystack = safe.to_lowercase();
+    let mut result = String::with_capacity(safe.len() + 32);
+    let mut last = 0;
+    let mut pos = 0;
+    let words: Vec<&str> = query_lower
+        .split_whitespace()
+        .filter(|w| w.len() > 1)
+        .collect();
+    if words.is_empty() {
+        return safe;
+    }
+    while pos < haystack.len() {
+        let mut earliest: Option<(usize, usize)> = None;
+        for &word in &words {
+            if let Some(idx) = haystack[pos..].find(word) {
+                let abs = pos + idx;
+                if earliest.is_none_or(|(a, _)| abs < a) {
+                    earliest = Some((abs, word.len()));
+                }
+            }
+        }
+        if let Some((p, len)) = earliest {
+            result.push_str(&safe[last..p]);
+            result.push_str("<mark>");
+            result.push_str(&safe[p..p + len]);
+            result.push_str("</mark>");
+            pos = p + len;
+            last = pos;
+        } else {
+            break;
+        }
+    }
+    result.push_str(&safe[last..]);
+    result
+}
+
+/// Simple HTML entity encoding for text content (<, >, &, ").
+fn html_escape_simple(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+#[allow(clippy::empty_line_after_doc_comments)]
 pub async fn search_submit(
     State(state): State<Arc<AppState>>,
     Extension(auth_user): Extension<AuthUser>,
@@ -573,19 +655,29 @@ pub async fn search_submit(
         }
     };
 
-    let result_hits: Vec<SearchResultHit> = hits
-        .into_iter()
-        .map(|h| SearchResultHit {
-            document_id: h.document_id,
-            score: h.score,
-            title: h.title,
-            snippet: h.snippet,
-            file_id: h.file_id,
-            page_no: h.page_no,
-            ts_offset: h.ts_offset,
-            kind: h.kind,
-        })
-        .collect();
+    let result_hits: Vec<SearchResultHit> = {
+        // Fetch tags for all result documents in one batch to avoid N+1.
+        let doc_ids: Vec<i64> = hits.iter().map(|h| h.document_id).collect();
+        let tags_map = fetch_tags_batch(&state.pg_store, auth_user.tenant_id, &doc_ids).await;
+        hits.into_iter()
+            .map(|h| {
+                let tags = tags_map.get(&h.document_id).cloned().unwrap_or_default();
+                let hl = highlight_snippet(&h.snippet, &query_text);
+                SearchResultHit {
+                    document_id: h.document_id,
+                    score: h.score,
+                    title: h.title,
+                    snippet: h.snippet,
+                    file_id: h.file_id,
+                    page_no: h.page_no,
+                    ts_offset: h.ts_offset,
+                    kind: h.kind,
+                    highlighted_snippet: hl,
+                    tags,
+                }
+            })
+            .collect()
+    };
 
     // Render an in-page "basic results" notice when retrieval degraded to keyword-only
     // (AI search budget reached / backend down), in addition to the X-Search-Mode header
@@ -609,6 +701,236 @@ fn with_search_mode_header(mut resp: Response, mode: kb_pipeline::SearchMode) ->
         axum::http::HeaderValue::from_static(mode.as_str()),
     );
     resp
+}
+
+// ── GET /search/stream (SSE progressive search) ────────────────────────────
+
+/// `GET /search/stream?q=...&kind=...&tag=...` — progressive search via SSE.
+///
+/// Streams two HTML events (plus done) so the browser can paint keyword-only
+/// results before the full AI-augmented pipeline finishes:
+///
+/// 1. `event: keyword` — BM25 keyword results (no AI wait, ~50ms)
+/// 2. `event: final`   — full hybrid (embed + vector + RRF + rerank) results
+/// 3. `event: done`    — close the connection
+///
+/// Each event's `data` payload is the rendered [`SearchResultsPartial`] HTML
+/// fragment, swapped into `#results` by the HTMX SSE extension.
+pub async fn search_stream(
+    State(state): State<Arc<AppState>>,
+    Extension(auth_user): Extension<AuthUser>,
+    axum::extract::Query(params): axum::extract::Query<StreamParams>,
+) -> SseResponse {
+    use axum::response::sse::Event;
+    use std::str::FromStr;
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(4);
+
+    let query_text = params.q.trim().to_string();
+    if query_text.is_empty() {
+        // Empty query: send empty results immediately, no spawned task.
+        let tx2 = tx.clone();
+        tokio::spawn(async move {
+            let partial = SearchResultsPartial {
+                hits: vec![],
+                query: String::new(),
+                degraded: false,
+            };
+            let html = partial.render().unwrap_or_default();
+            tx2.send(Ok(Event::default().event("keyword").data(html)))
+                .await
+                .ok();
+            tx2.send(Ok(Event::default().event("done").data("")))
+                .await
+                .ok();
+        });
+        return stream_response(rx);
+    }
+
+    let retrieval = match state.retrieval_pipeline.as_ref() {
+        Some(r) => r.clone(),
+        None => {
+            let tx2 = tx.clone();
+            tokio::spawn(async move {
+                let partial = SearchResultsPartial {
+                    hits: vec![],
+                    query: query_text,
+                    degraded: true,
+                };
+                let html = partial.render().unwrap_or_default();
+                tx2.send(Ok(Event::default().event("keyword").data(html)))
+                    .await
+                    .ok();
+                tx2.send(Ok(Event::default().event("done").data("")))
+                    .await
+                    .ok();
+            });
+            return stream_response(rx);
+        }
+    };
+
+    let store = state.pg_store.clone();
+    let query = query_text.clone();
+    let kind_strs: Vec<String> = params
+        .kind
+        .as_deref()
+        .unwrap_or("")
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let kinds: Vec<kb_core::kind::DocKind> = kind_strs
+        .iter()
+        .filter_map(|k| kb_core::kind::DocKind::from_str(k).ok())
+        .collect();
+    let tags: Vec<String> = params
+        .tag
+        .as_deref()
+        .unwrap_or("")
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    let local_only =
+        crate::handlers::resolve_local_only(&state.pg_store, auth_user.tenant_id).await;
+    let degrade = crate::handlers::search::budget_check_forces_degrade(
+        state
+            .pg_store
+            .check_plan_token_budget_rollup(auth_user.tenant_id)
+            .await,
+    );
+    let tenant_id = auth_user.tenant_id;
+    let user_id = auth_user.user_id;
+
+    tokio::spawn(async move {
+        // ── Phase 1: keyword-only results (~35ms, no AI) ──────────────
+        let kw_query = kb_core::query::Query {
+            text: query.clone(),
+            filters: kb_core::query::QueryFilters {
+                kinds: kinds.clone(),
+                tags: tags.clone(),
+                ..Default::default()
+            },
+            top_k: 20,
+        };
+        if let Ok(hits) = Store::keyword_search(store.as_ref(), tenant_id, &kw_query).await {
+            let doc_ids: Vec<i64> = hits.iter().map(|h| h.document_id).collect();
+            let tags_map = fetch_tags_batch(&store, tenant_id, &doc_ids).await;
+            let result_hits: Vec<SearchResultHit> = hits
+                .into_iter()
+                .map(|h| {
+                    let tags = tags_map.get(&h.document_id).cloned().unwrap_or_default();
+                    let hl = highlight_snippet(&h.snippet, &query);
+                    SearchResultHit {
+                        document_id: h.document_id,
+                        score: h.score,
+                        title: h.title,
+                        snippet: h.snippet,
+                        file_id: h.file_id,
+                        page_no: h.page_no,
+                        ts_offset: h.ts_offset,
+                        kind: h.kind,
+                        tags,
+                        highlighted_snippet: hl,
+                    }
+                })
+                .collect();
+            let partial = SearchResultsPartial {
+                hits: result_hits,
+                query: query.clone(),
+                degraded: true,
+            };
+            if let Ok(html) = partial.render()
+                && tx
+                    .send(Ok(Event::default().event("keyword").data(html)))
+                    .await
+                    .is_err()
+            {
+                return;
+            }
+        }
+
+        // ── Phase 2: full AI pipeline (embed + hybrid + rerank) ────────
+        let full_query = kb_core::query::Query {
+            text: query.clone(),
+            filters: kb_core::query::QueryFilters {
+                kinds,
+                tags,
+                ..Default::default()
+            },
+            top_k: 20,
+        };
+        if let Ok((hits, mode)) = retrieval
+            .retrieve(tenant_id, Some(user_id), &full_query, local_only, degrade)
+            .await
+        {
+            let doc_ids: Vec<i64> = hits.iter().map(|h| h.document_id).collect();
+            let tags_map = fetch_tags_batch(&store, tenant_id, &doc_ids).await;
+            let degraded = matches!(mode, kb_pipeline::SearchMode::Keyword);
+            let result_hits: Vec<SearchResultHit> = hits
+                .into_iter()
+                .map(|h| {
+                    let tags = tags_map.get(&h.document_id).cloned().unwrap_or_default();
+                    let hl = highlight_snippet(&h.snippet, &query);
+                    SearchResultHit {
+                        document_id: h.document_id,
+                        score: h.score,
+                        title: h.title,
+                        snippet: h.snippet,
+                        file_id: h.file_id,
+                        page_no: h.page_no,
+                        ts_offset: h.ts_offset,
+                        kind: h.kind,
+                        tags,
+                        highlighted_snippet: hl,
+                    }
+                })
+                .collect();
+            let partial = SearchResultsPartial {
+                hits: result_hits,
+                query: query.clone(),
+                degraded,
+            };
+            if let Ok(html) = partial.render()
+                && tx
+                    .send(Ok(Event::default().event("final").data(html)))
+                    .await
+                    .is_err()
+            {
+                return; // browser disconnected — abort
+            }
+        }
+        tx.send(Ok(Event::default().event("done").data("")))
+            .await
+            .ok();
+    });
+
+    stream_response(rx)
+}
+
+/// Build an SSE response from a receiver stream (helper to reduce boilerplate).
+fn stream_response(
+    rx: tokio::sync::mpsc::Receiver<Result<axum::response::sse::Event, std::convert::Infallible>>,
+) -> SseResponse {
+    let stream: std::pin::Pin<
+        Box<
+            dyn tokio_stream::Stream<
+                    Item = Result<axum::response::sse::Event, std::convert::Infallible>,
+                > + Send,
+        >,
+    > = Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx));
+    axum::response::Sse::new(stream)
+}
+
+/// Query params for the SSE search stream.
+#[derive(serde::Deserialize)]
+pub(crate) struct StreamParams {
+    q: String,
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    tag: Option<String>,
 }
 
 // ── GET /upload ─────────────────────────────────────────────────────────────────
@@ -1688,6 +2010,8 @@ mod tests {
                 page_no: None,
                 ts_offset: None,
                 kind: None,
+                highlighted_snippet: String::new(),
+                tags: vec![],
             }],
             query: "q".into(),
             degraded: true,
@@ -1722,6 +2046,8 @@ mod tests {
                 page_no: None,
                 ts_offset: None,
                 kind: None,
+                highlighted_snippet: String::new(),
+                tags: vec![],
             }],
             query: "q".into(),
             degraded: false,

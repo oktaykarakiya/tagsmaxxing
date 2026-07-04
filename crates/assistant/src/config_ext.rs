@@ -33,6 +33,40 @@ pub struct AssistantConfig {
 
 impl Default for AssistantConfig {
     fn default() -> Self {
+        // Read the TOML-based config, then overlay env vars (hot-swap rule).
+        let toml = kb_config::Assistant::default();
+        Self::from_toml_with_env(&toml)
+    }
+}
+
+impl AssistantConfig {
+    /// Build from a TOML config section, with env-var overrides.
+    pub fn from_toml_with_env(toml: &kb_config::Assistant) -> Self {
+        let opencode_bin = toml
+            .opencode_bin
+            .clone()
+            .or_else(|| std::env::var("OPENCODE_BIN").ok().filter(|v| !v.is_empty()));
+        let model_ref = toml
+            .model_ref
+            .clone()
+            .filter(|v| !v.is_empty())
+            .or_else(|| {
+                std::env::var("ASSISTANT_MODEL_REF")
+                    .ok()
+                    .filter(|v| !v.is_empty())
+            })
+            .unwrap_or_default();
+        Self {
+            opencode_bin,
+            prompt_timeout_secs: toml.prompt_timeout_secs.unwrap_or(300),
+            model_ref,
+            context_budget_pct: toml.context_budget_pct.unwrap_or(85),
+            ..Self::default_base()
+        }
+    }
+
+    /// Base default values shared by all constructors.
+    fn default_base() -> Self {
         Self {
             opencode_bin: None,
             prompt_timeout_secs: 300,

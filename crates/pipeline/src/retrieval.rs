@@ -21,6 +21,31 @@ use kb_llm::LlmError;
 
 use crate::embedder::ChunkEmbedder;
 
+// ── Query-embedding cache (Phase 1d) ─────────────────────────────────────────
+
+use std::collections::HashMap;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+#[allow(clippy::type_complexity)]
+static EMBED_CACHE: std::sync::LazyLock<Mutex<HashMap<String, (Vec<f32>, Instant)>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn cached_embed(key: &str) -> Option<Vec<f32>> {
+    let map = EMBED_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    map.get(key)
+        .filter(|(_, at)| at.elapsed() < Duration::from_secs(60))
+        .map(|(v, _)| v.clone())
+}
+
+fn cache_embed(key: String, embedding: Vec<f32>) {
+    let mut map = EMBED_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if map.len() >= 256 {
+        map.retain(|_, (_, at)| at.elapsed() < Duration::from_secs(60));
+    }
+    map.insert(key, (embedding, Instant::now()));
+}
+
 /// Which search path actually produced a result set (plan §8, §29, P14-T5).
 ///
 /// Surfaced to callers so the API layer can stamp the `X-Search-Mode` response header
@@ -197,13 +222,21 @@ impl RetrievalPipeline {
         query: &Query,
         local_only: bool,
     ) -> anyhow::Result<Vec<Hit>> {
-        // 1. Embed query text (metered to tenant+user on the search read path).
-        let query_embedding = self
-            .embedder
-            .embed_query(&query.text, tenant_id, user_id, local_only)
-            .await?;
+        // 1. Embed query text — check the LRU cache first (Phase 1d).
+        let cache_key = query.text.trim().to_lowercase();
+        let query_embedding = if let Some(cached) = cached_embed(&cache_key) {
+            cached
+        } else {
+            let vec = self
+                .embedder
+                .embed_query(&query.text, tenant_id, user_id, local_only)
+                .await?;
+            cache_embed(cache_key, vec.clone());
+            vec
+        };
 
-        // 2. Hybrid search (vector + keyword) with RRF fusion + document rollup.
+        // 2. Hybrid search (vector + keyword — already parallelised at the DB
+        //    layer) with RRF fusion + document rollup.
         let hits = self
             .store
             .hybrid_search(tenant_id, query, &query_embedding)
@@ -227,15 +260,8 @@ impl RetrievalPipeline {
             hits.len()
         );
 
-        // Blend RRF hybrid-search scores with reranker scores.
-        // RRF encodes keyword (BM25) + vector (cosine) signal that the
-        // cross-encoder may not fully capture on its own, especially with
-        // quantised models. Blending preserves the exact-match term boost
-        // while still deferring to the reranker for semantic relevance.
         const RRF_BLEND_WEIGHT: f32 = 0.2;
 
-        // Normalise RRF scores to [0, 1] so they are range-compatible with
-        // the reranker scores before blending.
         let max_rrf = hits.iter().map(|h| h.score).fold(0.0_f32, f32::max);
         let norm = if max_rrf > 0.0 { 1.0 / max_rrf } else { 1.0 };
 
@@ -252,7 +278,6 @@ impl RetrievalPipeline {
 
         rescored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-        // 4. Return top_k.
         let final_hits: Vec<Hit> = rescored
             .into_iter()
             .take(query.top_k)

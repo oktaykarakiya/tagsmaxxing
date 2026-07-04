@@ -38,6 +38,17 @@ pub struct PendingIngest {
     pub reused: bool,
 }
 
+/// Snapshot of the latest ingest job's retry state surfaced to the document
+/// detail page so users see retry progress instead of a static badge.
+pub struct PendingJobInfo {
+    /// Total attempts so far (0 = first attempt in progress, 1+ = retrying).
+    pub attempts: i32,
+    /// When the job becomes eligible again (set by exponential backoff).
+    pub run_after: Option<chrono::DateTime<chrono::Utc>>,
+    /// The last recorded error message, if any.
+    pub last_error: Option<String>,
+}
+
 impl PgStore {
     /// Stage an upload as a `pending` document + file rows in one tenant
     /// transaction, ready for a queued worker to process (P15-T1).
@@ -402,32 +413,49 @@ impl PgStore {
         Ok(n)
     }
 
-    /// The latest ingest job's `last_error` for a document (failure UX, P15-T9).
+    /// The latest ingest job's `last_error`, `attempts`, and `run_after` for a
+    /// document (failure UX, P15-T9 + retry-progress surfacing).
     ///
     /// Admin pool with an explicit `tenant_id` filter (§31.5 — jobs sit
     /// outside RLS); callers must already have proven document ownership via
-    /// an RLS-scoped read. Returns `None` when the document has no ingest job
-    /// or the job recorded no error.
+    /// an RLS-scoped read. Returns `None` when the document has no ingest job.
     ///
     /// # Errors
     /// Returns an error if the database is not connected or the query fails.
+    pub async fn latest_ingest_job_info(
+        &self,
+        tenant_id: i64,
+        document_id: i64,
+    ) -> anyhow::Result<Option<PendingJobInfo>> {
+        let pool = self.pool()?;
+        let row: Option<(i32, Option<chrono::DateTime<chrono::Utc>>, Option<String>)> =
+            sqlx::query_as(
+                "SELECT attempts, run_after, last_error FROM jobs \
+                 WHERE tenant_id = $1 AND document_id = $2 AND kind = 'ingest' \
+                 ORDER BY id DESC LIMIT 1",
+            )
+            .bind(tenant_id)
+            .bind(document_id)
+            .fetch_optional(&pool)
+            .await
+            .context("failed to read latest ingest job info")?;
+        Ok(row.map(|(attempts, run_after, last_error)| PendingJobInfo {
+            attempts,
+            run_after,
+            last_error,
+        }))
+    }
+
+    /// Convenience: the latest ingest job's `last_error` for a document.
     pub async fn latest_ingest_job_error(
         &self,
         tenant_id: i64,
         document_id: i64,
     ) -> anyhow::Result<Option<String>> {
-        let pool = self.pool()?;
-        let row: Option<(Option<String>,)> = sqlx::query_as(
-            "SELECT last_error FROM jobs \
-             WHERE tenant_id = $1 AND document_id = $2 AND kind = 'ingest' \
-             ORDER BY id DESC LIMIT 1",
-        )
-        .bind(tenant_id)
-        .bind(document_id)
-        .fetch_optional(&pool)
-        .await
-        .context("failed to read latest ingest job error")?;
-        Ok(row.and_then(|(e,)| e))
+        Ok(self
+            .latest_ingest_job_info(tenant_id, document_id)
+            .await?
+            .and_then(|info| info.last_error))
     }
 
     /// Requeue a document's terminal ingest job and reset the document for

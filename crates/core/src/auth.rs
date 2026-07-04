@@ -281,6 +281,31 @@ pub fn validate_password_strength(password: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
+// ── Authenticated request context ────────────────────────────────────────────
+
+/// The authenticated user context, injected into request extensions by the API
+/// layer's auth middleware and read by downstream handlers via
+/// `Extension<AuthUser>`.
+///
+/// Lives in `kb-core` (not `kb-api`) so sibling route crates — e.g.
+/// `kb-assistant`, whose router is built *by* `kb-api` — can extract the same
+/// request extension without a circular crate dependency.
+///
+/// Handlers **must not** be reachable without the auth middleware layer —
+/// a missing extension is a programming error, not an unauthenticated user
+/// (the middleware gates access).
+#[derive(Debug, Clone, Copy)]
+pub struct AuthUser {
+    /// The tenant this request is scoped to.
+    pub tenant_id: i64,
+    /// The authenticated user's id.
+    pub user_id: i64,
+    /// The user's role within the tenant.
+    pub role: crate::user::UserRole,
+    /// Whether the user's email has been verified (P12-T2).
+    pub email_verified: bool,
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

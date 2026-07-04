@@ -114,8 +114,10 @@ pub(crate) struct SearchResultHit {
     pub score: f32,
     /// Document title, if set.
     pub title: Option<String>,
-    /// Winning chunk snippet.
+    /// Winning chunk snippet with query-term highlighting.
     pub snippet: String,
+    /// Snippet with query terms wrapped in <mark> tags (rendered with |safe).
+    pub highlighted_snippet: String,
     /// File id for deep-link provenance.
     pub file_id: i64,
     /// Page number, if applicable.
@@ -124,6 +126,8 @@ pub(crate) struct SearchResultHit {
     pub ts_offset: Option<f64>,
     /// DocKind string for the kind badge.
     pub kind: Option<String>,
+    /// Canonical tag names attached to the document.
+    pub tags: Vec<String>,
 }
 
 /// `POST /search` HTMX fragment — rendered inside the `#results` container
@@ -187,6 +191,10 @@ pub(crate) struct DocumentDetailPage {
     /// Sanitized last ingest error (only populated when `status == "failed"`,
     /// P15-T9); empty otherwise.
     pub last_error: String,
+    /// Number of retry attempts so far (0 if not yet retried).
+    pub ingest_attempts: i32,
+    /// Human-readable next retry time (Some if a retry is scheduled).
+    pub next_retry_at: Option<String>,
 }
 
 /// A tag chip rendered on the document detail page (P6-T7).

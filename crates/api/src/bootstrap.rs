@@ -66,6 +66,14 @@ pub async fn bootstrap_seed(pg_store: &PgStore) -> anyhow::Result<()> {
         }
     };
 
+    // Warn if default credentials are detected (production safety gate).
+    if email == "admin@local.kb" || password == "admin" {
+        tracing::warn!(
+            "BOOTSTRAP_ADMIN_EMAIL and/or BOOTSTRAP_ADMIN_PASSWORD are set to well-known defaults. \
+             For production deployments, change these to unique credentials."
+        );
+    }
+
     let slug = std::env::var("BOOTSTRAP_TENANT_SLUG")
         .ok()
         .filter(|s| !s.is_empty())

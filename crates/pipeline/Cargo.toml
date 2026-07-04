@@ -22,7 +22,8 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 tracing = { workspace = true }
-tokio = { workspace = true, features = ["sync", "time", "process"] }
+tokio = { workspace = true, features = ["sync", "time", "process", "rt"] }
+futures = { workspace = true }
 tree_magic_mini = { workspace = true }
 zip = { workspace = true }
 tempfile = { workspace = true }

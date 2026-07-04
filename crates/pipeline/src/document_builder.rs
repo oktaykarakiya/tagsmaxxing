@@ -110,7 +110,7 @@ impl DocumentBuilder {
     ) -> (Document, Vec<FileRecord>) {
         let page = PageInput {
             bytes,
-            page_label: None,
+            page_label: path,
             path,
         };
         Self::build_multi(tenant_id, &[page], user_note)
@@ -729,7 +729,7 @@ mod tests {
 
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].page_no, 1);
-        assert_eq!(files[0].page_label, None);
+        assert_eq!(files[0].page_label.as_deref(), Some("hello.txt"));
         assert_eq!(files[0].tenant_id, 1);
         assert_eq!(files[0].document_id, 0);
         assert_eq!(files[0].status, ProcessingStatus::Pending);

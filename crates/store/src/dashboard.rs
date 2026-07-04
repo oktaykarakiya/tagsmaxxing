@@ -178,7 +178,7 @@ impl PgStore {
             "SELECT COALESCE(SUM(COALESCE(prompt_tokens,0) + COALESCE(completion_tokens,0)), 0)::BIGINT \
              FROM usage_events \
              WHERE tenant_id = $1 \
-               AND date_trunc('month', created_at AT TIME ZONE 'UTC') = date_trunc('month', now() AT TIME ZONE 'UTC')",
+               AND created_at >= date_trunc('month', now() AT TIME ZONE 'UTC')",
         )
         .bind(tenant_id)
         .fetch_one(&mut *tx)
@@ -217,8 +217,8 @@ impl PgStore {
                     COALESCE(SUM(COALESCE(ue.prompt_tokens,0) + COALESCE(ue.completion_tokens,0)), 0)::BIGINT AS total \
              FROM usage_events ue \
              LEFT JOIN users u ON u.id = ue.user_id AND u.tenant_id = ue.tenant_id \
-             WHERE ue.tenant_id = $1 \
-               AND date_trunc('month', ue.created_at AT TIME ZONE 'UTC') = date_trunc('month', now() AT TIME ZONE 'UTC') \
+               WHERE ue.tenant_id = $1 \
+                AND ue.created_at >= date_trunc('month', now() AT TIME ZONE 'UTC') \
              GROUP BY ue.user_id, u.email \
              ORDER BY total DESC, ue.user_id ASC NULLS LAST",
         )
@@ -264,8 +264,8 @@ impl PgStore {
                     COALESCE(SUM(prompt_tokens), 0)::BIGINT, \
                     COALESCE(SUM(completion_tokens), 0)::BIGINT \
              FROM usage_events \
-             WHERE tenant_id = $1 \
-               AND date_trunc('month', created_at AT TIME ZONE 'UTC') = date_trunc('month', now() AT TIME ZONE 'UTC') \
+              WHERE tenant_id = $1 \
+                AND created_at >= date_trunc('month', now() AT TIME ZONE 'UTC') \
              GROUP BY day \
              ORDER BY day",
         )

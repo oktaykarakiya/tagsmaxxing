@@ -69,6 +69,27 @@ pub struct Config {
     /// Upload-ingestion mode + queue admission bounds (plan §16, P15-T4).
     #[serde(default, rename = "ingest")]
     pub ingest: Ingest,
+    /// AI assistant settings (opencode binary, model, budgets).
+    #[serde(default, rename = "assistant")]
+    pub assistant: Assistant,
+}
+
+/// AI assistant configuration section.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Assistant {
+    /// Path to the `opencode` CLI binary. When empty, read from `OPENCODE_BIN` env var.
+    #[serde(default)]
+    pub opencode_bin: Option<String>,
+    /// Model reference for agent tasks, e.g. `"local/qwen-35b"`.
+    /// When empty, read from `ASSISTANT_MODEL_REF` env var.
+    #[serde(default)]
+    pub model_ref: Option<String>,
+    /// Maximum subprocess runtime per prompt in seconds. Default 300.
+    #[serde(default)]
+    pub prompt_timeout_secs: Option<u64>,
+    /// Max fraction (percent) of context window for augmented prompts. Default 85.
+    #[serde(default)]
+    pub context_budget_pct: Option<u8>,
 }
 
 /// Durable-storage configuration.
@@ -459,7 +480,7 @@ pub struct Worker {
     #[serde(default = "default_worker_lease_secs")]
     pub lease_secs: u64,
     /// Base retry backoff in milliseconds; attempt *n* waits
-    /// `min_backoff_ms × 2^n`. The 30 s default spreads a 5-attempt budget
+    /// `min_backoff_ms × 2^(n-1)`. The 30 s default spreads a 5-attempt budget
     /// over ~15 minutes so a transient backend outage or cooldown window
     /// cannot burn the whole budget in seconds (P15-T9). Deterministic
     /// failures skip retries entirely (permanent-error classification).

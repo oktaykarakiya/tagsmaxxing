@@ -34,10 +34,13 @@ echo "$(date -Is) model watchdog started (interval ${INTERVAL}s)"
 while true; do
   for port in 8080 8081 8082; do
     if ! probe "$port"; then
-      echo "$(date -Is) :$port dead — restarting models via start-models.sh"
-      rotate_log text 8080
-      rotate_log embed 8081
-      bash "$SCRIPT_DIR/start-models.sh" start --no-fan --no-whisper || true
+      echo "$(date -Is) :$port dead — restarting single model via start-models.sh"
+      case "$port" in
+        8080) rotate_log text 8080 ;;
+        8081) rotate_log embed 8081 ;;
+        8082) rotate_log rerank 8082 ;;
+      esac
+      bash "$SCRIPT_DIR/start-models.sh" restart "$port" || true
       break
     fi
   done

@@ -43,6 +43,7 @@ arc-swap = { workspace = true }
 async-trait = { workspace = true }
 hmac = { workspace = true }
 uuid = { workspace = true }
+tokio-stream = { workspace = true }
 
 [dev-dependencies]
 kb-mock-backend = { workspace = true }

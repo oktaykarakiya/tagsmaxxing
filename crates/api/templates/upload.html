@@ -4,7 +4,7 @@
 {% block title %}Upload{% endblock %}
 
 {% block head_extra %}
-<script src="https://unpkg.com/htmx.org@2.0.4"></script>
+<script src="/static/htmx.min.js"></script>
 {% endblock %}
 
 {% block content %}
@@ -222,14 +222,14 @@
                  formatBytes(total) + ' total)</span></h3>';
 
       selectedFiles.forEach((f, idx) => {
-          html += '<div class="flex items-center gap-3 rounded-lg border border-gray-200 bg-white p-3 shadow-sm">';
+                html += '<div class="flex items-center gap-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-3 shadow-sm">';
 
           // Thumbnail
           if (f.objectUrl) {
               html += '<img src="' + f.objectUrl + '" alt="" ' +
                       'class="h-12 w-12 rounded object-cover shrink-0 border border-gray-100">';
           } else {
-              html += '<div class="h-12 w-12 rounded bg-gray-100 flex items-center justify-center shrink-0 border border-gray-200">' +
+              html += '<div class="h-12 w-12 rounded bg-gray-100 dark:bg-gray-800 flex items-center justify-center shrink-0 border border-gray-200 dark:border-gray-700">' +
                       '<svg class="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">' +
                       '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" ' +
                       'd="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/>' +
@@ -301,7 +301,7 @@
   }
 
   // ── Form submission ────────────────────────────────────────────────────────
-  async function handleUploadSubmit(e) {
+  function handleUploadSubmit(e) {
       e.preventDefault();
 
       if (selectedFiles.length === 0) return;
@@ -343,56 +343,67 @@
           formData.append('files', f.file, f.name);
       });
 
-      // Submit to the web upload endpoint
-      try {
-          const resp = await fetch('/upload', {
-              method: 'POST',
-              body: formData
-          });
+      // Submit to the web upload endpoint via XHR for real progress tracking.
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/upload');
 
-          if (!resp.ok) {
-              const errData = await resp.json().catch(() => ({}));
-              showUploadError(errData.message || 'Upload failed (' + resp.status + ')');
-              return;
+      xhr.upload.onprogress = function(e) {
+          if (e.lengthComputable) {
+              const pct = Math.round((e.loaded / e.total) * 100);
+              bar.style.width = pct + '%';
+              document.getElementById('progress-text').textContent = 'Uploading\u2026 ' + pct + '%';
           }
+      };
 
-          const data = await resp.json();
-          const docId = data.document_id;
-          const jobId = data.job_id;
+      xhr.onload = function() {
+          if (xhr.status >= 200 && xhr.status < 300) {
+              try {
+                  const data = JSON.parse(xhr.responseText);
+                  const docId = data.document_id;
+                  const jobId = data.job_id;
 
-          if (docId) {
-              // Upload accepted — document is durably staged and queued.
-              // Link the user to the document page (which auto-refreshes
-              // from "processing" → "ready") and let them upload more or
-              // navigate away immediately — no blocking progress wait.
-              const bar = document.getElementById('progress-bar');
-              bar.style.width = '100%';
-              bar.classList.remove('bg-indigo-500');
-              bar.classList.add('bg-green-500');
-              document.getElementById('progress-text').textContent = 'Uploaded!';
-              const detail = document.getElementById('progress-detail');
-              detail.innerHTML = '';
-              const link = document.createElement('a');
-              link.href = '/documents/' + docId;
-              link.textContent = 'View document #' + docId;
-              link.className = 'text-indigo-600 underline font-medium';
-              detail.appendChild(link);
-              if (jobId) {
-                  detail.appendChild(document.createTextNode(' \u2014 processing in background'));
+                  if (docId) {
+                      // Upload accepted — document is durably staged and queued.
+                      bar.style.width = '100%';
+                      bar.classList.remove('bg-indigo-500');
+                      bar.classList.add('bg-green-500');
+                      document.getElementById('progress-text').textContent = 'Uploaded!';
+                      const detail = document.getElementById('progress-detail');
+                      detail.innerHTML = '';
+                      const link = document.createElement('a');
+                      link.href = '/documents/' + docId;
+                      link.textContent = 'View document #' + docId;
+                      link.className = 'text-indigo-600 underline font-medium';
+                      detail.appendChild(link);
+                      if (jobId) {
+                          detail.appendChild(document.createTextNode(' \u2014 processing in background'));
+                      }
+                      document.getElementById('progress-error').innerHTML =
+                          '<button onclick="resetUpload()" class="text-sm text-indigo-600 hover:text-indigo-500 font-medium">Upload more</button>';
+                      document.getElementById('progress-error').classList.remove('hidden');
+                      return;
+                  }
+
+                  // Legacy fallback: job id only.
+                  showUploadError('Upload queued, but no document link is available.');
+              } catch (err) {
+                  showUploadError('Invalid server response.');
               }
-              document.getElementById('progress-error').innerHTML =
-                  '<button onclick="resetUpload()" class="text-sm text-indigo-600 hover:text-indigo-500 font-medium">Upload more</button>';
-              document.getElementById('progress-error').classList.remove('hidden');
-              return;
+          } else {
+              try {
+                  const errData = JSON.parse(xhr.responseText);
+                  showUploadError(errData.message || 'Upload failed (' + xhr.status + ')');
+              } catch (_) {
+                  showUploadError('Upload failed (' + xhr.status + ')');
+              }
           }
+      };
 
-          // Legacy fallback: job id only.
-          showUploadError('Upload queued, but no document link is available.');
+      xhr.onerror = function() {
+          showUploadError('Network error — please check your connection and try again.');
+      };
 
-      } catch (err) {
-          showUploadError(err.message || 'Network error — please check your connection and try again.');
-      }
-  }
+      xhr.send(formData);
 
   function showUploadError(msg) {
       document.getElementById('progress-text').textContent = 'Upload failed';

@@ -24,6 +24,12 @@
 		-Server
 	}
 
+	# ── Compression ────────────────────────────────────────────────────
+	encode zstd gzip
+
+	# Match the app's DefaultBodyLimit (500 MiB + framing overhead).
+	request_body /tmp 524288000
+
 	# ── Structured request logging ───────────────────────────────────────
 	log {
 		output stdout

@@ -35,15 +35,12 @@ use axum::response::Response;
 pub async fn security_headers_middleware(request: Request, next: Next) -> Response {
     let mut response = next.run(request).await;
 
-    // CSP: scripts may load from self, the HTMX (unpkg.com) and Tailwind
-    // (cdn.tailwindcss.com) CDNs, and inline ('unsafe-inline') — the templates load
-    // HTMX from unpkg and use inline <script> helpers plus inline event handlers
-    // (e.g. onsubmit) that the browser blocks without it. Omitting unpkg.com or
-    // 'unsafe-inline' here disables the entire HTMX-driven web UI. 'unsafe-inline'
-    // for styles is required by Tailwind's runtime CSS engine.
+    // CSP: all assets are self-hosted (HTMX, Tailwind CSS, Chart.js).
+    // 'unsafe-inline' is still required for inline <script> helpers
+    // (dark-mode toggle, SSE search, inline event handlers like onsubmit).
     let csp_value = concat!(
         "default-src 'self'; ",
-        "script-src 'self' 'unsafe-inline' https://unpkg.com cdn.tailwindcss.com cdn.jsdelivr.net; ",
+        "script-src 'self' 'unsafe-inline'; ",
         "style-src 'self' 'unsafe-inline'; ",
         "img-src 'self' data: blob:; ",
         "connect-src 'self'; ",
@@ -141,8 +138,7 @@ mod tests {
             .get("content-security-policy")
             .expect("HTML response must have CSP header");
         let csp_str = csp.to_str().unwrap();
-        assert!(csp_str.contains("script-src"));
-        assert!(csp_str.contains("cdn.tailwindcss.com"));
+        assert!(csp_str.contains("script-src 'self'"));
         assert!(csp_str.contains("frame-ancestors 'none'"));
         assert!(csp_str.contains("object-src 'none'"));
     }
@@ -180,9 +176,7 @@ mod tests {
 
         // All required directives must be present.
         assert!(csp.contains("default-src 'self'"));
-        assert!(
-            csp.contains("script-src 'self' 'unsafe-inline' https://unpkg.com cdn.tailwindcss.com cdn.jsdelivr.net")
-        );
+        assert!(csp.contains("script-src 'self' 'unsafe-inline'"));
         assert!(csp.contains("img-src 'self' data: blob:"));
         assert!(csp.contains("form-action 'self'"));
         assert!(csp.contains("base-uri 'self'"));

@@ -231,7 +231,10 @@ pub async fn build_runtime(
     }
 
     let http = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(30))
         .timeout(Duration::from_secs(120))
+        .tcp_keepalive(Duration::from_secs(60))
+        .pool_idle_timeout(Duration::from_secs(90))
         .build()
         .context("failed to create HTTP client")?;
 

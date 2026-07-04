@@ -238,6 +238,10 @@ fn search_ok(body: SearchResponse, mode: SearchMode) -> Response {
     let mut resp = (StatusCode::OK, Json(body)).into_response();
     resp.headers_mut()
         .insert(SEARCH_MODE_HEADER, HeaderValue::from_static(mode.as_str()));
+    resp.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        HeaderValue::from_static("max-age=30, private"),
+    );
     resp
 }
 

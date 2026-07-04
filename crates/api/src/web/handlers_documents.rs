@@ -273,21 +273,31 @@ async fn build_document_detail_page(
 
     // Failure UX (P15-T9): surface the latest ingest error on failed docs.
     // Sanitized for display: bounded length, and Askama HTML-escapes it.
-    let last_error = if doc.status == kb_core::status::ProcessingStatus::Failed {
-        match state
-            .pg_store
-            .latest_ingest_job_error(tenant_id, doc_id)
-            .await
-        {
-            Ok(Some(e)) => sanitize_job_error(&e),
-            Ok(None) => String::new(),
-            Err(e) => {
-                tracing::warn!(error = %e, %doc_id, "failed to load ingest error for display");
-                String::new()
-            }
+    //
+    // Retry-progress surfacing: when the document is still pending, we also
+    // fetch attempts + next run_after so the template can show a countdown
+    // instead of a static "processing" badge.
+    let (last_error, ingest_attempts, next_retry_at) = match state
+        .pg_store
+        .latest_ingest_job_info(tenant_id, doc_id)
+        .await
+    {
+        Ok(Some(info)) => {
+            let attempts = info.attempts;
+            let retry_at = info.run_after.map(|t| t.format("%H:%M:%S UTC").to_string());
+            let error = match info.last_error {
+                Some(e) if doc.status == kb_core::status::ProcessingStatus::Failed => {
+                    sanitize_job_error(&e)
+                }
+                Some(ref e) if attempts > 0 => {
+                    // document is pending with a failed retry — surface as progress
+                    sanitize_job_error(e)
+                }
+                _ => String::new(),
+            };
+            (error, attempts, retry_at)
         }
-    } else {
-        String::new()
+        _ => (String::new(), 0, None),
     };
 
     let page = DocumentDetailPage {
@@ -312,6 +322,8 @@ async fn build_document_detail_page(
         tenant_tag_names,
         files: file_entries,
         last_error,
+        ingest_attempts,
+        next_retry_at,
     };
 
     render_ok(&page)

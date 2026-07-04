@@ -11,6 +11,7 @@ use std::sync::Arc;
 use axum::Extension;
 use axum::Router;
 use axum::routing::{get, post};
+use kb_pipeline::IngestPipeline;
 use kb_pipeline::RetrievalPipeline;
 use kb_store::PgStore;
 
@@ -20,6 +21,7 @@ use crate::prompt::PromptBuilder;
 use crate::session::SessionManager;
 
 mod prompt;
+pub(crate) mod upload;
 
 /// Shared state for all assistant routes.
 #[derive(Clone)]
@@ -30,6 +32,8 @@ pub struct AssistantState {
     pub store: Arc<PgStore>,
     /// Hybrid search pipeline for context-enriched prompts.
     pub pipeline: Arc<RetrievalPipeline>,
+    /// Ingestion pipeline for file uploads.
+    pub ingest: Option<Arc<IngestPipeline>>,
     /// OpenCode CLI subprocess executor (None if disabled).
     pub executor: Option<Executor>,
     /// Prompt builder for context augmentation.
@@ -46,9 +50,9 @@ pub struct AssistantState {
 pub fn build_assistant_router(
     store: &Arc<PgStore>,
     pipeline: &Option<Arc<RetrievalPipeline>>,
+    ingest: &Option<Arc<IngestPipeline>>,
+    asst_cfg: AssistantConfig,
 ) -> Router {
-    let asst_cfg = AssistantConfig::default();
-
     let executor = asst_cfg.opencode_bin.as_ref().map(|bin| {
         Executor::new(
             std::path::Path::new(bin),
@@ -71,6 +75,7 @@ pub fn build_assistant_router(
         cfg: asst_cfg,
         store: Arc::clone(store),
         pipeline,
+        ingest: ingest.clone(),
         executor,
         prompt_builder,
         sessions: SessionManager::new(),
@@ -79,6 +84,7 @@ pub fn build_assistant_router(
     Router::new()
         .route("/", get(prompt::assistant_page))
         .route("/prompt", post(prompt::assistant_prompt_handler))
+        .route("/upload", post(upload::upload_handler))
         .route("/sessions", get(prompt::assistant_sessions_handler))
         .layer(Extension(state))
 }

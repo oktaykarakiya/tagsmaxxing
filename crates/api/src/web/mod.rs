@@ -79,6 +79,7 @@ pub(crate) fn build_web_router(
 
     // Public web routes (no auth required).
     let public = axum::Router::new()
+        .route("/static/{*path}", get(serve_static))
         .route("/", get(handlers_marketing::landing_page))
         .route("/pricing", get(handlers_marketing::pricing_page))
         .route("/features", get(handlers_marketing::features_page))
@@ -122,6 +123,7 @@ pub(crate) fn build_web_router(
             "/search",
             get(handlers::search_page).post(handlers::search_submit),
         )
+        .route("/search/stream", get(handlers::search_stream))
         .route(
             "/upload",
             get(handlers::upload_page).post(handlers::upload_submit),
@@ -307,4 +309,54 @@ pub(crate) fn build_web_router(
             security::security_headers_middleware,
         ))
         .with_state(state)
+}
+
+/// Serve static files (JS, CSS) from the static/ directory.
+async fn serve_static(
+    axum::extract::Path(path): axum::extract::Path<String>,
+) -> Result<impl axum::response::IntoResponse, (axum::http::StatusCode, &'static str)> {
+    use axum::body::Body;
+    use axum::http::header;
+    use axum::response::Response;
+
+    // Only allow known assets — no path traversal.
+    let safe = path
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '.' || *c == '-' || *c == '_')
+        .collect::<String>();
+    if safe != path {
+        return Err((axum::http::StatusCode::NOT_FOUND, "not found"));
+    }
+
+    // Try the compiled-in static path first (dev), then the container path.
+    let cargo_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("static")
+        .join(&safe);
+    let container_path = std::path::Path::new("/usr/local/lib/kb-static").join(&safe);
+    let file_path = if cargo_dir.exists() {
+        &cargo_dir
+    } else {
+        &container_path
+    };
+
+    match tokio::fs::read(file_path).await {
+        Ok(data) => {
+            let mime = if safe.ends_with(".js") {
+                "application/javascript"
+            } else {
+                "text/css"
+            };
+            let mut resp = Response::new(Body::from(data));
+            resp.headers_mut().insert(
+                header::CONTENT_TYPE,
+                axum::http::HeaderValue::from_static(mime),
+            );
+            resp.headers_mut().insert(
+                header::CACHE_CONTROL,
+                axum::http::HeaderValue::from_static("public, max-age=86400"),
+            );
+            Ok(resp)
+        }
+        Err(_) => Err((axum::http::StatusCode::NOT_FOUND, "not found")),
+    }
 }

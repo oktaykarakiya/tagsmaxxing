@@ -40,7 +40,7 @@ impl PgStore {
              FROM usage_events \
              WHERE tenant_id = $1 \
                AND cost_micros IS NOT NULL \
-               AND date_trunc('month', created_at) = date_trunc('month', now())",
+                AND created_at >= date_trunc('month', now())",
         )
         .bind(tenant_id)
         .fetch_one(&mut *tx)

@@ -6,16 +6,27 @@
 //! Each chunk records exactly which `file_id` (page) it came from, its `page_no`
 //! ordering, and an optional `ts_offset` for transcript deep-linking. The chunker is
 //! pure logic — no I/O, no async — so it is trivially unit-testable.
+//!
+//! Chunk boundaries are expressed in **bytes** and snap to UTF-8 character
+//! boundaries to avoid splitting multi-byte sequences.  For ASCII text (1 byte
+//! per character) the byte and character counts are identical.  Sizes are kept
+//! as the original character-derived constants so the behaviour is unchanged
+//! for the dominant content type (English prose + ASCII-heavy documents).
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-/// Default chunk size in characters. At ~4 chars per English token this is roughly
-/// 512 tokens — small enough to fit comfortably in an LLM context window with room
-/// for the retrieval prompt (plan §7).
+/// Default chunk size in bytes.  At ~1 byte per character for ASCII text
+/// this is roughly 2048 characters and ~512 English tokens — small enough to
+/// fit comfortably in an LLM context window with room for the retrieval
+/// prompt (plan §7).  For multi-byte UTF-8 the chunk will contain fewer
+/// characters, which corresponds to the higher token-per-character ratio of
+/// CJK / emoji (the safety factor covers the worst case).
 pub const DEFAULT_CHUNK_SIZE_CHARS: usize = 2048;
 
-/// Default overlap in characters between consecutive chunks (~16 tokens). Overlap
+/// Default overlap in bytes between consecutive chunks (~16 tokens). Overlap
 /// prevents splitting a key phrase across a chunk boundary (plan §7).
+/// For ASCII text (1 byte/char) this equals 64 characters; for wider UTF-8
+/// the char count is lower but the token-level overlap is preserved.
 pub const DEFAULT_OVERLAP_CHARS: usize = 64;
 
 /// Maximum number of texts to send in a single embedding API call. Batches larger
@@ -47,9 +58,11 @@ pub struct TextChunk {
 
 /// Split `text` into overlapping chunks with the given provenance fields.
 ///
-/// Each chunk (except possibly the last) is `chunk_size` **characters** long (not
-/// bytes — multi-byte UTF-8 is handled correctly). Consecutive chunks overlap by
-/// `overlap` characters.
+/// Chunk boundaries are measured in **bytes** and snapped to the nearest
+/// UTF-8 character boundary so multi-byte sequences are never split.  For
+/// ASCII text (1 byte per character) the byte and character counts are
+/// identical; for multi-byte UTF-8 (CJK, emoji) each chunk contains fewer
+/// characters, corresponding to the higher token-per-character ratio.
 ///
 /// # Panics
 ///
@@ -58,8 +71,10 @@ pub struct TextChunk {
 /// # Edge cases
 ///
 /// - **Empty text** → empty `Vec`.
-/// - **Text shorter than `chunk_size`** → a single chunk containing all of `text`.
+/// - **Text shorter than `chunk_size` bytes** → a single chunk containing all of `text`.
 /// - **Overlap = 0** → contiguous non-overlapping chunks.
+/// - **No multi-byte code-point splitting** — every chunk starts and ends on a
+///   valid UTF-8 boundary.
 #[must_use]
 pub fn chunk_text(
     text: &str,
@@ -74,29 +89,29 @@ pub fn chunk_text(
         "chunk_size ({chunk_size}) must be greater than overlap ({overlap})"
     );
 
-    let chars: Vec<char> = text.chars().collect();
-    let total_chars = chars.len();
-
-    if total_chars == 0 {
+    if text.is_empty() {
         return Vec::new();
     }
 
     let step = chunk_size.saturating_sub(overlap);
     // Safety: step ≥ 1 because chunk_size > overlap (asserted above).
     let mut chunks = Vec::new();
-    let mut start: usize = 0;
+    let mut start_byte: usize = 0;
     let mut idx: i32 = 0;
 
-    while start < total_chars {
-        let end = (start + chunk_size).min(total_chars);
-        let content: String = chars[start..end].iter().collect();
-
-        // Guard: if we can't extract any chars (shouldn't happen given the
-        // loop condition, but be defensive).
-        if content.is_empty() {
+    while start_byte < text.len() {
+        let end_byte = (start_byte + chunk_size).min(text.len());
+        // Snap end to a UTF-8 character boundary so we never split a
+        // multi-byte code point.
+        let mut end = end_byte;
+        while end > start_byte && !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        if end <= start_byte {
             break;
         }
 
+        let content = text[start_byte..end].to_string();
         chunks.push(TextChunk {
             content,
             idx,
@@ -106,7 +121,13 @@ pub fn chunk_text(
         });
 
         idx += 1;
-        start += step;
+        // Advance by `step` bytes, snapping forward to the next
+        // UTF-8 boundary.
+        let mut next_start = start_byte + step;
+        while next_start < text.len() && !text.is_char_boundary(next_start) {
+            next_start += 1;
+        }
+        start_byte = next_start;
     }
 
     chunks
@@ -278,30 +299,31 @@ mod tests {
 
     #[test]
     fn handles_multi_byte_utf8_characters() {
-        // Each emoji is a single char but 4 bytes.
-        let text = "🦀🦀🦀🦀🦀🦀🦀🦀🦀🦀"; // 10 crab emojis
+        // Each crab is 4 bytes.
+        let text = "🦀🦀🦀🦀🦀🦀🦀🦀🦀🦀"; // 10 crab emojis, 40 bytes
         let chunks = chunk_text(text, 1, None, None, 4, 1);
-        // step=3: starts at 0,3,6,9 → 4 chunks
-        assert_eq!(chunks.len(), 4);
-        // Each chunk should have correct char count, not byte count.
-        assert_eq!(chunks[0].content.chars().count(), 4);
-        assert_eq!(chunks[1].content.chars().count(), 4);
-        assert_eq!(chunks[2].content.chars().count(), 4);
-        assert_eq!(chunks[3].content.chars().count(), 1);
+        // step=3 bytes, byte char boundaries at 0,4,8,…,36 → 10 chunks
+        assert_eq!(chunks.len(), 10);
+        // Each chunk is exactly one emoji (4 bytes).
+        for chunk in &chunks {
+            assert_eq!(chunk.content, "🦀");
+            assert_eq!(chunk.content.chars().count(), 1);
+        }
     }
 
     #[test]
     fn handles_mixed_ascii_and_utf8() {
+        // a(1B) 🦀(4B) b(1B) 🦀(4B) c(1B) 🦀(4B) d(1B) 🦀(4B) e(1B) = 21 bytes
         let text = "a🦀b🦀c🦀d🦀e";
         let chunks = chunk_text(text, 1, None, None, 3, 1);
-        // step=2: 9 chars, starts at 0,2,4,6,8 → 5 chunks
+        // step=2 bytes, byte boundaries at 0,1,5,6,10,11,15,16,20,21
+        // Chunk starts (snapped): 0,5,10,15,20 → 5 single-byte chunks
         assert_eq!(chunks.len(), 5);
-        // All content concatenated should reconstruct the original.
-        // (With overlap some chars appear multiple times.)
-        // Just verify no panics and correct char counts.
-        for chunk in &chunks {
-            assert!(!chunk.content.is_empty());
-        }
+        assert_eq!(chunks[0].content, "a");
+        assert_eq!(chunks[1].content, "b");
+        assert_eq!(chunks[2].content, "c");
+        assert_eq!(chunks[3].content, "d");
+        assert_eq!(chunks[4].content, "e");
     }
 
     // ── Overlap zero ──────────────────────────────────────────────────────

@@ -73,14 +73,22 @@ preflight_models() {
 ensure_venv() { [ -x "$PY" ] || die "venv missing — run: ./test/run.sh setup"; }
 
 build_image() {
-  log "Building app image fresh (--no-cache): $APP_IMAGE"
+  # Respect E2E_NO_CACHE=0 to skip --no-cache and let cargo-chef reuse the
+  # dependency-compilation layer. Defaults to 1 (full rebuild) for safety.
+  local cache_flag="--no-cache"
+  if [ "${E2E_NO_CACHE:-1}" = "0" ]; then
+    cache_flag=""
+    log "Building app image (cargo-chef layer cache enabled): $APP_IMAGE"
+  else
+    log "Building app image fresh (--no-cache): $APP_IMAGE"
+  fi
   # Use an e2e-specific ignore file so the ~21GB models/ dir (+ other large,
   # build-irrelevant paths) never enter the build context — pulling them in makes
   # podman assemble a >20GB blob on the RAM-backed /tmp tmpfs and OOMs the host.
   # Falls back to the repo default .containerignore if the file is absent.
   local ignore_args=()
   [ -f "$SCRIPT_DIR/.containerignore.e2e" ] && ignore_args=(--ignorefile "$SCRIPT_DIR/.containerignore.e2e")
-  podman build --no-cache "${ignore_args[@]}" -t "$APP_IMAGE" -f Containerfile .
+  podman build $cache_flag "${ignore_args[@]}" -t "$APP_IMAGE" -f Containerfile .
 }
 
 stack_up() {

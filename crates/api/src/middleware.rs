@@ -227,7 +227,12 @@ pub async fn auth_middleware(
                         let is_api = is_api_path(request.uri().path());
                         let tenant_id = request.extensions().get::<AuthUser>().map(|u| u.tenant_id);
                         if is_api && let Some(tid) = tenant_id {
-                            match state.pg_store.resolve_rate_cap(tid).await {
+                            match crate::billing_cache::resolve_rate_cap_cached(
+                                &state.pg_store,
+                                tid,
+                            )
+                            .await
+                            {
                                 Ok(Some(cap)) if cap > 0 => {
                                     if let Err(retry_after) =
                                         PLAN_RATE_LIMITER.check(tid, cap as usize)
@@ -322,7 +327,7 @@ pub async fn auth_middleware(
         let is_api = is_api_path(request.uri().path());
         let tenant_id = request.extensions().get::<AuthUser>().map(|u| u.tenant_id);
         if is_api && let Some(tid) = tenant_id {
-            match state.pg_store.resolve_rate_cap(tid).await {
+            match crate::billing_cache::resolve_rate_cap_cached(&state.pg_store, tid).await {
                 Ok(Some(cap)) if cap > 0 => {
                     if let Err(retry_after) = PLAN_RATE_LIMITER.check(tid, cap as usize) {
                         kb_metrics::record_rate_limit_rejection("plan");
@@ -530,6 +535,16 @@ impl LoginBruteForceLimiter {
             Ok(())
         }
     }
+
+    /// Drop expired entries and remove empty keys (call periodically).
+    fn prune(&self) {
+        let mut map = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let cutoff = Instant::now() - self.window;
+        map.retain(|_, hits| {
+            hits.retain(|t| *t > cutoff);
+            !hits.is_empty()
+        });
+    }
 }
 
 /// Resolve the per-IP login attempt cap **at call time** (hot-swappable, plan
@@ -600,6 +615,16 @@ impl TokenRateLimiter {
         }
     }
 
+    /// Drop expired entries and remove empty keys.
+    fn prune(&self) {
+        let mut map = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let cutoff = Instant::now() - self.window;
+        map.retain(|_, hits| {
+            hits.retain(|t| *t > cutoff);
+            !hits.is_empty()
+        });
+    }
+
     /// Clear all tracked tokens (test-only).
     #[cfg(test)]
     fn reset(&self) {
@@ -653,6 +678,16 @@ impl PlanRateLimiter {
             attempts.push(now);
             Ok(())
         }
+    }
+
+    /// Drop expired entries and remove empty keys.
+    fn prune(&self) {
+        let mut map = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let cutoff = Instant::now() - self.window;
+        map.retain(|_, hits| {
+            hits.retain(|t| *t > cutoff);
+            !hits.is_empty()
+        });
     }
 
     /// Clear all tracked tenants (test-only).
@@ -841,6 +876,13 @@ impl IdempotencyStore {
         );
     }
 
+    /// Drop all expired entries (called periodically).
+    fn prune(&self) {
+        let mut map = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let cutoff = Instant::now() - self.ttl;
+        map.retain(|_, v| v.created_at > cutoff);
+    }
+
     /// Number of entries currently in the store (test-only).
     #[cfg(test)]
     fn len(&self) -> usize {
@@ -857,6 +899,22 @@ impl IdempotencyStore {
 /// Global idempotency-key store with a [`IDEMPOTENCY_TTL`] entry lifetime.
 static IDEMPOTENCY_STORE: LazyLock<IdempotencyStore> =
     LazyLock::new(|| IdempotencyStore::new(IDEMPOTENCY_TTL));
+
+/// Spawn a background task that periodically prunes expired entries from the
+/// login brute-force limiter, token rate limiter, plan rate limiter, and
+/// idempotency store to prevent unbounded memory growth from abandoned keys.
+pub fn spawn_cleanup_task() {
+    tokio::spawn(async {
+        loop {
+            tokio::time::sleep(Duration::from_secs(120)).await;
+            LOGIN_BRUTE_FORCE_LIMITER.prune();
+            TOKEN_RATE_LIMITER.prune();
+            PLAN_RATE_LIMITER.prune();
+            IDEMPOTENCY_STORE.prune();
+            crate::billing_cache::billing_cache_cleanup();
+        }
+    });
+}
 
 /// Extract the `Idempotency-Key` request header, returning `None` if absent
 /// or empty.
@@ -1007,28 +1065,15 @@ pub async fn http_metrics_middleware(request: Request<axum::body::Body>, next: N
 
 // ── CORS layer ─────────────────────────────────────────────────────────────────
 
-/// Build a Cross-Origin Resource Sharing (CORS) layer for browser-based API
-/// consumers.
+/// Returns a no-op [`CorsLayer`] that mirrors the request origin (not `*`).
 ///
-/// The layer allows any origin ([`Any`]) but does **not** allow credentials.
-/// This is a safe default for a local-first application: browsers can send
-/// cross-origin requests to the API, but the dangerous `*` + `credentials`
-/// combination is prohibited (browsers refuse to send cookies with a wildcard
-/// origin).
-///
-/// Preflight (`OPTIONS`) requests are handled automatically — the layer
-/// intercepts them before they reach the auth middleware, so unauthenticated
-/// preflights succeed.
-///
-/// # Security
-///
-/// The `Access-Control-Allow-Origin: *` header is set on responses for
-/// non-credentialed requests. Cookie-based and Bearer-based authentication
-/// still gate access to protected routes — CORS only governs whether a
-/// *browser* may issue the request, not whether the server will fulfil it.
+/// The application is same-origin — the frontend and API share the same scheme,
+/// host, and port behind Caddy. The CORS layer is kept as a thin shim so that
+/// legacy tooling that sends `Origin` headers (curl, scripts) does not break
+/// on preflight responses, but it does not emit `Access-Control-Allow-Origin: *`.
 pub fn cors_layer() -> CorsLayer {
     CorsLayer::new()
-        .allow_origin(Any)
+        .allow_origin(tower_http::cors::AllowOrigin::mirror_request())
         .allow_methods(Any)
         .allow_headers(Any)
 }

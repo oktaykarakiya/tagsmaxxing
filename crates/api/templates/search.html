@@ -4,7 +4,9 @@
 {% block title %}Search{% endblock %}
 
 {% block head_extra %}
-<script src="https://unpkg.com/htmx.org@2.0.4"></script>
+{# ── Asana task: can opencode sell me on Astro? ── #}
+<script src="/static/htmx.min.js"></script>
+<script src="/static/htmx-sse.js"></script>
 <script>
   function syncKindFilter() {
     const vals = [];
@@ -13,6 +15,76 @@
     });
     document.getElementById('kind-hidden').value = vals.join(',');
   }
+
+  {# ── SSE progressive search ────────────────────────────────────── #}
+  {# When EventSource is available, live-typing streams keyword        #}
+  {# results instantly (~35ms) and upgrades in-place after AI rerank. #}
+  {# HTMX keyup trigger is KEPT for Enter-key + test compatibility.   #}
+  (function() {
+    if (typeof EventSource === 'undefined') return; // HTMX-only fallback
+
+    var input = document.getElementById('search-input');
+    var tagFilter = document.getElementById('tag-filter');
+    var kindHidden = document.getElementById('kind-hidden');
+    var resultsEl = document.getElementById('results');
+    var es = null;
+    var debounce = null;
+    var lastQ = input.value;
+
+    function buildUrl() {
+      var q = encodeURIComponent((input.value || '').trim());
+      var k = kindHidden ? encodeURIComponent(kindHidden.value) : '';
+      var t = tagFilter ? encodeURIComponent((tagFilter.value || '').trim()) : '';
+      var url = '/search/stream?q=' + q;
+      if (k) url += '&kind=' + k;
+      if (t) url += '&tag=' + t;
+      return url;
+    }
+
+    function closeStream() {
+      if (es) { es.close(); es = null; }
+    }
+
+    function sseSearch() {
+      closeStream();
+      var q = (input.value || '').trim();
+      if (q === lastQ) return;
+      lastQ = q;
+      history.pushState({}, '', '/search?q=' + encodeURIComponent(q));
+      if (!q) { resultsEl.innerHTML = ''; return; }
+
+      resultsEl.innerHTML = document.getElementById('search-loader').innerHTML;
+
+      es = new EventSource(buildUrl());
+      es.addEventListener('keyword', function(e) {
+        resultsEl.innerHTML = e.data;
+      });
+      es.addEventListener('final', function(e) {
+        resultsEl.innerHTML = e.data;
+      });
+      es.addEventListener('done', function() { closeStream(); });
+      es.addEventListener('error', function() { closeStream(); });
+    }
+
+    input.addEventListener('input', function() {
+      clearTimeout(debounce);
+      debounce = setTimeout(sseSearch, 200);
+    });
+
+    {# Cancel pending SSE when Enter triggers htmx keyup→POST #}
+    document.getElementById('search-form').addEventListener('submit', function() {
+      clearTimeout(debounce);
+      closeStream();
+      lastQ = (input.value || '').trim();
+    });
+
+    if (tagFilter) {
+      tagFilter.addEventListener('input', function() {
+        clearTimeout(debounce);
+        debounce = setTimeout(sseSearch, 150);
+      });
+    }
+  })();
 </script>
 <style>
   /* display-based so the idle skeleton occupies no layout space */
@@ -48,7 +120,7 @@
                            name="q"
                            id="search-input"
                            value="{{ query }}"
-                           placeholder="Search your knowledge base…"
+                           placeholder="Search your knowledge base… /"
                            aria-label="Search your knowledge base"
                            autofocus
                            autocomplete="off"
@@ -59,6 +131,7 @@
                            hx-include="#search-form"
                            hx-sync="closest form:abort"
                            hx-indicator="#search-loader"
+                           hx-push-url="true"
                            class="w-full pl-12 pr-4 py-3.5 sm:py-4 text-base sm:text-lg text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500
                                   bg-white dark:bg-gray-900 rounded-full border border-gray-200 dark:border-gray-700 shadow-sm
                                   hover:shadow-md focus:shadow-md focus:border-gray-300 dark:focus:border-gray-600 focus:outline-none

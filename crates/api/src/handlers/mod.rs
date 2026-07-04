@@ -56,17 +56,9 @@ pub(crate) fn local_only_for_plan(remote_allowed: bool) -> bool {
 /// models (degraded quality, not a billing or isolation breach), and ingest/search
 /// stay fully available because local models still run.
 pub(crate) async fn resolve_local_only(pg_store: &Arc<PgStore>, tenant_id: i64) -> bool {
-    match pg_store.is_remote_models_allowed(tenant_id).await {
-        Ok(remote_allowed) => local_only_for_plan(remote_allowed),
-        Err(e) => {
-            tracing::warn!(
-                error = %e,
-                tenant_id,
-                "remote-models plan gate: lookup failed; failing closed to local-only"
-            );
-            true
-        }
-    }
+    let remote_allowed =
+        crate::billing_cache::is_remote_models_allowed_cached(pg_store, tenant_id).await;
+    local_only_for_plan(remote_allowed)
 }
 
 #[cfg(test)]

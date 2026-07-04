@@ -648,7 +648,7 @@ mod tests {
     }
 
     #[test]
-    fn dashboard_page_template_includes_chartjs_cdn() {
+    fn dashboard_page_template_includes_selfhosted_chartjs() {
         let page = DashboardPage {
             email_verified: true,
             tenant_name: "T".into(),
@@ -677,8 +677,12 @@ mod tests {
         };
         let html = page.render().expect("render");
         assert!(
-            html.contains("chart.js") || html.contains("Chart.js") || html.contains("chartjs"),
-            "dashboard should include Chart.js CDN reference"
+            html.contains(r#"<script src="/static/chart.umd.min.js">"#),
+            "dashboard should load the self-hosted Chart.js bundle"
+        );
+        assert!(
+            !html.contains("cdn.jsdelivr.net"),
+            "dashboard must not reference a CDN — the CSP only allows script-src 'self'"
         );
     }
 

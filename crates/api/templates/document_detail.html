@@ -4,7 +4,7 @@
 {% block title %}Document — {{ title }}{% endblock %}
 
 {% block head_extra %}
-<script src="https://unpkg.com/htmx.org@2.0.4" integrity="sha384-HGxK/P+cwP5aFMyxXiUxHh6rB3tLHkbcQ5fXJ3VqGM3TT5qFL4FHmBX9Ph5fjAM" crossorigin="anonymous"></script>
+<script src="/static/htmx.min.js"></script>
 {% endblock %}
 
 {% block content %}
@@ -62,6 +62,14 @@
                         {% endif %}">
                         {{ status }}
                     </span>
+                    {% if status == "processing" && ingest_attempts > 0 %}
+                    <span class="text-xs text-yellow-600 dark:text-yellow-400 ml-2">
+                        Attempt {{ ingest_attempts }} failed
+                        {% if let Some(retry_at) = next_retry_at %}
+                        &mdash; retrying at {{ retry_at }}
+                        {% endif %}
+                    </span>
+                    {% endif %}
                 </div>
                 {% if !summary.is_empty() %}
                 <p class="text-gray-600 dark:text-gray-400 leading-relaxed">{{ summary }}</p>
@@ -195,7 +203,7 @@
             <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4" id="page-strip">
                 {% for file in files %}
                 <div class="group relative bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-700 p-3 hover:shadow-md transition"
-                     data-file-id="{{ file.file_id }}" data-page-no="{{ file.page_no }}">
+                      id="page-{{ file.page_no }}" data-file-id="{{ file.file_id }}" data-page-no="{{ file.page_no }}">
                     {# ── Page thumbnail / preview ─────────────────────────── #}
                     <a href="{{ file.download_url }}"
                        title="{% if file.mime.starts_with("image/") || file.mime.starts_with("video/") || file.mime.starts_with("audio/") || file.mime == "application/pdf" %}View file{% else %}Download file{% endif %}"
@@ -321,5 +329,26 @@
     document.getElementById('reorder-page-nos').value = pageNos.join(',');
     return true;
   }
+
+  // Deep-link fragment handler: #page=N and #t=Ts from search result links.
+  (function() {
+    var hash = window.location.hash;
+    if (!hash) return;
+    var m;
+    if ((m = hash.match(/^#page=(\d+)/))) {
+      var el = document.getElementById('page-' + m[1]);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        el.style.outline = '3px solid #6366f1';
+        setTimeout(function() { el.style.outline = ''; }, 3000);
+      }
+    } else if ((m = hash.match(/^#t=(.+)/))) {
+      var player = document.querySelector('audio, video');
+      if (player) {
+        var sec = parseFloat(m[1]);
+        if (!isNaN(sec)) player.currentTime = sec;
+      }
+    }
+  })();
 </script>
 {% endblock %}

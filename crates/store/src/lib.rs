@@ -56,7 +56,7 @@ pub use buffered_recorder::BufferedUsageRecorder;
 pub use dashboard::{ActivityEvent, DailyTokenUsage, UserTokenUsage};
 pub use db_routing::{PgRoutingNotifier, ROUTING_CHANNEL};
 pub use encrypted_blob::EncryptedBlob;
-pub use ingest_staging::{PendingIngest, RetryIngestOutcome};
+pub use ingest_staging::{PendingIngest, PendingJobInfo, RetryIngestOutcome};
 pub use migrations::MIGRATOR;
 pub use multipart_stream::{MultipartUploadConfig, PartProgress, StreamingMultipartUpload};
 pub use pg_store::PgStore;

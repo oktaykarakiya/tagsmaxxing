@@ -19,6 +19,6 @@ pub use env::{EnvMap, apply_env, env_from_process};
 pub use error::ConfigError;
 pub use load::{load_path, load_str, validate};
 pub use model::{
-    Api, Backend, BlobConfig, Config, DEFAULT_PORT, Degradation, FolderWatch, Ingest,
+    Api, Assistant, Backend, BlobConfig, Config, DEFAULT_PORT, Degradation, FolderWatch, Ingest,
     IntegrityScan, OrphanGc, RestoreTest, S3Blob, Scheduler, Storage, Thumbnail, Worker,
 };

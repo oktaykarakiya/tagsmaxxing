@@ -30,7 +30,10 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         pkg-config \
         ca-certificates \
+        mold \
+        clang \
     && rm -rf /var/lib/apt/lists/*
+ENV RUSTFLAGS="-C link-arg=-fuse-ld=mold"
 WORKDIR /app
 # Pull in the cached deps.
 COPY --from=planner /app/recipe.json recipe.json
@@ -56,6 +59,36 @@ RUN apt-get update \
         curl \
         ffmpeg \
     && rm -rf /var/lib/apt/lists/*
+# Self-hosted Tailwind CSS: download the standalone CLI and scan the templates
+# plus the Rust sources (handlers pick badge/status classes in code) to produce
+# a minified stylesheet containing only the utility classes actually used.
+# Dark mode via the `class` strategy. NOTE: the CLI's --content flag is
+# single-valued — repeating it silently keeps only the last flag — so all
+# globs MUST go in one comma-separated value.
+ARG TAILWIND_VERSION=3.4.17
+RUN curl -fsSL -o /usr/local/bin/tailwindcss \
+        "https://github.com/tailwindlabs/tailwindcss/releases/download/v${TAILWIND_VERSION}/tailwindcss-linux-x64" \
+    && chmod +x /usr/local/bin/tailwindcss
+COPY crates/api/templates/ /tmp/kb-templates/
+COPY crates/assistant/templates/ /tmp/kb-assistant-templates/
+COPY crates/api/src/ /tmp/kb-api-src/
+COPY crates/assistant/src/ /tmp/kb-assistant-src/
+COPY crates/api/tailwind.config.js /tmp/tailwind.config.js
+RUN /usr/local/bin/tailwindcss \
+        --config /tmp/tailwind.config.js \
+        --content '/tmp/kb-templates/**/*.html,/tmp/kb-assistant-templates/**/*.html,/tmp/kb-api-src/**/*.rs,/tmp/kb-assistant-src/**/*.rs' \
+        --minify \
+        -o /usr/local/lib/kb-static/tailwind.css
+RUN rm -rf /tmp/kb-templates /tmp/kb-assistant-templates /tmp/kb-api-src /tmp/kb-assistant-src /tmp/tailwind.config.js /usr/local/bin/tailwindcss
+# Self-hosted frontend assets (HTMX + extensions).
+COPY crates/api/static/ /usr/local/lib/kb-static/
+# OpenCode CLI for the assistant agent (v1.17.13 from GitHub releases).
+ARG OPENCODE_VERSION=1.17.13
+RUN curl -fsSL -o /tmp/opencode.tar.gz \
+        "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-x64.tar.gz" \
+    && tar -xzf /tmp/opencode.tar.gz -C /usr/local/bin/ \
+    && rm /tmp/opencode.tar.gz \
+    && chmod +x /usr/local/bin/opencode
 # Non-root user (uid 1000) as required by plan §14.
 RUN useradd --uid 1000 --create-home --shell /sbin/nologin kb
 # Copy only the compiled binary.

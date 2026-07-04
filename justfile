@@ -133,6 +133,29 @@ ci-integration:
         --group auth={{cov_min_secure}}:crates/core/src/auth.rs,crates/core/src/session.rs,crates/store/src/session_store.rs
     echo "✓ ci-integration: #[ignore] suites passed; coverage floors met (>={{cov_min_integration}} overall, >={{cov_min_secure}} store+auth)"
 
+# ── frontend assets ──────────────────────────────────────────────────────────
+
+# Build the self-hosted Tailwind stylesheet for local `cargo run` dev serving
+# (crates/api/static/tailwind.css, gitignored; the container image builds its own
+# copy in the Containerfile). Scans the templates AND the Rust sources — handlers
+# pick badge/status classes in code. Downloads the standalone CLI on first use.
+# NOTE: the CLI's --content flag is single-valued — a repeated flag silently
+# overrides earlier ones — so all globs share one comma-separated value.
+tailwind:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    version=3.4.17
+    bin="${CARGO_HOME:-$HOME/.cargo}/bin/tailwindcss"
+    if [ ! -x "$bin" ]; then
+        echo "downloading tailwindcss v${version} standalone CLI…"
+        curl -fsSL -o "$bin" "https://github.com/tailwindlabs/tailwindcss/releases/download/v${version}/tailwindcss-linux-x64"
+        chmod +x "$bin"
+    fi
+    "$bin" --config crates/api/tailwind.config.js \
+        --content 'crates/api/templates/**/*.html,crates/assistant/templates/**/*.html,crates/api/src/**/*.rs,crates/assistant/src/**/*.rs' \
+        --minify -o crates/api/static/tailwind.css
+    echo "✓ built crates/api/static/tailwind.css"
+
 # ── autonomous build loop (plan §31.1) ───────────────────────────────────────
 
 # Print the next eligible ledger task id (or PHASE_COMPLETE / CHECKPOINT:<id>).

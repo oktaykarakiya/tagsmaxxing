@@ -20,27 +20,28 @@
     <p class="text-xs text-gray-400 dark:text-gray-500 mb-6 px-1">
         {{ hits.len() }} result{% if hits.len() != 1 %}s{% endif %}
         {% if !query.is_empty() %}for <span class="text-gray-600 dark:text-gray-300">&ldquo;{{ query }}&rdquo;</span>{% endif %}
+        {% if degraded %}
+        <span class="refining-shimmer text-amber-600 dark:text-amber-400 ml-2">refining&hellip;</span>
+        {% endif %}
     </p>
 
     <ul class="space-y-0">
         {% for hit in hits %}
         <li class="py-4 border-b border-gray-100 dark:border-gray-800 last:border-b-0">
-            <a href="/documents/{{ hit.document_id }}"
-               class="block group">
+            {# URL / provenance line #}
+            <p class="text-xs text-gray-400 dark:text-gray-500 mb-0.5 leading-none">
+                /documents/{{ hit.document_id }}
+                {% if let Some(page) = hit.page_no %}
+                &nbsp;&middot;&nbsp;<a href="/documents/{{ hit.document_id }}#page={{ page }}" class="hover:underline">page {{ page }}</a>
+                {% else if let Some(ts) = hit.ts_offset %}
+                &nbsp;&middot;&nbsp;<a href="/documents/{{ hit.document_id }}#t={{ ts }}" class="hover:underline">{{ "{:.1}"|format(ts) }}s</a>
+                {% endif %}
+                {% if let Some(kind) = hit.kind %}
+                &nbsp;&middot;&nbsp;<span class="text-[10px] text-gray-400 dark:text-gray-500">{{ kind }}</span>
+                {% endif %}
+            </p>
 
-                {# URL / provenance line #}
-                <p class="text-xs text-gray-400 dark:text-gray-500 mb-0.5 leading-none">
-                    /documents/{{ hit.document_id }}
-                    {% if let Some(page) = hit.page_no %}
-                    &nbsp;&middot;&nbsp;page {{ page }}
-                    {% else if let Some(ts) = hit.ts_offset %}
-                    &nbsp;&middot;&nbsp;{{ "{:.1}"|format(ts) }}s
-                    {% endif %}
-                    {% if let Some(kind) = hit.kind %}
-                    &nbsp;&middot;&nbsp;<span class="text-[10px] text-gray-400 dark:text-gray-500">{{ kind }}</span>
-                    {% endif %}
-                </p>
-
+            <a href="/documents/{{ hit.document_id }}" class="block group">
                 {# Title #}
                 <h3 class="text-lg sm:text-xl text-blue-700 dark:text-blue-400 group-hover:underline leading-snug mb-1">
                     {{ hit.title.as_deref().unwrap_or("Untitled") }}
@@ -48,9 +49,19 @@
 
                 {# Snippet #}
                 <p class="text-sm text-gray-600 dark:text-gray-400 leading-relaxed line-clamp-3">
-                    {{ hit.snippet }}
+                    {{ hit.highlighted_snippet|safe }}
                 </p>
             </a>
+            {# Tag chips — click to filter by this tag #}
+            {% if !hit.tags.is_empty() %}
+            <div class="flex flex-wrap gap-1 mt-2">
+                {% for tag in hit.tags %}
+                <button type="button"
+                        onclick="var t=document.getElementById('tag-filter');t.value='{{ tag }}';t.dispatchEvent(new Event('input',{bubbles:true}))"
+                        class="inline-flex items-center px-2 py-0.5 text-[10px] font-medium bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors cursor-pointer">{{ tag }}</button>
+                {% endfor %}
+            </div>
+            {% endif %}
         </li>
         {% endfor %}
     </ul>

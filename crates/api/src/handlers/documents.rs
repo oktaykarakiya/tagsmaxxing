@@ -12,9 +12,10 @@ use std::sync::Arc;
 use axum::Extension;
 use axum::body::Body;
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
 use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE, LOCATION};
+use axum::http::{StatusCode, header};
 use axum::response::Json;
+use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 
 use crate::AppState;
@@ -104,25 +105,13 @@ pub async fn document_detail(
     State(state): State<Arc<AppState>>,
     Extension(auth_user): Extension<AuthUser>,
     Path(id): Path<i64>,
-) -> Result<(StatusCode, Json<DocumentDetail>), (StatusCode, Json<ErrorResponse>)> {
-    let doc = state
+) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
+    let (doc, files, tags) = state
         .pg_store
-        .get_document(auth_user.tenant_id, id)
+        .get_document_detail(auth_user.tenant_id, id)
         .await
         .map_err(internal_error)?
         .ok_or_else(|| not_found("document_not_found", "document not found"))?;
-
-    let files = state
-        .pg_store
-        .get_files_for_document(auth_user.tenant_id, id)
-        .await
-        .map_err(internal_error)?;
-
-    let tags = state
-        .pg_store
-        .get_tags_for_document(auth_user.tenant_id, id)
-        .await
-        .map_err(internal_error)?;
 
     let file_entries: Vec<FileEntry> = files
         .into_iter()
@@ -146,22 +135,30 @@ pub async fn document_detail(
         })
         .collect();
 
-    Ok((
-        StatusCode::OK,
-        Json(DocumentDetail {
-            id: doc.id,
-            title: doc.title,
-            summary: doc.summary,
-            user_note: doc.user_note,
-            kind: doc.kind.as_str().to_owned(),
-            meta: doc.meta,
-            page_count: doc.page_count,
-            status: doc.status.as_str().to_owned(),
-            created_at: doc.created_at.to_rfc3339(),
-            files: file_entries,
-            tags: tag_entries,
-        }),
-    ))
+    Ok({
+        let mut resp = (
+            StatusCode::OK,
+            Json(DocumentDetail {
+                id: doc.id,
+                title: doc.title,
+                summary: doc.summary,
+                user_note: doc.user_note,
+                kind: doc.kind.as_str().to_owned(),
+                meta: doc.meta,
+                page_count: doc.page_count,
+                status: doc.status.as_str().to_owned(),
+                created_at: doc.created_at.to_rfc3339(),
+                files: file_entries,
+                tags: tag_entries,
+            }),
+        )
+            .into_response();
+        resp.headers_mut().insert(
+            header::CACHE_CONTROL,
+            axum::http::HeaderValue::from_static("max-age=60, private"),
+        );
+        resp
+    })
 }
 
 /// `GET /api/documents/:id/file/:file_id` — redirect to a presigned download URL.

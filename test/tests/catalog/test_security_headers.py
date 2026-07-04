@@ -77,13 +77,12 @@ def test_csp_allows_htmx_and_tailwind_on_html(api):
 
     Regression guard for the CSP-vs-HTMX bug: fetch a rendered HTML page (e.g.
     ``/login``) and assert it carries a ``Content-Security-Policy`` whose
-    ``script-src`` includes ``'self'``, ``'unsafe-inline'``, ``https://unpkg.com``
-    (HTMX) and ``cdn.tailwindcss.com``. Omitting any of these silently breaks the
-    HTMX-driven web UI in a standards-compliant browser.
+    ``script-src`` includes ``'self'`` and ``'unsafe-inline'``. All assets
+    (HTMX, Tailwind CSS, Chart.js) are self-hosted — no CDN domains needed.
     """
     csp = _require_csp(_get_html(api, "/login"))
     script_src = _csp_directive(csp, "script-src")
-    for needed in ("'self'", "'unsafe-inline'", "https://unpkg.com", "cdn.tailwindcss.com"):
+    for needed in ("'self'", "'unsafe-inline'"):
         assert needed in script_src, (
             f"CSP script-src is missing {needed!r} (got {script_src}); "
             "the HTMX/Tailwind web UI would be blocked in a compliant browser"

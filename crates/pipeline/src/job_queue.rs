@@ -42,11 +42,13 @@ pub const PERMANENT_ERROR_PREFIX: &str = "permanent: ";
 
 /// Calculate the exponential backoff duration for a given attempt count.
 ///
-/// Formula: `min_backoff_ms × 2^attempts`, clamped so the exponent never exceeds 30
-/// (prevents overflow). Uses saturating arithmetic — absurdly large inputs produce a
+/// Formula: `min_backoff_ms × 2^(attempts-1)`, clamped so the exponent never exceeds 30
+/// (prevents overflow). Attempt 1 retries after `min_backoff_ms`; attempt 2 after
+/// `2 × min_backoff_ms`; attempt 3 after `4 × min_backoff_ms`, etc.
+/// Uses saturating arithmetic — absurdly large inputs produce a
 /// clamped result instead of panicking.
 fn calculate_backoff(attempts: i32, min_backoff_ms: i64) -> chrono::Duration {
-    let shift = (attempts.max(0) as u32).min(30);
+    let shift = ((attempts.max(1) - 1) as u32).min(30);
     let ms = min_backoff_ms.saturating_mul(1i64 << shift);
     chrono::Duration::milliseconds(ms)
 }
@@ -746,21 +748,21 @@ mod tests {
     // ── calculate_backoff ────────────────────────────────
 
     #[test]
-    fn backoff_attempt_1_is_2x_min() {
+    fn backoff_attempt_1_is_1x_min() {
         let d = calculate_backoff(1, 10_000);
+        assert_eq!(d.num_milliseconds(), 10_000);
+    }
+
+    #[test]
+    fn backoff_attempt_2_is_2x_min() {
+        let d = calculate_backoff(2, 10_000);
         assert_eq!(d.num_milliseconds(), 20_000);
     }
 
     #[test]
-    fn backoff_attempt_2_is_4x_min() {
-        let d = calculate_backoff(2, 10_000);
-        assert_eq!(d.num_milliseconds(), 40_000);
-    }
-
-    #[test]
-    fn backoff_attempt_3_is_8x_min() {
+    fn backoff_attempt_3_is_4x_min() {
         let d = calculate_backoff(3, 10_000);
-        assert_eq!(d.num_milliseconds(), 80_000);
+        assert_eq!(d.num_milliseconds(), 40_000);
     }
 
     #[test]
@@ -771,14 +773,14 @@ mod tests {
 
     #[test]
     fn backoff_clamped_at_30() {
-        // 2^30 = 1_073_741_824 — at 1ms this fits in i64.
+        // 2^29 = 536_870_912 — with 1ms base this fits in i64.
         let d = calculate_backoff(30, 1);
-        assert_eq!(d.num_milliseconds(), 1_073_741_824);
+        assert_eq!(d.num_milliseconds(), 536_870_912);
     }
 
     #[test]
     fn backoff_clamped_at_31() {
-        // 2^31 would overflow i64 at 1ms, so we clamp to 2^30.
+        // 2^31 would overflow i64, clamped to 2^30 = 1_073_741_824.
         let d = calculate_backoff(31, 1);
         assert_eq!(d.num_milliseconds(), 1_073_741_824);
     }

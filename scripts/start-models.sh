@@ -97,6 +97,66 @@ stop_all() {
   echo "Done."
 }
 
+# Kill just the process listening on a single port.
+stop_port() {
+  local port="$1"
+  local pid
+  pid=$(ss -tlnpH "sport = :$port" 2>/dev/null | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2) || true
+  if [ -n "${pid:-}" ]; then
+    kill "$pid" 2>/dev/null && echo "  ✗ killed :$port (pid $pid)" || true
+  fi
+}
+
+# Start a single model server (text :8080, embed :8081, or rerank :8082).
+start_single() {
+  local port="$1"
+  case "$port" in
+    8080) start_text ;;
+    8081) start_embed ;;
+    8082) start_rerank ;;
+    *) echo "Unknown model port: $port" >&2; return 1 ;;
+  esac
+}
+
+# ── text / vision / code — Qwen3.6-35B-A3B-VL :8080 (GPU, 4×64k ctx) ────
+start_text() {
+  echo "── Starting :8080 text/vision/code (Qwen3.6-35B-A3B-VL, 4×64k ctx, GPU) ──"
+  if _listening 8080; then
+    _green "  ✓ :8080 already listening (reusing)"
+    return 0
+  fi
+  nohup "$LLAMA_BIN_TEXT" -ngl 99 --temp 0 -c 262144 --parallel 4 --host 0.0.0.0 --port 8080 \
+    --model "$MODEL_DIR/$MODEL_TEXT" --mmproj "$MODEL_DIR/$MODEL_MMPROJ" \
+    --reasoning-budget 0 --chat-template-kwargs '{"enable_thinking":false}' \
+    >/tmp/llama-text-8080.log 2>&1 &
+  echo "  ▶ started :8080 (pid $!)"
+}
+
+# ── embeddings — Qwen3-Embedding-4B :8081 ────────────────────────────────
+start_embed() {
+  echo "── Starting :8081 embeddings (Qwen3-Embedding-4B) ──"
+  if _listening 8081; then
+    _green "  ✓ :8081 already listening (reusing)"
+    return 0
+  fi
+  nohup "$LLAMA_BIN" -ngl 99 -c 8192 --host 0.0.0.0 --port 8081 \
+    --model "$MODEL_DIR/$MODEL_EMBED" --embedding --pooling last \
+    >/tmp/llama-embed-8081.log 2>&1 &
+  echo "  ▶ started :8081 (pid $!)"
+}
+
+# ── reranker — ettin sidecar :8082 ───────────────────────────────────────
+start_rerank() {
+  echo "── Starting :8082 reranker (ettin-reranker-400m-v1) ──"
+  if _listening 8082; then
+    _green "  ✓ :8082 already listening (reusing)"
+    return 0
+  fi
+  ETTIN_LOG=/tmp/ettin-rerank-8082.log \
+    PORT=8082 nohup bash tools/ettin-rerank/run.sh >/dev/null 2>&1 &
+  echo "  ▶ started :8082 (pid $!)"
+}
+
 # ── status ──────────────────────────────────────────────────────────────────
 show_status() {
   echo "Model server status:"
@@ -311,13 +371,29 @@ start_all() {
   show_status
 }
 
+# ── targeted restart ─────────────────────────────────────────────────────────
+
+restart_single() {
+  local port="$1"
+  if [ -z "$port" ]; then
+    echo "Usage: $0 restart <port>" >&2
+    exit 1
+  fi
+  echo "Restarting model server on :$port"
+  stop_port "$port"
+  sleep 1
+  start_single "$port"
+}
+
 # ── dispatch ────────────────────────────────────────────────────────────────
 case "${1:-start}" in
   start)   shift; start_all "$@" ;;
   stop)    stop_all ;;
   status)  show_status ;;
+  restart) shift; restart_single "${1:-}" ;;
   *)
-    echo "Usage: $0 {start|stop|status} [--no-fan] [--no-whisper]"
+    echo "Usage: $0 {start|stop|status|restart <port>} [--no-fan] [--no-whisper]"
+    echo "  restart <port>  restart a single model server (8080, 8081, or 8082)"
     exit 1
     ;;
 esac

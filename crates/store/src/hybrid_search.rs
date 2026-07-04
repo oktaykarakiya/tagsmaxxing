@@ -57,28 +57,19 @@ pub(crate) async fn run_hybrid_search(
     query: &Query,
     query_embedding: &[f32],
 ) -> anyhow::Result<Vec<Hit>> {
-    // Edge case: top_k of 0.
     if query.top_k == 0 {
         return Ok(Vec::new());
     }
 
-    // All three reads run inside ONE tenant transaction on the kb_app pool, so the
-    // `app.current_tenant` GUC set by begin_tenant_tx is live for every query and RLS scopes
-    // them to this tenant (P6-T14). Running them on separate pooled connections would lose the
-    // transaction-local GUC and deny every row under the non-BYPASSRLS role.
     let pool = store.app_pool()?;
     let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
 
-    // Resolve tag names to IDs if a tag filter is set. We resolve once and reuse for
-    // both queries.
     let tag_ids = if !query.filters.tags.is_empty() {
         resolve_tag_ids_for_filter(&mut tx, &query.filters.tags).await?
     } else {
         Vec::new()
     };
 
-    // If a tag filter was requested but no tags resolved (e.g. the named tags don't
-    // exist), no document can match — return empty.
     if !query.filters.tags.is_empty() && tag_ids.is_empty() {
         return Ok(Vec::new());
     }
@@ -89,16 +80,11 @@ pub(crate) async fn run_hybrid_search(
         .await
         .context("failed to commit hybrid_search transaction")?;
 
-    // Extract ranked IDs for RRF. The DB query returns rows in relevance order, so
-    // position in the Vec is the rank.
     let vec_ids: Vec<i64> = vec_chunks.iter().map(|c| c.chunk_id).collect();
     let kw_ids: Vec<i64> = kw_chunks.iter().map(|c| c.chunk_id).collect();
 
-    // RRF fusion on chunk IDs.
     let fused = rrf_fuse(&vec_ids, &kw_ids, RRF_K);
 
-    // Map fused (chunk_id, score) pairs back to full ChunkHit values. We collect all
-    // chunk rows into a map by chunk_id for O(1) lookup.
     let chunk_map: HashMap<i64, &ChunkRow> = vec_chunks
         .iter()
         .chain(kw_chunks.iter())
@@ -107,10 +93,7 @@ pub(crate) async fn run_hybrid_search(
 
     let chunk_hits = ranked_rows_to_chunk_hits(store, tenant_id, &fused, &chunk_map).await;
 
-    // Roll up to one Hit per document, keeping best chunk's provenance.
     let mut hits = document_rollup(&chunk_hits);
-
-    // Truncate to requested top_k.
     hits.truncate(query.top_k);
 
     Ok(hits)
@@ -193,12 +176,13 @@ async fn ranked_rows_to_chunk_hits(
     ranked: &[(i64, f32)],
     chunk_map: &HashMap<i64, &ChunkRow>,
 ) -> Vec<ChunkHit> {
+    // Fetch the tenant DEK once before the loop — decrypt_chunk_content would
+    // otherwise re-fetch it (with its own DB query) for every chunk.
+    let dek = store.get_or_create_tenant_dek(tenant_id).await.ok();
     let mut hits = Vec::with_capacity(ranked.len());
     for (chunk_id, score) in ranked {
         if let Some(row) = chunk_map.get(chunk_id) {
-            let snippet = store
-                .decrypt_chunk_content(tenant_id, row.content_enc.as_deref(), &row.content)
-                .await;
+            let snippet = decrypt_snippet(dek.as_ref(), row);
             hits.push(ChunkHit {
                 chunk_id: row.chunk_id,
                 document_id: row.document_id,
@@ -213,6 +197,17 @@ async fn ranked_rows_to_chunk_hits(
         }
     }
     hits
+}
+
+/// Decrypt a chunk row's content using a pre-fetched DEK (or fall back to plaintext).
+fn decrypt_snippet(dek: Option<&[u8; 32]>, row: &ChunkRow) -> String {
+    let Some(enc) = row.content_enc.as_deref() else {
+        return row.content.clone();
+    };
+    let Some(dek) = dek else {
+        return row.content.clone();
+    };
+    kb_core::envelope::decrypt_column(dek, enc).unwrap_or_else(|_| row.content.clone())
 }
 
 // ── Tag resolution ────────────────────────────────────────────────────────────
@@ -335,8 +330,15 @@ async fn execute_keyword_query(
         return Ok(Vec::new());
     }
 
-    // Owned copy for binding into QueryBuilder<'static, _>.
-    let query_text = trimmed.to_string();
+    // Sanitise input for the BM25 parser: strip single/double quotes which
+    // ParadeDB's `paradedb.parse()` interprets as phrase-delimiter syntax
+    // and rejects when malformed (unmatched quotes). The vector arm uses the
+    // unsanitised query text so semantic search is unaffected.
+    let sanitised: String = trimmed
+        .chars()
+        .map(|c| if c == '\'' || c == '"' { ' ' } else { c })
+        .collect();
+    let query_text = sanitised.trim().to_string();
 
     let mut builder = build_base_select();
     // Keyword match condition — must come before optional filters.
@@ -347,11 +349,18 @@ async fn execute_keyword_query(
     builder.push(" ORDER BY paradedb.score(c.id) DESC LIMIT ");
     builder.push_bind(overscan_limit(query.top_k) as i64);
 
-    let rows = builder
+    let rows = match builder
         .build_query_as::<ChunkRow>()
         .fetch_all(&mut *conn)
         .await
-        .context("keyword search query failed")?;
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(error = %e, query_text = %query_text, "keyword search query failed; returning empty keyword arm");
+            // Degrade gracefully — the vector arm still contributes results.
+            return Ok(Vec::new());
+        }
+    };
 
     Ok(dedup_best_chunk_per_document(rows, query.top_k))
 }
@@ -391,14 +400,15 @@ fn push_filters(
     }
 
     // Tag filter — documents must carry ALL specified tags.
+    // Uses a non-correlated IN subquery evaluated once, not per chunk row.
     if !tag_ids.is_empty() {
         builder.push(
-            " AND (SELECT COUNT(DISTINCT dt2.tag_id) FROM document_tags dt2 \
-             WHERE dt2.document_id = d.id AND dt2.tag_id = ANY(",
+            " AND d.id IN (SELECT dt2.document_id FROM document_tags dt2 WHERE dt2.tag_id = ANY(",
         );
         builder.push_bind(tag_ids.to_vec());
-        builder.push(")) = ");
+        builder.push(") GROUP BY dt2.document_id HAVING COUNT(DISTINCT dt2.tag_id) = ");
         builder.push_bind(tag_ids.len() as i64);
+        builder.push(")");
     }
 
     // Date range filters.

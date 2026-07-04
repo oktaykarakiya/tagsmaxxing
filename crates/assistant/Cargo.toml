@@ -34,3 +34,6 @@ uuid = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
 kb-testsupport = { workspace = true }
+kb-scheduler = { workspace = true }
+reqwest = { workspace = true }
+tower = { version = "0.5", features = ["util"] }

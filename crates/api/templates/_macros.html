@@ -117,7 +117,6 @@
     const el = document.getElementById('nav-processing-indicator');
     const count = document.getElementById('nav-processing-count');
     if (!el || !count) return;
-    let timer = null;
     async function refresh() {
       try {
         const resp = await fetch('/api/jobs?limit=1');
@@ -128,15 +127,14 @@
           count.textContent = n;
           el.classList.remove('hidden');
           el.classList.add('inline-flex');
-          if (!timer) timer = setInterval(refresh, 10000);
         } else {
           el.classList.add('hidden');
           el.classList.remove('inline-flex');
-          if (timer) { clearInterval(timer); timer = null; }
         }
       } catch (_e) { /* nav decoration only */ }
     }
     refresh();
+    setInterval(refresh, 10000);
   })();
 </script>
 {% endmacro %}

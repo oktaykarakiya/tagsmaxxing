@@ -12,6 +12,7 @@
 //! **port 9999** (the configured default, per plan §12).
 
 pub mod backpressure;
+pub mod billing_cache;
 pub mod bootstrap;
 pub mod cli;
 pub mod degradation_middleware;
@@ -363,6 +364,9 @@ impl AppState {
 pub fn build_router(state: AppState) -> Router {
     let state = Arc::new(state);
 
+    // Spawn background cleanup for rate-limiter + billing-cache stale entries.
+    crate::middleware::spawn_cleanup_task();
+
     // Public JSON API routes (no auth required).
     let public = Router::new()
         .route("/auth/login", post(handlers::auth::login))
@@ -428,8 +432,19 @@ pub fn build_router(state: AppState) -> Router {
     let web = web::build_web_router(state.clone());
 
     // Assistant routes — always mounted, behind auth middleware.
-    let asst_router =
-        kb_assistant::handlers::build_assistant_router(&state.pg_store, &state.retrieval_pipeline);
+    let asst_cfg = state
+        .app_config
+        .as_ref()
+        .map(|ac| {
+            kb_assistant::config_ext::AssistantConfig::from_toml_with_env(&ac.current().assistant)
+        })
+        .unwrap_or_default();
+    let asst_router = kb_assistant::handlers::build_assistant_router(
+        &state.pg_store,
+        &state.retrieval_pipeline,
+        &state.ingest_pipeline,
+        asst_cfg,
+    );
 
     // Wrap assistant in a protected sub-router so auth middleware applies.
     let assistant = axum::Router::new()
@@ -590,19 +605,11 @@ async fn metrics_handler() -> impl IntoResponse {
 /// [`auth_middleware`] and available to downstream handlers via
 /// `Extension<AuthUser>`.
 ///
-/// Handlers **must** not receive this type without the auth middleware layer —
-/// missing extensions are a 500, not a 401 (the middleware gates access).
-#[derive(Debug, Clone, Copy)]
-pub struct AuthUser {
-    /// The tenant this request is scoped to.
-    pub tenant_id: i64,
-    /// The authenticated user's id.
-    pub user_id: i64,
-    /// The user's role within the tenant.
-    pub role: kb_core::user::UserRole,
-    /// Whether the user's email has been verified (P12-T2).
-    pub email_verified: bool,
-}
+/// The struct itself lives in `kb-core` so sibling route crates (e.g.
+/// `kb-assistant`) can extract the same request extension without a circular
+/// dependency on `kb-api`; this re-export keeps existing `crate::AuthUser`
+/// call sites unchanged.
+pub use kb_core::auth::AuthUser;
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 

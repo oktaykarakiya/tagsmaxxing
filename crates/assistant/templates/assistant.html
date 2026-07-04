@@ -4,8 +4,8 @@
 {% block title %}Assistant{% endblock %}
 
 {% block head_extra %}
-<script src="https://unpkg.com/htmx.org@2.0.4"></script>
-<script src="https://unpkg.com/htmx-ext-sse@2.2.2/sse.js"></script>
+<script src="/static/htmx.min.js"></script>
+<script src="/static/htmx-sse.js"></script>
 {% endblock %}
 
 {% block content %}
@@ -41,14 +41,27 @@
                 </div>
             </div>
 
+            {# ── File attachment area ──────────────────────────────────── #}
+            <div id="upload-area" class="mb-3 px-3 py-2 bg-gray-50 dark:bg-gray-800/50 border border-dashed border-gray-200 dark:border-gray-700 rounded-lg text-xs text-gray-500 dark:text-gray-400" style="display:none">
+                <span id="upload-label">No files attached</span>
+            </div>
+
+            <div id="prompt-errors" class="mb-2 text-xs text-red-500 dark:text-red-400" style="display:none"></div>
+
             <form id="prompt-form"
                   hx-post="/assistant/prompt"
                   hx-target="#output-log"
                   hx-swap="innerHTML"
                   hx-indicator="#spinner"
                   class="flex gap-2">
+                <button type="button" id="btn-attach"
+                        class="text-gray-400 dark:text-gray-500 hover:text-indigo-500 dark:hover:text-indigo-400 px-2 py-3"
+                        title="Attach files">📎</button>
+                <input type="file" id="file-input" name="files" multiple style="display:none"
+                       onchange="handleFileSelect()">
                 <input type="text"
                        name="text"
+                       id="prompt-text"
                        placeholder="Ask anything about your documents..."
                        required
                        class="flex-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg px-4 py-3 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:focus:ring-indigo-400">
@@ -57,6 +70,53 @@
                     Ask
                 </button>
             </form>
+
+            <input type="hidden" id="attached-doc-ids" name="doc_ids" form="prompt-form" value="">
+            <input type="file" id="file-input" multiple style="display:none"
+                   onchange="handleFileSelect()">
+            <script>
+            let attachedDocs = [];
+            function handleFileSelect() {
+                const files = document.getElementById('file-input').files;
+                if (!files.length) return;
+                const formData = new FormData();
+                for (const f of files) formData.append('files', f);
+                const area = document.getElementById('upload-area');
+                const label = document.getElementById('upload-label');
+                const errDiv = document.getElementById('prompt-errors');
+                area.style.display = 'block';
+                label.textContent = `Uploading ${files.length} file(s)...`;
+                errDiv.style.display = 'none';
+                fetch('/assistant/upload', { method: 'POST', body: formData, credentials: 'same-origin' })
+                    .then(r => r.json())
+                    .then(data => {
+                        const names = [];
+                        for (const f of data.files) {
+                            if (f.document_id) {
+                                attachedDocs.push(f.document_id);
+                                names.push(f.name);
+                            }
+                        }
+                        document.getElementById('attached-doc-ids').value = attachedDocs.join(',');
+                        const bytes = names.length === 0 ? '0 files' : 
+                            `${names.length} file(s) — ${names.join(', ')}`;
+                        label.textContent = bytes;
+                        if (names.length < files.length) {
+                            errDiv.style.display = 'block';
+                            errDiv.textContent = `${files.length - names.length} file(s) failed to ingest.`;
+                        }
+                        document.getElementById('file-input').value = '';
+                    })
+                    .catch(e => {
+                        label.textContent = 'Upload failed.';
+                        errDiv.style.display = 'block';
+                        errDiv.textContent = e.message;
+                    });
+            }
+            document.getElementById('btn-attach').addEventListener('click', () => {
+                document.getElementById('file-input').click();
+            });
+            </script>
 
             <div id="spinner" class="htmx-indicator text-center text-sm text-gray-400">
                 <div class="inline-block animate-spin h-4 w-4 border-2 border-indigo-400 border-t-transparent rounded-full mr-2 align-middle"></div>

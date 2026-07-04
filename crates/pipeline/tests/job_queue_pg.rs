@@ -404,7 +404,7 @@ async fn fail_increments_attempts_and_sets_backoff() -> anyhow::Result<()> {
     let attempts = job_attempts(&s.pool, id).await?;
     assert_eq!(attempts, 1);
 
-    // run_after should be in the future (~now + 2 × 5000ms = +10s).
+    // run_after should be in the future (~now + 5000ms = +5s).
     let run_after = job_run_after_epoch(&s.pool, id).await?;
     assert!(
         dbg!(run_after) > dbg!(before),
@@ -797,7 +797,7 @@ async fn failed_job_becomes_claimable_after_backoff() -> anyhow::Result<()> {
     let _ = s.queue.claim().await?;
     s.queue.fail(id, "transient").await?;
 
-    // Immediately — should not be claimable (run_after is ~now + 200ms).
+    // Immediately — should not be claimable (run_after is ~now + 100ms).
     let now = s.queue.claim().await?;
     assert!(now.is_none(), "failed job should wait for backoff");
 

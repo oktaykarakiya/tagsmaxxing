@@ -66,6 +66,8 @@ testcontainers = "0.27.3"
 object_store = { version = "0.13.2", default-features = false }
 # Stream combinators for consuming object_store list streams (§23, P8-T10)
 futures = "0.3"
+# Bridge between tokio channels and async streams (SSE handlers).
+tokio-stream = "0.1"
 # SQLite for the B2 blob read-through cache metadata (plan §20, P8-T2)
 rusqlite = { version = "0.32", features = ["bundled"] }
 # UUID generation (plan §28, P10-T1 DataKey)
@@ -92,3 +94,10 @@ unwrap_used = "deny"
 expect_used = "deny"
 todo = "deny"
 unimplemented = "deny"
+
+# Release profile optimized for the container binary — smaller, faster,
+# and harder to reverse-engineer (no debug symbols).
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

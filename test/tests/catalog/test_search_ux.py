@@ -235,13 +235,15 @@ def test_tag_filter_via_ui_narrows_results(api, page):
     tag_input = page.locator("#search-form input[name='tag']")
 
     # Filtering by an unrelated tag narrows the results — the doc drops out.
-    tag_input.fill(unrelated)
-    page.press("input[name='q']", "Enter")
+    tag_input.type(unrelated, delay=20)
+    page.wait_for_timeout(300)  # wait for HTMX debounce (150ms)
     expect(doc_link).to_have_count(0, timeout=SEARCH_TIMEOUT_MS)
 
     # Filtering by the document's own tag includes it again.
-    tag_input.fill(tag_name)
-    page.press("input[name='q']", "Enter")
+    page.locator("#search-form input[name='tag']").clear()
+    page.locator("#search-form input[name='tag']").type(tag_name, delay=20)
+    page.wait_for_timeout(300)
+    expect(doc_link).to_have_count(1, timeout=SEARCH_TIMEOUT_MS)
     expect(doc_link).to_have_count(1, timeout=SEARCH_TIMEOUT_MS)
 
 

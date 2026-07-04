@@ -249,16 +249,25 @@ impl ChunkEmbedder {
 
         let mut all_vectors = Vec::with_capacity(processed.len());
 
-        for batch in processed.chunks(MAX_EMBED_BATCH_SIZE) {
-            let req = EmbedReq {
-                texts: batch.to_vec(),
-            };
+        let llm = self.llm.clone();
+        let embed_model = self.embed_model.clone();
+        let batch_futures: Vec<_> = processed
+            .chunks(MAX_EMBED_BATCH_SIZE)
+            .map(|batch| {
+                let llm = llm.clone();
+                let embed_model = embed_model.clone();
+                let batch_vec = batch.to_vec();
+                async move {
+                    llm.embed(&embed_model, &EmbedReq { texts: batch_vec }, local_only, 0)
+                        .await
+                }
+            })
+            .collect();
 
-            let resp = self
-                .llm
-                .embed(&self.embed_model, &req, local_only, 0)
-                .await
-                .context("failed to embed batch")?;
+        let results = futures::future::join_all(batch_futures).await;
+
+        for resp in results {
+            let resp = resp.context("failed to embed batch")?;
 
             // Meter this batch's token usage to the tenant (BUG-BILL-03),
             // attributed to the acting user when known (P14-T1/P14-T2). Both

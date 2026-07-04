@@ -185,6 +185,10 @@ impl PgStore {
         let admin_url = self.current_admin_url();
         let admin = PgPoolOptions::new()
             .max_connections(10)
+            .min_connections(2)
+            .acquire_timeout(std::time::Duration::from_secs(10))
+            .idle_timeout(std::time::Duration::from_secs(300))
+            .max_lifetime(std::time::Duration::from_secs(1800))
             .connect(admin_url.as_ref())
             .await
             .context("failed to connect to Postgres (admin role)")?;
@@ -242,6 +246,10 @@ impl PgStore {
         } else {
             PgPoolOptions::new()
                 .max_connections(10)
+                .min_connections(2)
+                .acquire_timeout(std::time::Duration::from_secs(10))
+                .idle_timeout(std::time::Duration::from_secs(300))
+                .max_lifetime(std::time::Duration::from_secs(1800))
                 .connect(app_url.as_ref())
                 .await
                 .context("failed to connect to Postgres (app role)")?
@@ -521,6 +529,7 @@ impl PgStore {
     ///
     /// This is `pub(crate)` so [`run_hybrid_search`] can decrypt snippet text
     /// after reading chunk rows.
+    #[allow(dead_code)]
     pub(crate) async fn decrypt_chunk_content(
         &self,
         tenant_id: i64,
@@ -854,19 +863,43 @@ impl Store for PgStore {
             .execute(&mut *tx)
             .await
             .context("failed to delete old chunks")?;
-        for chunk in chunks {
-            let content_enc = dek
-                .as_ref()
-                .map(|d| envelope::encrypt_column(d, &chunk.content))
-                .transpose()
-                .context("failed to encrypt chunk content")?;
-            let vec_str = format_vector(&chunk.embedding);
-            sqlx::query("INSERT INTO chunks (tenant_id,document_id,file_id,page_no,idx,content,content_enc,ts_offset,embedding) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,CAST($9 AS vector))")
-                .bind(chunk.tenant_id).bind(chunk.document_id).bind(file_id)
-                .bind(chunk.page_no).bind(chunk.idx)
-                .bind(&chunk.content).bind(&content_enc).bind(chunk.ts_offset).bind(&vec_str)
-                .execute(&mut *tx).await
-                .context("failed to insert chunk")?;
+        // Pre-compute encryption + vector formatting for a single batch INSERT.
+        let chunk_data: Vec<(Option<Vec<u8>>, String)> = chunks
+            .iter()
+            .map(|chunk| {
+                let content_enc = dek
+                    .as_ref()
+                    .map(|d| envelope::encrypt_column(d, &chunk.content))
+                    .transpose()
+                    .context("failed to encrypt chunk content")?;
+                let vec_str = format_vector(&chunk.embedding);
+                Ok((content_enc, vec_str))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()
+            .context("failed to prepare chunk data")?;
+
+        if !chunk_data.is_empty() {
+            let mut qb = sqlx::QueryBuilder::new(
+                "INSERT INTO chunks (tenant_id,document_id,file_id,page_no,idx,content,content_enc,ts_offset,embedding) ",
+            );
+            qb.push_values(
+                chunks.iter().zip(chunk_data.iter()),
+                |mut b, (chunk, (content_enc, vec_str))| {
+                    b.push_bind(chunk.tenant_id)
+                        .push_bind(chunk.document_id)
+                        .push_bind(file_id)
+                        .push_bind(chunk.page_no)
+                        .push_bind(chunk.idx)
+                        .push_bind(&chunk.content)
+                        .push_bind(content_enc)
+                        .push_bind(chunk.ts_offset);
+                    b.push(format!("'{vec_str}'::vector"));
+                },
+            );
+            qb.build()
+                .execute(&mut *tx)
+                .await
+                .context("failed to batch-insert chunks")?;
         }
         tx.commit().await.context("failed to commit upsert_chunks")
     }
@@ -1058,20 +1091,22 @@ impl PgStore {
         let pool = self.app_pool()?;
         let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
 
-        for &tag_id in tag_ids {
-            sqlx::query(
-                "INSERT INTO document_tags (document_id, tag_id, source, locked) \
-                 VALUES ($1, $2, $3, $4) \
-                 ON CONFLICT (document_id, tag_id) DO UPDATE SET source = EXCLUDED.source, locked = EXCLUDED.locked",
-            )
-            .bind(document_id)
-            .bind(tag_id)
-            .bind(source.as_str())
-            .bind(locked)
+        let mut qb = sqlx::QueryBuilder::new(
+            "INSERT INTO document_tags (document_id, tag_id, source, locked) ",
+        );
+        qb.push_values(tag_ids, |mut b, &tag_id| {
+            b.push_bind(document_id)
+                .push_bind(tag_id)
+                .push_bind(source.as_str())
+                .push_bind(locked);
+        });
+        qb.push(
+            " ON CONFLICT (document_id, tag_id) DO UPDATE SET source = EXCLUDED.source, locked = EXCLUDED.locked",
+        );
+        qb.build()
             .execute(&mut *tx)
             .await
-            .context("failed to insert document_tag row")?;
-        }
+            .context("failed to insert document_tag rows")?;
 
         tx.commit()
             .await
@@ -1599,17 +1634,21 @@ impl PgStore {
         }
 
         // 3. Insert document tags (LLM-sourced, not locked — plan §6.5, P6-T11).
-        for &tag_id in tag_ids {
-            sqlx::query(
-                "INSERT INTO document_tags (document_id, tag_id, source, locked) \
-                 VALUES ($1, $2, 'llm', false) \
-                 ON CONFLICT (document_id, tag_id) DO NOTHING",
-            )
-            .bind(doc_id)
-            .bind(tag_id)
-            .execute(&mut *tx)
-            .await
-            .context("failed to insert document_tag")?;
+        {
+            let mut qb = sqlx::QueryBuilder::new(
+                "INSERT INTO document_tags (document_id, tag_id, source, locked) ",
+            );
+            qb.push_values(tag_ids, |mut b, &tag_id| {
+                b.push_bind(doc_id)
+                    .push_bind(tag_id)
+                    .push_bind("llm")
+                    .push_bind(false);
+            });
+            qb.push(" ON CONFLICT (document_id, tag_id) DO NOTHING");
+            qb.build()
+                .execute(&mut *tx)
+                .await
+                .context("failed to insert document_tags")?;
         }
 
         // 4. Replace chunks for each file.
@@ -1619,20 +1658,42 @@ impl PgStore {
                 .execute(&mut *tx)
                 .await
                 .context("failed to delete old chunks")?;
-            for chunk in chunks {
-                let content_enc = dek
-                    .as_ref()
-                    .map(|d| envelope::encrypt_column(d, &chunk.content))
-                    .transpose()
-                    .context("failed to encrypt chunk content")?;
-                let vec_str = format_vector(&chunk.embedding);
-                sqlx::query("INSERT INTO chunks (tenant_id,document_id,file_id,page_no,idx,content,content_enc,ts_offset,embedding) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,CAST($9 AS vector))")
-                    .bind(chunk.tenant_id).bind(doc_id).bind(file_id)
-                    .bind(chunk.page_no).bind(chunk.idx)
-                    .bind(&chunk.content).bind(&content_enc)
-                    .bind(chunk.ts_offset).bind(&vec_str)
-                    .execute(&mut *tx).await
-                    .context("failed to insert chunk")?;
+            // Pre-compute encryption + vector formatting for batch insert.
+            let chunk_data: Vec<(Option<Vec<u8>>, String)> = chunks
+                .iter()
+                .map(|chunk| {
+                    let content_enc = dek
+                        .as_ref()
+                        .map(|d| envelope::encrypt_column(d, &chunk.content))
+                        .transpose()
+                        .context("failed to encrypt chunk content")?;
+                    let vec_str = format_vector(&chunk.embedding);
+                    Ok((content_enc, vec_str))
+                })
+                .collect::<anyhow::Result<Vec<_>>>()
+                .context("failed to prepare chunk data")?;
+            if !chunk_data.is_empty() {
+                let mut qb = sqlx::QueryBuilder::new(
+                    "INSERT INTO chunks (tenant_id,document_id,file_id,page_no,idx,content,content_enc,ts_offset,embedding) ",
+                );
+                qb.push_values(
+                    chunks.iter().zip(chunk_data.iter()),
+                    |mut b, (chunk, (content_enc, vec_str))| {
+                        b.push_bind(chunk.tenant_id)
+                            .push_bind(doc_id)
+                            .push_bind(file_id)
+                            .push_bind(chunk.page_no)
+                            .push_bind(chunk.idx)
+                            .push_bind(&chunk.content)
+                            .push_bind(content_enc)
+                            .push_bind(chunk.ts_offset);
+                        b.push(format!("'{vec_str}'::vector"));
+                    },
+                );
+                qb.build()
+                    .execute(&mut *tx)
+                    .await
+                    .context("failed to batch-insert chunks")?;
             }
         }
 
@@ -2441,6 +2502,98 @@ impl PgStore {
         row.map(document_from_row).transpose()
     }
 
+    /// Fetch a document with its files and tags in a single database transaction.
+    ///
+    /// Eliminates two `BEGIN`/`COMMIT` pairs and two RLS context set-ups compared to
+    /// calling [`get_document`], [`get_files_for_document`], and
+    /// [`get_tags_for_document`] separately.
+    ///
+    /// # Errors
+    /// Returns an error if the database is not connected or any query fails.
+    pub async fn get_document_detail(
+        &self,
+        tenant_id: i64,
+        document_id: i64,
+    ) -> anyhow::Result<Option<(Document, Vec<FileRecord>, Vec<kb_core::tag::Tag>)>> {
+        let pool = self.app_pool()?;
+        let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
+
+        let mut doc_row: Option<DocumentRow> = sqlx::query_as(
+            "SELECT id, tenant_id, title, summary, summary_enc, user_note, user_note_enc, kind, meta, page_count, local_only, status, created_at \
+             FROM documents WHERE id = $1",
+        )
+        .bind(document_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .context("failed to fetch document")?;
+
+        let file_rows: Vec<FileRow> = sqlx::query_as(
+            "SELECT id, tenant_id, document_id, page_no, page_label, sha256, blob_key, path, \
+             mime, size_bytes, meta, status, ingested_at \
+             FROM files WHERE document_id = $1 ORDER BY page_no",
+        )
+        .bind(document_id)
+        .fetch_all(&mut *tx)
+        .await
+        .context("failed to fetch files for document")?;
+
+        #[derive(sqlx::FromRow)]
+        struct TagRow {
+            id: i64,
+            tenant_id: i64,
+            name: String,
+            embedding_text: Option<String>,
+        }
+        let tag_rows: Vec<TagRow> = sqlx::query_as(
+            "SELECT t.id, t.tenant_id, t.name, t.embedding::text AS embedding_text \
+             FROM tags t \
+             JOIN document_tags dt ON t.id = dt.tag_id \
+             WHERE dt.document_id = $1 \
+             ORDER BY t.name",
+        )
+        .bind(document_id)
+        .fetch_all(&mut *tx)
+        .await
+        .context("failed to fetch tags for document")?;
+
+        tx.commit()
+            .await
+            .context("failed to commit get_document_detail")?;
+
+        if let Some(ref mut r) = doc_row {
+            self.decrypt_document_row(tenant_id, r).await?;
+        }
+
+        let doc = match doc_row {
+            Some(r) => document_from_row(r)?,
+            None => return Ok(None),
+        };
+
+        let files: Vec<FileRecord> = file_rows
+            .into_iter()
+            .map(file_from_row)
+            .collect::<Result<Vec<_>, anyhow::Error>>()?;
+
+        let tags: Vec<kb_core::tag::Tag> = tag_rows
+            .into_iter()
+            .map(|r| {
+                let embedding = r
+                    .embedding_text
+                    .map(|t| parse_vector_text(&t))
+                    .transpose()
+                    .context("failed to parse tag embedding")?;
+                Ok(kb_core::tag::Tag {
+                    id: r.id,
+                    tenant_id: r.tenant_id,
+                    name: r.name,
+                    embedding,
+                })
+            })
+            .collect::<Result<Vec<_>, anyhow::Error>>()?;
+
+        Ok(Some((doc, files, tags)))
+    }
+
     /// Fetch all files belonging to a document, ordered by `page_no`.
     ///
     /// Returns an empty `Vec` if the document has no files or does not exist
@@ -2519,6 +2672,47 @@ impl PgStore {
                 })
             })
             .collect()
+    }
+
+    /// Batch variant: fetch tags for multiple documents in a single round-trip.
+    ///
+    /// Returns a map from `document_id` → tag names. Documents with no tags
+    /// are represented as empty vectors. Uses `ANY($1)` to avoid N+1 queries.
+    pub async fn get_tags_for_documents(
+        &self,
+        tenant_id: i64,
+        doc_ids: &[i64],
+    ) -> anyhow::Result<std::collections::HashMap<i64, Vec<String>>> {
+        if doc_ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let pool = self.app_pool()?;
+        let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            document_id: i64,
+            name: String,
+        }
+        let rows: Vec<Row> = sqlx::query_as(
+            "SELECT dt.document_id, t.name \
+             FROM document_tags dt \
+             JOIN tags t ON t.id = dt.tag_id \
+             WHERE dt.document_id = ANY($1) \
+             ORDER BY t.name",
+        )
+        .bind(doc_ids)
+        .fetch_all(&mut *tx)
+        .await
+        .context("failed to batch-fetch tags for documents")?;
+        tx.commit()
+            .await
+            .context("failed to commit batch tag fetch")?;
+        let mut map: std::collections::HashMap<i64, Vec<String>> =
+            std::collections::HashMap::with_capacity(doc_ids.len());
+        for row in rows {
+            map.entry(row.document_id).or_default().push(row.name);
+        }
+        Ok(map)
     }
 
     /// Look up a tag by canonical name within a tenant.

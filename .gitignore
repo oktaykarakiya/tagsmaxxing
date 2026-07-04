@@ -25,6 +25,9 @@ config.toml
 # Claude Code session artifacts
 /.claude/
 
+# Generated dev stylesheet (`just tailwind`); the container builds its own copy.
+/crates/api/static/tailwind.css
+
 # Editor noise
 *.rs.bk
 .DS_Store
