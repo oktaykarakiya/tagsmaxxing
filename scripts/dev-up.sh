@@ -238,6 +238,9 @@ do_status() {
 # ── dispatch ────────────────────────────────────────────────────────────────
 case "${1:-start}" in
   start|up)   [ $# -gt 0 ] && shift; do_start "$@" ;;
+  # Bare-flag form documented in the header and wired as `just up --rebuild`:
+  # the flag goes straight to do_start without a leading start/up word.
+  --rebuild)  do_start "$@" ;;
   down|stop)  do_down ;;
   status)     do_status ;; 
   --help|-h|help)
