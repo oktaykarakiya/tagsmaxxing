@@ -354,6 +354,202 @@ impl PgStore {
         tx.commit().await?;
         Ok(())
     }
+    /// Atomically claim up to `batch_limit` due documents for re-fetch.
+    ///
+    /// Uses the **admin pool** (cross-tenant scan; `documents` do not have RLS
+    /// on the scan itself — the worker resolves the tenant per-document).
+    /// `FOR UPDATE SKIP LOCKED` prevents concurrent scanners from claiming the
+    /// same document. The claim bump on `next_fetch_at` is a placeholder — the
+    /// worker overwrites it at completion. Returns `(doc_id, tenant_id)` pairs.
+    pub async fn claim_due_documents(
+        &self,
+        batch_limit: usize,
+        min_interval_secs: i64,
+    ) -> anyhow::Result<Vec<(i64, i64)>> {
+        let pool = self.admin_pool()?;
+        let rows: Vec<(i64, i64)> = sqlx::query_as(
+            "WITH due AS ( \
+               SELECT id, tenant_id FROM documents \
+               WHERE source_url IS NOT NULL \
+                 AND next_fetch_at IS NOT NULL \
+                 AND next_fetch_at <= now() \
+               ORDER BY next_fetch_at \
+               LIMIT $1 \
+               FOR UPDATE SKIP LOCKED \
+             ) \
+             UPDATE documents d SET \
+               next_fetch_at = now() + make_interval(secs => GREATEST($2, COALESCE(d.fetch_interval_secs, $2))) \
+             FROM due WHERE d.id = due.id \
+             RETURNING d.id, d.tenant_id",
+        )
+        .bind(batch_limit as i64)
+        .bind(min_interval_secs as f64)
+        .fetch_all(&pool)
+        .await
+        .context("failed to claim due documents")?;
+
+        Ok(rows)
+    }
+
+    /// Mark a document's re-fetch as unchanged (content hash matched).
+    ///
+    /// Bumps `last_fetched_at`, stores the new `sha256`, updates `next_fetch_at`,
+    /// and resets `fetch_failure_count`. Called by the refetch worker on a
+    /// no-change result.
+    pub async fn mark_document_fetch_unchanged(
+        &self,
+        tenant_id: i64,
+        doc_id: i64,
+        new_sha256: &[u8],
+        next_fetch_at: chrono::DateTime<chrono::Utc>,
+    ) -> anyhow::Result<()> {
+        let pool = self.app_pool()?;
+        let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
+
+        sqlx::query(
+            "UPDATE documents SET \
+             last_fetched_at = now(), \
+             last_fetch_sha256 = $3, \
+             next_fetch_at = $4, \
+             fetch_failure_count = 0 \
+             WHERE id = $1 AND tenant_id = $2",
+        )
+        .bind(doc_id)
+        .bind(tenant_id)
+        .bind(new_sha256)
+        .bind(next_fetch_at)
+        .execute(&mut *tx)
+        .await
+        .context("failed to mark document fetch unchanged")?;
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Mark a document's re-fetch as failed, applying schedule-level backoff.
+    ///
+    /// Increments `fetch_failure_count`, computes the backoff delay via
+    /// [`kb_core::source_sync::compute_failure_backoff`], and sets
+    /// `next_fetch_at = now() + backoff`. At failure count 10 and beyond,
+    /// sets `next_fetch_at = NULL` (pauses sync for this document) and
+    /// resets the failure count to 10 (paused state).
+    pub async fn mark_document_fetch_failed(
+        &self,
+        tenant_id: i64,
+        doc_id: i64,
+        min_fetch_interval: i64,
+        max_backoff: i64,
+    ) -> anyhow::Result<()> {
+        use kb_core::source_sync::compute_failure_backoff;
+
+        let pool = self.app_pool()?;
+        let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
+
+        // Fetch current interval + failure count for backoff math.
+        let (interval, failure_count): (Option<i64>, i32) = sqlx::query_as(
+            "SELECT fetch_interval_secs, fetch_failure_count FROM documents WHERE id = $1",
+        )
+        .bind(doc_id)
+        .fetch_one(&mut *tx)
+        .await
+        .context("failed to read document for failure backoff")?;
+
+        let new_count = (failure_count + 1).min(10);
+        let base = interval.unwrap_or(min_fetch_interval);
+
+        if new_count >= 10 {
+            // Pause: set next_fetch_at to NULL to stop scanning.
+            sqlx::query(
+                "UPDATE documents SET \
+                 fetch_failure_count = 10, \
+                 next_fetch_at = NULL, \
+                 last_fetched_at = now() \
+                 WHERE id = $1 AND tenant_id = $2",
+            )
+            .bind(doc_id)
+            .bind(tenant_id)
+            .execute(&mut *tx)
+            .await
+            .context("failed to pause document fetch")?;
+        } else {
+            let backoff_secs = compute_failure_backoff(base, new_count, max_backoff);
+            let next = chrono::Utc::now() + chrono::Duration::seconds(backoff_secs);
+
+            sqlx::query(
+                "UPDATE documents SET \
+                 fetch_failure_count = $3, \
+                 next_fetch_at = $4, \
+                 last_fetched_at = now() \
+                 WHERE id = $1 AND tenant_id = $2",
+            )
+            .bind(doc_id)
+            .bind(tenant_id)
+            .bind(new_count)
+            .bind(next)
+            .execute(&mut *tx)
+            .await
+            .context("failed to update document fetch failure backoff")?;
+        }
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Collect the full live document text from all non-tombstoned chunks,
+    /// ordered by file page_no then chunk index, decrypted if needed.
+    ///
+    /// Used by the refetch worker to capture the "old" text before re-ingest
+    /// so the diff-summary LLM has both sides to compare.
+    pub async fn get_live_document_text(
+        &self,
+        tenant_id: i64,
+        doc_id: i64,
+    ) -> anyhow::Result<String> {
+        let pool = self.app_pool()?;
+        let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
+
+        #[derive(sqlx::FromRow)]
+        struct ChunkTextRow {
+            content: Option<String>,
+            content_enc: Option<Vec<u8>>,
+        }
+
+        let rows: Vec<ChunkTextRow> = sqlx::query_as(
+            "SELECT c.content, c.content_enc \
+             FROM chunks c \
+             JOIN files f ON c.file_id = f.id \
+             WHERE c.document_id = $1 AND c.superseded_at IS NULL AND f.superseded_at IS NULL \
+             ORDER BY f.page_no, c.idx",
+        )
+        .bind(doc_id)
+        .fetch_all(&mut *tx)
+        .await
+        .context("failed to fetch live document text")?;
+
+        tx.commit().await?;
+
+        let mut text = String::new();
+        for row in rows {
+            let chunk_text = if let Some(ref enc) = row.content_enc {
+                if self.kek().is_some() {
+                    let dek = self.get_or_create_tenant_dek(tenant_id).await?;
+                    kb_core::envelope::decrypt_column(&dek, enc)?
+                } else {
+                    row.content.unwrap_or_default()
+                }
+            } else {
+                row.content.unwrap_or_default()
+            };
+            if !chunk_text.is_empty() {
+                if !text.is_empty() {
+                    text.push('\n');
+                }
+                text.push_str(&chunk_text);
+            }
+        }
+
+        Ok(text)
+    }
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────

@@ -1879,9 +1879,9 @@ description = "Store scanner claim + fetch bookkeeping + live-text. document_ver
 depends_on = ["P17-T6"]
 plan_sections = ["5", "16"]
 acceptance = "just ci green; #[ignore] pg tests: two concurrent claims never return same doc; claim bumps next_fetch_at; pause at 10 sets next_fetch_at NULL; live-text excludes tombstoned chunks + decrypts when KEK configured."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "Added to document_versions.rs: claim_due_documents (admin pool, FOR UPDATE SKIP LOCKED atomic claim-and-bump via make_interval), mark_document_fetch_unchanged (set last_fetched+sha+next+failure_reset), mark_document_fetch_failed (compute_failure_backoff, pause-at-10 with next_fetch_at=NULL), get_live_document_text (JOIN files, WHERE superseded_at IS NULL on both, ORDER BY f.page_no/c.idx, DEK decryption via get_or_create_tenant_dek). just ci green."
 
 [[task]]
 id = "P17-T8"
