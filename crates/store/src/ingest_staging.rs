@@ -257,6 +257,45 @@ impl PgStore {
         })
     }
 
+    /// Stage a URL-only pending document for the "Add from URL" flow (P17-T11).
+    ///
+    /// Creates a bare document row (`status='pending'`, no files, no blobs)
+    /// with `source_url` and `fetch_interval_secs` pre-set. The refetch worker
+    /// handles the actual fetch on its first run — the handler returns 202
+    /// immediately and the user polls for completion.
+    ///
+    /// # Errors
+    /// Returns an error if `source_url` is empty, the database is not
+    /// connected, or any query fails.
+    pub async fn create_pending_url_ingest(
+        &self,
+        tenant_id: i64,
+        source_url: &str,
+        fetch_interval_secs: Option<i64>,
+        local_only: bool,
+    ) -> anyhow::Result<i64> {
+        anyhow::ensure!(!source_url.is_empty(), "source_url must not be empty");
+        let pool = self.app_pool()?;
+        let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
+
+        let doc_id: i64 = sqlx::query_scalar(
+            "INSERT INTO documents (tenant_id, kind, meta, page_count, status, local_only, source_url, fetch_interval_secs) \
+             VALUES ($1, 'document', '{}', 1, 'pending', $2, $3, $4) RETURNING id",
+        )
+        .bind(tenant_id)
+        .bind(local_only)
+        .bind(source_url)
+        .bind(fetch_interval_secs)
+        .fetch_one(&mut *tx)
+        .await
+        .context("failed to insert pending URL-ingest document")?;
+
+        tx.commit()
+            .await
+            .context("failed to commit create_pending_url_ingest")?;
+        Ok(doc_id)
+    }
+
     /// Stage additional `pending` files against an **existing** document and
     /// flip the document back to `pending` for re-processing (P15-T5, the web
     /// "add page" flow). Returns the staged file row ids.
@@ -383,7 +422,7 @@ impl PgStore {
         let (tenant_pending, global_pending): (i64, i64) = sqlx::query_as(
             "SELECT count(*) FILTER (WHERE tenant_id = $1), count(*) \
              FROM jobs \
-             WHERE kind = 'ingest' AND status IN ('queued','running','failed')",
+             WHERE kind IN ('ingest','refetch') AND status IN ('queued','running','failed')",
         )
         .bind(tenant_id)
         .fetch_one(&pool)
