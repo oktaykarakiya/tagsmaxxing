@@ -451,7 +451,25 @@ pub fn is_internal_host(host: &str) -> bool {
 }
 
 /// Determine whether an IP address belongs to an internal network.
+///
+/// IPv4-mapped IPv6 addresses (`::ffff:a.b.c.d`) are automatically converted to
+/// their native IPv4 form before internal-network checks are applied, so an
+/// address like `::ffff:127.0.0.1` is correctly classified as loopback.
 pub fn is_internal_ip(ip: IpAddr) -> bool {
+    // Normalize v4-mapped IPv6 → native v4 so the v4-private/loopback/link-local
+    // checks cover it. Skipped IPv6-only ranges (unique-local, link-local) apply
+    // only to non-mapped v6 addresses.
+    // Use to_ipv4_mapped() — converts only the ::ffff:0:0/96 range
+    // (RFC 4291 §2.5.5.2). to_ipv4() would also convert IPv4-compatible
+    // addresses like ::1 → 0.0.0.1, which incorrectly escapes the v6-is-
+    // loopback check.
+    let ip = match ip {
+        IpAddr::V6(v6) => v6
+            .to_ipv4_mapped()
+            .map(IpAddr::V4)
+            .unwrap_or(IpAddr::V6(v6)),
+        v4 @ IpAddr::V4(_) => v4,
+    };
     match ip {
         IpAddr::V4(v4) => {
             v4.is_loopback()
@@ -1003,6 +1021,27 @@ mod tests {
     fn public_ipv4_not_internal() {
         assert!(!is_internal_ip(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
         assert!(!is_internal_ip(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))));
+    }
+
+    #[test]
+    fn ipv4_mapped_v6_loopback_is_internal() {
+        // ::ffff:127.0.0.1 must be caught as loopback, not bypassed as v6.
+        let mapped = Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, 0x7f00, 0x0001);
+        assert!(is_internal_ip(IpAddr::V6(mapped)));
+    }
+
+    #[test]
+    fn ipv4_mapped_v6_private_is_internal() {
+        // ::ffff:192.168.1.1 must be caught as private.
+        let mapped = Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, 0xc0a8, 0x0101);
+        assert!(is_internal_ip(IpAddr::V6(mapped)));
+    }
+
+    #[test]
+    fn ipv4_mapped_v6_public_is_not_internal() {
+        // ::ffff:8.8.8.8 is a legitimate public address.
+        let mapped = Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, 0x0808, 0x0808);
+        assert!(!is_internal_ip(IpAddr::V6(mapped)));
     }
 
     #[test]

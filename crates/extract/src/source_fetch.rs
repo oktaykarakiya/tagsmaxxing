@@ -504,6 +504,19 @@ mod tests {
     }
 
     #[test]
+    fn ipv4_mapped_v6_loopback_rejected() {
+        // ::ffff:127.0.0.1 must be caught via v4→v6 mapping normalization.
+        let err = validate_url("http://[::ffff:127.0.0.1]:8080/data").unwrap_err();
+        assert!(matches!(err, FetchError::InternalAddress(_)));
+    }
+
+    #[test]
+    fn ipv4_mapped_v6_private_rejected() {
+        let err = validate_url("http://[::ffff:192.168.1.1]:8080/data").unwrap_err();
+        assert!(matches!(err, FetchError::InternalAddress(_)));
+    }
+
+    #[test]
     fn garbage_string_is_rejected() {
         let err = validate_url("not a url at all").unwrap_err();
         assert!(matches!(err, FetchError::UnsupportedScheme(_)));
