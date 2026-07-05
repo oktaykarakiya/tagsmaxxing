@@ -73,6 +73,17 @@ str_enum! {
         BillingOverride = "billing_override",
         /// A tenant's billing status was changed (lifecycle transition).
         BillingStatusChanged = "billing_status_changed",
+        /// A document was successfully re-fetched from its source URL and a new
+        /// version snapshot was created (P17 source-sync).
+        DocumentRefetched = "document_refetched",
+        /// A document's source URL was re-fetched but the content was unchanged,
+        /// so no new version was created (P17 source-sync).
+        DocumentRefetchSkipped = "document_refetch_skipped",
+        /// A document's source URL re-fetch failed (P17 source-sync).
+        DocumentRefetchFailed = "document_refetch_failed",
+        /// A document's source-sync settings were updated (source_url,
+        /// fetch_interval, or both cleared) (P17 source-sync).
+        DocumentSourceUpdated = "document_source_updated",
     }
 }
 
@@ -178,7 +189,23 @@ mod tests {
             AuditAction::BillingStatusChanged.as_str(),
             "billing_status_changed"
         );
-        assert_eq!(AuditAction::all().len(), 23);
+        assert_eq!(
+            AuditAction::DocumentRefetched.as_str(),
+            "document_refetched"
+        );
+        assert_eq!(
+            AuditAction::DocumentRefetchSkipped.as_str(),
+            "document_refetch_skipped"
+        );
+        assert_eq!(
+            AuditAction::DocumentRefetchFailed.as_str(),
+            "document_refetch_failed"
+        );
+        assert_eq!(
+            AuditAction::DocumentSourceUpdated.as_str(),
+            "document_source_updated"
+        );
+        assert_eq!(AuditAction::all().len(), 27);
     }
 
     #[test]

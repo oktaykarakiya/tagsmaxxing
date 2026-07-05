@@ -2242,7 +2242,8 @@ impl PgStore {
         let pool = self.app_pool()?;
         let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
         let mut rows: Vec<DocumentRow> = sqlx::query_as(
-            "SELECT id, tenant_id, title, summary, summary_enc, user_note, user_note_enc, kind, meta, page_count, local_only, status, created_at \
+            "SELECT id, tenant_id, title, summary, summary_enc, user_note, user_note_enc, kind, meta, page_count, local_only, status, created_at, \
+             source_url, fetch_interval_secs, next_fetch_at, last_fetched_at, last_fetch_sha256, current_version, fetch_failure_count \
              FROM documents WHERE tenant_id = $1 ORDER BY id",
         )
         .bind(tenant_id)
@@ -2485,7 +2486,8 @@ impl PgStore {
         let pool = self.app_pool()?;
         let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
         let mut row: Option<DocumentRow> = sqlx::query_as(
-            "SELECT id, tenant_id, title, summary, summary_enc, user_note, user_note_enc, kind, meta, page_count, local_only, status, created_at \
+            "SELECT id, tenant_id, title, summary, summary_enc, user_note, user_note_enc, kind, meta, page_count, local_only, status, created_at, \
+             source_url, fetch_interval_secs, next_fetch_at, last_fetched_at, last_fetch_sha256, current_version, fetch_failure_count \
              FROM documents WHERE id = $1",
         )
         .bind(doc_id)
@@ -2519,7 +2521,8 @@ impl PgStore {
         let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
 
         let mut doc_row: Option<DocumentRow> = sqlx::query_as(
-            "SELECT id, tenant_id, title, summary, summary_enc, user_note, user_note_enc, kind, meta, page_count, local_only, status, created_at \
+            "SELECT id, tenant_id, title, summary, summary_enc, user_note, user_note_enc, kind, meta, page_count, local_only, status, created_at, \
+             source_url, fetch_interval_secs, next_fetch_at, last_fetched_at, last_fetch_sha256, current_version, fetch_failure_count \
              FROM documents WHERE id = $1",
         )
         .bind(document_id)
@@ -2839,6 +2842,13 @@ struct DocumentRow {
     local_only: bool,
     status: String,
     created_at: chrono::DateTime<chrono::Utc>,
+    source_url: Option<String>,
+    fetch_interval_secs: Option<i64>,
+    next_fetch_at: Option<chrono::DateTime<chrono::Utc>>,
+    last_fetched_at: Option<chrono::DateTime<chrono::Utc>>,
+    last_fetch_sha256: Option<Vec<u8>>,
+    current_version: i32,
+    fetch_failure_count: i32,
 }
 
 /// Convert a [`DocumentRow`] into a [`Document`].
@@ -2860,6 +2870,13 @@ fn document_from_row(r: DocumentRow) -> anyhow::Result<Document> {
         status,
         created_at: r.created_at,
         local_only: r.local_only,
+        source_url: r.source_url,
+        fetch_interval_secs: r.fetch_interval_secs,
+        next_fetch_at: r.next_fetch_at,
+        last_fetched_at: r.last_fetched_at,
+        last_fetch_sha256: r.last_fetch_sha256,
+        current_version: r.current_version,
+        fetch_failure_count: r.fetch_failure_count,
     })
 }
 
@@ -3534,6 +3551,13 @@ mod tests {
             status: kb_core::status::ProcessingStatus::Pending,
             created_at: chrono::Utc::now(),
             local_only: false,
+            source_url: None,
+            fetch_interval_secs: None,
+            next_fetch_at: None,
+            last_fetched_at: None,
+            last_fetch_sha256: None,
+            current_version: 1,
+            fetch_failure_count: 0,
         }
     }
 
@@ -4008,6 +4032,13 @@ mod tests {
                     status: ProcessingStatus::Ready,
                     created_at: chrono::Utc::now(),
                     local_only: false,
+                    source_url: None,
+                    fetch_interval_secs: None,
+                    next_fetch_at: None,
+                    last_fetched_at: None,
+                    last_fetch_sha256: None,
+                    current_version: 1,
+                    fetch_failure_count: 0,
                 };
 
                 let _doc_id2 = store
@@ -4795,6 +4826,13 @@ mod tests {
             local_only: false,
             status: "ready".into(),
             created_at: chrono::Utc::now(),
+            source_url: None,
+            fetch_interval_secs: None,
+            next_fetch_at: None,
+            last_fetched_at: None,
+            last_fetch_sha256: None,
+            current_version: 1,
+            fetch_failure_count: 0,
         };
         let doc = document_from_row(row).unwrap();
         assert_eq!(doc.id, 1);
@@ -4820,6 +4858,13 @@ mod tests {
             local_only: false,
             status: "ready".into(),
             created_at: chrono::Utc::now(),
+            source_url: None,
+            fetch_interval_secs: None,
+            next_fetch_at: None,
+            last_fetched_at: None,
+            last_fetch_sha256: None,
+            current_version: 1,
+            fetch_failure_count: 0,
         };
         let err = document_from_row(row).unwrap_err();
         assert!(err.to_string().contains("invalid DocKind"));

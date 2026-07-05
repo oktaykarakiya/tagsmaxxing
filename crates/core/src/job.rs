@@ -37,6 +37,9 @@ str_enum! {
         /// Payload is a JSON-serialized [`EmailJobPayload`] stored in `last_error`
         /// (reused as a payload column for this job kind).
         SendEmail = "send_email",
+        /// Re-fetch a document's `source_url`, compare content hashes, and if changed,
+        /// re-ingest + record a new version snapshot with an LLM diff summary (P17).
+        Refetch = "refetch",
     }
 }
 
@@ -110,7 +113,9 @@ mod tests {
         assert_eq!(JobKind::OrphanGc.as_str(), "orphan_gc");
         assert_eq!(JobKind::IntegrityScan.as_str(), "integrity_scan");
         assert_eq!(JobKind::DeleteTenant.as_str(), "delete_tenant");
-        assert_eq!(JobKind::all().len(), 9);
+        assert_eq!(JobKind::SendEmail.as_str(), "send_email");
+        assert_eq!(JobKind::Refetch.as_str(), "refetch");
+        assert_eq!(JobKind::all().len(), 10);
     }
 
     #[test]

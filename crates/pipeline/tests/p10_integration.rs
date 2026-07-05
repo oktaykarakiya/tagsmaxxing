@@ -662,6 +662,13 @@ async fn crypto_shred_full_cycle_create_retrieve_shred_unrecoverable() -> anyhow
         status: kb_core::status::ProcessingStatus::Ready,
         created_at: chrono::Utc::now(),
         local_only: false,
+        source_url: None,
+        fetch_interval_secs: None,
+        next_fetch_at: None,
+        last_fetched_at: None,
+        last_fetch_sha256: None,
+        current_version: 1,
+        fetch_failure_count: 0,
     };
     let doc_id = store.upsert_document(&doc).await?;
     assert!(doc_id > 0, "document must be upserted");
@@ -943,6 +950,13 @@ async fn kek_rotation_with_db_stored_dek_re_wrap_and_verify() -> anyhow::Result<
         status: kb_core::status::ProcessingStatus::Ready,
         created_at: chrono::Utc::now(),
         local_only: false,
+        source_url: None,
+        fetch_interval_secs: None,
+        next_fetch_at: None,
+        last_fetched_at: None,
+        last_fetch_sha256: None,
+        current_version: 1,
+        fetch_failure_count: 0,
     };
     let doc_id = store.upsert_document(&doc).await?;
     assert!(doc_id > 0);
@@ -1020,6 +1034,13 @@ async fn kek_rotation_new_kek_after_rotation_decrypts_document() -> anyhow::Resu
         status: kb_core::status::ProcessingStatus::Ready,
         created_at: chrono::Utc::now(),
         local_only: false,
+        source_url: None,
+        fetch_interval_secs: None,
+        next_fetch_at: None,
+        last_fetched_at: None,
+        last_fetch_sha256: None,
+        current_version: 1,
+        fetch_failure_count: 0,
     };
     let doc_id = store.upsert_document(&doc).await?;
 

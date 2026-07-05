@@ -1824,9 +1824,9 @@ description = "kb-core types: Document gains source_url, fetch_interval_secs, ne
 depends_on = ["P17-T1"]
 plan_sections = ["4", "31.3", "31.4"]
 acceptance = "just ci green; source_sync.rs pure functions ~100% covered (happy + edge + proptest); wire strings locked by enum count + as_str tests."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "Document gains 7 source-sync fields. New document_version.rs: DocumentVersion + TagSnapshotEntry. New source_sync.rs: clamp_fetch_interval, compute_next_fetch_at, compute_failure_backoff (saturating, clamped at 32x max), decide_refetch_action + 16 tests incl. monotonic proptest. JobKind::Refetch (count 9→10). AuditAction ×4: DocumentRefetched/RefetchSkipped/RefetchFailed/DocumentSourceUpdated (count 23→27). lib.rs exports. pg_store.rs: DocumentRow + document_from_row + 3 SQL queries + 2 test constructors updated. All 14 Document constructor sites across the workspace fixed."
 
 [[task]]
 id = "P17-T3"

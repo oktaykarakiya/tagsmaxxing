@@ -710,6 +710,13 @@ async fn transactional_ingest_respects_tenant_boundary() -> anyhow::Result<()> {
         status: ProcessingStatus::Pending,
         created_at: Utc::now(),
         local_only: false,
+        source_url: None,
+        fetch_interval_secs: None,
+        next_fetch_at: None,
+        last_fetched_at: None,
+        last_fetch_sha256: None,
+        current_version: 1,
+        fetch_failure_count: 0,
     };
     let rec = make_file_rec(s.tenant_a, 0, 1, "isolated-page");
     let tag_id = s

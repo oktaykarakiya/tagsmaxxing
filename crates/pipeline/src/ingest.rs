@@ -598,6 +598,13 @@ impl IngestPipeline {
             status: ProcessingStatus::Ready,
             created_at: document.created_at,
             local_only,
+            source_url: document.source_url,
+            fetch_interval_secs: document.fetch_interval_secs,
+            next_fetch_at: document.next_fetch_at,
+            last_fetched_at: document.last_fetched_at,
+            last_fetch_sha256: document.last_fetch_sha256,
+            current_version: document.current_version,
+            fetch_failure_count: document.fetch_failure_count,
         };
 
         let doc_id = self
@@ -3038,6 +3045,13 @@ mod tests {
             status: ProcessingStatus::Ready,
             created_at: chrono::Utc::now(),
             local_only: false,
+            source_url: None,
+            fetch_interval_secs: None,
+            next_fetch_at: None,
+            last_fetched_at: None,
+            last_fetch_sha256: None,
+            current_version: 1,
+            fetch_failure_count: 0,
         };
         let files = vec![];
         let tag_ids = vec![1i64, 2];

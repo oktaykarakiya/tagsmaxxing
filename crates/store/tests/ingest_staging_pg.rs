@@ -64,6 +64,13 @@ fn doc(tenant_id: i64, note: &str) -> Document {
         status: ProcessingStatus::Pending,
         created_at: chrono::Utc::now(),
         local_only: true,
+        source_url: None,
+        fetch_interval_secs: None,
+        next_fetch_at: None,
+        last_fetched_at: None,
+        last_fetch_sha256: None,
+        current_version: 1,
+        fetch_failure_count: 0,
     }
 }
 
