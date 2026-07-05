@@ -1901,9 +1901,9 @@ description = "Refetch worker handler + pool dispatch. New crates/pipeline/src/r
 depends_on = ["P17-T3", "P17-T4", "P17-T5", "P17-T6", "P17-T7", "P17-T8"]
 plan_sections = ["7", "16"]
 acceptance = "just ci green; unit tests with mocked fetcher/store/LLM: unchanged short-circuit, changed full path incl. version insert ordering, diff-failure fallback, permanent-vs-transient classification, audit events per outcome, local_only OR rule, revert-to-old-sha path."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "New crates/pipeline/src/refetch_worker.rs: process_refetch_job (fetch→hash→decide: unchanged=skip-audit, changed=reingest+version+diff+audit, failure=backoff+audit+classify). reingest_changed: old-text snapshot→ingest_into→diff-summary→insert_document_version_and_advance→set_next_fetch→audit. record_failure + emit_audit helpers. Added kb-extract dep to pipeline. worker_pool.rs: spawn_refetch_workers (claims [Refetch], resolves plan_local_only, dispatches to process_refetch_job). document_versions.rs: set_document_next_fetch_at method. lib.rs + imports wired. just ci green."
 
 [[task]]
 id = "P17-T10"

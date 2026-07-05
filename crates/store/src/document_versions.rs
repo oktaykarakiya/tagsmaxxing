@@ -495,6 +495,27 @@ impl PgStore {
         Ok(())
     }
 
+    /// Set the next fetch timestamp for a document (called after a successful
+    /// re-fetch to schedule the next cycle).
+    pub async fn set_document_next_fetch_at(
+        &self,
+        tenant_id: i64,
+        doc_id: i64,
+        next_fetch_at: chrono::DateTime<chrono::Utc>,
+    ) -> anyhow::Result<()> {
+        let pool = self.app_pool()?;
+        let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
+        sqlx::query("UPDATE documents SET next_fetch_at = $3 WHERE id = $1 AND tenant_id = $2")
+            .bind(doc_id)
+            .bind(tenant_id)
+            .bind(next_fetch_at)
+            .execute(&mut *tx)
+            .await
+            .context("failed to set next_fetch_at")?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// Collect the full live document text from all non-tombstoned chunks,
     /// ordered by file page_no then chunk index, decrypted if needed.
     ///

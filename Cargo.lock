@@ -2186,6 +2186,7 @@ dependencies = [
  "image",
  "kb-config",
  "kb-core",
+ "kb-extract",
  "kb-llm",
  "kb-logging",
  "kb-metrics",

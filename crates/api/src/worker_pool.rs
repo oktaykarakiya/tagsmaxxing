@@ -15,6 +15,7 @@ use std::time::Duration;
 
 use kb_core::blob::Blob;
 use kb_core::job::JobKind;
+use kb_llm::DiffSummaryGenerator;
 use kb_pipeline::ingest::IngestPipeline;
 use kb_pipeline::job_queue::JobQueue;
 use kb_pipeline::{process_queued_ingest, run_lease_reaper, run_worker_pool};
@@ -65,6 +66,58 @@ pub fn spawn_ingest_workers(
         job_queue,
         concurrency,
         vec![JobKind::Ingest],
+        shutdown,
+        handler,
+    ))
+}
+
+/// Spawn refetch workers (P17-T9): claim [`JobKind::Refetch`] jobs and run
+/// [`kb_pipeline::refetch_worker::process_refetch_job`].
+///
+/// # Panics
+/// Panics if the shutdown channel is dropped before the spawned task completes.
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_refetch_workers(
+    job_queue: Arc<JobQueue>,
+    pipeline: Arc<IngestPipeline>,
+    pg_store: Arc<PgStore>,
+    diff_gen: Arc<DiffSummaryGenerator>,
+    fetch_limits: kb_extract::source_fetch::FetchLimits,
+    min_fetch_interval: i64,
+    max_fetch_interval: i64,
+    max_backoff_secs: i64,
+    concurrency: usize,
+    shutdown: tokio::sync::watch::Receiver<bool>,
+) -> tokio::task::JoinHandle<()> {
+    use kb_pipeline::refetch_worker::process_refetch_job;
+
+    let handler = move |job: kb_core::job::Job| {
+        let pipeline = Arc::clone(&pipeline);
+        let pg_store = Arc::clone(&pg_store);
+        let diff_gen = Arc::clone(&diff_gen);
+        let fetch_limits = fetch_limits.clone();
+        async move {
+            let plan_local_only =
+                crate::handlers::resolve_local_only(&pg_store, job.tenant_id).await;
+            process_refetch_job(
+                &job,
+                &pipeline,
+                pg_store.as_ref(),
+                &diff_gen,
+                &fetch_limits,
+                min_fetch_interval,
+                max_fetch_interval,
+                max_backoff_secs,
+                plan_local_only,
+            )
+            .await
+            .map_err(|e| e.to_string())
+        }
+    };
+    tokio::spawn(run_worker_pool(
+        job_queue,
+        concurrency,
+        vec![JobKind::Refetch],
         shutdown,
         handler,
     ))

@@ -34,6 +34,7 @@ pub mod job_queue;
 pub mod maintenance;
 pub mod metadata_merge;
 pub mod orphan_gc;
+pub mod refetch_worker;
 pub mod restore_test;
 pub mod retrieval;
 pub mod rrf;
