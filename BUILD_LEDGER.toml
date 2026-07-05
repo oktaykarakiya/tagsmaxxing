@@ -1912,9 +1912,9 @@ description = "Due-document scanner loop. New crates/api/src/source_sync_scanner
 depends_on = ["P17-T9"]
 plan_sections = ["16", "25"]
 acceptance = "just ci green; unit test: scanner drains on shutdown; disabled config → no claims (mock or pg test); enabled → claims due docs and enqueues refetch jobs."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "New crates/api/src/source_sync_scanner.rs: run_source_sync_scanner (lease-reaper pattern: interval tick, re-read config.current().source_sync each tick, enabled gate, claim_due_documents, enqueue JobKind::Refetch per doc), read_interval helper (zero→default 60s). 2 unit tests. lib.rs registered. just ci green."
 
 [[task]]
 id = "P17-T11"

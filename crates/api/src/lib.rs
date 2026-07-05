@@ -21,6 +21,7 @@ pub mod handlers;
 pub mod metrics_collector;
 pub mod middleware;
 pub mod runtime;
+pub mod source_sync_scanner;
 pub mod stripe_client;
 pub mod web;
 pub mod worker_pool;
