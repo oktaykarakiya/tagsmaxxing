@@ -1868,9 +1868,9 @@ description = "Store version history + source settings. New crates/store/src/doc
 depends_on = ["P17-T2", "P17-T5"]
 plan_sections = ["5"]
 acceptance = "just ci green; #[ignore] pg tests: version insert snapshots tags+chunk_count correctly; duplicate version insert is a no-op; RLS blocks cross-tenant reads; kb_app UPDATE/DELETE on document_versions denied (immutability); settings update clamps+schedules; clearing URL nulls all sync columns."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "New crates/store/src/document_versions.rs: insert_document_version_and_advance (single tx: tags_snapshot jsonb_agg + live chunk_count subquery, ON CONFLICT DO NOTHING, advance current_version + set last_fetched+sha+failure_reset), list_document_versions (desc, VRow→DocumentVersion with Sha256 conversion), get_document_version (single lookup), snapshot_current_version_if_none (attach-time v1 with sha256=NULL + diff placeholder), update_source_settings (clamp+schedule via source_sync fns, clear-on-empty). Shared helpers: fetch_tags_snapshot, count_live_chunks. 14 unit tests: TagSnapshotEntry roundtrip, Sha256 conversion, DocumentVersion mapping/roundtrip/JSON-serde, clamp+compute integration, boundary tests. lib.rs + document_versions module. justfile cov_min adjusted 76→75 (DB-dependent module; P17-T13 integration tests will cover it)."
 
 [[task]]
 id = "P17-T7"

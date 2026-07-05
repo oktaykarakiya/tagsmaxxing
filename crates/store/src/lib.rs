@@ -33,6 +33,7 @@ pub mod crypto_shred_store;
 pub mod dashboard;
 pub mod db_routing;
 pub mod decrypt_audit;
+pub mod document_versions;
 pub mod encrypted_blob;
 pub(crate) mod hybrid_search;
 pub mod ingest_staging;
