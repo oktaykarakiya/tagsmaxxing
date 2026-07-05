@@ -29,6 +29,7 @@ mod adapter;
 #[cfg(feature = "anthropic")]
 mod anthropic;
 mod client;
+mod diff_summary;
 mod error;
 mod reranker;
 mod tagger;
@@ -38,6 +39,7 @@ pub use adapter::OpenAiCompat;
 #[cfg(feature = "anthropic")]
 pub use anthropic::Anthropic;
 pub use client::LlamaClient;
+pub use diff_summary::DiffSummaryGenerator;
 pub use error::LlmError;
 pub use reranker::LlamaReranker;
 pub use tagger::JsonSchemaTagger;

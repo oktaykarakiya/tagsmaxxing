@@ -1890,9 +1890,9 @@ description = "kb-llm diff-summary generator. New crates/llm/src/diff_summary.rs
 depends_on = ["P17-T0"]
 plan_sections = ["6", "7"]
 acceptance = "just ci green; mock-backend tests: happy path, corrective retry, defence-rule prompt pinned, local_only threaded, usage metered, hard-cap truncation, fallback on parse failure."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "New crates/llm/src/diff_summary.rs: DiffSummaryGenerator (client + model + usage_recorder, modeled on JsonSchemaTagger), generate(old, new, local_only, priority, tenant, user) → String, SYSTEM_PROMPT with defence-rule paragraph, json_schema {diff_summary: string}, one corrective retry on parse failure, best-effort (never fails — falls back to placeholder text), 16KB per-side hard cap via cap_str(), UsageEvent recording. 8 unit tests: cap truncation, fallback, deserialize, schema stability, contract version. lib.rs registered."
 
 [[task]]
 id = "P17-T9"
