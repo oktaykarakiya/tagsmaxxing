@@ -8,7 +8,7 @@
 #   5. commit (one task = one commit, message references the id, §31.6), set status = "done";
 #   6. if `checkpoint = true`, STOP and request human review before proceeding (§31.5).
 #
-# P0-P5 are complete (44 tasks). P6-P12 (60 tasks) are authored and todo. This file was hardened
+# P0-P16 are complete. This file was hardened
 # in the review/p6-readiness pass (see docs/analysis/): added P6-T0 (re-armed CI + Podman
 # integration lane for the #[ignore] RLS/auth suites), P7-T7 (the MISSED §31.5 extractor
 # untrusted-bytes checkpoint + sandboxing), P6-T11 (tag provenance/locking + retag job kind),
@@ -19,7 +19,7 @@
 
 [meta]
 generated = "2026-05-31"
-phases_planned = ["P0", "P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10", "P11", "P12"]
+phases_planned = ["P0", "P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10", "P11", "P12", "P13", "P14", "P15", "P16", "P17"]
 gate_command = "just ci"
 walking_skeleton = "Complete the P0-P4 vertical slice before adding breadth (§31.6)."
 # Crate versions verified against crates.io on 2026-05-29 (the plan's names had drifted):
@@ -1782,3 +1782,180 @@ acceptance = "just ci green; 3 migration unit tests pass; 405 kb-store unit test
 status = "done"
 checkpoint = false
 notes = "Created 0001_base_schema.sql (420 lines, 7 ordered phases: extension → function → root tables → FK tables → RLS → kb_app grants → seed data). Rewrote migrations.rs test suite: 3 tests (embed count, forward-only validation, comprehensive DDL lock-in covering 23 tables, all CHECK values, 19 indexes, 10 RLS policies with document_tags EXISTS subquery, kb_app role + all grants, 17 FK relationships, seed data, generated columns — filling prior gaps on audit_events, tenant_data_keys, and 13 untested indexes). Deleted 27 old .sql files. Updated ~85 references across 21 files (migration numbers → descriptive names). Wrote docs/migration-squash.md. Baked EMBED_DIM=2560 directly into the base schema — no ALTER/TRUNCATE. Single DROP+ADD on jobs.kind CHECK eliminated. just ci green: 0 fmt errors, 0 clippy warnings, all tests pass."
+
+# ── Phase P17 — Document Source Sync with Version History ────────────────────
+#
+# Documents gain an optional source_url + fetch interval. A background job
+# re-fetches due URLs, compares content hashes, and on change re-runs the full
+# ingest pipeline, records an immutable version snapshot with an LLM-generated
+# "what changed" summary, and tombstones old chunks so search uses only the
+# latest version. Per user decision: both a new "Add from URL" ingest flow AND
+# attach/edit source settings on existing documents.
+#
+# Security checkpoint on P17-T4 (SSRF-guarded fetcher — §31.5 untrusted-bytes
+# boundary applied to user-supplied URLs for the first time).
+
+[[task]]
+id = "P17-T0"
+phase = "P17"
+description = "Author the P17 phase in BUILD_LEDGER.toml: update meta.phases_planned, stale comment, append P17-T1..T14 task entries with descriptions/dependencies/acceptance/checkpoint flags. Design is in plans/frolicking-cooking-flask.md."
+depends_on = []
+plan_sections = ["31"]
+acceptance = "just next resolves P17-T1; all 15 P17 tasks present with correct depends_on chains."
+status = "done"
+checkpoint = false
+notes = "Appended P17-T0..T14 to BUILD_LEDGER.toml; updated phases_planned to include P13..P17 (catch-up) and the stale P0-P12-only comment. The P13-P16 tasks existed in the ledger but were never added to phases_planned — now fixed. Plan: /home/oktaykarakiya/.claude/plans/frolicking-cooking-flask.md."
+
+[[task]]
+id = "P17-T1"
+phase = "P17"
+description = "Migration 0006_source_sync.sql: ALTER documents ADD source_url, fetch_interval_secs, next_fetch_at, last_fetched_at, last_fetch_sha256, current_version, FETCH_FAILURE_COUNT + partial index documents_next_fetch_due; ALTER files/chunks ADD superseded_at; CREATE TABLE document_versions (id, tenant_id, document_id, version_number, sha256, title, summary, summary_enc, tags_snapshot JSONB, chunk_count, content_diff_summary, content_diff_summary_enc, created_at) with RLS + INSERT-only kb_app grant + sequence grant; ALTER jobs CHECK constraint add 'refetch'. Update migrations.rs lock-in test: versions vec, tables list, indexes list, jobs.kind list, RLS policies, kb_app grants (assert SELECT+INSERT but NO UPDATE/DELETE on document_versions). Do NOT touch the files unique index — pg_store.rs:224 rewrites it at runtime."
+depends_on = ["P17-T0"]
+plan_sections = ["5"]
+acceptance = "just ci green; lock-in test asserts all new DDL elements; migration applies cleanly on a fresh db (ignored pg test)."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P17-T2"
+phase = "P17"
+description = "kb-core types: Document gains source_url, fetch_interval_secs, next_fetch_at, last_fetched_at, last_fetch_sha256, current_version, fetch_failure_count. New document_version.rs: DocumentVersion struct + TagSnapshotEntry {name, source, locked}. New source_sync.rs pure fns: clamp_fetch_interval, compute_next_fetch_at, compute_failure_backoff, decide_refetch_action — TDD + proptest for interval/backoff math. job.rs: JobKind::Refetch variant + bump count test 9→10. audit.rs: AuditAction += DocumentRefetched, DocumentRefetchSkipped, DocumentRefetchFailed, DocumentSourceUpdated. lib.rs exports. pg_store.rs DocumentRow mapping + SELECT column lists updated; test/mock constructors updated."
+depends_on = ["P17-T1"]
+plan_sections = ["4", "31.3", "31.4"]
+acceptance = "just ci green; source_sync.rs pure functions ~100% covered (happy + edge + proptest); wire strings locked by enum count + as_str tests."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P17-T3"
+phase = "P17"
+description = "[source_sync] config section. model.rs: SourceSync struct (enabled, scan_interval_secs, min/max_fetch_interval_secs, fetch_timeout_secs, max_response_bytes, max_redirects, scan_batch_limit) with serde defaults + Config field. load.rs: validation (min ≤ max, scan ≥ 5, redirects ≤ 10, max_bytes ≥ 1024) with tests for invalid combos. Hot-swap readable via AppConfig::current()."
+depends_on = ["P17-T0"]
+plan_sections = ["6"]
+acceptance = "just ci green; empty section parses with defaults; invalid combos rejected with clear ConfigError; hot-swap read pattern works."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P17-T4"
+phase = "P17"
+description = "SSRF-guarded URL fetcher — SECURITY CHECKPOINT. New crates/extract/src/source_fetch.rs: validate_url (url crate parse, scheme allowlist http/https, reject userinfo, static is_internal_host), DNS-resolving guard (tokio lookup_host, reject loopback/private/link-local/unspecified IPs v4+v6 incl. v4-mapped-v6, pin to validated addrs via resolve_to_addrs), manual redirect hop loop (≤ max_redirects, full re-validation per hop), streamed body read capped at max_bytes, timeout, thiserror FetchError with deterministic-vs-transient classification. Expose internals from security.rs as needed. Cargo.toml: url dep if absent. Tests: unit + proptest over URL shapes (IPv6 brackets, userinfo, [::ffff:127.0.0.1], decimal IPv4 encodings), per-hop redirect re-validation, size-cap abort, timeout, error taxonomy."
+depends_on = ["P17-T0"]
+plan_sections = ["17", "31.5"]
+acceptance = "just ci green; proptest exercises URL edge cases; deterministic vs transient error split tested; no private-network escape hatch in prod code."
+status = "todo"
+checkpoint = true
+notes = "§31.5 CHECKPOINT: the URL-fetch boundary is untrusted-user-input — human must review the SSRF guard before any code calls it."
+
+[[task]]
+id = "P17-T5"
+phase = "P17"
+description = "Store tombstoning + latest-only search. pg_store.rs: transactional_ingest chunk delete :1656 → DELETE ... AND superseded_at IS NULL; upsert_chunks :861 same filter; file upsert DO UPDATE clauses add superseded_at = NULL (revive on revert); new step 4.5 supersede old files+chunks in-tx; new step 3-pre clear unlocked LLM tags before tag insert. ingest_staging.rs :185/:302 revive. hybrid_search.rs: build_base_select → WHERE c.superseded_at IS NULL (both vector+keyword arms inherit). Grep-driven live filters on get_files_for_document + dashboard/admin chunk/file counts."
+depends_on = ["P17-T2"]
+plan_sections = ["5", "8"]
+acceptance = "just ci green; #[ignore] pg tests: re-ingest different bytes tombstones old files+chunks (both excluded from hybrid search vector+keyword); revert-to-old-sha revives file row + inserts fresh live chunks preserving tombstoned history; unlocked LLM tags replaced, locked+user tags preserved; replay of identical staged ingest stays convergent."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P17-T6"
+phase = "P17"
+description = "Store version history + source settings. New crates/store/src/document_versions.rs (file-size cap): insert_document_version_and_advance (single tenant tx: bump current_version, set last_fetched_at/last_fetch_sha256/next_fetch_at, reset fetch_failure_count, INSERT version row with server-side tags_snapshot jsonb_agg + live chunk_count subquery, ON CONFLICT DO NOTHING = benign dup); list_document_versions (desc); get_document_version; snapshot_current_version_if_none (attach-time v1, sha256 NULL, diff='Snapshot at sync enablement'); update_source_settings (clamp interval via source_sync fns, re-arm next_fetch_at=now(), clear URL nulls all sync cols). Envelope encrypt/decrypt summary+diff mirroring pg_store.rs:1511-1527 + decrypt_document_rows."
+depends_on = ["P17-T2", "P17-T5"]
+plan_sections = ["5"]
+acceptance = "just ci green; #[ignore] pg tests: version insert snapshots tags+chunk_count correctly; duplicate version insert is a no-op; RLS blocks cross-tenant reads; kb_app UPDATE/DELETE on document_versions denied (immutability); settings update clamps+schedules; clearing URL nulls all sync columns."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P17-T7"
+phase = "P17"
+description = "Store scanner claim + fetch bookkeeping + live-text. document_versions.rs or pg_store.rs: claim_due_documents(batch, min_interval) — admin-pool SQL with FOR UPDATE SKIP LOCKED claim-and-bump; mark_document_fetch_unchanged(tenant, doc, sha256, next); mark_document_fetch_failed(tenant, doc) — compute_failure_backoff + pause-at-10; get_live_document_text(tenant, doc) — live chunks ordered by f.page_no, c.idx, decrypt via decrypt_chunk_content :533 with DEK fetched once."
+depends_on = ["P17-T6"]
+plan_sections = ["5", "16"]
+acceptance = "just ci green; #[ignore] pg tests: two concurrent claims never return same doc; claim bumps next_fetch_at; pause at 10 sets next_fetch_at NULL; live-text excludes tombstoned chunks + decrypts when KEK configured."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P17-T8"
+phase = "P17"
+description = "kb-llm diff-summary generator. New crates/llm/src/diff_summary.rs modeled on JsonSchemaTagger (tagger.rs:137): DIFF_SUMMARY_CONTRACT_VERSION, LlamaClient::chat(Role::Text, …, local_only, priority), json_schema {diff_summary: string}, same prompt-injection defence paragraph, UsageRecorder metering, one corrective retry on parse failure. Prompt: 1-3 sentences covering additions/removals/substantive edits; 'No substantive changes.' when identical. Best-effort: failure → fallback text, never fails the refetch. lib.rs exports."
+depends_on = ["P17-T0"]
+plan_sections = ["6", "7"]
+acceptance = "just ci green; mock-backend tests: happy path, corrective retry, defence-rule prompt pinned, local_only threaded, usage metered, hard-cap truncation, fallback on parse failure."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P17-T9"
+phase = "P17"
+description = "Refetch worker handler + pool dispatch. New crates/pipeline/src/refetch_worker.rs: SourceFetcher trait + RefetchStore trait (mock-backend pattern), process_refetch_job flow: load doc → require source_url → effective local_only = doc.local_only || resolve_local_only → fetch → hash → decide_refetch_action → unchanged: bookkeeping + DocumentRefetchSkipped audit; changed: old-text snapshot → blob put → DocumentBuilder IngestFile → ingest_into → diff summary (best-effort) → insert_document_version_and_advance + DocumentRefetched audit; failures: mark_document_fetch_failed + DocumentRefetchFailed audit + Err with permanent classification per FetchError taxonomy. worker_pool.rs: spawn_ingest_workers → claim kinds [Ingest, Refetch] + kind dispatch via match on job.kind (inline handler or separate pool). runtime.rs: construct SourceFetcher + DiffSummaryGenerator into runtime bundle. lib.rs exports."
+depends_on = ["P17-T3", "P17-T4", "P17-T5", "P17-T6", "P17-T7", "P17-T8"]
+plan_sections = ["7", "16"]
+acceptance = "just ci green; unit tests with mocked fetcher/store/LLM: unchanged short-circuit, changed full path incl. version insert ordering, diff-failure fallback, permanent-vs-transient classification, audit events per outcome, local_only OR rule, revert-to-old-sha path."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P17-T10"
+phase = "P17"
+description = "Due-document scanner loop. New crates/api/src/source_sync_scanner.rs: run_source_sync_scanner(pg_store, job_queue, app_config, shutdown) — lease-reaper style interval loop (worker_pool.rs:76 pattern), each tick: re-read config.current().source_sync (enabled gate + scan_interval_secs + batch), if enabled: claim_due_documents, enqueue JobKind::Refetch per row (created_by=None), log/backoff on error. Spawn in serve.rs alongside reaper; spawn in worker_main for kb worker binary. lib.rs exports."
+depends_on = ["P17-T9"]
+plan_sections = ["16", "25"]
+acceptance = "just ci green; unit test: scanner drains on shutdown; disabled config → no claims (mock or pg test); enabled → claims due docs and enqueues refetch jobs."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P17-T11"
+phase = "P17"
+description = "Add from URL ingest path (web + JSON API). ingest_staging.rs: create_pending_url_ingest (documents row status='pending', source_url, clamped interval, no files/blobs); count_pending_ingest_jobs → kind IN ('ingest','refetch'). handlers/ingest.rs: shared stage_url_ingest helper (static validate_url for 400 UX, interval clamp via source_sync fns, admission caps via count_pending, resolve_local_only fail-closed, enqueue Refetch with created_by=user); JSON POST /api/ingest/url. web/handlers.rs: POST /upload/url CSRF form handler + upload.html URL section (url input, note, interval preset never/1h/1d/1w/custom, local_only toggle). web/mod.rs + JSON router registration. latest_ingest_job_info extended to surface refetch job state on URL docs."
+depends_on = ["P17-T3", "P17-T9"]
+plan_sections = ["12", "13"]
+acceptance = "just ci green; tower-oneshot handler tests: valid URL → 202 + queued refetch job; invalid/SSRF-static-rejected → 400; feature disabled → 403; CSRF negative; admission cap → 429."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P17-T12"
+phase = "P17"
+description = "Document detail: source settings form, History panel, version view. web/handlers_documents.rs: build_document_detail_page loads source fields + list_document_versions; update_source_settings POST (CSRF → update_source_settings store call + snapshot_current_version_if_none for attach-time v1 + DocumentSourceUpdated audit with real actor → re-render → fresh CSRF cookie); document_version_page GET. document_detail.html: Source-sync section (url/interval/last+next fetch/paused banner + CSRF edit form), History panel (versions desc with version_number/created_at/diff summary + links). New document_version.html: viewing-version-N-of-M banner + snapshot title/summary/tags. web/templates.rs: template structs. web/mod.rs: POST /documents/{id}/source-settings, GET /documents/{id}/versions/{v}. handlers/documents.rs: DocumentDetail DTO gains source/version fields; GET /api/documents/{id}/versions[/{n}], PATCH /api/documents/{id}/source."
+depends_on = ["P17-T2", "P17-T6"]
+plan_sections = ["12"]
+acceptance = "just ci green; colocated template-render tests: history ordering desc, paused banner, empty-history state, version page snapshot fields, CSRF negative cases."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P17-T13"
+phase = "P17"
+description = "Integration test suite (Podman, #[ignore]). New crates/api/tests/p17_source_sync_integration.rs via kb_testsupport::fresh_db + mocked SourceFetcher: URL ingest → v1 → content change → refetch job → v2 with tombstoned old chunks excluded from vector+keyword hybrid search; no-change skip bumps timestamps only; failure → backoff → pause at 10; two-process claim dedup; RLS + INSERT-only immutability on document_versions; audit rows for all 3 outcomes; refetch job passes new jobs.kind CHECK."
+depends_on = ["P17-T10", "P17-T11", "P17-T12"]
+plan_sections = ["31.3"]
+acceptance = "just ci green; just ci-integration green including new suite."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P17-T14"
+phase = "P17"
+description = "Docs close-out. ARCHITECTURE.md: source-sync flow diagram (scanner → claim-bump → refetch job → hash gate → version+tombstone), tombstone/index revisit note, audit actor-0 convention. docs/LOCAL_RUNBOOK.md: enabling [source_sync], tuning intervals, un-pausing failed docs, dead-letter replay of refetch jobs, HNSW-partial rebuild recipe. README.md blurb. Final just ci + full e2e regression vs baseline (no-new-failures rule)."
+depends_on = ["P17-T13"]
+plan_sections = ["31.2", "31.6"]
+acceptance = "just ci green; docs merged; all P17 tasks done with notes; e2e regression zero new failures vs baseline."
+status = "todo"
+checkpoint = false
+notes = ""
