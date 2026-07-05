@@ -23,7 +23,7 @@ mod tests {
     #[test]
     fn embeds_the_schema_migrations() {
         let versions: Vec<i64> = MIGRATOR.iter().map(|m| m.version).collect();
-        assert_eq!(versions, vec![1, 2, 3, 4, 5]);
+        assert_eq!(versions, vec![1, 2, 3, 4, 5, 6]);
     }
 
     /// Forward-only and monotonic: no down/reversible scripts, strictly increasing versions,
@@ -113,6 +113,7 @@ mod tests {
             "assistant_decisions",
             "assistant_stale_watches",
             "assistant_transcripts",
+            "document_versions",
         ] {
             assert!(
                 sql.contains(&format!("CREATE TABLE {table} ")),
@@ -192,6 +193,7 @@ mod tests {
             "'integrity_scan'",
             "'delete_tenant'",
             "'send_email'",
+            "'refetch'",
         ] {
             assert!(sql.contains(kind), "jobs.kind CHECK missing {kind}");
         }
@@ -279,6 +281,8 @@ mod tests {
             "idx_asst_stale_watch_unique",
             "idx_asst_stale_watch_due",
             "idx_asst_transcripts_session",
+            "documents_next_fetch_due",
+            "document_versions_doc_desc",
         ] {
             assert!(sql.contains(idx), "missing index: {idx}");
         }
@@ -290,13 +294,13 @@ mod tests {
         // ── f) RLS ─────────────────────────────────────────────────────────────
         let rls_enable_count = sql.matches("ENABLE ROW LEVEL SECURITY").count();
         assert!(
-            rls_enable_count >= 15,
-            "expected >=15 ENABLE ROW LEVEL SECURITY, found {rls_enable_count}"
+            rls_enable_count >= 16,
+            "expected >=16 ENABLE ROW LEVEL SECURITY, found {rls_enable_count}"
         );
         let rls_force_count = sql.matches("FORCE ROW LEVEL SECURITY").count();
         assert!(
-            rls_force_count >= 10,
-            "expected >=10 FORCE ROW LEVEL SECURITY, found {rls_force_count}"
+            rls_force_count >= 11,
+            "expected >=11 FORCE ROW LEVEL SECURITY, found {rls_force_count}"
         );
         assert!(
             sql.contains("app.current_tenant"),
@@ -340,6 +344,24 @@ mod tests {
         assert!(
             sql.contains("EXECUTE ON FUNCTION app_set_current_tenant"),
             "kb_app must be granted EXECUTE on app_set_current_tenant"
+        );
+
+        // document_versions: INSERT-only immutability (no UPDATE/DELETE grant).
+        assert!(
+            sql.contains("SELECT, INSERT ON document_versions TO kb_app"),
+            "kb_app must be granted SELECT, INSERT on document_versions"
+        );
+        assert!(
+            !sql.contains("UPDATE ON document_versions TO kb_app"),
+            "kb_app must NOT be granted UPDATE on document_versions (immutable)"
+        );
+        assert!(
+            !sql.contains("DELETE ON document_versions TO kb_app"),
+            "kb_app must NOT be granted DELETE on document_versions (immutable)"
+        );
+        assert!(
+            sql.contains("document_versions_id_seq TO kb_app"),
+            "kb_app must be granted USAGE, SELECT on document_versions_id_seq"
         );
 
         // Privileged-only tables must NOT appear in a GRANT … TO kb_app list.
