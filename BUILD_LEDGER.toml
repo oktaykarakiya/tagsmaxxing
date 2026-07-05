@@ -1857,9 +1857,9 @@ description = "Store tombstoning + latest-only search. pg_store.rs: transactiona
 depends_on = ["P17-T2"]
 plan_sections = ["5", "8"]
 acceptance = "just ci green; #[ignore] pg tests: re-ingest different bytes tombstones old files+chunks (both excluded from hybrid search vector+keyword); revert-to-old-sha revives file row + inserts fresh live chunks preserving tombstoned history; unlocked LLM tags replaced, locked+user tags preserved; replay of identical staged ingest stays convergent."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "Chunk DELETE → DELETE ... AND superseded_at IS NULL (both upsert_chunks :861 and transactional_ingest :1656). File DO UPDATE revives (superseded_at = NULL in pg_store.rs ×2 + ingest_staging.rs ×2). New step 3-pre: DELETE unlocked LLM document_tags before tag insert (preserves locked+user). New step 4.5: UPDATE files+chunks SET superseded_at = now() WHERE document_id = $1 AND id/file_id != ALL(incoming). hybrid_search.rs: build_base_select → WHERE c.superseded_at IS NULL (both vector+keyword arms). get_files_for_document: live filter. dashboard get_file_count: live filter. Idempotency lookup: live filter. Updated SQL structure test. just ci green."
 
 [[task]]
 id = "P17-T6"

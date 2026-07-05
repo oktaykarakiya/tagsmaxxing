@@ -811,7 +811,7 @@ impl Store for PgStore {
         let id = sqlx::query_scalar::<Postgres, i64>(
             "INSERT INTO files (tenant_id,document_id,page_no,page_label,sha256,blob_key,path,mime,size_bytes,meta,status,ingested_at) \
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) \
-             ON CONFLICT (tenant_id,sha256,document_id) DO UPDATE SET document_id=EXCLUDED.document_id,page_no=EXCLUDED.page_no,page_label=EXCLUDED.page_label,blob_key=EXCLUDED.blob_key,path=EXCLUDED.path,mime=EXCLUDED.mime,size_bytes=EXCLUDED.size_bytes,meta=EXCLUDED.meta,status=EXCLUDED.status,ingested_at=EXCLUDED.ingested_at \
+             ON CONFLICT (tenant_id,sha256,document_id) DO UPDATE SET document_id=EXCLUDED.document_id,page_no=EXCLUDED.page_no,page_label=EXCLUDED.page_label,blob_key=EXCLUDED.blob_key,path=EXCLUDED.path,mime=EXCLUDED.mime,size_bytes=EXCLUDED.size_bytes,meta=EXCLUDED.meta,status=EXCLUDED.status,ingested_at=EXCLUDED.ingested_at,superseded_at = NULL \
              RETURNING id",
         )
         .bind(rec.tenant_id).bind(rec.document_id).bind(rec.page_no)
@@ -858,7 +858,7 @@ impl Store for PgStore {
 
         let pool = self.app_pool()?;
         let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
-        sqlx::query("DELETE FROM chunks WHERE file_id = $1")
+        sqlx::query("DELETE FROM chunks WHERE file_id = $1 AND superseded_at IS NULL")
             .bind(file_id)
             .execute(&mut *tx)
             .await
@@ -1575,7 +1575,7 @@ impl PgStore {
                  WHERE f.tenant_id = $1 \
                  GROUP BY f.document_id \
                  HAVING COUNT(*) = $4 \
-                    AND (SELECT COUNT(*) FROM files f2 WHERE f2.document_id = f.document_id) = $4 \
+                    AND (SELECT COUNT(*) FROM files f2 WHERE f2.document_id = f.document_id AND f2.superseded_at IS NULL) = $4 \
                  ORDER BY f.document_id LIMIT 1",
             )
             .bind(doc.tenant_id)
@@ -1620,7 +1620,7 @@ impl PgStore {
             let fid: i64 = sqlx::query_scalar(
                 "INSERT INTO files (tenant_id,document_id,page_no,page_label,sha256,blob_key,path,mime,size_bytes,meta,status,ingested_at) \
                  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) \
-                 ON CONFLICT (tenant_id,sha256,document_id) DO UPDATE SET document_id=EXCLUDED.document_id,page_no=EXCLUDED.page_no,page_label=EXCLUDED.page_label,blob_key=EXCLUDED.blob_key,path=EXCLUDED.path,mime=EXCLUDED.mime,size_bytes=EXCLUDED.size_bytes,meta=EXCLUDED.meta,status=EXCLUDED.status,ingested_at=EXCLUDED.ingested_at \
+                 ON CONFLICT (tenant_id,sha256,document_id) DO UPDATE SET document_id=EXCLUDED.document_id,page_no=EXCLUDED.page_no,page_label=EXCLUDED.page_label,blob_key=EXCLUDED.blob_key,path=EXCLUDED.path,mime=EXCLUDED.mime,size_bytes=EXCLUDED.size_bytes,meta=EXCLUDED.meta,status=EXCLUDED.status,ingested_at=EXCLUDED.ingested_at,superseded_at = NULL \
                  RETURNING id",
             )
             .bind(file.tenant_id).bind(doc_id).bind(file.page_no)
@@ -1632,6 +1632,18 @@ impl PgStore {
             .context("failed to upsert file in transaction")?;
             file_ids.push(fid);
         }
+
+        // 3-pre. Clear unlocked LLM-assigned tags for this document so re-ingest
+        // replaces old AI-derived tags atomically. Preserves user-assigned and
+        // locked tags (plan §6.5, P6-T11). Convergent: no-op for first ingests
+        // and queued replays (the DELETE finds nothing).
+        sqlx::query(
+            "DELETE FROM document_tags WHERE document_id = $1 AND source = 'llm' AND locked = false",
+        )
+        .bind(doc_id)
+        .execute(&mut *tx)
+        .await
+        .context("failed to clear unlocked LLM tags")?;
 
         // 3. Insert document tags (LLM-sourced, not locked — plan §6.5, P6-T11).
         {
@@ -1653,7 +1665,7 @@ impl PgStore {
 
         // 4. Replace chunks for each file.
         for (file_id, chunks) in file_ids.iter().copied().zip(file_chunks.iter()) {
-            sqlx::query("DELETE FROM chunks WHERE file_id = $1")
+            sqlx::query("DELETE FROM chunks WHERE file_id = $1 AND superseded_at IS NULL")
                 .bind(file_id)
                 .execute(&mut *tx)
                 .await
@@ -1696,6 +1708,31 @@ impl PgStore {
                     .context("failed to batch-insert chunks")?;
             }
         }
+
+        // 4.5. Supersede old files and chunks — any file belonging to this
+        // document whose id is NOT in the incoming file_ids is from a previous
+        // version. Tombstone it + its chunks (set superseded_at = now()) so
+        // hybrid search and document detail exclude them. No-op on first ingest
+        // (all file ids are incoming) and convergent on replay.
+        sqlx::query(
+            "UPDATE files SET superseded_at = now() \
+             WHERE document_id = $1 AND id != ALL($2) AND superseded_at IS NULL",
+        )
+        .bind(doc_id)
+        .bind(&file_ids)
+        .execute(&mut *tx)
+        .await
+        .context("failed to supersede old files")?;
+
+        sqlx::query(
+            "UPDATE chunks SET superseded_at = now() \
+             WHERE document_id = $1 AND file_id != ALL($2) AND superseded_at IS NULL",
+        )
+        .bind(doc_id)
+        .bind(&file_ids)
+        .execute(&mut *tx)
+        .await
+        .context("failed to supersede old chunks")?;
 
         tx.commit()
             .await
@@ -2533,7 +2570,7 @@ impl PgStore {
         let file_rows: Vec<FileRow> = sqlx::query_as(
             "SELECT id, tenant_id, document_id, page_no, page_label, sha256, blob_key, path, \
              mime, size_bytes, meta, status, ingested_at \
-             FROM files WHERE document_id = $1 ORDER BY page_no",
+             FROM files WHERE document_id = $1 AND superseded_at IS NULL ORDER BY page_no",
         )
         .bind(document_id)
         .fetch_all(&mut *tx)
@@ -2614,7 +2651,7 @@ impl PgStore {
         let rows: Vec<FileRow> = sqlx::query_as(
             "SELECT id, tenant_id, document_id, page_no, page_label, sha256, blob_key, path, \
              mime, size_bytes, meta, status, ingested_at \
-             FROM files WHERE document_id = $1 ORDER BY page_no",
+             FROM files WHERE document_id = $1 AND superseded_at IS NULL ORDER BY page_no",
         )
         .bind(doc_id)
         .fetch_all(&mut *tx)

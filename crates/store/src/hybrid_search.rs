@@ -374,14 +374,15 @@ fn build_base_select() -> QueryBuilder<'static, Postgres> {
          c.page_no, c.ts_offset, c.content, c.content_enc, d.title, d.kind \
          FROM chunks c \
          JOIN documents d ON c.document_id = d.id \
-         WHERE TRUE",
+         WHERE c.superseded_at IS NULL",
     )
 }
 
 /// Push optional filter clauses (kinds, tags, date range) into `builder`.
 ///
-/// Each active filter is appended as ` AND <clause>`. `WHERE TRUE` must already
-/// be present in the builder before calling this function.
+/// Each active filter is appended as ` AND <clause>`. `WHERE c.superseded_at IS NULL`
+/// must already be present in the builder before calling this function (set by
+/// [`build_base_select`]).
 fn push_filters(
     builder: &mut QueryBuilder<'static, Postgres>,
     filters: &kb_core::query::QueryFilters,
@@ -520,7 +521,10 @@ mod tests {
             "missing SELECT: {sql}"
         );
         assert!(sql.contains("JOIN documents d"), "missing JOIN: {sql}");
-        assert!(sql.contains("WHERE TRUE"), "missing WHERE TRUE: {sql}");
+        assert!(
+            sql.contains("WHERE c.superseded_at IS NULL"),
+            "missing tombstone filter: {sql}"
+        );
         assert!(
             sql.contains("ORDER BY c.embedding <=>"),
             "missing ORDER BY: {sql}"

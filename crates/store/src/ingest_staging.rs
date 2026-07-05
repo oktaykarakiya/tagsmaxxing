@@ -186,7 +186,7 @@ impl PgStore {
                  page_no=EXCLUDED.page_no,page_label=EXCLUDED.page_label,\
                  blob_key=EXCLUDED.blob_key,path=EXCLUDED.path,mime=EXCLUDED.mime,\
                  size_bytes=EXCLUDED.size_bytes,meta=EXCLUDED.meta,status='pending',\
-                 ingested_at=EXCLUDED.ingested_at \
+                 ingested_at=EXCLUDED.ingested_at,superseded_at = NULL \
                  RETURNING id",
             )
             .bind(file.tenant_id)
@@ -303,7 +303,7 @@ impl PgStore {
                  page_no=EXCLUDED.page_no,page_label=EXCLUDED.page_label,\
                  blob_key=EXCLUDED.blob_key,path=EXCLUDED.path,mime=EXCLUDED.mime,\
                  size_bytes=EXCLUDED.size_bytes,meta=EXCLUDED.meta,status='pending',\
-                 ingested_at=EXCLUDED.ingested_at \
+                 ingested_at=EXCLUDED.ingested_at,superseded_at = NULL \
                  RETURNING id",
             )
             .bind(tenant_id)

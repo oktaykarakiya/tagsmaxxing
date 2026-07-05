@@ -81,12 +81,13 @@ impl PgStore {
     pub async fn get_file_count(&self, tenant_id: i64) -> anyhow::Result<i64> {
         let pool = self.app_pool()?;
         let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
-        let count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*)::BIGINT FROM files WHERE tenant_id = $1")
-                .bind(tenant_id)
-                .fetch_one(&mut *tx)
-                .await
-                .context("failed to query file count")?;
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*)::BIGINT FROM files WHERE tenant_id = $1 AND superseded_at IS NULL",
+        )
+        .bind(tenant_id)
+        .fetch_one(&mut *tx)
+        .await
+        .context("failed to query file count")?;
         tx.commit()
             .await
             .context("failed to commit get_file_count")?;
