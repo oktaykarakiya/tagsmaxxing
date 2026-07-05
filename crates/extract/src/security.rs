@@ -375,9 +375,9 @@ pub fn validate_mime(mime: &str) -> anyhow::Result<()> {
 /// This is a **static host check** — it does not perform DNS resolution,
 /// so DNS rebinding attacks are not caught. For the current architecture
 /// (extractors call only operator-configured sidecar containers on the
-/// compose network), this is acceptable. If user-supplied URLs were ever
-/// fetched (e.g. a "fetch from URL" feature), a proper DNS-resolving
-/// SSRF guard would be required.
+/// compose network), this is acceptable. For user-supplied URLs (P17
+/// source-sync fetcher), use [`crate::source_fetch::SourceFetcher`] which
+/// performs full DNS resolution + connection pinning per hop.
 ///
 /// # Examples
 ///
@@ -436,7 +436,7 @@ fn extract_url_host(raw: &str) -> Option<String> {
 }
 
 /// Decide whether `host` refers to an internal network destination.
-fn is_internal_host(host: &str) -> bool {
+pub fn is_internal_host(host: &str) -> bool {
     // Try parsing as an IP address first (quick, no DNS).
     if let Ok(ip) = host.parse::<IpAddr>() {
         return is_internal_ip(ip);
@@ -451,7 +451,7 @@ fn is_internal_host(host: &str) -> bool {
 }
 
 /// Determine whether an IP address belongs to an internal network.
-fn is_internal_ip(ip: IpAddr) -> bool {
+pub fn is_internal_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => {
             v4.is_loopback()

@@ -13,6 +13,7 @@ pub mod document;
 pub mod email;
 pub mod image;
 pub mod security;
+pub mod source_fetch;
 pub mod text;
 pub mod tika;
 pub mod video;

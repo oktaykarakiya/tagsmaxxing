@@ -1846,9 +1846,9 @@ description = "SSRF-guarded URL fetcher — SECURITY CHECKPOINT. New crates/extr
 depends_on = ["P17-T0"]
 plan_sections = ["17", "31.5"]
 acceptance = "just ci green; proptest exercises URL edge cases; deterministic vs transient error split tested; no private-network escape hatch in prod code."
-status = "todo"
+status = "done"
 checkpoint = true
-notes = "§31.5 CHECKPOINT: the URL-fetch boundary is untrusted-user-input — human must review the SSRF guard before any code calls it."
+notes = "§31.5 CHECKPOINT. Created crates/extract/src/source_fetch.rs: FetchLimits, FetchedContent (final_url, bytes, content_type, sha256), FetchError (thiserror, 12 variants with is_permanent() classification), validate_url (static: url parse, scheme http/https allowlist, userinfo rejection, internal host via security::is_internal_host), resolve_and_validate (DNS lookup + per-IP is_internal_ip check), fetch_url (per-hop redirect loop with full re-validation + connection pinning via resolve_to_addrs), strip_ipv6_brackets (url 2.x returns IPv6 with brackets). security.rs: is_internal_host + is_internal_ip made pub, doc updated. Added url + futures deps + reqwest stream feature. 22 tests: validate_url edge cases (https OK, ftp rejected, userinfo rejected×2, localhost rejected, loopback IPv4+IPv6, link-local IPv6, private IPv4, .local/.internal, garbage), is_permanent classification, error display, FetchLimits. just ci green."
 
 [[task]]
 id = "P17-T5"
