@@ -1835,9 +1835,9 @@ description = "[source_sync] config section. model.rs: SourceSync struct (enable
 depends_on = ["P17-T0"]
 plan_sections = ["6"]
 acceptance = "just ci green; empty section parses with defaults; invalid combos rejected with clear ConfigError; hot-swap read pattern works."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "Added SourceSync struct to model.rs: enabled, scan_interval_secs, min/max_fetch_interval_secs, fetch_timeout_secs, max_response_bytes, max_redirects, scan_batch_limit with serde defaults + const fn defaults + Default impl. Config field source_sync. ConfigError::SourceSync variant. Validation in load.rs: min>0, min<=max, scan>=5, redirects<=10, bytes>=1024, timeout>0. 8 tests: defaults-off, enabled parses, min>max rejected, scan<5 rejected, redirects>10 rejected, bytes<1024 rejected, timeout=0 rejected, valid custom values. just ci green."
 
 [[task]]
 id = "P17-T4"

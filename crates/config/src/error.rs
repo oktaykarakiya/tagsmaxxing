@@ -48,4 +48,10 @@ pub enum ConfigError {
     /// The filesystem watcher could not be created or armed.
     #[error("filesystem watch error: {0}")]
     Watch(#[from] notify::Error),
+    /// The `[source_sync]` configuration section is invalid.
+    #[error("source_sync configuration error: {reason}")]
+    SourceSync {
+        /// Human-readable reason the configuration is invalid.
+        reason: String,
+    },
 }

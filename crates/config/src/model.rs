@@ -66,6 +66,11 @@ pub struct Config {
     /// Ingest-job worker settings (plan §16, P15-T4).
     #[serde(default, rename = "worker")]
     pub worker: Worker,
+    /// Document source-sync settings: periodic URL re-fetch, diff, and versioning
+    /// (P17). The global `enabled` flag gates both the scanner loop and the
+    /// URL-ingest handler.
+    #[serde(default, rename = "source_sync")]
+    pub source_sync: SourceSync,
     /// Upload-ingestion mode + queue admission bounds (plan §16, P15-T4).
     #[serde(default, rename = "ingest")]
     pub ingest: Ingest,
@@ -552,6 +557,86 @@ impl Default for Ingest {
             max_pending_per_tenant: default_max_pending_per_tenant(),
             max_pending_global: default_max_pending_global(),
             max_payload_bytes: default_max_payload_bytes(),
+        }
+    }
+}
+
+/// Document source-sync settings (P17).
+///
+/// Controls periodic re-fetch of documents with a `source_url`, LLM diff
+/// summary generation, and version-history recording. The global `enabled`
+/// flag gates both the scanner loop and the URL-ingest handler — setting it
+/// to `false` disables all source-sync functionality at runtime without a
+/// restart (read via `AppConfig::current()` at call time).
+#[derive(Debug, Clone, Deserialize)]
+pub struct SourceSync {
+    /// Global kill-switch for source-sync functionality. When `false`, the
+    /// scanner loop does not claim due documents and the URL-based ingest
+    /// endpoint returns a 403 Forbidden.
+    #[serde(default)]
+    pub enabled: bool,
+    /// How often the scanner loop checks for due documents, in seconds
+    /// (minimum 5). Default: 60.
+    #[serde(default = "default_scan_interval_secs")]
+    pub scan_interval_secs: u64,
+    /// Minimum allowed fetch interval in seconds. User-supplied intervals
+    /// below this are clamped up. Default: 300 (5 min).
+    #[serde(default = "default_min_fetch_interval_secs")]
+    pub min_fetch_interval_secs: i64,
+    /// Maximum allowed fetch interval in seconds. User-supplied intervals
+    /// above this are clamped down. Default: 2_592_000 (30 days).
+    #[serde(default = "default_max_fetch_interval_secs")]
+    pub max_fetch_interval_secs: i64,
+    /// Per-fetch HTTP request timeout in seconds. Default: 30.
+    #[serde(default = "default_fetch_timeout_secs")]
+    pub fetch_timeout_secs: u64,
+    /// Maximum response body size in bytes. Bodies larger than this are
+    /// aborted mid-stream. Default: 20_971_520 (20 MiB).
+    #[serde(default = "default_max_response_bytes")]
+    pub max_response_bytes: u64,
+    /// Maximum number of HTTP redirect hops per fetch. Each hop is
+    /// re-validated through the SSRF guard. Default: 5.
+    #[serde(default = "default_max_redirects")]
+    pub max_redirects: u8,
+    /// Maximum number of due documents the scanner claims per tick.
+    /// Default: 50.
+    #[serde(default = "default_scan_batch_limit")]
+    pub scan_batch_limit: usize,
+}
+
+const fn default_scan_interval_secs() -> u64 {
+    60
+}
+const fn default_min_fetch_interval_secs() -> i64 {
+    300
+}
+const fn default_max_fetch_interval_secs() -> i64 {
+    2_592_000
+}
+const fn default_fetch_timeout_secs() -> u64 {
+    30
+}
+const fn default_max_response_bytes() -> u64 {
+    20_971_520
+}
+const fn default_max_redirects() -> u8 {
+    5
+}
+const fn default_scan_batch_limit() -> usize {
+    50
+}
+
+impl Default for SourceSync {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            scan_interval_secs: default_scan_interval_secs(),
+            min_fetch_interval_secs: default_min_fetch_interval_secs(),
+            max_fetch_interval_secs: default_max_fetch_interval_secs(),
+            fetch_timeout_secs: default_fetch_timeout_secs(),
+            max_response_bytes: default_max_response_bytes(),
+            max_redirects: default_max_redirects(),
+            scan_batch_limit: default_scan_batch_limit(),
         }
     }
 }

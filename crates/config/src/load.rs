@@ -62,6 +62,51 @@ pub fn validate(cfg: &Config) -> Result<(), ConfigError> {
             return Err(invalid("slots must be >= 1"));
         }
     }
+    // ── source_sync validation ─────────────────────────────────────────────
+    let ss = &cfg.source_sync;
+    if ss.min_fetch_interval_secs <= 0 {
+        return Err(ConfigError::SourceSync {
+            reason: format!(
+                "min_fetch_interval_secs must be > 0, got {}",
+                ss.min_fetch_interval_secs
+            ),
+        });
+    }
+    if ss.min_fetch_interval_secs > ss.max_fetch_interval_secs {
+        return Err(ConfigError::SourceSync {
+            reason: format!(
+                "min_fetch_interval_secs ({}) must be <= max_fetch_interval_secs ({})",
+                ss.min_fetch_interval_secs, ss.max_fetch_interval_secs
+            ),
+        });
+    }
+    if ss.scan_interval_secs < 5 {
+        return Err(ConfigError::SourceSync {
+            reason: format!(
+                "scan_interval_secs must be >= 5, got {}",
+                ss.scan_interval_secs
+            ),
+        });
+    }
+    if ss.max_redirects > 10 {
+        return Err(ConfigError::SourceSync {
+            reason: format!("max_redirects must be <= 10, got {}", ss.max_redirects),
+        });
+    }
+    if ss.max_response_bytes < 1024 {
+        return Err(ConfigError::SourceSync {
+            reason: format!(
+                "max_response_bytes must be >= 1024, got {}",
+                ss.max_response_bytes
+            ),
+        });
+    }
+    if ss.fetch_timeout_secs == 0 {
+        return Err(ConfigError::SourceSync {
+            reason: "fetch_timeout_secs must be > 0".to_string(),
+        });
+    }
+
     Ok(())
 }
 
@@ -174,5 +219,83 @@ mod tests {
                    [[backend]]\nid = \"a\"\nbase_url = \"http://h\"\nroles = [\"text\"]\nslots = 0\n";
         let err = load_str(src, &empty_env()).unwrap_err();
         assert!(matches!(err, ConfigError::Backend { .. }));
+    }
+
+    // ── source_sync validation ────────────────────────────────────────────
+
+    fn base() -> String {
+        "[storage]\npostgres_url = \"postgres://x\"\n".to_string()
+    }
+
+    #[test]
+    fn source_sync_defaults_are_off() {
+        let cfg = load_str(&base(), &empty_env()).unwrap();
+        assert!(!cfg.source_sync.enabled);
+        assert_eq!(cfg.source_sync.scan_interval_secs, 60);
+        assert_eq!(cfg.source_sync.min_fetch_interval_secs, 300);
+        assert_eq!(cfg.source_sync.max_fetch_interval_secs, 2_592_000);
+    }
+
+    #[test]
+    fn source_sync_enabled_parses() {
+        let src = format!("{}[source_sync]\nenabled = true", base());
+        let cfg = load_str(&src, &empty_env()).unwrap();
+        assert!(cfg.source_sync.enabled);
+    }
+
+    #[test]
+    fn source_sync_min_greater_than_max_is_rejected() {
+        let src = format!(
+            "{}[source_sync]\nenabled = true\nmin_fetch_interval_secs = 1000\nmax_fetch_interval_secs = 500",
+            base()
+        );
+        let err = load_str(&src, &empty_env()).unwrap_err();
+        assert!(matches!(err, ConfigError::SourceSync { .. }));
+        assert!(err.to_string().contains("min_fetch_interval_secs"));
+    }
+
+    #[test]
+    fn source_sync_scan_interval_too_low_is_rejected() {
+        let src = format!("{}[source_sync]\nscan_interval_secs = 2", base());
+        let err = load_str(&src, &empty_env()).unwrap_err();
+        assert!(matches!(err, ConfigError::SourceSync { .. }));
+        assert!(err.to_string().contains("scan_interval_secs"));
+    }
+
+    #[test]
+    fn source_sync_max_redirects_too_high_is_rejected() {
+        let src = format!("{}[source_sync]\nmax_redirects = 15", base());
+        let err = load_str(&src, &empty_env()).unwrap_err();
+        assert!(matches!(err, ConfigError::SourceSync { .. }));
+        assert!(err.to_string().contains("max_redirects"));
+    }
+
+    #[test]
+    fn source_sync_max_response_bytes_too_low_is_rejected() {
+        let src = format!("{}[source_sync]\nmax_response_bytes = 100", base());
+        let err = load_str(&src, &empty_env()).unwrap_err();
+        assert!(matches!(err, ConfigError::SourceSync { .. }));
+        assert!(err.to_string().contains("max_response_bytes"));
+    }
+
+    #[test]
+    fn source_sync_fetch_timeout_zero_is_rejected() {
+        let src = format!("{}[source_sync]\nfetch_timeout_secs = 0", base());
+        let err = load_str(&src, &empty_env()).unwrap_err();
+        assert!(matches!(err, ConfigError::SourceSync { .. }));
+        assert!(err.to_string().contains("fetch_timeout_secs"));
+    }
+
+    #[test]
+    fn source_sync_valid_custom_values() {
+        let src = format!(
+            "{}[source_sync]\nenabled = true\nmin_fetch_interval_secs = 600\nmax_fetch_interval_secs = 86400\nscan_interval_secs = 15",
+            base()
+        );
+        let cfg = load_str(&src, &empty_env()).unwrap();
+        assert!(cfg.source_sync.enabled);
+        assert_eq!(cfg.source_sync.min_fetch_interval_secs, 600);
+        assert_eq!(cfg.source_sync.max_fetch_interval_secs, 86_400);
+        assert_eq!(cfg.source_sync.scan_interval_secs, 15);
     }
 }
