@@ -23,7 +23,7 @@ mod tests {
     #[test]
     fn embeds_the_schema_migrations() {
         let versions: Vec<i64> = MIGRATOR.iter().map(|m| m.version).collect();
-        assert_eq!(versions, vec![1, 2, 3, 4, 5, 6]);
+        assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7]);
     }
 
     /// Forward-only and monotonic: no down/reversible scripts, strictly increasing versions,
@@ -114,6 +114,8 @@ mod tests {
             "assistant_stale_watches",
             "assistant_transcripts",
             "document_versions",
+            "conversations",
+            "conversation_messages",
         ] {
             assert!(
                 sql.contains(&format!("CREATE TABLE {table} ")),
@@ -283,6 +285,8 @@ mod tests {
             "idx_asst_transcripts_session",
             "documents_next_fetch_due",
             "document_versions_doc_desc",
+            "idx_conv_tenant_user",
+            "idx_convmsg_conv",
         ] {
             assert!(sql.contains(idx), "missing index: {idx}");
         }
@@ -294,13 +298,13 @@ mod tests {
         // ── f) RLS ─────────────────────────────────────────────────────────────
         let rls_enable_count = sql.matches("ENABLE ROW LEVEL SECURITY").count();
         assert!(
-            rls_enable_count >= 16,
-            "expected >=16 ENABLE ROW LEVEL SECURITY, found {rls_enable_count}"
+            rls_enable_count >= 18,
+            "expected >=18 ENABLE ROW LEVEL SECURITY, found {rls_enable_count}"
         );
         let rls_force_count = sql.matches("FORCE ROW LEVEL SECURITY").count();
         assert!(
-            rls_force_count >= 11,
-            "expected >=11 FORCE ROW LEVEL SECURITY, found {rls_force_count}"
+            rls_force_count >= 13,
+            "expected >=13 FORCE ROW LEVEL SECURITY, found {rls_force_count}"
         );
         assert!(
             sql.contains("app.current_tenant"),
@@ -362,6 +366,23 @@ mod tests {
         assert!(
             sql.contains("document_versions_id_seq TO kb_app"),
             "kb_app must be granted USAGE, SELECT on document_versions_id_seq"
+        );
+        // P18: conversation tables + sequences.
+        assert!(
+            sql.contains("GRANT SELECT, INSERT, UPDATE, DELETE ON conversations TO kb_app"),
+            "kb_app must be granted DML on conversations"
+        );
+        assert!(
+            sql.contains("GRANT SELECT, INSERT, UPDATE, DELETE ON conversation_messages TO kb_app"),
+            "kb_app must be granted DML on conversation_messages"
+        );
+        assert!(
+            sql.contains("conversations_id_seq TO kb_app"),
+            "kb_app must be granted USAGE, SELECT on conversations_id_seq"
+        );
+        assert!(
+            sql.contains("conversation_messages_id_seq TO kb_app"),
+            "kb_app must be granted USAGE, SELECT on conversation_messages_id_seq"
         );
 
         // Privileged-only tables must NOT appear in a GRANT … TO kb_app list.

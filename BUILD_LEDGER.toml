@@ -1986,7 +1986,7 @@ description = "Migration 0007_chat.sql: CREATE TABLE conversations (id, tenant_i
 depends_on = ["P18-T0"]
 plan_sections = ["5"]
 acceptance = "just ci green; lock-in test asserts all new DDL; migration applies cleanly."
-status = "todo"
+status = "done"
 checkpoint = false
 notes = ""
 
