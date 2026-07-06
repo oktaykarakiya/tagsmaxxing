@@ -650,3 +650,70 @@ max_rag_docs = 5
   in model's context window. History truncated to `max_history_messages` most recent.
 - **Persistent, never clears**: conversations persist indefinitely. Messages are cursor-paginated
   for infinite scrollback.
+
+## Tool / Function Calling (P20)
+
+The LLM can invoke tools — the chat handler sends tool definitions with each request,
+and if the model returns `tool_calls` instead of text, the system executes them and feeds
+results back for a final synthesized answer.
+
+### Architecture
+
+```
+[Chat Handler] → build ToolRegistry (SearchKnowledgeBase, GetDocument)
+  → LlamaClient.chat(tools: registry.definitions())
+  → Model responds with tool_calls: [{id, function: {name, arguments}}]
+  → executor::run_with_tools() loop:
+     1. Execute each tool via registry
+     2. Feed results back as ChatRole::Tool messages
+     3. Re-call LLM with updated conversation
+     4. Repeat until text response or max_rounds (5)
+  → Stream final answer via SSE
+```
+
+### Core types (`kb_core::provider`)
+
+- `ToolDef {name, description, parameters: JSON Schema}` — the tool definition sent to the model
+- `ToolChoice` — Auto/Required/Specific{name}/None — controls how the model selects tools
+- `ToolCall {id, function: FunctionCall}` — returned by the model
+- `FunctionCall {name, arguments: String}` — JSON-stringified arguments
+- `ChatRole::Tool` — message role for tool results in conversation history
+- `ChatReq.tools`, `ChatReq.tool_choice` — request-side tool configuration
+- `ChatResp.tool_calls`, `ChatResp.finish_reason` — response-side tool handling
+
+### Adapter (`OpenAiCompat`)
+
+Maps `ChatReq.tools` → `tools: [{type:"function", function:{name,description,parameters}}]`
+in the OpenAI wire format. Parses `tool_calls` from response `choices[0].message.tool_calls`
+back into `Vec<ToolCall>`.
+
+### Tool registry (`crates/pipeline/src/tools/`)
+
+- `Tool` trait: `definition() → ToolDef`, `execute(args, ctx) → String`
+- `ToolRegistry`: register/find/definitions
+- Built-in tools: `SearchKnowledgeBaseTool` (RetrievalPipeline), `GetDocumentTool` (PgStore)
+- `executor::run_with_tools()`: multi-turn loop with configurable `max_rounds` safety limit
+
+### Config (`[tools]`)
+
+```toml
+[tools]
+enabled = false
+max_rounds = 5
+```
+
+### SSE event contract
+
+| Event | Data | Description |
+|-------|------|-------------|
+| `tool_call` | `{id, name, arguments}` | Tool invocation |
+| `response` | `{content, tokens}` | Final answer (after tool execution) |
+| `done` | `{conversation_id, message_count}` | Completion |
+
+### Key design decisions
+
+- **Degrade gracefully**: when `[tools] enabled = false`, chat falls back to direct LLM call.
+  When model doesn't support tools, `tool_calls` is empty → treated as plain text response.
+- **Safety limit**: `max_rounds = 5` prevents infinite tool-calling loops.
+- **Wire format**: Only the OpenAI-compatible adapter supports tools (Anthropic adapter
+  still drops `tool_use` blocks).
