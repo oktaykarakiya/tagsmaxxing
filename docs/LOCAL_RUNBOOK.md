@@ -285,3 +285,82 @@ legacy flat-priority mode over the config `[[backend]]`s. Since BUG-SCHED-03:
   backends aren't probed by the health loop — a dead one is retried on the
   next routing change (BUG-SCHED-05); a single `NOTIFY` can be missed between
   listener cycles — touch any routing row again to re-trigger (BUG-SCHED-06).
+
+## Source Sync (P17)
+
+Document source-sync lets documents be configured with a `source_url` and
+`fetch_interval_secs`. The system periodically re-fetches URLs, compares
+content hashes, and on change re-ingests + records version snapshots with
+LLM diff summaries.
+
+### Enabling
+
+Add to `config.toml`:
+
+```toml
+[source_sync]
+enabled = true
+```
+
+The scanner loop starts automatically in both `kb serve` and `kb worker`
+processes. No restart needed — config is hot-swappable.
+
+### Monitoring
+
+- Watch for `document_refetched` / `document_refetch_skipped` /
+  `document_refetch_failed` rows in the `audit_events` table.
+- Use `psql` to inspect due documents:
+  ```sql
+  SELECT id, source_url, current_version, next_fetch_at
+  FROM documents WHERE source_url IS NOT NULL ORDER BY next_fetch_at;
+  ```
+- Check version history:
+  ```sql
+  SELECT document_id, version_number, content_diff_summary, created_at
+  FROM document_versions ORDER BY document_id, version_number DESC;
+  ```
+
+### Un-pausing a failed document
+
+Sync auto-pauses after 10 consecutive failures. To re-arm:
+
+```sql
+UPDATE documents SET fetch_failure_count = 0, next_fetch_at = now()
+WHERE id = <doc_id>;
+```
+
+Or update the source URL/fetch interval via the document detail page UI.
+
+### Dead-letter replay
+
+Refetch jobs that exhaust retries land in `jobs.status = 'dead'`. Replay
+via the admin UI or:
+
+```sql
+UPDATE jobs SET status = 'queued', attempts = 0 WHERE id = <job_id> AND kind = 'refetch';
+```
+
+### Tuning
+
+- **Frequent updates**: set `fetch_interval_secs` to 300 (5 min) on hot documents.
+- **Infrequent**: use 86400 (daily) or 604800 (weekly).
+- **One-shot**: set `fetch_interval_secs` to `NULL` — the URL is fetched once
+  (when added via "Add from URL") and never re-fetched.
+- **Scanner cadence**: adjust `[source_sync].scan_interval_secs` (default 60).
+  Lower = more responsive, higher = less DB load.
+- **Batch size**: `scan_batch_limit` (default 50) caps how many docs the scanner
+  claims per tick. Increase if you have many due documents.
+
+### HNSW partial-index rebuild
+
+If tombstoned chunk rows accumulate (e.g. heavy re-syncing), rebuild the
+HNSW index to exclude them:
+
+```sql
+DROP INDEX chunks_embedding_hnsw;
+CREATE INDEX chunks_embedding_hnsw ON chunks
+  USING hnsw (embedding::halfvec(2560) halfvec_cosine_ops)
+  WHERE superseded_at IS NULL;
+```
+
+(Note: `CONCURRENTLY` requires no other open transactions.)

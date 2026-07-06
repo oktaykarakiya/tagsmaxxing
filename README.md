@@ -179,6 +179,14 @@ kb worker --config /etc/kb/config.toml --concurrency 4
 Rollback lever: set `[ingest] mode = "inline"` in config.toml (hot-reloaded,
 no restart) to restore the synchronous pipeline.
 
+**Document Source Sync (P17):** give a document a `source_url` and it stays
+current automatically. The system periodically re-fetches the URL, compares
+content hashes, and on change re-ingests the new content with an LLM-generated
+"what changed" summary and an immutable version snapshot. Old chunks are
+soft-deleted (tombstoned), search always uses the latest version. Configurable
+per-document interval, global scanner loop, SSRF-guarded fetcher. See
+`[source_sync]` in `config.example.toml`.
+
 See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a full crate tour, data-flow diagrams,
 and the rationale behind key design decisions.
 

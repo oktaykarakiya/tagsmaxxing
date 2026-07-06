@@ -500,3 +500,79 @@ upload edge (multipart API handler), and container sandboxing (compose.yaml).
 
 *Review date: 2026-06-01.* Findings incorporated as the mitigations above.
 Residual risks are documented in "What is NOT (yet) protected".
+
+## Document Source Sync (P17)
+
+Documents can be configured with a `source_url` and `fetch_interval_secs` — the system
+periodically re-fetches the URL, compares content hashes, and if changed, re-runs the full
+ingest pipeline and records an immutable version snapshot with an LLM-generated diff summary.
+
+### Flow
+
+```
+[source_sync_scanner]                    (interval loop, config-gated)
+  │
+  ├─ claim_due_documents(SKIP LOCKED)    (admin pool, atomic claim-and-bump)
+  │
+  ├─ enqueue(JobKind::Refetch)            (per due document)
+  │
+  ▼
+[refetch worker]
+  │
+  ├─ fetch_url(source_url)               (SSRF-guarded, DNS-resolving, per-hop validation)
+  │
+  ├─ hash compare → decide_refetch_action
+  │    ├─ Unchanged: bump timestamps, DocumentRefetchSkipped audit
+  │    └─ Changed:
+  │         ├─ Snapshot old text (get_live_document_text)
+  │         ├─ ingest_into (full pipeline: extract→tag→chunk→embed)
+  │         ├─ DiffSummaryGenerator (LLM: old vs new, best-effort)
+  │         ├─ insert_document_version_and_advance (tags_snapshot, chunk_count)
+  │         └─ DocumentRefetched audit
+  └─ Failure: backoff (2^attempts capped), pause at 10 failures,
+               DocumentRefetchFailed audit
+```
+
+### Key design decisions
+
+- **Tombstones, not hard deletes**: old chunks get `superseded_at = now()`, not `DELETE`.
+  Hybrid search (`WHERE c.superseded_at IS NULL`) and the document detail page only see
+  the latest version. Retroactive search on old versions is possible by querying directly.
+- **Insert-only `document_versions`**: immutable append-only table, RLS-enforced,
+  `kb_app` role granted `SELECT, INSERT` only (no `UPDATE`/`DELETE`).
+- **Per-hop SSRF guard**: every redirect re-runs DNS resolution + IP validation +
+  connection pinning (`resolve_to_addrs`). DNS rebinding is defeated. No escape hatch.
+- **local_only inheritance**: re-fetch/diff/re-tag respect the document's `local_only`
+  flag exactly like initial ingest — data never leaves local models.
+- **Audit events**: `document_refetched`, `document_refetch_skipped`, `document_refetch_failed`,
+  `document_source_updated`. Actor = `job.created_by` or `0` (system sentinel).
+- **Scanner dedup**: `FOR UPDATE SKIP LOCKED` claim-and-bump prevents concurrent scanners
+  from double-enqueuing. Raced worker insertions converge via `ON CONFLICT DO NOTHING`.
+
+### Config (`[source_sync]`)
+
+```toml
+[source_sync]
+enabled = false                     # global kill-switch
+scan_interval_secs = 60             # how often to check for due documents
+min_fetch_interval_secs = 300       # clamp floor (5 min)
+max_fetch_interval_secs = 2592000   # clamp ceiling (30 days)
+fetch_timeout_secs = 30
+max_response_bytes = 20971520       # 20 MiB
+max_redirects = 5
+scan_batch_limit = 50               # max docs claimed per tick
+```
+
+### Tombstone index note
+
+Chunks and files use `superseded_at` for soft-delete, with existing HNSW and BM25 indexes
+covering both live and tombstoned rows. At low tombstone ratios, post-filter overhead is
+negligible. If a heavily-synced corpus accumulates many tombstoned rows, rebuild as partial
+indexes (`WHERE superseded_at IS NULL`) via `CREATE INDEX CONCURRENTLY` as an ops action.
+
+### Audit actor-0 convention
+
+Worker-side audit events (the first in the codebase) use `actor_user_id = 0` for
+system-initiated actions (no authenticated user context). This is safe because
+`audit_events.actor_user_id` has no FK constraint (0001:70). The admin audit UI
+renders actor 0 as "System".

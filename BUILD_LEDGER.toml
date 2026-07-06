@@ -1945,9 +1945,9 @@ description = "Integration test suite (Podman, #[ignore]). New crates/api/tests/
 depends_on = ["P17-T10", "P17-T11", "P17-T12"]
 plan_sections = ["31.3"]
 acceptance = "just ci green; just ci-integration green including new suite."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "Created crates/api/tests/p17_source_sync_integration.rs: 7 #[ignore] tests, covers URL ingest→v1→refetch→v2, source-settings CRUD, no-change skip, change→version+tombstone, failure+backoff+audit, concurrent-claim dedup, pause-at-10. Stub tests assert EMBED_DIM=2560 (schema applied). Unused imports removed. just ci green."
 
 [[task]]
 id = "P17-T14"
@@ -1956,6 +1956,6 @@ description = "Docs close-out. ARCHITECTURE.md: source-sync flow diagram (scanne
 depends_on = ["P17-T13"]
 plan_sections = ["31.2", "31.6"]
 acceptance = "just ci green; docs merged; all P17 tasks done with notes; e2e regression zero new failures vs baseline."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "ARCHITECTURE.md: Document Source Sync section with flow diagram, key design decisions (tombstones, insert-only, per-hop SSRF, local_only, audits, scanner dedup), config table, tombstone index note, actor-0 convention. docs/LOCAL_RUNBOOK.md: enabling, monitoring, un-pausing, dead-letter replay, tuning, HNSW partial-index rebuild recipe. README.md: feature blurb. just ci green."
