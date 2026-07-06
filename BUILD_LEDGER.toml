@@ -19,7 +19,7 @@
 
 [meta]
 generated = "2026-05-31"
-phases_planned = ["P0", "P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10", "P11", "P12", "P13", "P14", "P15", "P16", "P17"]
+phases_planned = ["P0", "P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10", "P11", "P12", "P13", "P14", "P15", "P16", "P17", "P18"]
 gate_command = "just ci"
 walking_skeleton = "Complete the P0-P4 vertical slice before adding breadth (§31.6)."
 # Crate versions verified against crates.io on 2026-05-29 (the plan's names had drifted):
@@ -1959,3 +1959,132 @@ acceptance = "just ci green; docs merged; all P17 tasks done with notes; e2e reg
 status = "done"
 checkpoint = false
 notes = "ARCHITECTURE.md: Document Source Sync section with flow diagram, key design decisions (tombstones, insert-only, per-hop SSRF, local_only, audits, scanner dedup), config table, tombstone index note, actor-0 convention. docs/LOCAL_RUNBOOK.md: enabling, monitoring, un-pausing, dead-letter replay, tuning, HNSW partial-index rebuild recipe. README.md: feature blurb. just ci green."
+
+# ── Phase P18 — Multi-turn Chat / Conversations ───────────────────────────
+#
+# Persistent, multi-turn chat with an LLM that has RAG access to the knowledge
+# base. New conversations + messages tables (not reusing assistant schema which
+# is designed for the opencode subprocess agent). RAG via RetrievalPipeline.
+# SSE streaming response with progress events. Persistent history, infinite
+# scroll. "never clear, just continue and continue."
+
+[[task]]
+id = "P18-T0"
+phase = "P18"
+description = "Author the P18 phase in BUILD_LEDGER.toml: update meta.phases_planned, append P18-T1..T10 task entries. Design is in plans/frolicking-cooking-flask.md."
+depends_on = []
+plan_sections = ["31"]
+acceptance = "just next resolves P18-T1; all 11 P18 tasks present."
+status = "done"
+checkpoint = false
+notes = "Appended P18-T0..T10 to BUILD_LEDGER.toml. Updated phases_planned to include P18."
+
+[[task]]
+id = "P18-T1"
+phase = "P18"
+description = "Migration 0007_chat.sql: CREATE TABLE conversations (id, tenant_id, user_id, title, model_ref, message_count, created_at, updated_at) + idx_conv_tenant_user + RLS; CREATE TABLE conversation_messages (id, tenant_id, conversation_id, role CHECK('user','assistant','system'), content, tokens_in, tokens_out, search_results_json JSONB, created_at) + idx_convmsg_conv + RLS; GRANT DML + sequence to kb_app. Update migrations.rs lock-in test: versions 1..=7, tables list, indexes list, RLS counts, kb_app grant assertions."
+depends_on = ["P18-T0"]
+plan_sections = ["5"]
+acceptance = "just ci green; lock-in test asserts all new DDL; migration applies cleanly."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P18-T2"
+phase = "P18"
+description = "kb-core types: new crates/core/src/chat.rs with ChatConversation struct (id, tenant_id, user_id, title, model_ref, message_count, created_at, updated_at) + ChatMessage struct (id, tenant_id, conversation_id, role, content, tokens_in, tokens_out, search_results_json, created_at). lib.rs exports."
+depends_on = ["P18-T1"]
+plan_sections = ["4"]
+acceptance = "just ci green; serde round-trip tests."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P18-T3"
+phase = "P18"
+description = "Store: new crates/store/src/chat.rs — create_conversation, get_conversation, list_conversations (by tenant+user, ordered by updated_at DESC), update_conversation_title, delete_conversation, insert_message (returns message id, bumps conversation message_count+updated_at), get_messages (by conv_id, cursor-based with before_id), get_recent_messages (last N for LLM context). All methods use begin_tenant_tx + app pool. NewConversationParams + InsertMessageParams structs."
+depends_on = ["P18-T2"]
+plan_sections = ["5"]
+acceptance = "just ci green; #[ignore] pg tests: CRUD round-trip, cursor pagination, tenant isolation verified."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P18-T4"
+phase = "P18"
+description = "Chat engine: new crates/pipeline/src/chat_engine.rs — ChatEngine struct (pool, retrieval, pg). respond() method: embed user query, hybrid search for RAG context, load recent history, build ChatReq with system prompt + RAG docs + history + user message, call LlamaClient::chat(), return ChatResponse { text, search_hits, tokens }. System prompt template. History formatter. Context window budget management."
+depends_on = ["P18-T2", "P18-T3"]
+plan_sections = ["6", "7", "8"]
+acceptance = "just ci green; unit tests: message building, context truncation, prompt formatting."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P18-T5"
+phase = "P18"
+description = "Config: [chat] section in model.rs — enabled (bool, default true), model (String, default '' — uses first available text model), max_history_messages (usize, default 20), max_rag_docs (usize, default 5), max_rag_tokens (usize, default 2000). Validation: model non-empty when enabled. env.rs overlay."
+depends_on = ["P18-T0"]
+plan_sections = ["6"]
+acceptance = "just ci green; defaults parse; validation rejects empty model with enabled=true."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P18-T6"
+phase = "P18"
+description = "Web UI: chat page handler + templates + routes. New crates/api/src/web/handlers_chat.rs: chat_page (GET /chat + GET /chat/{id}), chat_new (POST /chat/new), chat_send (POST /chat/{id}/send — SSE response with sources/thinking/response/done events), chat_delete (POST /chat/{id}/delete, CSRF), chat_messages (GET /chat/{id}/messages, HTMX partial). Templates: chat.html (two-panel layout, conversation list + message area + input), chat_messages.html (message list partial). Assumes retrieval_pipeline + backend_pool on AppState. Supports non-JS fallback (full page reload)."
+depends_on = ["P18-T3", "P18-T4"]
+plan_sections = ["12"]
+acceptance = "just ci green; handler tests with in-memory state: auth gate, CSRF gate, SSE events parsed."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P18-T7"
+phase = "P18"
+description = "JSON API: GET /api/chat/conversations (list user's conversations), GET /api/chat/conversations/{id} (conversation + messages), DELETE /api/chat/conversations/{id}. Response DTOs. Route registration in lib.rs."
+depends_on = ["P18-T3"]
+plan_sections = ["12"]
+acceptance = "just ci green; handler tests: auth gate, empty list, not-found for other user."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P18-T8"
+phase = "P18"
+description = "Navigation: add 'Chat' link to _macros.html nav bar (desktop + mobile), with active='chat' highlighting."
+depends_on = ["P18-T6"]
+plan_sections = ["12"]
+acceptance = "just ci green; nav renders Chat link on all authenticated pages."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P18-T9"
+phase = "P18"
+description = "Integration tests: crates/api/tests/p18_chat_integration.rs — #[ignore] tests covering conversation CRUD, message insertion, list ordering, cursor pagination, RLS isolation, SSE event stream parsing. Uses kb_testsupport::fresh_db() + mock LLM backend."
+depends_on = ["P18-T5", "P18-T6", "P18-T7"]
+plan_sections = ["31.3"]
+acceptance = "just ci green; just ci-integration green including new suite."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P18-T10"
+phase = "P18"
+description = "Docs close-out. ARCHITECTURE.md: Multi-turn Chat section with flow diagram (user→RAG→LLM→response→store), component diagram, SSE event contract. docs/LOCAL_RUNBOOK.md: enabling chat, model selection, context window tuning. README.md: chat feature blurb."
+depends_on = ["P18-T9"]
+plan_sections = ["31.2", "31.6"]
+acceptance = "just ci green; docs merged; all P18 tasks done."
+status = "todo"
+checkpoint = false
+notes = ""
