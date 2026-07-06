@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% import "_macros.html" as nav %}
+
+{% block title %}Chat{% endblock %}
+
+{% block head_extra %}
+<script src="/static/htmx.min.js"></script>
+<style>
+  .msg-user { background: #2563eb; color: #fff; align-self: flex-end; border-radius: 1rem 1rem 0.25rem 1rem; }
+  .msg-assistant { background: #f3f4f6; color: #111827; align-self: flex-start; border-radius: 1rem 1rem 1rem 0.25rem; }
+  .dark .msg-assistant { background: #1f2937; color: #e5e7eb; }
+  #msg-container { scroll-behavior: smooth; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="max-w-6xl mx-auto px-4 py-6">
+    {{ nav::app_nav("chat", csrf_token) }}
+
+    <div class="flex gap-4 h-[calc(100vh-12rem)]">
+        {# ── Sidebar: conversation list ── #}
+        <aside class="w-72 flex-shrink-0 bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-700 p-3 overflow-y-auto hidden md:block">
+            <form method="post" action="/chat/new" class="mb-3">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button type="submit" class="w-full rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700">+ New Chat</button>
+            </form>
+            <div class="space-y-1">
+                {% for c in conversations %}
+                <a href="/chat/{{ c.id }}" class="block rounded-md px-3 py-2 text-sm {% if conv_id == c.id %}bg-indigo-100 dark:bg-indigo-900/40 text-indigo-900 dark:text-indigo-200{% else %}text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800{% endif %}">
+                    <div class="font-medium truncate">{{ c.title }}</div>
+                    <div class="text-xs text-gray-500 dark:text-gray-400">{{ c.message_count }} messages · {{ c.updated_at }}</div>
+                </a>
+                {% endfor %}
+                {% if conversations.is_empty() %}
+                <p class="text-sm text-gray-400 dark:text-gray-500 px-2">No conversations yet.</p>
+                {% endif %}
+            </div>
+        </aside>
+
+        {# ── Main: messages + input ── #}
+        <main class="flex-1 flex flex-col min-w-0">
+            {# Mobile new chat button #}
+            <div class="md:hidden mb-3">
+                <form method="post" action="/chat/new">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <button type="submit" class="w-full rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white">+ New Chat</button>
+                </form>
+            </div>
+
+            {# Message area #}
+            <div id="msg-container" class="flex-1 overflow-y-auto space-y-3 p-2 mb-3" hx-get="/chat/{{ conv_id }}/messages" hx-trigger="load" hx-swap="innerHTML">
+                <div id="messages" class="flex flex-col space-y-3">
+                    {% if conv_id == 0 %}
+                    <div class="flex items-center justify-center h-full text-gray-400 dark:text-gray-500">
+                        <p>Select a conversation or start a new one.</p>
+                    </div>
+                    {% endif %}
+                    {% for m in messages %}
+                    <div class="max-w-[80%] px-4 py-2 text-sm {% if m.role == "user" %}msg-user{% else %}msg-assistant border border-gray-200 dark:border-gray-600{% endif %}">
+                        <div class="whitespace-pre-wrap">{{ m.content }}</div>
+                        {% if m.search_results_json.is_some() %}
+                        <details class="mt-2 text-xs opacity-70">
+                            <summary>Sources</summary>
+                            <pre class="mt-1 overflow-auto max-h-32">{{ m.search_results_json.clone().unwrap() }}</pre>
+                        </details>
+                        {% endif %}
+                        <div class="text-xs mt-1 opacity-60">{{ m.created_at }}</div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+
+            {# Input area ── #}
+            {% if conv_id > 0 %}
+            <div class="border-t border-gray-200 dark:border-gray-700 pt-3">
+                <form id="chat-form" method="post" action="/chat/{{ conv_id }}/send"
+                      hx-post="/chat/{{ conv_id }}/send"
+                      hx-target="#messages" hx-swap="beforeend"
+                      hx-on::after-request="this.reset(); this.querySelector('textarea').focus(); document.getElementById('msg-container').scrollTop = document.getElementById('msg-container').scrollHeight;">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <div class="flex gap-2">
+                        <textarea name="message" rows="2" placeholder="Ask about your documents..."
+                                  class="flex-1 resize-none rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-4 py-2 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                  required></textarea>
+                        <button type="submit"
+                                class="shrink-0 rounded-lg bg-indigo-600 px-5 py-2 text-sm font-medium text-white hover:bg-indigo-700"
+                                hx-indicator="#chat-spinner">
+                            Send
+                        </button>
+                    </div>
+                    <div id="chat-spinner" class="htmx-indicator text-xs text-gray-500 mt-1">Thinking…</div>
+                </form>
+                <form method="post" action="/chat/{{ conv_id }}/delete" class="mt-1">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <button type="submit" class="text-xs text-red-500 hover:underline">Delete conversation</button>
+                </form>
+            </div>
+            {% else %}
+            <div class="flex items-center justify-center h-full text-gray-400 dark:text-gray-500">
+                <p>Start a new chat or select one from the sidebar.</p>
+            </div>
+            {% endif %}
+        </main>
+    </div>
+</div>
+
+<script>
+(function() {
+    var container = document.getElementById('msg-container');
+    if (container) container.scrollTop = container.scrollHeight;
+})();
+</script>
+{% endblock %}

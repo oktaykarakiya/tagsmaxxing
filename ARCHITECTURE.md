@@ -576,3 +576,77 @@ Worker-side audit events (the first in the codebase) use `actor_user_id = 0` for
 system-initiated actions (no authenticated user context). This is safe because
 `audit_events.actor_user_id` has no FK constraint (0001:70). The admin audit UI
 renders actor 0 as "System".
+
+## Multi-turn Chat (P18)
+
+Persistent, multi-turn chat with an LLM that has RAG access to the knowledge base
+via the existing [`RetrievalPipeline`]. Messages are stored in dedicated `conversations`
+and `conversation_messages` tables (not reusing the agent-oriented `assistant_sessions`
+schema).
+
+### Architecture
+
+```
+[Browser: SSE EventSource]
+  │  POST /chat/{id}/send  (SSE streaming response)
+  │
+  ▼
+[Chat Handler] → [RetrievalPipeline] → hybrid search → rerank → top-K docs
+  │                    │
+  │                    ▼  [LlamaClient.chat(Role::Text)]
+  │                    │     system prompt + RAG docs + history + user message
+  │                    │
+  ▼                    ▼
+ [conversation_messages]  INSERT user + assistant rows
+  │
+  ▼
+ [SSE events]  sources → response → done
+```
+
+### Data model
+
+- `conversations`: id, tenant_id, user_id, title (auto-generated), model_ref, message_count, timestamps. RLS enforced.
+- `conversation_messages`: id, tenant_id, conversation_id, role (user/assistant/system), content, tokens_in, tokens_out, search_results_json JSONB, created_at. RLS enforced.
+
+### SSE event contract
+
+| Event | Data | Description |
+|-------|------|-------------|
+| `sources` | `{count, docs: [{title, snippet, document_id}]}` | RAG results |
+| `response` | `{content, tokens: {in, out}}` | LLM response |
+| `done` | `{conversation_id, message_count}` | Completion |
+| `error` | `{message}` | Error |
+
+### Chat engine (`crates/pipeline/src/chat_engine.rs`)
+
+Wraps `RetrievalPipeline` + `LlamaClient` + `PgStore`:
+1. Embed user query → hybrid search → get top-K RAG documents
+2. Load recent conversation history from `conversation_messages`
+3. Build `ChatReq` with system prompt + RAG docs + history + user message
+4. Call `LlamaClient::chat(Role::Text)` with failover + circuit-breaker
+5. Return `ChatResponse { text, search_results, usage }`
+
+### Config (`[chat]`)
+
+```toml
+[chat]
+enabled = true
+model = ""          # empty = uses first available text model
+max_history_messages = 20
+max_rag_docs = 5
+```
+
+### Key design decisions
+
+- **Separate tables** (not reusing assistant schema): the `assistant_sessions`/`assistant_transcripts`
+  tables are designed for the opencode subprocess agent (sandbox_path, tool_calls_json,
+  violations_json). Chat uses clean purpose-built tables.
+- **RAG via existing pipeline**: embeds user query, hybrid search, rerank. No new infrastructure.
+- **SSE streaming**: progressive events (sources → response → done) give the user immediate
+  feedback while the LLM generates. Based on the search SSE pattern.
+- **LLM via LlamaClient**: full failover, circuit-breaker, usage metering. No streaming LLM
+  support yet (request-response only; response arrives as one blob).
+- **Context window management**: system prompt + RAG docs + history + user message must fit
+  in model's context window. History truncated to `max_history_messages` most recent.
+- **Persistent, never clears**: conversations persist indefinitely. Messages are cursor-paginated
+  for infinite scrollback.

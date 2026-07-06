@@ -411,6 +411,14 @@ pub fn build_router(state: AppState) -> Router {
             "/api/documents/{id}/source",
             patch(handlers::documents::update_document_source),
         )
+        .route(
+            "/api/chat/conversations",
+            get(handlers::chat::list_conversations),
+        )
+        .route(
+            "/api/chat/conversations/{id}",
+            get(handlers::chat::get_conversation).delete(handlers::chat::delete_conversation),
+        )
         .route("/api/jobs", get(handlers::jobs::list_jobs))
         .route("/api/jobs/{id}", get(handlers::jobs::job_status))
         .route(

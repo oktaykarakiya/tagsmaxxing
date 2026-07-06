@@ -32,6 +32,7 @@ pub(crate) mod csrf;
 pub(crate) mod handlers;
 pub(crate) mod handlers_account;
 pub(crate) mod handlers_auth_web;
+pub(crate) mod handlers_chat;
 pub(crate) mod handlers_dashboard;
 pub(crate) mod handlers_documents;
 pub(crate) mod handlers_legal;
@@ -164,6 +165,12 @@ pub(crate) fn build_web_router(
             "/documents/{id}/versions/{v}",
             get(handlers_documents::document_version_page),
         )
+        .route("/chat", get(handlers_chat::chat_page))
+        .route("/chat/{id}", get(handlers_chat::chat_page_with_id))
+        .route("/chat/new", post(handlers_chat::chat_new))
+        .route("/chat/{id}/send", post(handlers_chat::chat_send))
+        .route("/chat/{id}/delete", post(handlers_chat::chat_delete))
+        .route("/chat/{id}/messages", get(handlers_chat::chat_messages))
         .route("/logout", post(handlers::logout_web))
         // Dashboard (P12-T4)
         .route("/dashboard", get(handlers_dashboard::dashboard_page))

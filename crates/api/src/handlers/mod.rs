@@ -15,6 +15,7 @@ pub mod admin_quota;
 pub mod api_tokens;
 pub mod auth;
 pub mod billing;
+pub mod chat;
 pub mod documents;
 pub mod ingest;
 pub mod jobs;

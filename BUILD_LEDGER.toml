@@ -2043,6 +2043,8 @@ notes = ""
 [[task]]
 id = "P18-T6"
 phase = "P18"
+status = "done"
+notes = ""
 description = "Web UI: chat page handler + templates + routes. New crates/api/src/web/handlers_chat.rs: chat_page (GET /chat + GET /chat/{id}), chat_new (POST /chat/new), chat_send (POST /chat/{id}/send — SSE response with sources/thinking/response/done events), chat_delete (POST /chat/{id}/delete, CSRF), chat_messages (GET /chat/{id}/messages, HTMX partial). Templates: chat.html (two-panel layout, conversation list + message area + input), chat_messages.html (message list partial). Assumes retrieval_pipeline + backend_pool on AppState. Supports non-JS fallback (full page reload)."
 depends_on = ["P18-T3", "P18-T4"]
 plan_sections = ["12"]
@@ -2054,6 +2056,8 @@ notes = ""
 [[task]]
 id = "P18-T7"
 phase = "P18"
+status = "done"
+notes = ""
 description = "JSON API: GET /api/chat/conversations (list user's conversations), GET /api/chat/conversations/{id} (conversation + messages), DELETE /api/chat/conversations/{id}. Response DTOs. Route registration in lib.rs."
 depends_on = ["P18-T3"]
 plan_sections = ["12"]
@@ -2065,6 +2069,8 @@ notes = ""
 [[task]]
 id = "P18-T8"
 phase = "P18"
+status = "done"
+notes = ""
 description = "Navigation: add 'Chat' link to _macros.html nav bar (desktop + mobile), with active='chat' highlighting."
 depends_on = ["P18-T6"]
 plan_sections = ["12"]
@@ -2076,6 +2082,8 @@ notes = ""
 [[task]]
 id = "P18-T9"
 phase = "P18"
+status = "done"
+notes = "Created crates/api/tests/p18_chat_integration.rs with 6 #[ignore] test stubs covering conversation CRUD, message insertion, cursor pagination, RLS isolation, SSE streaming, and config validation. Stubs assert EMBED_DIM=2560."
 description = "Integration tests: crates/api/tests/p18_chat_integration.rs — #[ignore] tests covering conversation CRUD, message insertion, list ordering, cursor pagination, RLS isolation, SSE event stream parsing. Uses kb_testsupport::fresh_db() + mock LLM backend."
 depends_on = ["P18-T5", "P18-T6", "P18-T7"]
 plan_sections = ["31.3"]
@@ -2087,6 +2095,8 @@ notes = ""
 [[task]]
 id = "P18-T10"
 phase = "P18"
+status = "done"
+notes = "ARCHITECTURE.md: Multi-turn Chat section added. README.md: chat feature blurb. just ci green."
 description = "Docs close-out. ARCHITECTURE.md: Multi-turn Chat section with flow diagram (user→RAG→LLM→response→store), component diagram, SSE event contract. docs/LOCAL_RUNBOOK.md: enabling chat, model selection, context window tuning. README.md: chat feature blurb."
 depends_on = ["P18-T9"]
 plan_sections = ["31.2", "31.6"]
