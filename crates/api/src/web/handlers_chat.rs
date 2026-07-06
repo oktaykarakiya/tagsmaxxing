@@ -430,15 +430,7 @@ pub async fn chat_send(
                 tool_call_id: None,
             });
 
-            let req = kb_core::provider::ChatReq {
-                messages,
-                max_tokens: Some(1024),
-                ..Default::default()
-            };
-
-            // LLM call: construct a temporary LlamaClient from the pool.
-            // (In production, the LlamaClient should be shared via AppState
-            // rather than created per-request.)
+            // Build LlamaClient from pool.
             let client = kb_llm::LlamaClient::new(
                 (**pool).clone(),
                 reqwest::Client::new(),
@@ -446,47 +438,146 @@ pub async fn chat_send(
                 5,
                 std::time::Duration::from_secs(30),
             );
-            match client
-                .chat(kb_core::role::Role::Text, &model, &req, local_only, 0)
+
+            // Check if tools are enabled.
+            let tools_enabled = app_config
+                .as_ref()
+                .map(|c| c.current().tools.enabled)
+                .unwrap_or(false);
+            let max_rounds = app_config
+                .as_ref()
+                .map(|c| c.current().tools.max_rounds)
+                .unwrap_or(5);
+
+            let (final_text, _tool_calls_json, usage) = if tools_enabled {
+                // Build tool registry with search + document tools.
+                let mut registry = kb_pipeline::tools::ToolRegistry::new();
+                registry.register(std::sync::Arc::new(
+                    kb_pipeline::tools::SearchKnowledgeBaseTool,
+                ));
+                registry.register(std::sync::Arc::new(kb_pipeline::tools::GetDocumentTool));
+
+                let tool_ctx = kb_pipeline::tools::ToolContext {
+                    tenant_id,
+                    user_id: Some(user_id),
+                    pg_store: pg.clone(),
+                    retrieval: Some(retrieval.clone()),
+                };
+
+                match kb_pipeline::tools::run_with_tools(
+                    &client,
+                    &registry,
+                    &tool_ctx,
+                    &model,
+                    &mut messages,
+                    local_only,
+                    max_rounds,
+                )
                 .await
-            {
-                Ok(resp) => {
-                    let response_json = serde_json::json!({"content": resp.text, "tokens": {"in": resp.usage.prompt_tokens, "out": resp.usage.completion_tokens}});
-                    tx.send(Ok(Event::default()
-                        .event("response")
-                        .data(response_json.to_string())))
-                        .await
-                        .ok();
-
-                    let _ = pg
-                        .insert_message(
-                            tenant_id,
-                            user_id,
-                            conv_id,
-                            "assistant",
-                            &resp.text,
-                            Some(resp.usage.prompt_tokens as i32),
-                            Some(resp.usage.completion_tokens as i32),
-                            Some(&serde_json::to_value(&search_results).unwrap_or_default()),
+                {
+                    Ok(result) => {
+                        // Send tool calls as SSE events.
+                        for tc in &result.tool_calls {
+                            let tc_json = serde_json::json!({
+                                "id": tc.id,
+                                "name": tc.function.name,
+                                "arguments": tc.function.arguments,
+                            });
+                            tx.send(Ok(Event::default()
+                                .event("tool_call")
+                                .data(tc_json.to_string())))
+                                .await
+                                .ok();
+                        }
+                        (
+                            result.text,
+                            Some(serde_json::to_value(&result.tool_calls).unwrap_or_default()),
+                            result.usage,
                         )
-                        .await;
+                    }
+                    Err(e) => {
+                        tracing::error!(error=%e, "tool execution failed");
+                        tx.send(Ok(Event::default().event("error").data(format!(
+                            "{{\"message\":\"Tool execution failed: {}\"}}",
+                            e
+                        ))))
+                        .await
+                        .ok();
+                        // Fallback: generate without tools
+                        let req = kb_core::provider::ChatReq {
+                            messages: messages.clone(),
+                            max_tokens: Some(1024),
+                            ..Default::default()
+                        };
+                        match client
+                            .chat(kb_core::role::Role::Text, &model, &req, local_only, 0)
+                            .await
+                        {
+                            Ok(resp) => (resp.text, None, resp.usage),
+                            Err(e2) => {
+                                tx.send(Ok(Event::default()
+                                    .event("error")
+                                    .data(format!("{{\"message\":\"{}\"}}", e2))))
+                                    .await
+                                    .ok();
+                                return;
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Tools disabled — direct LLM call.
+                let req = kb_core::provider::ChatReq {
+                    messages,
+                    max_tokens: Some(1024),
+                    ..Default::default()
+                };
+                match client
+                    .chat(kb_core::role::Role::Text, &model, &req, local_only, 0)
+                    .await
+                {
+                    Ok(resp) => (resp.text, None, resp.usage),
+                    Err(e) => {
+                        tracing::error!(error=%e, "chat LLM failed");
+                        tx.send(Ok(Event::default()
+                            .event("error")
+                            .data(format!("{{\"message\":\"{}\"}}", e))))
+                            .await
+                            .ok();
+                        return;
+                    }
+                }
+            };
 
-                    let done_json = serde_json::json!({"conversation_id": conv_id, "message_count": conv.map(|c| c.message_count + 2).unwrap_or(2)});
-                    tx.send(Ok(Event::default()
-                        .event("done")
-                        .data(done_json.to_string())))
-                        .await
-                        .ok();
-                }
-                Err(e) => {
-                    tracing::error!(error=%e, "chat LLM failed");
-                    tx.send(Ok(Event::default()
-                        .event("error")
-                        .data(format!("{{\"message\":\"{}\"}}", e))))
-                        .await
-                        .ok();
-                }
-            }
+            // Send response SSE event.
+            let response_json = serde_json::json!({"content": final_text, "tokens": {"in": usage.prompt_tokens, "out": usage.completion_tokens}});
+            tx.send(Ok(Event::default()
+                .event("response")
+                .data(response_json.to_string())))
+                .await
+                .ok();
+
+            // Save assistant message.
+            let _ = pg
+                .insert_message(
+                    tenant_id,
+                    user_id,
+                    conv_id,
+                    "assistant",
+                    &final_text,
+                    Some(usage.prompt_tokens as i32),
+                    Some(usage.completion_tokens as i32),
+                    Some(&serde_json::to_value(&search_results).unwrap_or_default()),
+                )
+                .await;
+
+            // Done.
+            let done_json = serde_json::json!({"conversation_id": conv_id, "message_count": conv.map(|c| c.message_count + 2).unwrap_or(2)});
+            tx.send(Ok(Event::default()
+                .event("done")
+                .data(done_json.to_string())))
+                .await
+                .ok();
         } else {
             tx.send(Ok(Event::default().event("error").data("{\"message\":\"Chat backend not configured — retrieval pipeline or backend pool missing\"}"))).await.ok();
         }

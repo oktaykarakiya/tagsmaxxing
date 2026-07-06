@@ -59,12 +59,15 @@ impl AnswerGenerator {
     ///
     /// Takes up to `max_sources` top hits, truncates each snippet to
     /// `max_chars_per_source` characters, and builds a prompt for the LLM.
+    /// If `tools` is provided, the LLM can call tools (e.g. to search for
+    /// additional documents beyond the pre-retrieved hits).
     /// The response is parsed for citations in `[N]` format.
     pub async fn generate(
         &self,
         query: &str,
         hits: &[Hit],
         local_only: bool,
+        tools: Option<Vec<kb_core::provider::ToolDef>>,
     ) -> anyhow::Result<GeneratedAnswer> {
         const MAX_SOURCES: usize = 5;
         const MAX_CHARS_PER_SOURCE: usize = 500;
@@ -100,6 +103,7 @@ impl AnswerGenerator {
             }],
             max_tokens: Some(512),
             temperature: Some(0.3),
+            tools,
             ..Default::default()
         };
 

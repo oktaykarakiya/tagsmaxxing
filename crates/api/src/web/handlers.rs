@@ -932,7 +932,7 @@ pub async fn search_stream(
             .map(|c| c.current().search.answer_generation)
             .unwrap_or(false);
         if let (Some(ag), true) = (&answer_gen, answer_enabled) {
-            match ag.generate(&query, &answer_hits, local_only).await {
+            match ag.generate(&query, &answer_hits, local_only, None).await {
                 Ok(answer) => {
                     let json = serde_json::json!({
                         "text": answer.text,
