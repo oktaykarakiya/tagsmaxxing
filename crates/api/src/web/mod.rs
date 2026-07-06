@@ -156,6 +156,14 @@ pub(crate) fn build_web_router(
             "/documents/{id}/add-page",
             post(handlers_documents::add_page),
         )
+        .route(
+            "/documents/{id}/source-settings",
+            post(handlers_documents::update_source_settings),
+        )
+        .route(
+            "/documents/{id}/versions/{v}",
+            get(handlers_documents::document_version_page),
+        )
         .route("/logout", post(handlers::logout_web))
         // Dashboard (P12-T4)
         .route("/dashboard", get(handlers_dashboard::dashboard_page))

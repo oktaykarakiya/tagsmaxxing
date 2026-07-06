@@ -195,6 +195,60 @@ pub(crate) struct DocumentDetailPage {
     pub ingest_attempts: i32,
     /// Human-readable next retry time (Some if a retry is scheduled).
     pub next_retry_at: Option<String>,
+    /// Source URL this document is synced from (P17-T12).
+    pub source_url: String,
+    /// Configured fetch interval in seconds (P17-T12).
+    pub fetch_interval_secs: Option<i64>,
+    /// Human-readable next fetch time (P17-T12).
+    pub next_fetch_at: Option<String>,
+    /// Human-readable last fetch time (P17-T12).
+    pub last_fetched_at: Option<String>,
+    /// Current version number (P17-T12).
+    pub current_version: i32,
+    /// Fetch failure count (P17-T12).
+    pub fetch_failure_count: i32,
+    /// Whether sync is paused (failure count >= 10, P17-T12).
+    pub sync_paused: bool,
+    /// Version history entries, newest first (P17-T12).
+    pub versions: Vec<DocumentVersionEntry>,
+}
+
+/// A single document version snapshot page (P17-T12).
+#[derive(Debug, Template)]
+#[template(path = "document_version.html")]
+pub(crate) struct DocumentVersionPage {
+    /// CSRF token (available for future form use, currently unused in template).
+    #[allow(dead_code)]
+    pub csrf_token: String,
+    /// The document this version belongs to.
+    pub doc_id: i64,
+    /// The document title at this version.
+    pub title: String,
+    /// Version number being viewed.
+    pub version_number: i32,
+    /// Total number of versions for this document.
+    pub total_versions: i32,
+    /// LLM-generated summary at this version.
+    pub summary: String,
+    /// LLM-generated change summary from previous version.
+    pub content_diff_summary: String,
+    /// Human-readable creation time.
+    pub created_at: String,
+    /// Comma-separated tag names at this version.
+    pub tags_display: String,
+    /// Number of live chunks at this version.
+    pub chunk_count: i32,
+}
+
+/// Form data for updating source-sync settings on a document (P17-T12).
+#[derive(Debug, serde::Deserialize)]
+pub(crate) struct SourceSettingsForm {
+    /// CSRF token.
+    pub csrf_token: String,
+    /// The source URL (empty string = clear/disable sync).
+    pub source_url: String,
+    /// Fetch interval in seconds (None = never auto-refresh).
+    pub fetch_interval_secs: Option<i64>,
 }
 
 /// A tag chip rendered on the document detail page (P6-T7).
@@ -228,6 +282,17 @@ pub(crate) struct DocumentFileEntry {
     pub mime: String,
     /// Presigned download URL for the original file.
     pub download_url: String,
+}
+
+/// A single version entry in the document detail History panel (P17-T12).
+#[derive(Debug, Clone)]
+pub(crate) struct DocumentVersionEntry {
+    /// Version number (1, 2, 3, …).
+    pub version_number: i32,
+    /// Human-readable creation time.
+    pub created_at: String,
+    /// LLM-generated diff summary ("Added section X…").
+    pub content_diff_summary: String,
 }
 
 // ── Auth flow page types (P12-T2) ─────────────────────────────────────────────────

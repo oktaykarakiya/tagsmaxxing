@@ -272,6 +272,80 @@
         </section>
         {% endif %}
 
+        {# ── Source-sync panel (P17-T12) ───────────────────────────────────── #}
+        <section class="mb-8">
+            <h2 class="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-3">Source Sync</h2>
+            <div class="bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-700 p-4 space-y-3">
+                {% if sync_paused %}
+                <div class="bg-yellow-50 dark:bg-yellow-900/30 border border-yellow-300 dark:border-yellow-700 rounded p-3 text-sm text-yellow-800 dark:text-yellow-200">
+                    Sync paused after repeated failures. Update the settings below to re-arm.
+                </div>
+                {% endif %}
+
+                <form method="post" action="/documents/{{ doc_id }}/source-settings" class="space-y-3">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+                    <div>
+                        <label class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Source URL</label>
+                        <input type="url" name="source_url" value="{{ source_url }}"
+                               class="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm text-gray-900 dark:text-gray-100"
+                               placeholder="https://example.com/document.pdf">
+                    </div>
+
+                    <div class="flex gap-3 items-end flex-wrap">
+                        <div>
+                            <label class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Fetch Interval</label>
+                            <select name="fetch_interval_secs" class="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm text-gray-900 dark:text-gray-100">
+                                <option value="">Never</option>
+                                <option value="3600" {% if fetch_interval_secs.unwrap_or(0) == 3600 %}selected{% endif %}>Hourly</option>
+                                <option value="86400" {% if fetch_interval_secs.unwrap_or(0) == 86400 %}selected{% endif %}>Daily</option>
+                                <option value="604800" {% if fetch_interval_secs.unwrap_or(0) == 604800 %}selected{% endif %}>Weekly</option>
+                            </select>
+                        </div>
+                        <button type="submit" class="rounded-md bg-blue-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-700">Save</button>
+                    </div>
+                </form>
+
+                <div class="text-xs text-gray-500 dark:text-gray-400 space-y-1">
+                    {% if !source_url.is_empty() %}
+                    <p>Current version: <strong>{{ current_version }}</strong></p>
+                    {% endif %}
+                    {% match next_fetch_at %}{% when Some with (nf) %}
+                    <p>Next check: {{ nf }}</p>
+                    {% when None %}{% endmatch %}
+                    {% match last_fetched_at %}{% when Some with (lf) %}
+                    <p>Last fetched: {{ lf }}</p>
+                    {% when None %}{% endmatch %}
+                    {% if fetch_failure_count > 0 && !sync_paused %}
+                    <p class="text-yellow-600 dark:text-yellow-400">Failures: {{ fetch_failure_count }}</p>
+                    {% endif %}
+                </div>
+            </div>
+        </section>
+
+        {# ── Version history panel (P17-T12) ───────────────────────────────── #}
+        {% if !versions.is_empty() %}
+        <section class="mb-8">
+            <h2 class="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-3">History</h2>
+            <div class="bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-700 divide-y divide-gray-200 dark:divide-gray-700">
+                {% for v in versions %}
+                <div class="p-3 hover:bg-gray-50 dark:hover:bg-gray-800/50">
+                    <div class="flex items-center justify-between mb-1">
+                        <a href="/documents/{{ doc_id }}/versions/{{ v.version_number }}"
+                           class="text-sm font-medium text-blue-600 dark:text-blue-400 hover:underline">
+                            Version {{ v.version_number }}
+                        </a>
+                        <span class="text-xs text-gray-500 dark:text-gray-400">{{ v.created_at }}</span>
+                    </div>
+                    {% if !v.content_diff_summary.is_empty() %}
+                    <p class="text-xs text-gray-600 dark:text-gray-400">{{ v.content_diff_summary }}</p>
+                    {% endif %}
+                </div>
+                {% endfor %}
+            </div>
+        </section>
+        {% endif %}
+
         {# ── Combined metadata section ────────────────────────────────────── #}
         {% if !meta_json.is_empty() && meta_json != "{}" %}
         <section class="mb-8">

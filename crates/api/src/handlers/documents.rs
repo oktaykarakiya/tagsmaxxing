@@ -337,6 +337,138 @@ pub async fn retry_document_ingest(
     }
 }
 
+// ── P17-T12: Version history + source settings API ─────────────────────────
+
+/// `GET /api/documents/:id/versions` — list all version snapshots.
+pub async fn document_versions_list(
+    State(state): State<Arc<AppState>>,
+    Extension(auth_user): Extension<AuthUser>,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
+    let versions = state
+        .pg_store
+        .list_document_versions(auth_user.tenant_id, id)
+        .await
+        .map_err(internal_error)?;
+
+    let json_versions: Vec<serde_json::Value> = versions
+        .into_iter()
+        .map(|v| {
+            serde_json::json!({
+                "id": v.id,
+                "version_number": v.version_number,
+                "sha256": v.sha256.map(|s| s.to_hex()),
+                "title": v.title,
+                "summary": v.summary,
+                "tags_snapshot": v.tags_snapshot.iter().map(|t| serde_json::json!({
+                    "name": t.name,
+                    "source": t.source,
+                    "locked": t.locked,
+                })).collect::<Vec<_>>(),
+                "chunk_count": v.chunk_count,
+                "content_diff_summary": v.content_diff_summary,
+                "created_at": v.created_at.to_rfc3339(),
+            })
+        })
+        .collect();
+
+    Ok(Json(serde_json::json!({ "versions": json_versions })))
+}
+
+/// `GET /api/documents/:id/versions/:v` — get a single version snapshot.
+pub async fn document_version_detail(
+    State(state): State<Arc<AppState>>,
+    Extension(auth_user): Extension<AuthUser>,
+    Path((id, version_number)): Path<(i64, i32)>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
+    match state
+        .pg_store
+        .get_document_version(auth_user.tenant_id, id, version_number)
+        .await
+        .map_err(internal_error)?
+    {
+        None => Err(not_found("version_not_found", "version not found")),
+        Some(v) => Ok(Json(serde_json::json!({
+            "id": v.id,
+            "document_id": v.document_id,
+            "version_number": v.version_number,
+            "sha256": v.sha256.map(|s| s.to_hex()),
+            "title": v.title,
+            "summary": v.summary,
+            "tags_snapshot": v.tags_snapshot.iter().map(|t| serde_json::json!({
+                "name": t.name,
+                "source": t.source,
+                "locked": t.locked,
+            })).collect::<Vec<_>>(),
+            "chunk_count": v.chunk_count,
+            "content_diff_summary": v.content_diff_summary,
+            "created_at": v.created_at.to_rfc3339(),
+        }))),
+    }
+}
+
+/// `PATCH /api/documents/:id/source` — update source-sync settings.
+#[derive(Debug, serde::Deserialize)]
+pub struct SourceSettingsPatch {
+    /// New source URL (`None` leaves it unchanged, `Some("")` clears it).
+    pub source_url: Option<String>,
+    /// New fetch interval in seconds (`None` = never auto-refresh).
+    pub fetch_interval_secs: Option<i64>,
+}
+
+/// Update a document's source-sync settings via the JSON API (P17-T12).
+///
+/// Clamps `fetch_interval_secs` to the configured `[source_sync]` min/max,
+/// re-arms `next_fetch_at`, and snapshots v1 if this is the first time a
+/// URL has been attached.
+pub async fn update_document_source(
+    State(state): State<Arc<AppState>>,
+    Extension(auth_user): Extension<AuthUser>,
+    Path(id): Path<i64>,
+    Json(body): Json<SourceSettingsPatch>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
+    let cfg = state.app_config.as_ref().map(|c| c.current());
+    let (min_interval, max_interval) = cfg
+        .as_ref()
+        .map(|c| {
+            (
+                c.source_sync.min_fetch_interval_secs,
+                c.source_sync.max_fetch_interval_secs,
+            )
+        })
+        .unwrap_or((300, 2_592_000));
+
+    let url_opt = body.source_url.as_deref().filter(|s| !s.trim().is_empty());
+
+    state
+        .pg_store
+        .update_source_settings(
+            auth_user.tenant_id,
+            id,
+            url_opt,
+            body.fetch_interval_secs,
+            min_interval,
+            max_interval,
+        )
+        .await
+        .map_err(internal_error)?;
+
+    // Snapshot v1 if this is first sync enablement.
+    if url_opt.is_some() {
+        let _ = state
+            .pg_store
+            .snapshot_current_version_if_none(auth_user.tenant_id, id)
+            .await;
+    }
+
+    Ok(Json(serde_json::json!({
+        "document_id": id,
+        "source_url": url_opt,
+        "fetch_interval_secs": body.fetch_interval_secs,
+        "ok": true,
+    })))
+}
+
 // ── Error helpers ──────────────────────────────────────────────────────────────
 
 fn conflict(code: &str, msg: &str) -> (StatusCode, Json<ErrorResponse>) {

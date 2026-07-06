@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+
+{% block title %}Version {{ version_number }} — {{ title }}{% endblock %}
+
+{% block content %}
+<div class="max-w-4xl mx-auto px-4 py-6">
+    <nav class="mb-6 flex items-center gap-4 text-sm">
+        <a href="/search" class="text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100">Search</a>
+        <a href="/upload" class="text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100">Upload</a>
+        <a href="/dashboard" class="text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100">Dashboard</a>
+    </nav>
+
+    <div class="mb-6 flex items-center justify-between">
+        <div>
+            <h1 class="text-xl font-bold text-gray-900 dark:text-gray-100">{{ title }}</h1>
+            <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">Viewing version {{ version_number }} of {{ total_versions }}</p>
+        </div>
+        <a href="/documents/{{ doc_id }}" class="rounded-md bg-gray-200 dark:bg-gray-700 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600">← Back</a>
+    </div>
+
+    {% if !content_diff_summary.is_empty() %}
+    <section class="bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-700 p-4 mb-4">
+        <h2 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">What changed</h2>
+        <p class="text-sm text-gray-600 dark:text-gray-400">{{ content_diff_summary }}</p>
+    </section>
+    {% endif %}
+
+    {% if !summary.is_empty() %}
+    <section class="bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-700 p-4 mb-4">
+        <h2 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">Summary</h2>
+        <p class="text-sm text-gray-600 dark:text-gray-400">{{ summary }}</p>
+    </section>
+    {% endif %}
+
+    <section class="bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-700 p-4 mb-4">
+        <h2 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">Tags</h2>
+        {% if !tags_display.is_empty() %}
+        <div class="flex flex-wrap gap-1">
+            {% for tag_name in tags_display.split(", ") %}
+            <span class="inline-flex items-center rounded-full bg-blue-100 dark:bg-blue-900/40 px-2.5 py-0.5 text-xs font-medium text-blue-800 dark:text-blue-200">{{ tag_name }}</span>
+            {% endfor %}
+        </div>
+        {% else %}
+        <p class="text-xs text-gray-400 italic">No tags at this version.</p>
+        {% endif %}
+    </section>
+
+    <p class="text-xs text-gray-500 dark:text-gray-400">{{ chunk_count }} chunks · {{ created_at }}</p>
+</div>
+{% endblock %}

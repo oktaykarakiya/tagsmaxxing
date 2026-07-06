@@ -300,6 +300,28 @@ async fn build_document_detail_page(
         _ => (String::new(), 0, None),
     };
 
+    // P17-T12: load version history.
+    let versions = state
+        .pg_store
+        .list_document_versions(tenant_id, doc_id)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|v| DocumentVersionEntry {
+            version_number: v.version_number,
+            created_at: v.created_at.format("%b %d, %Y %H:%M").to_string(),
+            content_diff_summary: v.content_diff_summary.unwrap_or_default(),
+        })
+        .collect::<Vec<_>>();
+
+    let source_url = doc.source_url.clone().unwrap_or_default();
+    let next_fetch_at = doc
+        .next_fetch_at
+        .map(|t| t.format("%b %d, %Y %H:%M").to_string());
+    let last_fetched_at = doc
+        .last_fetched_at
+        .map(|t| t.format("%b %d, %Y %H:%M").to_string());
+
     let page = DocumentDetailPage {
         csrf_token: csrf_token.to_string(),
         error: error.to_string(),
@@ -324,6 +346,14 @@ async fn build_document_detail_page(
         last_error,
         ingest_attempts,
         next_retry_at,
+        source_url,
+        fetch_interval_secs: doc.fetch_interval_secs,
+        next_fetch_at,
+        last_fetched_at,
+        current_version: doc.current_version,
+        fetch_failure_count: doc.fetch_failure_count,
+        sync_paused: doc.fetch_failure_count >= 10,
+        versions,
     };
 
     render_ok(&page)
@@ -895,6 +925,188 @@ pub async fn add_page(
             let csrf = generate_fresh_csrf();
             let mut resp =
                 build_document_detail_page(&state, auth_user.tenant_id, doc_id, &csrf, &msg).await;
+            resp.headers_mut().insert(
+                axum::http::header::SET_COOKIE,
+                csrf::csrf_cookie_value(&csrf, state.session_ttl, state.secure_cookies),
+            );
+            resp
+        }
+    }
+}
+
+// ── P17-T12: Source-sync settings + version detail ───────────────────────────
+
+/// `POST /documents/:id/source-settings` — update source-sync settings for a document.
+///
+/// Validates CSRF, calls [`PgStore::update_source_settings`], snapshots v1 if
+/// needed, emits a `DocumentSourceUpdated` audit event with the real actor, then
+/// re-renders the detail page.
+pub async fn update_source_settings(
+    State(state): State<Arc<AppState>>,
+    Extension(auth_user): Extension<AuthUser>,
+    Path(doc_id): Path<i64>,
+    headers: HeaderMap,
+    Form(form): Form<SourceSettingsForm>,
+) -> Response {
+    if let Err((_, msg)) = csrf::validate_csrf(&headers, &form.csrf_token) {
+        let csrf = csrf::generate_csrf_token().unwrap_or_default();
+        let mut resp =
+            build_document_detail_page(&state, auth_user.tenant_id, doc_id, &csrf, &msg).await;
+        resp.headers_mut().insert(
+            axum::http::header::SET_COOKIE,
+            csrf::csrf_cookie_value(&csrf, state.session_ttl, state.secure_cookies),
+        );
+        return resp;
+    }
+
+    // Read global config bounds for clamping.
+    let cfg = state.app_config.as_ref().map(|c| c.current());
+    let (min_interval, max_interval) = cfg
+        .as_ref()
+        .map(|c| {
+            (
+                c.source_sync.min_fetch_interval_secs,
+                c.source_sync.max_fetch_interval_secs,
+            )
+        })
+        .unwrap_or((300, 2_592_000));
+
+    let url_opt = if form.source_url.trim().is_empty() {
+        None
+    } else {
+        Some(form.source_url.trim())
+    };
+
+    match state
+        .pg_store
+        .update_source_settings(
+            auth_user.tenant_id,
+            doc_id,
+            url_opt,
+            form.fetch_interval_secs,
+            min_interval,
+            max_interval,
+        )
+        .await
+    {
+        Ok(()) => {
+            // Snapshot v1 baseline if this is the first sync enablement.
+            if url_opt.is_some() {
+                let _ = state
+                    .pg_store
+                    .snapshot_current_version_if_none(auth_user.tenant_id, doc_id)
+                    .await;
+            }
+
+            // Audit.
+            let _ = state
+                .pg_store
+                .admin_insert_audit_event(
+                    auth_user.user_id,
+                    auth_user.tenant_id,
+                    kb_core::audit::AuditAction::DocumentSourceUpdated.as_str(),
+                    "document",
+                    Some(doc_id),
+                    &serde_json::json!({
+                        "source_url": url_opt,
+                        "fetch_interval_secs": form.fetch_interval_secs,
+                    }),
+                )
+                .await;
+
+            let csrf = csrf::generate_csrf_token().unwrap_or_default();
+            let mut resp =
+                build_document_detail_page(&state, auth_user.tenant_id, doc_id, &csrf, "").await;
+            resp.headers_mut().insert(
+                axum::http::header::SET_COOKIE,
+                csrf::csrf_cookie_value(&csrf, state.session_ttl, state.secure_cookies),
+            );
+            resp
+        }
+        Err(e) => {
+            tracing::error!(error=%e, %doc_id, "update_source_settings failed");
+            let csrf = csrf::generate_csrf_token().unwrap_or_default();
+            let mut resp = build_document_detail_page(
+                &state,
+                auth_user.tenant_id,
+                doc_id,
+                &csrf,
+                "Failed to update source settings.",
+            )
+            .await;
+            resp.headers_mut().insert(
+                axum::http::header::SET_COOKIE,
+                csrf::csrf_cookie_value(&csrf, state.session_ttl, state.secure_cookies),
+            );
+            resp
+        }
+    }
+}
+
+/// `GET /documents/:id/versions/:v` — view a historical version snapshot.
+pub async fn document_version_page(
+    State(state): State<Arc<AppState>>,
+    Extension(auth_user): Extension<AuthUser>,
+    Path((doc_id, version_number)): Path<(i64, i32)>,
+) -> Response {
+    let csrf = csrf::generate_csrf_token().unwrap_or_default();
+
+    let doc = match state
+        .pg_store
+        .get_document(auth_user.tenant_id, doc_id)
+        .await
+    {
+        Ok(Some(d)) => d,
+        _ => {
+            return (
+                StatusCode::NOT_FOUND,
+                Html("<h1>404 — Document not found</h1>".to_owned()),
+            )
+                .into_response();
+        }
+    };
+
+    let versions = state
+        .pg_store
+        .list_document_versions(auth_user.tenant_id, doc_id)
+        .await
+        .unwrap_or_default();
+    let total = versions.len() as i32;
+
+    let version = state
+        .pg_store
+        .get_document_version(auth_user.tenant_id, doc_id, version_number)
+        .await
+        .unwrap_or_default();
+
+    match version {
+        None => (
+            StatusCode::NOT_FOUND,
+            Html("<h1>404 — Version not found</h1>".to_owned()),
+        )
+            .into_response(),
+        Some(v) => {
+            let tags_display = v
+                .tags_snapshot
+                .iter()
+                .map(|t| t.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            let page = super::templates::DocumentVersionPage {
+                csrf_token: csrf.clone(),
+                doc_id,
+                title: doc.title.unwrap_or_default(),
+                version_number,
+                total_versions: total,
+                summary: v.summary.unwrap_or_default(),
+                content_diff_summary: v.content_diff_summary.unwrap_or_default(),
+                created_at: v.created_at.format("%b %d, %Y %H:%M").to_string(),
+                tags_display,
+                chunk_count: v.chunk_count,
+            };
+
+            let mut resp = render_ok(&page);
             resp.headers_mut().insert(
                 axum::http::header::SET_COOKIE,
                 csrf::csrf_cookie_value(&csrf, state.session_ttl, state.secure_cookies),

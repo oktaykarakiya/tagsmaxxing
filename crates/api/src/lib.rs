@@ -36,7 +36,7 @@ use axum::extract::DefaultBodyLimit;
 use axum::http::StatusCode;
 use axum::middleware::{from_fn, from_fn_with_state};
 use axum::response::IntoResponse;
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post};
 use kb_core::api_token::ApiTokenStore;
 use kb_core::blob::Blob;
 use kb_core::degradation::DegradationState;
@@ -339,6 +339,9 @@ impl AppState {
 /// | GET    | `/api/documents/:id`           | yes   | Document detail + files + tags       |
 /// | GET    | `/api/documents/:id/file/:file_id` | yes | Redirect to presigned download URL  |
 /// | POST   | `/api/documents/:id/retry`     | yes   | Requeue a failed ingest (P15-T9)     |
+/// | GET    | `/api/documents/:id/versions`     | yes   | List version snapshots (P17-T12)     |
+/// | GET    | `/api/documents/:id/versions/:v`  | yes   | Version snapshot detail (P17-T12)    |
+/// | PATCH  | `/api/documents/:id/source`       | yes   | Update source-sync settings (P17-T12)|
 /// | GET    | `/api/jobs`                    | yes   | Tenant job list + active count (T10) |
 /// | GET    | `/api/jobs/:id`                | yes   | Job status                           |
 /// | GET    | `/billing/checkout`            | yes   | Stripe Checkout via query param (BUG-UPGR-01) |
@@ -395,6 +398,18 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/documents/{id}/retry",
             post(handlers::documents::retry_document_ingest),
+        )
+        .route(
+            "/api/documents/{id}/versions",
+            get(handlers::documents::document_versions_list),
+        )
+        .route(
+            "/api/documents/{id}/versions/{v}",
+            get(handlers::documents::document_version_detail),
+        )
+        .route(
+            "/api/documents/{id}/source",
+            patch(handlers::documents::update_document_source),
         )
         .route("/api/jobs", get(handlers::jobs::list_jobs))
         .route("/api/jobs/{id}", get(handlers::jobs::job_status))

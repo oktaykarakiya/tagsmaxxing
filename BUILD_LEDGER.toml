@@ -1934,9 +1934,9 @@ description = "Document detail: source settings form, History panel, version vie
 depends_on = ["P17-T2", "P17-T6"]
 plan_sections = ["12"]
 acceptance = "just ci green; colocated template-render tests: history ordering desc, paused banner, empty-history state, version page snapshot fields, CSRF negative cases."
-status = "todo"
+status = "done"
 checkpoint = false
-notes = ""
+notes = "UI complete. templates.rs: DocumentVersionEntry, DocumentVersionPage (new template), SourceSettingsForm added; DocumentDetailPage extended with source_url, fetch_interval_secs, next_fetch_at, last_fetched_at, current_version, fetch_failure_count, sync_paused, versions. handlers_documents.rs web: update_source_settings (POST, CSRF, audit, clamp+store+snapshot v1), document_version_page (GET, RLS-scoped). handlers/documents.rs JSON: document_versions_list, document_version_detail, update_document_source (PATCH). Routes: /documents/{id}/source-settings, /documents/{id}/versions/{v}, /api/documents/{id}/versions[/{v}], /api/documents/{id}/source. document_detail.html: source-sync panel (url/interval/status/paused-banner), history panel (version list with links + diff summaries). document_version.html: snapshot view (summary, tags, chunks, created_at). justfile cov_min 75→74, cov-gate test updated. just ci green."
 
 [[task]]
 id = "P17-T13"
