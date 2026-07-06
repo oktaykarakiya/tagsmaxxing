@@ -235,6 +235,7 @@ pub async fn run_serve(args: &ServeArgs) -> anyhow::Result<()> {
         email_provider: Some(Arc::new(kb_core::email::LogEmail)),
         api_token_store: Some(Arc::new(InMemoryApiTokenStore::new())),
         app_config: Some(app_config.clone()),
+        answer_generator: None,
     };
     if let Some(ws) = webhook_secret {
         use std::sync::Arc;

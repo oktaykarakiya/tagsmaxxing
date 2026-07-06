@@ -19,7 +19,7 @@
 
 [meta]
 generated = "2026-05-31"
-phases_planned = ["P0", "P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10", "P11", "P12", "P13", "P14", "P15", "P16", "P17", "P18"]
+phases_planned = ["P0", "P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10", "P11", "P12", "P13", "P14", "P15", "P16", "P17", "P18", "P19"]
 gate_command = "just ci"
 walking_skeleton = "Complete the P0-P4 vertical slice before adding breadth (§31.6)."
 # Crate versions verified against crates.io on 2026-05-29 (the plan's names had drifted):
@@ -2101,6 +2101,100 @@ description = "Docs close-out. ARCHITECTURE.md: Multi-turn Chat section with flo
 depends_on = ["P18-T9"]
 plan_sections = ["31.2", "31.6"]
 acceptance = "just ci green; docs merged; all P18 tasks done."
+status = "todo"
+checkpoint = false
+notes = ""
+
+# ── Phase P19 — RAG Answer Generation ───────────────────────────────────
+#
+# Synthesizes AI answers from search results. An LLM call runs after the
+# hybrid search produces ranked hits, generating a cited answer displayed
+# above the hit list via a new SSE event.
+
+[[task]]
+id = "P19-T0"
+phase = "P19"
+description = "Author the P19 phase in BUILD_LEDGER.toml: update meta.phases_planned, append P19-T1..T7 task entries."
+depends_on = []
+plan_sections = ["31"]
+acceptance = "just next resolves P19-T1; all 8 P19 tasks present."
+status = "done"
+checkpoint = false
+notes = "Appended P19-T0..T7 to BUILD_LEDGER.toml."
+
+[[task]]
+id = "P19-T1"
+phase = "P19"
+description = "Answer generator: new crates/pipeline/src/answer_generator.rs. AnswerGenerator struct (client+model). generate() method: builds prompt with top 5 hit snippets as numbered sources, calls LlamaClient::chat(Role::Text) with max_tokens=512, returns GeneratedAnswer{text,sources}. SYSTEM_PROMPT constant. Citation parsing with regex [N]. 3 unit tests (prompt formatting, empty hits, citation regex)."
+depends_on = ["P19-T0"]
+plan_sections = ["7", "8"]
+acceptance = "just ci green; unit tests verify prompt shape and citation extraction."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P19-T2"
+phase = "P19"
+description = "Config: [search] section in model.rs — answer_generation bool (default false). Default impl. Config field on Config struct."
+depends_on = ["P19-T0"]
+plan_sections = ["6"]
+acceptance = "just ci green; defaults parse; disabled by default."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P19-T3"
+phase = "P19"
+description = "SSE handler: add Phase 3 answer generation between final and done events. Capture hits after retrieval, gate on config.search.answer_generation, construct AnswerGenerator if AppState has it, send 'answer' event with JSON {text, sources}. Best-effort: errors logged, search continues unaffected. Add AnswerGenerator to AppState."
+depends_on = ["P19-T1", "P19-T2"]
+plan_sections = ["7", "12"]
+acceptance = "just ci green; answer event appears when enabled, absent when disabled."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P19-T4"
+phase = "P19"
+description = "Frontend: search.html — add answer-area div above results + CSS (.answer-card, .answer-text, .answer-sources) + JS EventSource listener for 'answer' event. search_results.html — optional answer section at top (server-side fallback). Template struct: SearchResultsPartial gains optional answer + answer_sources fields."
+depends_on = ["P19-T3"]
+plan_sections = ["12"]
+acceptance = "just ci green; answer card renders from SSE event."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P19-T5"
+phase = "P19"
+description = "AppState + runtime: add answer_generator: Option<Arc<AnswerGenerator>> to AppState. Wire in build_runtime() — construct from LlamaClient + config model."
+depends_on = ["P19-T1"]
+plan_sections = ["4"]
+acceptance = "just ci green; AppState carries optional AnswerGenerator."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P19-T6"
+phase = "P19"
+description = "Integration tests: SSE answer event parsing, prompt formatting, config toggle. #[ignore] stubs."
+depends_on = ["P19-T3", "P19-T4"]
+plan_sections = ["31.3"]
+acceptance = "just ci green; just ci-integration green."
+status = "todo"
+checkpoint = false
+notes = ""
+
+[[task]]
+id = "P19-T7"
+phase = "P19"
+description = "Docs: ARCHITECTURE.md RAG Answer section, RUNBOOK entry, README blurb."
+depends_on = ["P19-T6"]
+plan_sections = ["31.2"]
+acceptance = "just ci green; docs merged."
 status = "todo"
 checkpoint = false
 notes = ""

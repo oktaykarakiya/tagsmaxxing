@@ -126,6 +126,10 @@ pub struct AppState {
     /// `app_config.current()` (the hot-swap rule); `None` (tests, auth-only
     /// configs) falls back to compiled defaults.
     pub app_config: Option<kb_config::AppConfig>,
+    /// RAG answer generator (P19). When `Some`, the search SSE handler can
+    /// optionally synthesize an AI answer from top search hits. When `None`,
+    /// answer generation is skipped (no LLM cost).
+    pub answer_generator: Option<Arc<kb_pipeline::answer_generator::AnswerGenerator>>,
 }
 
 impl AppState {
@@ -166,6 +170,7 @@ impl AppState {
             email_provider: None,
             api_token_store: None,
             app_config: None,
+            answer_generator: None,
         }
     }
 
@@ -204,6 +209,7 @@ impl AppState {
             email_provider: None,
             api_token_store: None,
             app_config: None,
+            answer_generator: None,
         }
     }
 
@@ -211,6 +217,16 @@ impl AppState {
     #[must_use]
     pub fn with_app_config(mut self, cfg: kb_config::AppConfig) -> Self {
         self.app_config = Some(cfg);
+        self
+    }
+
+    /// Builder: attach the P19 RAG answer generator.
+    #[must_use]
+    pub fn with_answer_generator(
+        mut self,
+        g: Arc<kb_pipeline::answer_generator::AnswerGenerator>,
+    ) -> Self {
+        self.answer_generator = Some(g);
         self
     }
 
@@ -672,6 +688,7 @@ mod tests {
             email_provider: None,
             api_token_store: None,
             app_config: None,
+            answer_generator: None,
         })
     }
 

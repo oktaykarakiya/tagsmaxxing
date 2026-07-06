@@ -444,6 +444,8 @@ pub async fn search_page(State(state): State<Arc<AppState>>) -> Result<Response,
         selected_tags: String::new(),
         hits: Vec::new(),
         degraded: false,
+        answer: None,
+        answer_sources: vec![],
     };
 
     let mut resp = render_ok(&page);
@@ -546,6 +548,8 @@ pub async fn search_submit(
             hits: Vec::new(),
             query: form.q,
             degraded: false,
+            answer: None,
+            answer_sources: vec![],
         };
         return render_template(&partial, status);
     }
@@ -558,6 +562,8 @@ pub async fn search_submit(
             hits: Vec::new(),
             query: query_text,
             degraded: false,
+            answer: None,
+            answer_sources: vec![],
         };
         return render_ok(&partial);
     }
@@ -571,6 +577,8 @@ pub async fn search_submit(
                 hits: Vec::new(),
                 query: query_text,
                 degraded: false,
+                answer: None,
+                answer_sources: vec![],
             };
             return render_template(&partial, StatusCode::INTERNAL_SERVER_ERROR);
         }
@@ -650,6 +658,8 @@ pub async fn search_submit(
                 hits: Vec::new(),
                 query: query_text,
                 degraded: false,
+                answer: None,
+                answer_sources: vec![],
             };
             return render_template(&partial, StatusCode::INTERNAL_SERVER_ERROR);
         }
@@ -687,6 +697,8 @@ pub async fn search_submit(
         hits: result_hits,
         query: query_text,
         degraded,
+        answer: None,
+        answer_sources: vec![],
     };
 
     // Signal the degrade/hybrid mode to the client. The header lets the UI show a "basic
@@ -735,6 +747,8 @@ pub async fn search_stream(
                 hits: vec![],
                 query: String::new(),
                 degraded: false,
+                answer: None,
+                answer_sources: vec![],
             };
             let html = partial.render().unwrap_or_default();
             tx2.send(Ok(Event::default().event("keyword").data(html)))
@@ -756,6 +770,8 @@ pub async fn search_stream(
                     hits: vec![],
                     query: query_text,
                     degraded: true,
+                    answer: None,
+                    answer_sources: vec![],
                 };
                 let html = partial.render().unwrap_or_default();
                 tx2.send(Ok(Event::default().event("keyword").data(html)))
@@ -802,6 +818,8 @@ pub async fn search_stream(
     );
     let tenant_id = auth_user.tenant_id;
     let user_id = auth_user.user_id;
+    let answer_gen = state.answer_generator.clone();
+    let app_config = state.app_config.clone();
 
     tokio::spawn(async move {
         // ── Phase 1: keyword-only results (~35ms, no AI) ──────────────
@@ -840,6 +858,8 @@ pub async fn search_stream(
                 hits: result_hits,
                 query: query.clone(),
                 degraded: true,
+                answer: None,
+                answer_sources: vec![],
             };
             if let Ok(html) = partial.render()
                 && tx
@@ -861,10 +881,12 @@ pub async fn search_stream(
             },
             top_k: 20,
         };
+        let mut answer_hits: Vec<kb_core::query::Hit> = Vec::new();
         if let Ok((hits, mode)) = retrieval
             .retrieve(tenant_id, Some(user_id), &full_query, local_only, degrade)
             .await
         {
+            answer_hits = hits.iter().take(5).cloned().collect();
             let doc_ids: Vec<i64> = hits.iter().map(|h| h.document_id).collect();
             let tags_map = fetch_tags_batch(&store, tenant_id, &doc_ids).await;
             let degraded = matches!(mode, kb_pipeline::SearchMode::Keyword);
@@ -891,6 +913,8 @@ pub async fn search_stream(
                 hits: result_hits,
                 query: query.clone(),
                 degraded,
+                answer: None,
+                answer_sources: vec![],
             };
             if let Ok(html) = partial.render()
                 && tx
@@ -901,6 +925,35 @@ pub async fn search_stream(
                 return; // browser disconnected — abort
             }
         }
+
+        // ── Phase 3: answer generation (P19) ─────────────────────────
+        let answer_enabled = app_config
+            .as_ref()
+            .map(|c| c.current().search.answer_generation)
+            .unwrap_or(false);
+        if let (Some(ag), true) = (&answer_gen, answer_enabled) {
+            match ag.generate(&query, &answer_hits, local_only).await {
+                Ok(answer) => {
+                    let json = serde_json::json!({
+                        "text": answer.text,
+                        "sources": answer.sources.iter().map(|s| serde_json::json!({
+                            "document_id": s.document_id,
+                            "title": s.title,
+                            "snippet": s.snippet,
+                            "file_id": s.file_id,
+                            "page_no": s.page_no,
+                        })).collect::<Vec<_>>(),
+                    });
+                    tx.send(Ok(Event::default().event("answer").data(json.to_string())))
+                        .await
+                        .ok();
+                }
+                Err(e) => {
+                    tracing::warn!(error=%e, "answer generation failed for query");
+                }
+            }
+        }
+
         tx.send(Ok(Event::default().event("done").data("")))
             .await
             .ok();
@@ -2015,6 +2068,8 @@ mod tests {
             }],
             query: "q".into(),
             degraded: true,
+            answer: None,
+            answer_sources: vec![],
         };
         let html = with_hits.render().expect("render");
         assert!(
@@ -2027,6 +2082,8 @@ mod tests {
             hits: vec![],
             query: "q".into(),
             degraded: true,
+            answer: None,
+            answer_sources: vec![],
         };
         let html = empty.render().expect("render");
         assert!(html.contains("Basic results"));
@@ -2051,6 +2108,8 @@ mod tests {
             }],
             query: "q".into(),
             degraded: false,
+            answer: None,
+            answer_sources: vec![],
         };
         let html = partial.render().expect("render");
         assert!(
@@ -2819,6 +2878,8 @@ mod tests {
             selected_tags: String::new(),
             hits: Vec::new(),
             degraded: false,
+            answer: None,
+            answer_sources: vec![],
         };
         let html = page.render().expect("search template must render");
 

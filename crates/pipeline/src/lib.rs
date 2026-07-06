@@ -17,6 +17,7 @@
 //! - The **batch embedder** (plan §7, P3-T4): batches chunk content (and tag names)
 //!   through [`LlamaClient`], verifying output dimensions against the schema.
 
+pub mod answer_generator;
 pub mod cdn;
 pub mod chat_engine;
 pub mod chunker;

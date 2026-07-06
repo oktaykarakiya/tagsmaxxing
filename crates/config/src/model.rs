@@ -77,6 +77,9 @@ pub struct Config {
     /// AI assistant settings (opencode binary, model, budgets).
     #[serde(default, rename = "assistant")]
     pub assistant: Assistant,
+    /// Search settings (P19).
+    #[serde(default, rename = "search")]
+    pub search: SearchConfig,
     /// Multi-turn chat settings (P18).
     #[serde(default, rename = "chat")]
     pub chat: ChatConfig,
@@ -642,6 +645,15 @@ impl Default for SourceSync {
             scan_batch_limit: default_scan_batch_limit(),
         }
     }
+}
+
+/// Search settings (P19).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct SearchConfig {
+    /// Enable AI-powered answer generation (LLM call per search).
+    /// When `false`, search behaves exactly as before. Default: `false`.
+    #[serde(default)]
+    pub answer_generation: bool,
 }
 
 /// Multi-turn chat settings (P18).

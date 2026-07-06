@@ -1,5 +1,20 @@
 {# HTMX partial fragment — swapped into #results on /search POST. #}
 
+{% if answer.is_some() %}
+<div class="answer-card" style="background:linear-gradient(135deg,#eef2ff,#f0f9ff);border:1px solid #c7d2fe;border-radius:0.75rem;padding:1rem 1.25rem;margin-bottom:1.5rem">
+    <h2 class="text-sm font-semibold text-indigo-700 mb-2">AI Answer</h2>
+    <div class="answer-text" style="font-size:0.9375rem;line-height:1.6;white-space:pre-wrap">{{ answer.clone().unwrap() }}</div>
+    {% if !answer_sources.is_empty() %}
+    <div style="margin-top:0.75rem;padding-top:0.5rem;border-top:1px solid #e0e7ff;display:flex;flex-wrap:wrap;gap:0.5rem">
+        <span class="text-xs text-gray-500">Sources: </span>
+        {% for s in answer_sources %}
+        <a href="/documents/{{ s.document_id }}" style="font-size:0.75rem;color:#4f46e5">{{ s.title.as_deref().unwrap_or("Untitled") }}</a>
+        {% endfor %}
+    </div>
+    {% endif %}
+</div>
+{% endif %}
+
 {% if degraded %}
 <p class="text-xs text-amber-600 dark:text-amber-400 mb-4 px-1">
     Basic results only &mdash; AI search budget reached.

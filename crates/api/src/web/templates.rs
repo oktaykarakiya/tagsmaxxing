@@ -88,6 +88,11 @@ pub(crate) struct SearchPage {
     /// Always `false` on the initial page (no search has run yet); the HTMX
     /// fragment re-render carries the real value (P14-T5/P14-T13).
     pub degraded: bool,
+    /// AI-synthesized answer (P19). Always `None` on initial page load;
+    /// the SSE event populates it client-side.
+    pub answer: Option<String>,
+    /// Sources cited in the answer (P19).
+    pub answer_sources: Vec<AnswerSourceEntry>,
 }
 
 /// A single kind filter checkbox entry in the search sidebar.
@@ -146,6 +151,21 @@ pub(crate) struct SearchResultsPartial {
     /// was reached, or the embed/rerank backend was unavailable). When `true`,
     /// the template shows a small "basic results" notice (P14-T5/P14-T13).
     pub degraded: bool,
+    /// Optional AI-synthesized answer (P19). When `Some`, rendered at the top of
+    /// results. `None` when answer generation is disabled, the query is empty, or
+    /// generation failed.
+    pub answer: Option<String>,
+    /// Source documents cited in the answer (P19).
+    pub answer_sources: Vec<AnswerSourceEntry>,
+}
+
+/// A source document cited in an AI-generated answer (P19).
+#[derive(Debug, Clone)]
+pub(crate) struct AnswerSourceEntry {
+    /// Document id.
+    pub document_id: i64,
+    /// Document title, if set.
+    pub title: Option<String>,
 }
 
 // ── Document detail page types (P6-T7) ────────────────────────────────────────────

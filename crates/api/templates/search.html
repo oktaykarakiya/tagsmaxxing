@@ -59,6 +59,24 @@
       es.addEventListener('keyword', function(e) {
         resultsEl.innerHTML = e.data;
       });
+      es.addEventListener('answer', function(e) {
+        try {
+          var data = JSON.parse(e.data);
+          var html = '<div class=\"answer-card\">' +
+            '<h2 class=\"text-sm font-semibold text-indigo-700 dark:text-indigo-300 mb-2\">AI Answer</h2>' +
+            '<div class=\"answer-text\">' + escapeHtml(data.text) + '</div>';
+          if (data.sources && data.sources.length) {
+            html += '<div class=\"answer-sources\"><span class=\"text-xs text-gray-500 dark:text-gray-400\">Sources: </span>';
+            data.sources.forEach(function(s) {
+              html += '<a href=\"/documents/' + s.document_id + '\" class=\"answer-source-link\">' +
+                escapeHtml(s.title || 'Document ' + s.document_id) + '</a>';
+            });
+            html += '</div>';
+          }
+          html += '</div>';
+          document.getElementById('answer-area').innerHTML = html;
+        } catch(ignored) {}
+      });
       es.addEventListener('final', function(e) {
         resultsEl.innerHTML = e.data;
       });
@@ -91,6 +109,39 @@
   .htmx-indicator { display: none; }
   .htmx-request .htmx-indicator { display: block; }
   .htmx-request.htmx-indicator { display: block; }
+  /* ── P19: AI answer card ──────────────────────────────────── */
+  .answer-card {
+      background: linear-gradient(135deg, #eef2ff, #f0f9ff);
+      border: 1px solid #c7d2fe;
+      border-radius: 0.75rem;
+      padding: 1rem 1.25rem;
+      margin-bottom: 1.5rem;
+  }
+  .dark .answer-card {
+      background: linear-gradient(135deg, #1e1b4b, #172554);
+      border-color: #3730a3;
+  }
+  .answer-text {
+      font-size: 0.9375rem;
+      line-height: 1.6;
+      white-space: pre-wrap;
+  }
+  .answer-sources {
+      margin-top: 0.75rem;
+      padding-top: 0.5rem;
+      border-top: 1px solid #e0e7ff;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+  }
+  .dark .answer-sources { border-color: #312e81; }
+  .answer-source-link {
+      display: inline-block;
+      font-size: 0.75rem;
+      color: #4f46e5;
+      text-decoration: none;
+  }
+  .answer-source-link:hover { text-decoration: underline; }
 </style>
 {% endblock %}
 
@@ -190,6 +241,7 @@
     </div>
 
     {# ── Results container ──────────────────────────────────────────────── #}
+    <div id="answer-area" class="max-w-2xl mx-auto px-4"></div>
     <div id="results" class="flex-1 max-w-2xl mx-auto px-4 pb-16 w-full">
         {% if !query.is_empty() %}
             {% include "search_results.html" %}
