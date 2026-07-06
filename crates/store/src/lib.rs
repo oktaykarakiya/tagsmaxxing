@@ -29,6 +29,7 @@ pub mod blob;
 pub mod blob_cache;
 pub mod budget;
 pub mod buffered_recorder;
+pub mod chat;
 pub mod crypto_shred_store;
 pub mod dashboard;
 pub mod db_routing;

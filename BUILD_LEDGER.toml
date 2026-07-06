@@ -2004,6 +2004,8 @@ notes = ""
 [[task]]
 id = "P18-T3"
 phase = "P18"
+status = "done"
+notes = "Created crates/store/src/chat.rs: create_conversation, get_conversation, list_conversations (tenant+user, ordered by updated_at DESC), update_conversation_title, delete_conversation (CASCADE), insert_message (bumps message_count+updated_at, returns full row), get_messages (cursor-based with before_id), get_recent_messages (subquery DESC LIMIT sub ASC). All methods use begin_tenant_tx + app pool. 2 unit tests. lib.rs registered. just ci green."
 description = "Store: new crates/store/src/chat.rs — create_conversation, get_conversation, list_conversations (by tenant+user, ordered by updated_at DESC), update_conversation_title, delete_conversation, insert_message (returns message id, bumps conversation message_count+updated_at), get_messages (by conv_id, cursor-based with before_id), get_recent_messages (last N for LLM context). All methods use begin_tenant_tx + app pool. NewConversationParams + InsertMessageParams structs."
 depends_on = ["P18-T2"]
 plan_sections = ["5"]
