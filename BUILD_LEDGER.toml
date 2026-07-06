@@ -2017,6 +2017,8 @@ notes = ""
 [[task]]
 id = "P18-T4"
 phase = "P18"
+status = "done"
+notes = "Created crates/pipeline/src/chat_engine.rs: ChatEngine (client, retrieval, pg, model, max_rag_docs, max_history_messages), respond() method (RAG retrieval via Query+RetrievalPipeline, history loading via get_recent_messages, system prompt assembly with document context, LlamaClient::chat call), ChatResponse {text, search_results, usage}. SYSTEM_PROMPT constant. 2 unit tests."
 description = "Chat engine: new crates/pipeline/src/chat_engine.rs — ChatEngine struct (pool, retrieval, pg). respond() method: embed user query, hybrid search for RAG context, load recent history, build ChatReq with system prompt + RAG docs + history + user message, call LlamaClient::chat(), return ChatResponse { text, search_hits, tokens }. System prompt template. History formatter. Context window budget management."
 depends_on = ["P18-T2", "P18-T3"]
 plan_sections = ["6", "7", "8"]
@@ -2028,6 +2030,8 @@ notes = ""
 [[task]]
 id = "P18-T5"
 phase = "P18"
+status = "done"
+notes = "Added ChatConfig to model.rs: enabled (default true), model, max_history_messages (default 20), max_rag_docs (default 5). Default impl. Config field on Config struct. just ci green."
 description = "Config: [chat] section in model.rs — enabled (bool, default true), model (String, default '' — uses first available text model), max_history_messages (usize, default 20), max_rag_docs (usize, default 5), max_rag_tokens (usize, default 2000). Validation: model non-empty when enabled. env.rs overlay."
 depends_on = ["P18-T0"]
 plan_sections = ["6"]

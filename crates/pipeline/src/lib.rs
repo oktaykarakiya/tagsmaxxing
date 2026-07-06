@@ -18,6 +18,7 @@
 //!   through [`LlamaClient`], verifying output dimensions against the schema.
 
 pub mod cdn;
+pub mod chat_engine;
 pub mod chunker;
 pub mod crypto_shred;
 pub mod document_builder;

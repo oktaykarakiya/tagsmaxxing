@@ -77,6 +77,9 @@ pub struct Config {
     /// AI assistant settings (opencode binary, model, budgets).
     #[serde(default, rename = "assistant")]
     pub assistant: Assistant,
+    /// Multi-turn chat settings (P18).
+    #[serde(default, rename = "chat")]
+    pub chat: ChatConfig,
 }
 
 /// AI assistant configuration section.
@@ -637,6 +640,45 @@ impl Default for SourceSync {
             max_response_bytes: default_max_response_bytes(),
             max_redirects: default_max_redirects(),
             scan_batch_limit: default_scan_batch_limit(),
+        }
+    }
+}
+
+/// Multi-turn chat settings (P18).
+#[derive(Debug, Clone, Deserialize)]
+pub struct ChatConfig {
+    /// Whether the chat feature is enabled.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Model reference for chat, e.g. `"local/qwen-35b"`. When empty, the
+    /// first available text model from the backend pool is used.
+    #[serde(default)]
+    pub model: String,
+    /// Maximum number of recent messages in the LLM context window.
+    #[serde(default = "default_chat_max_history")]
+    pub max_history_messages: usize,
+    /// Maximum number of RAG documents to retrieve per turn.
+    #[serde(default = "default_chat_max_rag_docs")]
+    pub max_rag_docs: usize,
+}
+
+fn default_chat_max_history() -> usize {
+    20
+}
+fn default_chat_max_rag_docs() -> usize {
+    5
+}
+fn default_true() -> bool {
+    true
+}
+
+impl Default for ChatConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            model: String::new(),
+            max_history_messages: default_chat_max_history(),
+            max_rag_docs: default_chat_max_rag_docs(),
         }
     }
 }
