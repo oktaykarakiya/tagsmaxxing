@@ -80,6 +80,9 @@ pub struct Config {
     /// Search settings (P19).
     #[serde(default, rename = "search")]
     pub search: SearchConfig,
+    /// Tool/function calling settings (P20).
+    #[serde(default, rename = "tools")]
+    pub tools: ToolsConfig,
     /// Multi-turn chat settings (P18).
     #[serde(default, rename = "chat")]
     pub chat: ChatConfig,
@@ -654,6 +657,21 @@ pub struct SearchConfig {
     /// When `false`, search behaves exactly as before. Default: `false`.
     #[serde(default)]
     pub answer_generation: bool,
+}
+
+/// Tool/function calling settings (P20).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ToolsConfig {
+    /// Enable tool calling. When `false`, tools are not sent to the model.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Maximum tool-calling rounds per chat turn (safety limit).
+    #[serde(default = "default_tools_max_rounds")]
+    pub max_rounds: usize,
+}
+
+fn default_tools_max_rounds() -> usize {
+    5
 }
 
 /// Multi-turn chat settings (P18).

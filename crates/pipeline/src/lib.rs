@@ -43,6 +43,7 @@ pub mod rrf;
 pub mod tag_canonicalizer;
 pub mod tag_store;
 pub mod thumbnail;
+pub mod tools;
 
 pub use cdn::rewrite_blob_url;
 pub use crypto_shred::{

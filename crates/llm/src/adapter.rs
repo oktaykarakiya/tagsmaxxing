@@ -27,6 +27,24 @@ struct OpenAiChatBody<'a> {
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     response_format: Option<ResponseFormat>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<OpenAiTool>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAiTool {
+    #[serde(rename = "type")]
+    type_: &'static str,
+    function: OpenAiFunction,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAiFunction {
+    name: String,
+    description: String,
+    parameters: serde_json::Value,
 }
 
 #[derive(Debug, Serialize)]
@@ -60,11 +78,35 @@ struct OpenAiChatResp {
 #[derive(Debug, serde::Deserialize)]
 struct OpenAiChoice {
     message: OpenAiMsgContent,
+    #[serde(default)]
+    finish_reason: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize)]
 struct OpenAiMsgContent {
+    #[serde(default)]
     content: String,
+    #[serde(default)]
+    tool_calls: Vec<OpenAiToolCall>,
+}
+
+/// A tool call in an OpenAI chat response (P20).
+#[derive(Debug, serde::Deserialize)]
+struct OpenAiToolCall {
+    /// Unique call id.
+    id: String,
+    /// Always `"function"`.
+    #[serde(rename = "type")]
+    #[allow(dead_code)]
+    type_: String,
+    /// The function to call.
+    function: OpenAiFuncCall,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct OpenAiFuncCall {
+    name: String,
+    arguments: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -134,6 +176,29 @@ impl ProviderAdapter for OpenAiCompat {
             },
         });
 
+        // Map ChatReq tools to wire format.
+        let tools: Option<Vec<OpenAiTool>> = req.tools.as_ref().map(|defs| {
+            defs.iter()
+                .map(|d| OpenAiTool {
+                    type_: "function",
+                    function: OpenAiFunction {
+                        name: d.name.clone(),
+                        description: d.description.clone(),
+                        parameters: d.parameters.clone(),
+                    },
+                })
+                .collect()
+        });
+
+        let tool_choice = req.tool_choice.as_ref().map(|tc| match tc {
+            kb_core::provider::ToolChoice::Auto => serde_json::json!("auto"),
+            kb_core::provider::ToolChoice::Required => serde_json::json!("required"),
+            kb_core::provider::ToolChoice::Specific { name } => {
+                serde_json::json!({"type": "function", "function": {"name": name}})
+            }
+            kb_core::provider::ToolChoice::None => serde_json::json!("none"),
+        });
+
         let body = OpenAiChatBody {
             model: &conn.model_id,
             messages: req
@@ -147,22 +212,41 @@ impl ProviderAdapter for OpenAiCompat {
             max_tokens: req.max_tokens,
             temperature: req.temperature,
             response_format,
+            tools,
+            tool_choice,
         };
 
         let raw: OpenAiChatResp = self.post_json(&url, conn, &body).await?;
+        let first = raw.choices.into_iter().next();
+        let text = first
+            .as_ref()
+            .map(|c| c.message.content.clone())
+            .unwrap_or_default();
+        let finish_reason = first.as_ref().and_then(|c| c.finish_reason.clone());
+        let tool_calls: Vec<kb_core::provider::ToolCall> = first
+            .map(|c| {
+                c.message
+                    .tool_calls
+                    .into_iter()
+                    .map(|tc| kb_core::provider::ToolCall {
+                        id: tc.id,
+                        function: kb_core::provider::FunctionCall {
+                            name: tc.function.name,
+                            arguments: tc.function.arguments,
+                        },
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
         Ok(ChatResp {
-            text: raw
-                .choices
-                .into_iter()
-                .next()
-                .map(|c| c.message.content)
-                .unwrap_or_default(),
+            text,
             usage: raw.usage.map_or(Usage::default(), |u| Usage {
                 prompt_tokens: u.prompt_tokens,
                 completion_tokens: u.completion_tokens,
             }),
-            tool_calls: vec![],
-            finish_reason: None,
+            tool_calls,
+            finish_reason,
         })
     }
 
