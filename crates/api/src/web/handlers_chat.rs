@@ -407,6 +407,8 @@ pub async fn chat_send(
             messages.push(kb_core::provider::ChatMessage {
                 role: kb_core::provider::ChatRole::System,
                 content: system_content,
+                tool_calls: None,
+                tool_call_id: None,
             });
             for msg in &history {
                 let role = match msg.role.as_str() {
@@ -417,11 +419,15 @@ pub async fn chat_send(
                 messages.push(kb_core::provider::ChatMessage {
                     role,
                     content: msg.content.clone(),
+                    tool_calls: None,
+                    tool_call_id: None,
                 });
             }
             messages.push(kb_core::provider::ChatMessage {
                 role: kb_core::provider::ChatRole::User,
                 content: message.clone(),
+                tool_calls: None,
+                tool_call_id: None,
             });
 
             let req = kb_core::provider::ChatReq {

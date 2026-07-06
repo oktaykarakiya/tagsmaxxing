@@ -175,6 +175,8 @@ impl ProviderAdapter for Anthropic {
                 prompt_tokens: raw.usage.input_tokens,
                 completion_tokens: raw.usage.output_tokens,
             },
+            tool_calls: vec![],
+            finish_reason: None,
         })
     }
 
@@ -391,6 +393,8 @@ mod tests {
             messages: vec![ChatMessage {
                 role: ChatRole::User,
                 content: content.into(),
+                tool_calls: None,
+                tool_call_id: None,
             }],
             ..Default::default()
         }
@@ -402,10 +406,14 @@ mod tests {
                 ChatMessage {
                     role: ChatRole::System,
                     content: system.into(),
+                    tool_calls: None,
+                    tool_call_id: None,
                 },
                 ChatMessage {
                     role: ChatRole::User,
                     content: user.into(),
+                    tool_calls: None,
+                    tool_call_id: None,
                 },
             ],
             ..Default::default()
@@ -497,6 +505,8 @@ mod tests {
             messages: vec![ChatMessage {
                 role: ChatRole::User,
                 content: "test".into(),
+                tool_calls: None,
+                tool_call_id: None,
             }],
             max_tokens: None,
             ..Default::default()
@@ -517,6 +527,8 @@ mod tests {
             messages: vec![ChatMessage {
                 role: ChatRole::User,
                 content: "test".into(),
+                tool_calls: None,
+                tool_call_id: None,
             }],
             max_tokens: Some(512),
             ..Default::default()
@@ -669,6 +681,8 @@ mod tests {
             messages: vec![ChatMessage {
                 role: ChatRole::User,
                 content: "test".into(),
+                tool_calls: None,
+                tool_call_id: None,
             }],
             temperature: Some(0.7),
             ..Default::default()
@@ -689,6 +703,8 @@ mod tests {
             messages: vec![ChatMessage {
                 role: ChatRole::User,
                 content: "test".into(),
+                tool_calls: None,
+                tool_call_id: None,
             }],
             temperature: None,
             ..Default::default()

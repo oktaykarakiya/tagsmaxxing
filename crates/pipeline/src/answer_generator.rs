@@ -95,6 +95,8 @@ impl AnswerGenerator {
             messages: vec![ChatMessage {
                 role: ChatRole::User,
                 content: prompt,
+                tool_calls: None,
+                tool_call_id: None,
             }],
             max_tokens: Some(512),
             temperature: Some(0.3),

@@ -96,10 +96,14 @@ impl DiffSummaryGenerator {
                 ChatMessage {
                     role: ChatRole::System,
                     content: SYSTEM_PROMPT.into(),
+                    tool_calls: None,
+                    tool_call_id: None,
                 },
                 ChatMessage {
                     role: ChatRole::User,
                     content: user_message.clone(),
+                    tool_calls: None,
+                    tool_call_id: None,
                 },
             ],
             json_schema: Some(diff_summary_schema()),
@@ -137,18 +141,26 @@ impl DiffSummaryGenerator {
                 ChatMessage {
                     role: ChatRole::System,
                     content: SYSTEM_PROMPT.into(),
+                    tool_calls: None,
+                    tool_call_id: None,
                 },
                 ChatMessage {
                     role: ChatRole::User,
                     content: user_message,
+                    tool_calls: None,
+                    tool_call_id: None,
                 },
                 ChatMessage {
                     role: ChatRole::Assistant,
                     content: resp.text,
+                    tool_calls: None,
+                    tool_call_id: None,
                 },
                 ChatMessage {
                     role: ChatRole::User,
                     content: "Output only JSON with key 'diff_summary'.".into(),
+                    tool_calls: None,
+                    tool_call_id: None,
                 },
             ],
             json_schema: Some(diff_summary_schema()),

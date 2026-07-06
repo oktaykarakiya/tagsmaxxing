@@ -130,6 +130,8 @@ impl ChatEngine {
         messages.push(ChatMessage {
             role: ChatRole::System,
             content: system_content,
+            tool_calls: None,
+            tool_call_id: None,
         });
 
         // History.
@@ -142,6 +144,8 @@ impl ChatEngine {
             messages.push(ChatMessage {
                 role,
                 content: msg.content.clone(),
+                tool_calls: None,
+                tool_call_id: None,
             });
         }
 
@@ -149,6 +153,8 @@ impl ChatEngine {
         messages.push(ChatMessage {
             role: ChatRole::User,
             content: user_message.to_string(),
+            tool_calls: None,
+            tool_call_id: None,
         });
 
         let req = ChatReq {

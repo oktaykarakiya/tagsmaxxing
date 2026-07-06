@@ -174,6 +174,8 @@ impl VisionCaptioner {
             messages: vec![ChatMessage {
                 role: kb_core::provider::ChatRole::User,
                 content: VLM_PROMPT.to_string(),
+                tool_calls: None,
+                tool_call_id: None,
             }],
             images: vec![resized],
             ..Default::default()

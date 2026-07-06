@@ -53,6 +53,8 @@ fn chat_req(text: &str) -> ChatReq {
         messages: vec![ChatMessage {
             role: ChatRole::User,
             content: text.into(),
+            tool_calls: None,
+            tool_call_id: None,
         }],
         ..Default::default()
     }

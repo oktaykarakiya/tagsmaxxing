@@ -39,7 +39,58 @@ str_enum! {
         User = "user",
         /// Prior model output.
         Assistant = "assistant",
+        /// Tool execution result (P20).
+        Tool = "tool",
     }
+}
+
+/// A function definition for tool calling (P20).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolDef {
+    /// Function name the model uses.
+    pub name: String,
+    /// Human-readable description.
+    pub description: String,
+    /// JSON Schema for the function parameters.
+    pub parameters: serde_json::Value,
+}
+
+/// How the model should select tools (P20).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ToolChoice {
+    /// Let the model decide.
+    #[serde(rename = "auto")]
+    Auto,
+    /// Require a tool call.
+    #[serde(rename = "required")]
+    Required,
+    /// Force a specific tool by name.
+    #[serde(rename = "function")]
+    Specific {
+        /// The name of the tool to force.
+        name: String,
+    },
+    /// No tools.
+    #[serde(rename = "none")]
+    None,
+}
+
+/// A function call from the model (P20).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolCall {
+    /// Unique call id.
+    pub id: String,
+    /// The function to invoke.
+    pub function: FunctionCall,
+}
+
+/// Function name + arguments (P20).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FunctionCall {
+    /// Function name.
+    pub name: String,
+    /// JSON-stringified arguments.
+    pub arguments: String,
 }
 
 /// One message in a chat request.
@@ -49,6 +100,12 @@ pub struct ChatMessage {
     pub role: ChatRole,
     /// The message text.
     pub content: String,
+    /// Tool calls made by the assistant (P20).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCall>>,
+    /// Tool call id for tool results (P20).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
 }
 
 /// A normalized chat-completion request.
@@ -65,6 +122,12 @@ pub struct ChatReq {
     pub max_tokens: Option<u32>,
     /// Optional sampling temperature.
     pub temperature: Option<f32>,
+    /// Tool definitions for function calling (P20).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<ToolDef>>,
+    /// Tool selection mode (P20).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<ToolChoice>,
     /// Page images for multimodal VLM calls. Skipped in serde — wire serialization
     /// is handled by the client when images are present (multimodal content format).
     #[serde(skip)]
@@ -92,10 +155,16 @@ impl Usage {
 /// A normalized chat-completion response.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ChatResp {
-    /// The generated text.
+    /// The generated text (empty when model returns only tool_calls).
     pub text: String,
     /// Token usage for the call.
     pub usage: Usage,
+    /// Tool calls requested by the model (P20).
+    #[serde(default)]
+    pub tool_calls: Vec<ToolCall>,
+    /// The reason the model stopped (P20).
+    #[serde(default)]
+    pub finish_reason: Option<String>,
 }
 
 /// A normalized embedding request.
@@ -192,6 +261,7 @@ mod tests {
         assert_eq!(ChatRole::System.as_str(), "system");
         assert_eq!(ChatRole::User.as_str(), "user");
         assert_eq!(ChatRole::Assistant.as_str(), "assistant");
+        assert_eq!(ChatRole::Tool.as_str(), "tool");
         for r in ChatRole::all() {
             assert_eq!(ChatRole::from_str(r.as_str()).unwrap(), *r);
         }

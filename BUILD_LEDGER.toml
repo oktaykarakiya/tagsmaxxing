@@ -19,7 +19,7 @@
 
 [meta]
 generated = "2026-05-31"
-phases_planned = ["P0", "P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10", "P11", "P12", "P13", "P14", "P15", "P16", "P17", "P18", "P19"]
+phases_planned = ["P0", "P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10", "P11", "P12", "P13", "P14", "P15", "P16", "P17", "P18", "P19", "P20"]
 gate_command = "just ci"
 walking_skeleton = "Complete the P0-P4 vertical slice before adding breadth (§31.6)."
 # Crate versions verified against crates.io on 2026-05-29 (the plan's names had drifted):
@@ -2195,6 +2195,30 @@ description = "Docs: ARCHITECTURE.md RAG Answer section, RUNBOOK entry, README b
 depends_on = ["P19-T6"]
 plan_sections = ["31.2"]
 acceptance = "just ci green; docs merged."
+status = "todo"
+checkpoint = false
+notes = ""
+
+# ── Phase P20 — Tool / Function Calling ─────────────────────────────────
+
+[[task]]
+id = "P20-T0"
+phase = "P20"
+description = "Author the P20 phase in BUILD_LEDGER.toml."
+depends_on = []
+plan_sections = ["31"]
+acceptance = "just next resolves P20-T1."
+status = "done"
+checkpoint = false
+notes = "P20 phase authored."
+
+[[task]]
+id = "P20-T1"
+phase = "P20"
+description = "Core types: ToolDef, ToolChoice, ToolCall, FunctionCall. Extend ChatReq, ChatResp, ChatMessage. Add ChatRole::Tool."
+depends_on = ["P20-T0"]
+plan_sections = ["4", "26"]
+acceptance = "just ci green."
 status = "todo"
 checkpoint = false
 notes = ""

@@ -202,10 +202,14 @@ impl JsonSchemaTagger {
             ChatMessage {
                 role: ChatRole::System,
                 content: SYSTEM_PROMPT.to_string(),
+                tool_calls: None,
+                tool_call_id: None,
             },
             ChatMessage {
                 role: ChatRole::User,
                 content: Self::build_user_content(input),
+                tool_calls: None,
+                tool_call_id: None,
             },
         ]
     }
@@ -409,6 +413,8 @@ impl Tagger for JsonSchemaTagger {
                 retry_messages.push(ChatMessage {
                     role: ChatRole::Assistant,
                     content: resp.text,
+                    tool_calls: None,
+                    tool_call_id: None,
                 });
                 retry_messages.push(ChatMessage {
                     role: ChatRole::User,
@@ -417,6 +423,8 @@ impl Tagger for JsonSchemaTagger {
                          Please respond with ONLY a valid JSON object containing exactly: \
                          title (string), summary (string), and tags (array of strings)."
                             .to_string(),
+                    tool_calls: None,
+                    tool_call_id: None,
                 });
 
                 let retry_req = ChatReq {

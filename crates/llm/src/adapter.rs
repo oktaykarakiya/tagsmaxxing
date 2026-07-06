@@ -161,6 +161,8 @@ impl ProviderAdapter for OpenAiCompat {
                 prompt_tokens: u.prompt_tokens,
                 completion_tokens: u.completion_tokens,
             }),
+            tool_calls: vec![],
+            finish_reason: None,
         })
     }
 
@@ -266,6 +268,8 @@ mod tests {
             messages: vec![ChatMessage {
                 role: kb_core::provider::ChatRole::User,
                 content: content.into(),
+                tool_calls: None,
+                tool_call_id: None,
             }],
             ..Default::default()
         }
