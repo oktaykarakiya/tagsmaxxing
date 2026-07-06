@@ -106,6 +106,15 @@ impl Tool for GetDocumentTool {
         }
     }
 
+    /// Execute: retrieve a document by id.
+    ///
+    /// # Authorization
+    ///
+    /// Documents in this system are **tenant-scoped** (shared knowledge base), not
+    /// user-scoped. RLS enforces tenant isolation; all users within a tenant can
+    /// access all documents. This is intentional — the KB is a shared resource.
+    /// If per-user document ACLs are added in the future, add `ctx.user_id` to
+    /// the store calls here.
     async fn execute(&self, args: &str, ctx: &ToolContext) -> anyhow::Result<String> {
         let params: serde_json::Value = serde_json::from_str(args)?;
         let doc_id = params["document_id"].as_i64().unwrap_or(0);
