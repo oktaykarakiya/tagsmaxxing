@@ -97,14 +97,14 @@ pub async fn get_conversation(
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ChatError>)> {
     let conv = state
         .pg_store
-        .get_conversation(auth_user.tenant_id, id)
+        .get_conversation(auth_user.tenant_id, auth_user.user_id, id)
         .await
         .map_err(internal_error)?
         .ok_or_else(not_found)?;
 
     let msgs = state
         .pg_store
-        .get_messages(auth_user.tenant_id, id, i64::MAX, 200)
+        .get_messages(auth_user.tenant_id, auth_user.user_id, id, i64::MAX, 200)
         .await
         .map_err(internal_error)?;
 
@@ -139,7 +139,7 @@ pub async fn delete_conversation(
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ChatError>)> {
     state
         .pg_store
-        .delete_conversation(auth_user.tenant_id, id)
+        .delete_conversation(auth_user.tenant_id, auth_user.user_id, id)
         .await
         .map_err(internal_error)?;
 

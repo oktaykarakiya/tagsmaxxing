@@ -138,7 +138,7 @@ async fn build_chat_page(
     let messages: Vec<ChatMsgEntry> = if let Some(cid) = conv_id {
         state
             .pg_store
-            .get_messages(tenant_id, cid, i64::MAX, 100)
+            .get_messages(tenant_id, user_id, cid, i64::MAX, 100)
             .await
             .unwrap_or_default()
             .into_iter()
@@ -298,7 +298,7 @@ pub async fn chat_send(
     let (tx, rx) = mpsc::channel::<Result<axum::response::sse::Event, std::convert::Infallible>>(8);
 
     let tenant_id = auth_user.tenant_id;
-    let _user_id = auth_user.user_id;
+    let user_id = auth_user.user_id;
     let pg = state.pg_store.clone();
     let retrieval = state.retrieval_pipeline.clone();
     let client = state.backend_pool.clone();
@@ -327,17 +327,23 @@ pub async fn chat_send(
 
         // 1. Save user message.
         let _ = pg
-            .insert_message(tenant_id, conv_id, "user", &message, None, None, None)
+            .insert_message(
+                tenant_id, user_id, conv_id, "user", &message, None, None, None,
+            )
             .await;
 
         // Auto-title: set from first message if conversation has no title.
-        let conv = pg.get_conversation(tenant_id, conv_id).await.ok().flatten();
+        let conv = pg
+            .get_conversation(tenant_id, user_id, conv_id)
+            .await
+            .ok()
+            .flatten();
         if let Some(ref c) = conv
             && c.title.is_none()
         {
             let title: String = message.chars().take(80).collect();
             let _ = pg
-                .update_conversation_title(tenant_id, conv_id, &title)
+                .update_conversation_title(tenant_id, user_id, conv_id, &title)
                 .await;
         }
 
@@ -377,7 +383,7 @@ pub async fn chat_send(
 
             // Load history.
             let history = pg
-                .get_recent_messages(tenant_id, conv_id, max_history as i64)
+                .get_recent_messages(tenant_id, user_id, conv_id, max_history as i64)
                 .await
                 .unwrap_or_default();
 
@@ -449,6 +455,7 @@ pub async fn chat_send(
                     let _ = pg
                         .insert_message(
                             tenant_id,
+                            user_id,
                             conv_id,
                             "assistant",
                             &resp.text,
@@ -502,7 +509,7 @@ pub async fn chat_delete(
 
     let _ = state
         .pg_store
-        .delete_conversation(auth_user.tenant_id, conv_id)
+        .delete_conversation(auth_user.tenant_id, auth_user.user_id, conv_id)
         .await;
 
     let csrf = csrf::generate_csrf_token().unwrap_or_default();
@@ -522,7 +529,13 @@ pub async fn chat_messages(
 ) -> Response {
     let messages: Vec<ChatMsgEntry> = state
         .pg_store
-        .get_messages(auth_user.tenant_id, conv_id, i64::MAX, 200)
+        .get_messages(
+            auth_user.tenant_id,
+            auth_user.user_id,
+            conv_id,
+            i64::MAX,
+            200,
+        )
         .await
         .unwrap_or_default()
         .into_iter()

@@ -62,10 +62,12 @@ impl PgStore {
         })
     }
 
-    /// Get a single conversation by id, scoped to tenant via RLS.
+    /// Get a single conversation by id and user — scoped to tenant + user.
+    /// The `user_id` parameter prevents cross-user IDOR within the same tenant.
     pub async fn get_conversation(
         &self,
         tenant_id: i64,
+        user_id: i64,
         conv_id: i64,
     ) -> anyhow::Result<Option<ChatConversation>> {
         let pool = self.app_pool()?;
@@ -83,11 +85,13 @@ impl PgStore {
             updated_at: chrono::DateTime<chrono::Utc>,
         }
 
-        let row: Option<Row> = sqlx::query_as("SELECT * FROM conversations WHERE id = $1")
-            .bind(conv_id)
-            .fetch_optional(&mut *tx)
-            .await
-            .context("failed to fetch conversation")?;
+        let row: Option<Row> =
+            sqlx::query_as("SELECT * FROM conversations WHERE id = $1 AND user_id = $2")
+                .bind(conv_id)
+                .bind(user_id)
+                .fetch_optional(&mut *tx)
+                .await
+                .context("failed to fetch conversation")?;
 
         tx.commit().await?;
 
@@ -153,36 +157,46 @@ impl PgStore {
             .collect())
     }
 
-    /// Update the title of a conversation.
+    /// Update the title of a conversation — scoped to tenant + user.
     pub async fn update_conversation_title(
         &self,
         tenant_id: i64,
+        user_id: i64,
         conv_id: i64,
         title: &str,
     ) -> anyhow::Result<()> {
         let pool = self.app_pool()?;
         let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
 
-        sqlx::query("UPDATE conversations SET title = $3 WHERE id = $1 AND tenant_id = $2")
-            .bind(conv_id)
-            .bind(tenant_id)
-            .bind(title)
-            .execute(&mut *tx)
-            .await
-            .context("failed to update conversation title")?;
+        sqlx::query(
+            "UPDATE conversations SET title = $4 WHERE id = $1 AND tenant_id = $2 AND user_id = $3",
+        )
+        .bind(conv_id)
+        .bind(tenant_id)
+        .bind(user_id)
+        .bind(title)
+        .execute(&mut *tx)
+        .await
+        .context("failed to update conversation title")?;
 
         tx.commit().await?;
         Ok(())
     }
 
-    /// Delete a conversation and all its messages (CASCADE).
-    pub async fn delete_conversation(&self, tenant_id: i64, conv_id: i64) -> anyhow::Result<()> {
+    /// Delete a conversation and all its messages (CASCADE) — scoped to tenant + user.
+    pub async fn delete_conversation(
+        &self,
+        tenant_id: i64,
+        user_id: i64,
+        conv_id: i64,
+    ) -> anyhow::Result<()> {
         let pool = self.app_pool()?;
         let mut tx = begin_tenant_tx(&pool, tenant_id).await?;
 
-        sqlx::query("DELETE FROM conversations WHERE id = $1 AND tenant_id = $2")
+        sqlx::query("DELETE FROM conversations WHERE id = $1 AND tenant_id = $2 AND user_id = $3")
             .bind(conv_id)
             .bind(tenant_id)
+            .bind(user_id)
             .execute(&mut *tx)
             .await
             .context("failed to delete conversation")?;
@@ -193,11 +207,15 @@ impl PgStore {
 
     /// Insert a new message and bump the conversation's message_count + updated_at.
     ///
+    /// The `user_id` parameter is checked against the conversation's owner to
+    /// prevent cross-user IDOR within the same tenant.
+    ///
     /// Returns the new message row.
     #[allow(clippy::too_many_arguments)]
     pub async fn insert_message(
         &self,
         tenant_id: i64,
+        user_id: i64,
         conv_id: i64,
         role: &str,
         content: &str,
@@ -224,7 +242,9 @@ impl PgStore {
         let row: Row = sqlx::query_as(
             "INSERT INTO conversation_messages \
              (tenant_id, conversation_id, role, content, tokens_in, tokens_out, search_results_json) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *",
+             SELECT $1, $2, $3, $4, $5, $6, $7 \
+             FROM conversations WHERE id = $2 AND user_id = $8 \
+             RETURNING conversation_messages.*",
         )
         .bind(tenant_id)
         .bind(conv_id)
@@ -233,6 +253,7 @@ impl PgStore {
         .bind(tokens_in)
         .bind(tokens_out)
         .bind(search_results_json)
+        .bind(user_id)
         .fetch_one(&mut *tx)
         .await
         .context("failed to insert message")?;
@@ -264,12 +285,17 @@ impl PgStore {
 
     /// Get messages for a conversation, cursor-based (before a given message id).
     ///
+    /// The `user_id` parameter is verified against the conversation's owner via
+    /// a subquery — if the conversation doesn't belong to this user, the result
+    /// set is empty (not an error, for consistent UX with RLS patterns).
+    ///
     /// Returns up to `limit` messages with `id < before_id`, ordered by
     /// `created_at ASC` (chronological). Pass `before_id = i64::MAX` for the
     /// most recent messages. Used for scrollback/infinite scroll.
     pub async fn get_messages(
         &self,
         tenant_id: i64,
+        user_id: i64,
         conv_id: i64,
         before_id: i64,
         limit: i64,
@@ -291,11 +317,13 @@ impl PgStore {
         }
 
         let rows: Vec<Row> = sqlx::query_as(
-            "SELECT * FROM conversation_messages \
-             WHERE conversation_id = $1 AND id < $2 \
-             ORDER BY created_at ASC LIMIT $3",
+            "SELECT cm.* FROM conversation_messages cm \
+             JOIN conversations c ON cm.conversation_id = c.id \
+             WHERE cm.conversation_id = $1 AND c.user_id = $2 AND cm.id < $3 \
+             ORDER BY cm.created_at ASC LIMIT $4",
         )
         .bind(conv_id)
+        .bind(user_id)
         .bind(before_id)
         .bind(limit)
         .fetch_all(&mut *tx)
@@ -322,10 +350,12 @@ impl PgStore {
 
     /// Get the most recent N messages for a conversation, for LLM context window.
     ///
+    /// The `user_id` parameter is verified against the conversation's owner.
     /// Ordered by `created_at ASC` (chronological), limited to `limit` most recent.
     pub async fn get_recent_messages(
         &self,
         tenant_id: i64,
+        user_id: i64,
         conv_id: i64,
         limit: i64,
     ) -> anyhow::Result<Vec<ChatMessage>> {
@@ -346,13 +376,15 @@ impl PgStore {
         }
 
         let rows: Vec<Row> = sqlx::query_as(
-            "SELECT * FROM (\
-               SELECT * FROM conversation_messages \
-               WHERE conversation_id = $1 \
-               ORDER BY created_at DESC LIMIT $2 \
+            "SELECT cm.* FROM (\
+               SELECT cm.* FROM conversation_messages cm \
+               JOIN conversations c ON cm.conversation_id = c.id \
+               WHERE cm.conversation_id = $1 AND c.user_id = $2 \
+               ORDER BY cm.created_at DESC LIMIT $3 \
              ) sub ORDER BY created_at ASC",
         )
         .bind(conv_id)
+        .bind(user_id)
         .bind(limit)
         .fetch_all(&mut *tx)
         .await

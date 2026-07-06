@@ -72,6 +72,7 @@ impl ChatEngine {
     pub async fn respond(
         &self,
         tenant_id: i64,
+        user_id: i64,
         conv_id: i64,
         user_message: &str,
         local_only: bool,
@@ -97,7 +98,12 @@ impl ChatEngine {
         // 2. Recent history.
         let history = self
             .pg
-            .get_recent_messages(tenant_id, conv_id, self.max_history_messages as i64)
+            .get_recent_messages(
+                tenant_id,
+                user_id,
+                conv_id,
+                self.max_history_messages as i64,
+            )
             .await
             .unwrap_or_default();
 
