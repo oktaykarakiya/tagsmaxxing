@@ -1997,7 +1997,7 @@ description = "kb-core types: new crates/core/src/chat.rs with ChatConversation 
 depends_on = ["P18-T1"]
 plan_sections = ["4"]
 acceptance = "just ci green; serde round-trip tests."
-status = "todo"
+status = "done"
 checkpoint = false
 notes = ""
 
